@@ -11,15 +11,20 @@
 //                                browserPaginate{ mode: scroll | replay }
 //   - BrowserPaginateHost      : protocol the WKWebView host implements so
 //                                BrowserPaginate can stay decoupled
+//   - Output catalog           : ScrapedDispensary / ScrapedCategory /
+//                                ScrapedProduct / ScrapedVariant /
+//                                ScrapedPriceObservation / Snapshot — the
+//                                fixed types every recipe is required to
+//                                output. Downstream consumers ingest
+//                                Snapshots and translate to their storage.
 //
 // Coming next:
 //   - Recipe                   : parsed recipe value type
 //   - HTTPEngine / BrowserEngine: full runtime that drives a recipe end-to-end
-//   - OutputCatalog            : the fixed type catalog recipes target
 //   - DiagnosticReport         : structured failure artifact
 //
 // See ../DESIGN.md for the design plan; ../README.md for the broad picture.
 
 public enum Forage {
-    public static let version = "0.0.1"
+    public static let version = "0.0.2"
 }
