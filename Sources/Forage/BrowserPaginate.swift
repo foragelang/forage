@@ -25,6 +25,21 @@ public protocol BrowserPaginateHost: AnyObject {
     func paginateLog(_ message: String)
     func paginateEvalJS(_ js: String, completion: @MainActor @Sendable @escaping (Any?, Error?) -> Void)
     func paginateCountCaptures(matching pattern: String) -> Int
+    /// Called once per pagination iteration, just after the iteration counter
+    /// is bumped and before the JS dispatch. Lets the engine surface live
+    /// progress (`BrowserProgress.phase = .paginating(...)`) without coupling
+    /// the paginator to the progress type. Default implementation is a no-op
+    /// so hosts that don't care can ignore it.
+    func paginateIterationStarted(iteration: Int, maxIterations: Int)
+    /// Called when pagination terminates (max iterations reached, no-progress
+    /// limit hit, or `.off` mode immediately). Lets the engine flip into a
+    /// `.settling` phase before the settle timer fires.
+    func paginateDidFinish()
+}
+
+extension BrowserPaginateHost {
+    public func paginateIterationStarted(iteration: Int, maxIterations: Int) {}
+    public func paginateDidFinish() {}
 }
 
 @MainActor
@@ -103,6 +118,7 @@ public final class BrowserPaginate {
             return
         }
         iteration += 1
+        host.paginateIterationStarted(iteration: iteration, maxIterations: maxIterations)
         captureCountAtIterStart = host.paginateCountCaptures(matching: observe)
 
         let js: String
@@ -155,6 +171,8 @@ public final class BrowserPaginate {
     }
 
     private func finish() {
+        guard !isFinished else { return }
         isFinished = true
+        host?.paginateDidFinish()
     }
 }

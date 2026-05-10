@@ -12,6 +12,9 @@
 //   - BrowserPaginate          : the engine primitive behind
 //                                browserPaginate{ mode: scroll | replay }
 //   - BrowserPaginateHost      : protocol the WKWebView host implements
+//   - BrowserProgress          : @Observable live progress signal driven by
+//                                BrowserEngine (phase, capture/record counts,
+//                                current/last observed URL)
 //
 // Output catalog (domain-agnostic):
 //   - Snapshot / ScrapedRecord / TypedValue

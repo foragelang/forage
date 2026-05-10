@@ -15,11 +15,12 @@ import WebKit
 /// completion, and `NSApp.terminate(nil)` to exit when the recipe settles
 /// (or hits its timeout). The runner returns the accumulated Snapshot.
 ///
-/// This class consolidates the orchestration that previously lived in
-/// `forage-probe/main.swift` (where it grew alongside the engine
-/// primitives), so the CLI becomes a thin recipe-driven wrapper and the
-/// in-app `BrowserProbe` (when re-introduced for recipe authoring) can use
-/// the same code.
+/// Live progress is exposed via `progress` (a `BrowserProgress`) so consumers
+/// can render phase / counters without polling. Rule application happens
+/// incrementally — each capture is dispatched through its matching
+/// `captures.match` rule on arrival and emits records into a long-lived
+/// `EmissionCollector` — so `progress.recordsEmitted` is meaningful while
+/// the run is in flight, not just after it completes.
 @MainActor
 public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessageHandler, BrowserPaginateHost {
     public let recipe: Recipe
@@ -30,11 +31,16 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     public let hardTimeoutSeconds: TimeInterval
     public private(set) var webView: WKWebView!
 
+    public let progress = BrowserProgress()
+
     private var window: NSWindow?
     private var settleTimer: Timer?
     private var hardTimer: Timer?
     private var paginate: BrowserPaginate?
     private var captures: [Capture] = []
+    private var collector = EmissionCollector()
+    private var unmatchedCaptures: [Capture] = []
+    private let scope: Scope
     private var didFireWarmup = false
     private var dismissAttempts = 0
     private var didFinishNav = false
@@ -57,6 +63,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         self.visible = visible
         self.settleSeconds = settleSeconds
         self.hardTimeoutSeconds = hardTimeoutSeconds
+        self.scope = Scope(inputs: inputs, frames: [[:]], current: nil)
         super.init()
 
         let config = WKWebViewConfiguration()
@@ -104,6 +111,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             do {
                 try start()
             } catch {
+                progress.setPhase(.failed("\(error)"))
                 cont.resume(throwing: error)
             }
         }
@@ -111,7 +119,6 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
     private func start() throws {
         let bcfg = recipe.browser!
-        let scope = Scope(inputs: inputs, frames: [[:]], current: nil)
         let url = try TemplateRenderer.render(bcfg.initialURL, in: scope)
         guard let urlValue = URL(string: url) else {
             throw BrowserEngineError.invalidInitialURL(url)
@@ -130,6 +137,8 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             self.window = win
         }
 
+        progress.setPhase(.loading)
+        progress.setCurrentURL(url)
         webView.load(URLRequest(url: urlValue))
 
         hardTimer = Timer.scheduledTimer(withTimeInterval: hardTimeoutSeconds, repeats: false) { [weak self] _ in
@@ -148,38 +157,46 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private func finish(reason: String) {
         guard let cont = continuation else { return }
         continuation = nil
+        if reason == "nav-fail" {
+            progress.setPhase(.failed(reason))
+        } else {
+            progress.setPhase(.done)
+        }
         let snapshot = buildSnapshot()
         cont.resume(returning: snapshot)
     }
 
     private func buildSnapshot() -> Snapshot {
-        let bcfg = recipe.browser!
-        var collector = EmissionCollector()
-        let scope = Scope(inputs: inputs, frames: [[:]], current: nil)
-        for capture in captures {
-            for rule in bcfg.captures where capture.responseUrl.contains(rule.urlPattern) {
-                applyRule(rule, capture: capture, scope: scope, collector: &collector)
-            }
-        }
-        return Snapshot(records: collector.records, observedAt: Date())
+        Snapshot(records: collector.records, observedAt: Date())
     }
 
-    private func applyRule(_ rule: CaptureRule, capture: Capture, scope: Scope, collector: inout EmissionCollector) {
+    private func applyMatchingRules(to capture: Capture) {
+        let bcfg = recipe.browser!
+        var matched = false
+        for rule in bcfg.captures where capture.responseUrl.contains(rule.urlPattern) {
+            matched = true
+            applyRule(rule, capture: capture)
+        }
+        if !matched {
+            unmatchedCaptures.append(capture)
+        }
+        progress.setRecordsEmitted(collector.records.count)
+    }
+
+    private func applyRule(_ rule: CaptureRule, capture: Capture) {
         guard let bodyData = capture.body.data(using: .utf8),
               let json = try? JSONValue.decode(bodyData) else { return }
         let captureScope = scope.withCurrent(json)
-        // The CaptureRule.body is a list of Statements that runs per matched
-        // response. Most rules are: `for $product in $.products[*] { emit … }`.
         do {
-            try runCaptureBody(rule.body, scope: captureScope, collector: &collector)
+            try runCaptureBody(rule.body, scope: captureScope)
         } catch {
             // Capture-rule errors are surfaced via DiagnosticReport in
-            // future; for now, we just swallow them so a single bad capture
+            // a later phase; for now, swallow so a single bad capture
             // doesn't terminate the whole run.
         }
     }
 
-    private func runCaptureBody(_ stmts: [Statement], scope: Scope, collector: inout EmissionCollector) throws {
+    private func runCaptureBody(_ stmts: [Statement], scope: Scope) throws {
         for stmt in stmts {
             switch stmt {
             case .emit(let em):
@@ -195,11 +212,9 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
                 }
                 for item in items {
                     let inner = scope.with(varName, item).withCurrent(item)
-                    try runCaptureBody(body, scope: inner, collector: &collector)
+                    try runCaptureBody(body, scope: inner)
                 }
             case .step:
-                // Steps inside a captures.match block don't make sense — the
-                // browser engine doesn't issue HTTP from recipes.
                 continue
             }
         }
@@ -209,7 +224,13 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         didFinishNav = true
+        progress.setCurrentURL(webView.url?.absoluteString)
         guard let bcfg = recipe.browser else { return }
+        if bcfg.ageGate != nil {
+            progress.setPhase(.ageGate)
+        } else if bcfg.dismissals != nil {
+            progress.setPhase(.dismissing)
+        }
         if bcfg.ageGate != nil || bcfg.dismissals != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.attemptDismissals()
@@ -242,6 +263,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
         // Pass 1: age gate
         if bcfg.ageGate != nil {
+            progress.setPhase(.ageGate)
             webView.evaluateJavaScript(InjectedScripts.ageGateFill) { [weak self] result, _ in
                 guard let self else { return }
                 if let s = result as? String, !s.isEmpty {
@@ -262,6 +284,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     private func attemptModalDismiss() {
+        progress.setPhase(.dismissing)
         webView.evaluateJavaScript(InjectedScripts.dismissModal) { [weak self] result, _ in
             guard let self else { return }
             if let s = result as? String, !s.isEmpty {
@@ -280,6 +303,9 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         guard !didFireWarmup else { return }
         didFireWarmup = true
         let labels = recipe.browser?.warmupClicks ?? []
+        if !labels.isEmpty {
+            progress.setPhase(.warmupClicks)
+        }
         clickWarmup(labels: labels) { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.paginate?.start()
@@ -307,6 +333,8 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             guard let dict = body as? [String: Any],
                   let cap = Capture(jsBridgePayload: dict) else { return }
             captures.append(cap)
+            progress.noteCapture(responseURL: cap.responseUrl)
+            applyMatchingRules(to: cap)
             resetSettleTimer()
             paginate?.handleCapture(cap)
         }
@@ -328,6 +356,14 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         captures.reduce(0) { acc, c in
             c.responseUrl.contains(pattern) ? acc + 1 : acc
         }
+    }
+
+    public func paginateIterationStarted(iteration: Int, maxIterations: Int) {
+        progress.setPhase(.paginating(iteration: iteration, maxIterations: maxIterations))
+    }
+
+    public func paginateDidFinish() {
+        progress.setPhase(.settling)
     }
 }
 
