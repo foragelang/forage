@@ -362,9 +362,10 @@ public actor HTTPEngine {
 
 // MARK: - Emission collector
 
-struct EmissionCollector {
-    var records: [ScrapedRecord] = []
-    mutating func append(_ r: ScrapedRecord) { records.append(r) }
+public struct EmissionCollector {
+    public var records: [ScrapedRecord] = []
+    public init() {}
+    public mutating func append(_ r: ScrapedRecord) { records.append(r) }
 }
 
 // MARK: - Errors

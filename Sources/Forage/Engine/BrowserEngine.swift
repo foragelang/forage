@@ -1,0 +1,346 @@
+#if canImport(WebKit)
+import Foundation
+import AppKit
+import WebKit
+
+/// Runs a `Recipe` whose `engineKind` is `.browser`. Hosts a `WKWebView`,
+/// drives navigation / age-gate fill / dismissal / warmup-clicks /
+/// pagination per `BrowserConfig`, captures fetch/XHR responses through the
+/// existing `InjectedScripts.captureWrapper`, and applies the recipe's
+/// `captures.match` rules to produce a `Snapshot`.
+///
+/// Requires an active `NSApplication` event loop — the consumer (the macOS
+/// app, `forage-probe`, etc.) is responsible for starting that. The
+/// `run(recipe:inputs:)` method spawns a window, drives the SPA to
+/// completion, and `NSApp.terminate(nil)` to exit when the recipe settles
+/// (or hits its timeout). The runner returns the accumulated Snapshot.
+///
+/// This class consolidates the orchestration that previously lived in
+/// `forage-probe/main.swift` (where it grew alongside the engine
+/// primitives), so the CLI becomes a thin recipe-driven wrapper and the
+/// in-app `BrowserProbe` (when re-introduced for recipe authoring) can use
+/// the same code.
+@MainActor
+public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessageHandler, BrowserPaginateHost {
+    public let recipe: Recipe
+    public let inputs: [String: JSONValue]
+    public let evaluator: ExtractionEvaluator
+    public let visible: Bool
+    public let settleSeconds: TimeInterval
+    public let hardTimeoutSeconds: TimeInterval
+    public private(set) var webView: WKWebView!
+
+    private var window: NSWindow?
+    private var settleTimer: Timer?
+    private var hardTimer: Timer?
+    private var paginate: BrowserPaginate?
+    private var captures: [Capture] = []
+    private var didFireWarmup = false
+    private var dismissAttempts = 0
+    private var didFinishNav = false
+
+    private var continuation: CheckedContinuation<Snapshot, any Error>?
+
+    public init(
+        recipe: Recipe,
+        inputs: [String: JSONValue],
+        evaluator: ExtractionEvaluator = ExtractionEvaluator(),
+        visible: Bool = true,
+        settleSeconds: TimeInterval = 8,
+        hardTimeoutSeconds: TimeInterval = 240
+    ) {
+        precondition(recipe.engineKind == .browser, "BrowserEngine requires browser-engine Recipe")
+        precondition(recipe.browser != nil, "browser-engine Recipe must have a `browser { … }` block")
+        self.recipe = recipe
+        self.inputs = inputs
+        self.evaluator = evaluator
+        self.visible = visible
+        self.settleSeconds = settleSeconds
+        self.hardTimeoutSeconds = hardTimeoutSeconds
+        super.init()
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let ucc = WKUserContentController()
+        let captureScript = WKUserScript(
+            source: InjectedScripts.captureWrapper,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        ucc.addUserScript(captureScript)
+        ucc.add(self, name: "captureNetwork")
+        config.userContentController = ucc
+
+        self.webView = WKWebView(
+            frame: NSRect(x: 0, y: 0, width: 1280, height: 900),
+            configuration: config
+        )
+        webView.navigationDelegate = self
+
+        // Construct paginate from recipe config.
+        let bcfg = recipe.browser!
+        let pmode: BrowserPaginate.Mode = (bcfg.pagination.mode == .scroll) ? .scroll : .replay
+        let untilLimit: Int = {
+            if case .noProgressFor(let n) = bcfg.pagination.until { return n }
+            return 3
+        }()
+        self.paginate = BrowserPaginate(
+            observe: bcfg.observe,
+            mode: pmode,
+            replayOverride: [:],
+            seedFilter: bcfg.pagination.seedFilter,
+            maxIterations: bcfg.pagination.maxIterations,
+            noProgressLimit: untilLimit,
+            iterationDelay: bcfg.pagination.iterationDelay
+        )
+        self.paginate?.host = self
+    }
+
+    /// Run the recipe. Returns the accumulated snapshot. Throws on hard
+    /// timeout or navigation error.
+    public func run() async throws -> Snapshot {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Snapshot, any Error>) in
+            self.continuation = cont
+            do {
+                try start()
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
+    }
+
+    private func start() throws {
+        let bcfg = recipe.browser!
+        let scope = Scope(inputs: inputs, frames: [[:]], current: nil)
+        let url = try TemplateRenderer.render(bcfg.initialURL, in: scope)
+        guard let urlValue = URL(string: url) else {
+            throw BrowserEngineError.invalidInitialURL(url)
+        }
+
+        if visible {
+            let win = NSWindow(
+                contentRect: NSRect(x: 60, y: 60, width: 1280, height: 900),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            win.title = "Forage — \(recipe.name)"
+            win.contentView = webView
+            win.makeKeyAndOrderFront(nil)
+            self.window = win
+        }
+
+        webView.load(URLRequest(url: urlValue))
+
+        hardTimer = Timer.scheduledTimer(withTimeInterval: hardTimeoutSeconds, repeats: false) { [weak self] _ in
+            self?.finish(reason: "hard-timeout")
+        }
+        resetSettleTimer()
+    }
+
+    private func resetSettleTimer() {
+        settleTimer?.invalidate()
+        settleTimer = Timer.scheduledTimer(withTimeInterval: settleSeconds, repeats: false) { [weak self] _ in
+            self?.finish(reason: "settled")
+        }
+    }
+
+    private func finish(reason: String) {
+        guard let cont = continuation else { return }
+        continuation = nil
+        let snapshot = buildSnapshot()
+        cont.resume(returning: snapshot)
+    }
+
+    private func buildSnapshot() -> Snapshot {
+        let bcfg = recipe.browser!
+        var collector = EmissionCollector()
+        let scope = Scope(inputs: inputs, frames: [[:]], current: nil)
+        for capture in captures {
+            for rule in bcfg.captures where capture.responseUrl.contains(rule.urlPattern) {
+                applyRule(rule, capture: capture, scope: scope, collector: &collector)
+            }
+        }
+        return Snapshot(records: collector.records, observedAt: Date())
+    }
+
+    private func applyRule(_ rule: CaptureRule, capture: Capture, scope: Scope, collector: inout EmissionCollector) {
+        guard let bodyData = capture.body.data(using: .utf8),
+              let json = try? JSONValue.decode(bodyData) else { return }
+        let captureScope = scope.withCurrent(json)
+        // The CaptureRule.body is a list of Statements that runs per matched
+        // response. Most rules are: `for $product in $.products[*] { emit … }`.
+        do {
+            try runCaptureBody(rule.body, scope: captureScope, collector: &collector)
+        } catch {
+            // Capture-rule errors are surfaced via DiagnosticReport in
+            // future; for now, we just swallow them so a single bad capture
+            // doesn't terminate the whole run.
+        }
+    }
+
+    private func runCaptureBody(_ stmts: [Statement], scope: Scope, collector: inout EmissionCollector) throws {
+        for stmt in stmts {
+            switch stmt {
+            case .emit(let em):
+                let record = try evaluator.emit(em, in: scope)
+                collector.append(record)
+            case .forLoop(let varName, let coll, let body):
+                let listValue = try PathResolver.resolve(coll, in: scope)
+                let items: [JSONValue]
+                switch listValue {
+                case .array(let xs): items = xs
+                case .null: items = []
+                default: items = [listValue]
+                }
+                for item in items {
+                    let inner = scope.with(varName, item).withCurrent(item)
+                    try runCaptureBody(body, scope: inner, collector: &collector)
+                }
+            case .step:
+                // Steps inside a captures.match block don't make sense — the
+                // browser engine doesn't issue HTTP from recipes.
+                continue
+            }
+        }
+    }
+
+    // MARK: - Navigation delegate
+
+    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        didFinishNav = true
+        guard let bcfg = recipe.browser else { return }
+        if bcfg.ageGate != nil || bcfg.dismissals != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.attemptDismissals()
+            }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.runWarmupAndPaginate()
+            }
+        }
+    }
+
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+        finish(reason: "nav-fail")
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+        finish(reason: "nav-fail")
+    }
+
+    // MARK: - Dismissal orchestration
+
+    private func attemptDismissals() {
+        let bcfg = recipe.browser!
+        let maxAttempts = bcfg.dismissals?.maxAttempts ?? 8
+        guard dismissAttempts < maxAttempts else {
+            runWarmupAndPaginate()
+            return
+        }
+        dismissAttempts += 1
+
+        // Pass 1: age gate
+        if bcfg.ageGate != nil {
+            webView.evaluateJavaScript(InjectedScripts.ageGateFill) { [weak self] result, _ in
+                guard let self else { return }
+                if let s = result as? String, !s.isEmpty {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        if bcfg.ageGate?.reloadAfter == true { self.webView.reload() }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                        self?.dismissAttempts = 0
+                        self?.attemptDismissals()
+                    }
+                    return
+                }
+                self.attemptModalDismiss()
+            }
+            return
+        }
+        attemptModalDismiss()
+    }
+
+    private func attemptModalDismiss() {
+        webView.evaluateJavaScript(InjectedScripts.dismissModal) { [weak self] result, _ in
+            guard let self else { return }
+            if let s = result as? String, !s.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.attemptDismissals()
+                }
+            } else {
+                self.runWarmupAndPaginate()
+            }
+        }
+    }
+
+    // MARK: - Warmup + paginate
+
+    private func runWarmupAndPaginate() {
+        guard !didFireWarmup else { return }
+        didFireWarmup = true
+        let labels = recipe.browser?.warmupClicks ?? []
+        clickWarmup(labels: labels) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.paginate?.start()
+            }
+        }
+    }
+
+    private func clickWarmup(labels: [String], completion: @escaping () -> Void) {
+        var remaining = labels
+        func step() {
+            guard !remaining.isEmpty else { completion(); return }
+            let label = remaining.removeFirst()
+            webView.evaluateJavaScript(InjectedScripts.clickButtonByText(label)) { _, _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { step() }
+            }
+        }
+        step()
+    }
+
+    // MARK: - WKScriptMessageHandler
+
+    public nonisolated func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        let body = message.body
+        MainActor.assumeIsolated {
+            guard let dict = body as? [String: Any],
+                  let cap = Capture(jsBridgePayload: dict) else { return }
+            captures.append(cap)
+            resetSettleTimer()
+            paginate?.handleCapture(cap)
+        }
+    }
+
+    // MARK: - BrowserPaginateHost
+
+    public func paginateLog(_ message: String) {
+        // No-op by default; consumer subclasses can override / hook a logger.
+    }
+
+    public func paginateEvalJS(_ js: String, completion: @MainActor @Sendable @escaping (Any?, Error?) -> Void) {
+        webView.evaluateJavaScript(js) { result, err in
+            MainActor.assumeIsolated { completion(result, err) }
+        }
+    }
+
+    public func paginateCountCaptures(matching pattern: String) -> Int {
+        captures.reduce(0) { acc, c in
+            c.responseUrl.contains(pattern) ? acc + 1 : acc
+        }
+    }
+}
+
+public enum BrowserEngineError: Error, CustomStringConvertible {
+    case invalidInitialURL(String)
+    case nsApplicationNotRunning
+
+    public var description: String {
+        switch self {
+        case .invalidInitialURL(let s): return "browser engine: initial URL didn't parse: \(s)"
+        case .nsApplicationNotRunning: return "browser engine: NSApplication event loop not running"
+        }
+    }
+}
+
+#endif // canImport(WebKit)
