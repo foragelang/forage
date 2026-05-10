@@ -208,14 +208,24 @@ func parsesBrowserConfig() throws {
     #expect(recipe.browser?.ageGate?.year == 1990)
 }
 
-// MARK: - Parses the example recipes from Phase A
+// MARK: - Parses the bundled platform recipes
+
+private func recipesDir(file: StaticString = #filePath) -> String {
+    let testFile = URL(fileURLWithPath: "\(file)")
+    return testFile
+        .deletingLastPathComponent()        // Tests/ForageTests
+        .deletingLastPathComponent()        // Tests
+        .deletingLastPathComponent()        // <repo>
+        .appendingPathComponent("recipes")
+        .path
+}
 
 @Test
-func parsesSweedExampleRecipe() throws {
-    let path = "/Users/dima/dev/forage-runtime/recipes/examples/sweed-zen-leaf.forage"
+func parsesSweedRecipe() throws {
+    let path = "\(recipesDir())/sweed/recipe.forage"
     let src = try String(contentsOfFile: path, encoding: .utf8)
     let recipe = try Parser.parse(source: src)
-    #expect(recipe.name == "sweed-zen-leaf-elkridge")
+    #expect(recipe.name == "sweed")
     #expect(recipe.engineKind == .http)
     #expect(recipe.types.contains(where: { $0.name == "Product" }))
     #expect(recipe.types.contains(where: { $0.name == "PriceObservation" }))
@@ -225,19 +235,20 @@ func parsesSweedExampleRecipe() throws {
 }
 
 @Test
-func parsesLeafbridgeExampleRecipe() throws {
-    let path = "/Users/dima/dev/forage-runtime/recipes/examples/leafbridge-remedy.forage"
+func parsesLeafbridgeRecipe() throws {
+    let path = "\(recipesDir())/leafbridge/recipe.forage"
     let src = try String(contentsOfFile: path, encoding: .utf8)
     let recipe = try Parser.parse(source: src)
-    #expect(recipe.name == "leafbridge-remedy")
+    #expect(recipe.name == "leafbridge")
     if case .htmlPrime = recipe.auth { } else { Issue.record("expected htmlPrime auth") }
 }
 
 @Test
-func parsesJaneExampleRecipe() throws {
-    let path = "/Users/dima/dev/forage-runtime/recipes/examples/jane-trilogy.forage"
+func parsesJaneRecipe() throws {
+    let path = "\(recipesDir())/jane/recipe.forage"
     let src = try String(contentsOfFile: path, encoding: .utf8)
     let recipe = try Parser.parse(source: src)
+    #expect(recipe.name == "jane")
     #expect(recipe.engineKind == .browser)
     #expect(recipe.browser != nil)
     #expect(recipe.browser?.observe.contains("smartpage") == true)

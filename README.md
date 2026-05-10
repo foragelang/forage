@@ -10,7 +10,7 @@ Will live at **foragelang.com** when the platform stabilizes.
 
 What you can do today:
 
-- Write a `.forage` recipe (see [`recipes/examples/`](./recipes/examples/)) and parse it via `Parser.parse(source:)`.
+- Write a `.forage` recipe (see [`recipes/`](./recipes/)) and parse it via `Parser.parse(source:)`.
 - Run an HTTP-engine recipe end-to-end via `RecipeRunner.run(recipe:inputs:)` against `URLSessionTransport` for live or `HTTPReplayer` for fixture replay.
 - Run a browser-engine recipe via `BrowserEngine.run()` on the main actor (consumer drives `NSApplication`).
 - Statically validate any recipe via `Validator.validate(_:)` — catches unknown types/fields/transforms, unbound path variables, missing required fields.
@@ -23,7 +23,7 @@ Canonical artifacts:
 
 - [`DESIGN.md`](./DESIGN.md) — design plan: principles, output type model, recipe shape, pagination strategies, dev/test workflow.
 - [`PLANS.md`](./PLANS.md) — execution plan for phases A-H with files, types, validator checks, anti-patterns.
-- [`recipes/examples/`](./recipes/examples/) — canonical example recipes for Sweed / Leafbridge / Jane.
+- [`recipes/sweed/`](./recipes/sweed/), [`recipes/leafbridge/`](./recipes/leafbridge/), [`recipes/jane/`](./recipes/jane/) — bundled platform recipes (parameterized by per-store inputs supplied by the consumer).
 - [`Sources/Forage/`](./Sources/Forage/) — runtime library (parser, engines, validator, fixture replay).
 - [`Sources/forage-probe/`](./Sources/forage-probe/) — `forage-probe run <recipe>` and `forage-probe capture <url>` CLI.
 
@@ -42,10 +42,12 @@ Canonical artifacts:
 ## Layout
 
 ```
-Sources/Forage/        # Swift runtime: engine primitives (capture, BrowserPaginate, …)
-Sources/forage-probe/  # CLI: WKWebView-hosted reverse-engineering tool
-Tests/ForageTests/     # Engine unit tests
+Sources/Forage/        # Swift runtime: parser, HTTP/browser engines, validator, fixture replay
+Sources/forage-probe/  # CLI: forage-probe run <recipe> | capture <url>
+Tests/ForageTests/     # Engine unit tests (27 green)
+recipes/<platform>/    # Bundled platform recipes — recipe.forage, optional fixtures/
 DESIGN.md              # Design plan
+PLANS.md               # Phase-by-phase execution plan (A-H)
 ```
 
 ## Building

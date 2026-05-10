@@ -74,13 +74,19 @@ func validatorWarnsAboutUnboundRequiredField() throws {
     #expect(issues.warnings.contains(where: { $0.message.contains("name") }))
 }
 
+private func validatorRecipesDir(file: StaticString = #filePath) -> URL {
+    URL(fileURLWithPath: "\(file)")
+        .deletingLastPathComponent()        // Tests/ForageTests
+        .deletingLastPathComponent()        // Tests
+        .deletingLastPathComponent()        // <repo>
+        .appendingPathComponent("recipes")
+}
+
 @Test
-func validatorAcceptsExampleRecipes() throws {
-    for path in [
-        "/Users/dima/dev/forage-runtime/recipes/examples/sweed-zen-leaf.forage",
-        "/Users/dima/dev/forage-runtime/recipes/examples/leafbridge-remedy.forage",
-        "/Users/dima/dev/forage-runtime/recipes/examples/jane-trilogy.forage",
-    ] {
+func validatorAcceptsBundledRecipes() throws {
+    let dir = validatorRecipesDir()
+    for platform in ["sweed", "leafbridge", "jane"] {
+        let path = dir.appendingPathComponent("\(platform)/recipe.forage").path
         let src = try String(contentsOfFile: path, encoding: .utf8)
         let recipe = try Parser.parse(source: src)
         let issues = Validator.validate(recipe)

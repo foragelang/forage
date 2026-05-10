@@ -1,5 +1,4 @@
-// Reference recipe — Leafbridge platform, Remedy Maryland (Columbia + Baltimore
-// share this recipe shape; per-store config differs in inputs).
+// Leafbridge platform recipe.
 //
 // Leafbridge is a WordPress plugin: each menu page issues an inline JS object
 // `leafbridge_public_ajax_obj = {"ajaxurl":"…","nonce":"…"}` that we have to
@@ -10,7 +9,7 @@
 // the cookie automatically (the HTTP client carries cookies forward) and pulls
 // the nonce out of the response body via regex.
 
-recipe "leafbridge-remedy" {
+recipe "leafbridge" {
     engine http
 
     /* ---------- Recipe-declared types ---------- */
@@ -81,8 +80,6 @@ recipe "leafbridge-remedy" {
     step prime {
         method "GET"
         url    "{$input.menuPageURL}"
-        // Special "html" body kind: response is text, runner runs the regex
-        // and binds the matched groups to the named scope vars from auth.htmlPrime.
         extract.regex {
             pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
             groups: [ajaxUrl, ajaxNonce]
@@ -143,8 +140,6 @@ recipe "leafbridge-remedy" {
                 images             ← $product.images[*].url | dedup
             }
 
-            // Leafbridge's category isn't returned as a separate list; it's
-            // implicit per-product. Emit a Category record per distinct value.
             emit Category {
                 externalId ← $product.category | titleCase
                 name       ← $product.category | titleCase
@@ -158,8 +153,6 @@ recipe "leafbridge-remedy" {
                     sizeUnit   ← $variant.option | parseSize | normalizeOzToGrams | sizeUnit | normalizeUnitToGrams
                 }
 
-                // Leafbridge surfaces both med + rec prices on every variant; the
-                // case-of selects the right field per iteration's $menu binding.
                 emit PriceObservation {
                     productExternalId ← $product.id
                     variantExternalId ← $variant.id

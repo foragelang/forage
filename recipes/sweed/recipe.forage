@@ -1,13 +1,13 @@
-// Reference recipe — Sweed platform, Zen Leaf Elkridge.
+// Sweed platform recipe.
 //
 // Sweed is a JSON-API platform: a single static-header auth (the storeId
 // header) authenticates every call. We fetch categories once per menu type,
 // then fetch products per (menu, category) pair with pageWithTotal pagination.
 //
-// The recipe-declared types are the contract weed-prices ingests; the
-// platform doesn't ship a fixed catalog.
+// Same recipe handles any Sweed-hosted dispensary; per-store inputs supply
+// the store identifier and which categories to scrape.
 
-recipe "sweed-zen-leaf-elkridge" {
+recipe "sweed" {
     engine http
 
     /* ---------- Recipe-declared types ---------- */
@@ -85,7 +85,6 @@ recipe "sweed-zen-leaf-elkridge" {
 
     /* ---------- Iteration + steps + emissions ---------- */
 
-    // Dispensary record fires once, doesn't depend on any HTTP call.
     emit Dispensary {
         slug             ← $input.dispensarySlug
         name             ← $input.dispensaryName
@@ -95,7 +94,6 @@ recipe "sweed-zen-leaf-elkridge" {
 
     for $menu in $input.menuTypes {
 
-        // Categories — one call per menu, returns flat list.
         step categories {
             method "POST"
             url    "https://web-ui-production.sweedpos.com/_api/proxy/Products/GetProductCategoryList"
@@ -115,7 +113,6 @@ recipe "sweed-zen-leaf-elkridge" {
             }
         }
 
-        // Products — one paginated call per (menu, category).
         for $catId in $input.priceCategoryIds {
             step products {
                 method "POST"
@@ -183,10 +180,6 @@ recipe "sweed-zen-leaf-elkridge" {
         }
     }
 
-    /* ---------- Expectations ---------- */
-
-    // Recipe author asserts they expect a populated menu. The runner reports
-    // a stalled run if these go unmet.
     expect { records.where(typeName == "Product").count >= 50 }
     expect { records.where(typeName == "Variant").count > 0 }
     expect { records.where(typeName == "PriceObservation").count > 0 }
