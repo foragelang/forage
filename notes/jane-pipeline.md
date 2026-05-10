@@ -75,7 +75,8 @@ Mutators are `internal` so only the engine drives them.
   `collector.records.count`. `buildSnapshot()` just snapshots the
   running collector.
 - While refactoring, stash a `private var unmatchedCaptures: [Capture]`
-  for Phase 5 (captures that matched no rule). Internal for now.
+  for Phase 3 (captures that matched no rule, which feed
+  `DiagnosticReport.unmatchedCaptures`). Internal for now.
 
 **Acceptance:**
 - `swift test` — 27 existing tests still pass, plus a new test
