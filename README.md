@@ -6,7 +6,7 @@ Will live at **foragelang.com** when the platform stabilizes.
 
 ## Status
 
-**Runtime operational, recipe-authoring tooling lands next.** Phases A-E of the [`PLANS.md`](./PLANS.md) execution plan are complete: parser, HTTP engine, browser engine, validator, fixture replay, snapshot codable. 27 tests green.
+**Runtime operational and consumer-integrated.** Phases A-G of the [`PLANS.md`](./PLANS.md) execution plan are complete: parser, HTTP engine, browser engine, validator, fixture replay, snapshot codable, platform recipes for Sweed / Leafbridge / Jane, and weed-prices now drives Forage as its sole scraping path (the bespoke per-platform Swift scrapers it shipped with are deleted). 27 tests green.
 
 What you can do today:
 
@@ -17,7 +17,7 @@ What you can do today:
 - Reverse-engineer a new platform with `forage-probe capture <url>` (legacy mode) and inspect the captured JSONL.
 - Encode/decode `Snapshot` values via `SnapshotIO.encode(_:)` / `.decode(_:)` for offline snapshot round-tripping.
 
-What lands next (Phases F-H, see [`PLANS.md`](./PLANS.md)): port the Sweed / Leafbridge / Jane / Dutchie platforms to actual recipes (capturing fixtures alongside), wire Forage as a Swift package dep in the weed-prices consumer, write a `SnapshotPersister` that translates Forage `ScrapedRecord`s into the consumer's SQLite schema by `typeName`, retire the bespoke per-platform Swift scrapers.
+What lands next: capture per-platform fixtures alongside each recipe so reviewers can verify a recipe extracts what its snapshot claims without running anything; surface the WKWebView the browser engine drives inside the consumer app so Jane (Trilogy) can ship; explore Dutchie as a fourth platform recipe.
 
 Canonical artifacts:
 
