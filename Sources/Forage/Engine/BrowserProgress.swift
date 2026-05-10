@@ -31,6 +31,17 @@ public final class BrowserProgress {
     public private(set) var currentURL: String? = nil
     public private(set) var lastObservedURL: String? = nil
 
+    /// True once the run has reached a terminal phase. Mutators that race
+    /// against `finish(reason:)` (e.g. pagination's settle transition, a
+    /// late `paginateDidFinish` after a hard-timeout already fired) check
+    /// this to avoid rewriting the terminal state.
+    public var isTerminal: Bool {
+        switch phase {
+        case .done, .failed: return true
+        default: return false
+        }
+    }
+
     public init() {}
 
     internal func setPhase(_ phase: Phase) {

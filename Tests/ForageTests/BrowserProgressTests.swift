@@ -82,4 +82,58 @@ func browserProgressPaginatingPhaseEqualityIsByAssociatedValue() {
     #expect(BrowserProgress.Phase.paginating(iteration: 1, maxIterations: 30)
             != .paginating(iteration: 1, maxIterations: 60))
 }
+
+@MainActor
+@Test
+func browserProgressIsTerminalIsFalseForInFlightPhases() {
+    let p = BrowserProgress()
+    #expect(p.isTerminal == false) // .starting
+    let nonTerminal: [BrowserProgress.Phase] = [
+        .loading,
+        .ageGate,
+        .dismissing,
+        .warmupClicks,
+        .paginating(iteration: 1, maxIterations: 30),
+        .settling,
+    ]
+    for phase in nonTerminal {
+        p.setPhase(phase)
+        #expect(p.isTerminal == false, "expected \(phase) to be non-terminal")
+    }
+}
+
+@MainActor
+@Test
+func browserProgressIsTerminalIsTrueForDoneAndFailed() {
+    let p = BrowserProgress()
+    p.setPhase(.done)
+    #expect(p.isTerminal == true)
+    p.setPhase(.failed("hard-timeout"))
+    #expect(p.isTerminal == true)
+    p.setPhase(.failed("nav-fail"))
+    #expect(p.isTerminal == true)
+}
+
+@MainActor
+@Test
+func browserProgressTerminalGuardPreventsSettlingAfterDone() {
+    // Mirrors the engine's guard in `paginateDidFinish()`:
+    // a late pagination-settle transition that fires after `finish(reason:)`
+    // already moved us to .done must not regress the phase.
+    let p = BrowserProgress()
+    p.setPhase(.done)
+    if !p.isTerminal { p.setPhase(.settling) }
+    #expect(p.phase == .done)
+}
+
+@MainActor
+@Test
+func browserProgressTerminalGuardPreservesFailedPhase() {
+    // Same guard, for the hard-timeout path: a late paginateDidFinish
+    // after `.failed("hard-timeout")` must not rewrite to .settling.
+    let p = BrowserProgress()
+    p.setPhase(.failed("hard-timeout"))
+    if !p.isTerminal { p.setPhase(.settling) }
+    #expect(p.phase == .failed("hard-timeout"))
+}
 #endif

@@ -157,10 +157,10 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private func finish(reason: String) {
         guard let cont = continuation else { return }
         continuation = nil
-        if reason == "nav-fail" {
-            progress.setPhase(.failed(reason))
-        } else {
+        if reason == "settled" {
             progress.setPhase(.done)
+        } else {
+            progress.setPhase(.failed(reason))
         }
         let snapshot = buildSnapshot()
         cont.resume(returning: snapshot)
@@ -226,10 +226,12 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         didFinishNav = true
         progress.setCurrentURL(webView.url?.absoluteString)
         guard let bcfg = recipe.browser else { return }
-        if bcfg.ageGate != nil {
-            progress.setPhase(.ageGate)
-        } else if bcfg.dismissals != nil {
-            progress.setPhase(.dismissing)
+        if isBeforeDismissals(progress.phase) {
+            if bcfg.ageGate != nil {
+                progress.setPhase(.ageGate)
+            } else if bcfg.dismissals != nil {
+                progress.setPhase(.dismissing)
+            }
         }
         if bcfg.ageGate != nil || bcfg.dismissals != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -239,6 +241,13 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.runWarmupAndPaginate()
             }
+        }
+    }
+
+    private func isBeforeDismissals(_ phase: BrowserProgress.Phase) -> Bool {
+        switch phase {
+        case .starting, .loading, .ageGate, .dismissing: return true
+        default: return false
         }
     }
 
@@ -263,7 +272,6 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
         // Pass 1: age gate
         if bcfg.ageGate != nil {
-            progress.setPhase(.ageGate)
             webView.evaluateJavaScript(InjectedScripts.ageGateFill) { [weak self] result, _ in
                 guard let self else { return }
                 if let s = result as? String, !s.isEmpty {
@@ -284,7 +292,9 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     private func attemptModalDismiss() {
-        progress.setPhase(.dismissing)
+        if case .ageGate = progress.phase {
+            progress.setPhase(.dismissing)
+        }
         webView.evaluateJavaScript(InjectedScripts.dismissModal) { [weak self] result, _ in
             guard let self else { return }
             if let s = result as? String, !s.isEmpty {
@@ -363,6 +373,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     public func paginateDidFinish() {
+        guard !progress.isTerminal else { return }
         progress.setPhase(.settling)
     }
 }
