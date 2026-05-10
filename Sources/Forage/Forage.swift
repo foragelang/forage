@@ -1,6 +1,8 @@
 // Forage — declarative scraping platform.
 //
 // Public API surface so far:
+//
+// Engine primitives (browser):
 //   - Capture                  : record of one fetch / XHR exchange observed
 //                                by the injected JS wrapper
 //   - InjectedScripts          : the JS source strings hosts inject into
@@ -9,21 +11,41 @@
 //                                affordances dump, replay-fork, click-button)
 //   - BrowserPaginate          : the engine primitive behind
 //                                browserPaginate{ mode: scroll | replay }
-//   - BrowserPaginateHost      : protocol the WKWebView host implements so
-//                                BrowserPaginate can stay decoupled
-//   - Snapshot / ScrapedRecord / TypedValue — the generic record-and-wrapper
-//                                model. Recipes declare their own types in
-//                                the recipe file; forage stays domain-agnostic.
-//                                Consumers read records by `typeName` and
-//                                translate to their own storage.
+//   - BrowserPaginateHost      : protocol the WKWebView host implements
+//
+// Output catalog (domain-agnostic):
+//   - Snapshot / ScrapedRecord / TypedValue
+//
+// Recipe value type:
+//   - Recipe / Statement / EngineKind / Expectation
+//   - RecipeType / RecipeField / RecipeEnum / InputDecl / FieldType
+//   - HTTPGraph / HTTPStep / HTTPRequest / HTTPBody / HTTPBodyKV / BodyValue
+//   - Pagination (.pageWithTotal, .untilEmpty, .cursor)
+//   - AuthStrategy (.staticHeader, .htmlPrime + HtmlPrimeVar)
+//   - PathExpr / Template / TemplatePart
+//   - Emission / FieldBinding / ExtractionExpr / TransformCall
+//   - BrowserConfig / AgeGateConfig / DismissalConfig /
+//     BrowserPaginationConfig / BrowserPaginateUntil / CaptureRule
+//
+// Runtime (HTTP):
+//   - JSONValue                 : wire-format value
+//   - Scope                     : variable resolution
+//   - PathResolver              : evaluate PathExpr against scope
+//   - TemplateRenderer          : render Template with scope
+//   - TransformImpls            : built-in transform vocabulary
+//   - ExtractionEvaluator       : evaluate ExtractionExpr → TypedValue
+//   - HTTPClient / Transport / URLSessionTransport
+//   - HTTPEngine                : run an HTTP-engine Recipe
+//   - RecipeRunner              : top-level entry point
 //
 // Coming next:
-//   - Recipe                   : parsed recipe value type
-//   - HTTPEngine / BrowserEngine: full runtime that drives a recipe end-to-end
-//   - DiagnosticReport         : structured failure artifact
+//   - Parser (Phase C): .forage text → Recipe
+//   - Validator + DiagnosticReport + fixture harness (Phase D)
+//   - BrowserEngine (Phase E)
 //
-// See ../DESIGN.md for the design plan; ../README.md for the broad picture.
+// See ../DESIGN.md for the design plan; ../PLANS.md for the roadmap;
+// ../README.md for the broad picture.
 
 public enum Forage {
-    public static let version = "0.0.2"
+    public static let version = "0.0.3"
 }
