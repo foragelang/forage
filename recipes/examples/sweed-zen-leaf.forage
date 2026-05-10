@@ -1,0 +1,195 @@
+// Reference recipe — Sweed platform, Zen Leaf Elkridge.
+//
+// Sweed is a JSON-API platform: a single static-header auth (the storeId
+// header) authenticates every call. We fetch categories once per menu type,
+// then fetch products per (menu, category) pair with pageWithTotal pagination.
+//
+// The recipe-declared types are the contract weed-prices ingests; the
+// platform doesn't ship a fixed catalog.
+
+recipe "sweed-zen-leaf-elkridge" {
+    engine http
+
+    /* ---------- Recipe-declared types ---------- */
+
+    type Dispensary {
+        slug: String
+        name: String
+        platform: String
+        storeId: String?
+        address: String?
+        latitude: Double?
+        longitude: Double?
+        phone: String?
+        website: String?
+        timezone: String?
+    }
+
+    type Category {
+        externalId: String
+        name: String
+    }
+
+    type Variant {
+        externalId: String
+        name: String?
+        sku: String?
+        sizeValue: Double?
+        sizeUnit: String?
+    }
+
+    type Product {
+        externalId: String
+        name: String
+        description: String?
+        brand: String?
+        strain: String?
+        strainPrevalence: String?
+        productType: String?
+        categoryExternalId: String?
+        terpenes: [String]
+        images: [String]
+        variants: [Variant]
+    }
+
+    type PriceObservation {
+        productExternalId: String
+        variantExternalId: String
+        menuType: MenuType
+        price: Double?
+        promoPrice: Double?
+        availableQty: Double?
+        thcPct: Double?
+        cbdPct: Double?
+        terpenePct: Double?
+        stockType: String?
+        availability: String?
+        promoCount: Int?
+    }
+
+    enum MenuType { RECREATIONAL, MEDICAL }
+
+    /* ---------- Inputs (consumer-supplied per-store) ---------- */
+
+    input dispensarySlug: String
+    input dispensaryName: String
+    input storeId: String
+    input priceCategoryIds: [Int]
+    input menuTypes: [MenuType]
+
+    /* ---------- Auth ---------- */
+
+    auth.staticHeader {
+        name: "storeId"
+        value: "{$input.storeId}"
+    }
+
+    /* ---------- Iteration + steps + emissions ---------- */
+
+    // Dispensary record fires once, doesn't depend on any HTTP call.
+    emit Dispensary {
+        slug             ← $input.dispensarySlug
+        name             ← $input.dispensaryName
+        platform         ← "sweed"
+        storeId          ← $input.storeId
+    }
+
+    for $menu in $input.menuTypes {
+
+        // Categories — one call per menu, returns flat list.
+        step categories {
+            method "POST"
+            url    "https://web-ui-production.sweedpos.com/_api/proxy/Products/GetProductCategoryList"
+            body.json {
+                saleType:   case $menu of {
+                                RECREATIONAL → "Recreational"
+                                MEDICAL      → "Medical"
+                            }
+                platformOs: "web"
+            }
+        }
+
+        for $cat in $categories[*] {
+            emit Category {
+                externalId ← $cat.id | toString
+                name       ← $cat.name
+            }
+        }
+
+        // Products — one paginated call per (menu, category).
+        for $catId in $input.priceCategoryIds {
+            step products {
+                method "POST"
+                url    "https://web-ui-production.sweedpos.com/_api/proxy/Products/GetProductList"
+                body.json {
+                    filters:         { category: [$catId] }
+                    page:            1
+                    pageSize:        200
+                    platformOs:      "web"
+                    saleType:        case $menu of {
+                                         RECREATIONAL → "Recreational"
+                                         MEDICAL      → "Medical"
+                                     }
+                    searchTerm:      ""
+                    sortingMethodId: 7
+                    sourcePage:      0
+                }
+                paginate pageWithTotal {
+                    items:     $.list
+                    total:     $.total
+                    pageParam: "page"
+                    pageSize:  200
+                }
+            }
+
+            for $product in $products[*] {
+                emit Product {
+                    externalId         ← $product.id | toString
+                    name               ← $product.name
+                    description        ← $product.description
+                    brand              ← $product.brand?.name
+                    strain             ← $product.strain?.name
+                    strainPrevalence   ← $product.strain?.prevalence?.name | prevalenceNormalize
+                    productType        ← $product.productType?.name
+                    categoryExternalId ← $product.category?.id | toString
+                    terpenes           ← $product.strain?.terpenes[*].name | dedup
+                    images             ← $product.images[*]
+                    variants           ← $product.variants[*] | map(variant)
+                }
+
+                for $variant in $product.variants[*] {
+                    emit Variant {
+                        externalId ← $variant.id | toString
+                        name       ← $variant.name
+                        sku        ← $variant.sku
+                        sizeValue  ← $variant.unitSize?.value | normalizeOzToGrams($variant.unitSize?.unitAbbr)
+                        sizeUnit   ← $variant.unitSize?.unitAbbr | normalizeUnitToGrams
+                    }
+
+                    emit PriceObservation {
+                        productExternalId ← $product.id | toString
+                        variantExternalId ← $variant.id | toString
+                        menuType          ← $menu
+                        price             ← $variant.price
+                        promoPrice        ← $variant.promoPrice
+                        availableQty      ← $variant.availableQty
+                        thcPct            ← $variant.labTests?.thc?.value[0]
+                        cbdPct            ← $variant.labTests?.cbd?.value[0]
+                        terpenePct        ← $variant.labTests?.terpenes?.value[0]
+                        stockType         ← $variant.stockType
+                        availability      ← $variant.orderingAvailability?.reason
+                        promoCount        ← $variant.promos | length
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---------- Expectations ---------- */
+
+    // Recipe author asserts they expect a populated menu. The runner reports
+    // a stalled run if these go unmet.
+    expect { records.where(typeName == "Product").count >= 50 }
+    expect { records.where(typeName == "Variant").count > 0 }
+    expect { records.where(typeName == "PriceObservation").count > 0 }
+}

@@ -1,0 +1,148 @@
+// Reference recipe — Jane platform (frameless embed), Trilogy Wellness MD.
+//
+// Jane's data sits behind Cloudflare bot management — plain HTTP gets 403d, so
+// this recipe uses the browser engine. The page age-gates first (DOB form),
+// then renders a curated homepage; we navigate directly to /menu/all to land
+// on the paginatable product grid, then drive "View more" clicks until the
+// SDK runs out of pages.
+//
+// The SDK's pagination model: the initial /v2/multi response has 1000 product
+// SLOTS but only resolves the first 60 to full data; the rest are placeholder
+// IDs. Each click on the bottom "View more" button fires a /v2/smartpage call
+// that resolves the next batch of placeholder IDs to rich data. We observe
+// /v2/smartpage to count progress; emissions extract from each captured
+// smartpage response body.
+
+recipe "jane-trilogy" {
+    engine browser
+
+    /* ---------- Recipe-declared types ---------- */
+
+    type Dispensary {
+        slug: String
+        name: String
+        platform: String
+        storeId: String?
+        website: String?
+    }
+    type Variant {
+        externalId: String
+        name: String?
+        sizeValue: Double?
+        sizeUnit: String?
+    }
+    type Product {
+        externalId: String
+        name: String
+        description: String?
+        brand: String?
+        strainPrevalence: String?
+        productType: String?
+        images: [String]
+        variants: [Variant]
+    }
+    type PriceObservation {
+        productExternalId: String
+        variantExternalId: String
+        menuType: MenuType
+        price: Double?
+        promoPrice: Double?
+        availableQty: Double?
+        thcPct: Double?
+        cbdPct: Double?
+    }
+
+    enum MenuType { RECREATIONAL, MEDICAL }
+
+    /* ---------- Inputs ---------- */
+
+    input dispensarySlug: String
+    input dispensaryName: String
+    input storeId: Int            // Jane Mongo ObjectId-ish (e.g. 6389)
+    input menuPath: String        // e.g. "/shop/adult-use-menu"
+    input siteOrigin: String      // e.g. "https://trilogy.health"
+    input menuType: MenuType      // one menu per recipe run
+
+    /* ---------- Browser engine config ---------- */
+
+    browser {
+        // Where to land. /menu/all is Jane's full-grid view (homepage shows
+        // curated carousels, useless for full-coverage scrape).
+        initialURL: "{$input.siteOrigin}{$input.menuPath}/menu/all"
+
+        // Trilogy gates with a DOB form. Auto-fill picks up `age_gate[m/d/y]`
+        // inputs by name; many WP age-gate plugins follow the same shape.
+        ageGate.autoFill {
+            dob:         1990-01-01
+            reloadAfter: true       // POST handler is AJAX → reload to get menu
+        }
+
+        // After dismissals settle, paginate by clicking "View more" each iter.
+        // The bottom-most match disambiguates against banner promo links that
+        // share the same label.
+        observe: "iheartjane.com/v2/smartpage"
+
+        paginate browserPaginate.scroll {
+            until:          noProgressFor(3)
+            maxIterations:  30
+            iterationDelay: 1.8
+            // Default load-more vocabulary picks up "View more"; recipe could
+            // override with `loadMoreLabels: [...]` if a site uses different text.
+        }
+
+        // Each captured /v2/smartpage response carries a products array with
+        // rich `search_attributes`. The capture rule emits records from each.
+        captures.match {
+            urlPattern: "iheartjane.com/v2/smartpage"
+            for $product in $.products[*] {
+                emit Product {
+                    externalId       ← $product.search_attributes.objectID
+                    name             ← $product.search_attributes.name
+                    description      ← $product.search_attributes.description
+                    brand            ← $product.search_attributes.brand
+                    strainPrevalence ← $product.search_attributes.category | prevalenceNormalize
+                    productType      ← coalesce($product.search_attributes.kind,
+                                                 $product.search_attributes.custom_product_subtype)
+                    images           ← $product.search_attributes.image_urls
+                    variants         ← $product.search_attributes.available_weights[*] | map(variant_for_weight)
+                }
+
+                for $weight in $product.search_attributes.available_weights[*] {
+                    emit Variant {
+                        externalId ← "{$product.search_attributes.objectID}:{$weight}"
+                        name       ← $weight
+                        sizeValue  ← $weight | parseJaneWeight     // "half ounce" → 14, "gram" → 1, etc.
+                        sizeUnit   ← $weight | janeWeightUnit       // "G" / "EA"
+                    }
+
+                    emit PriceObservation {
+                        productExternalId ← $product.search_attributes.objectID
+                        variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
+                        menuType          ← $input.menuType
+                        price             ← $product.search_attributes."price_{$weight}"
+                        promoPrice        ← $product.search_attributes."discounted_price_{$weight}"
+                        availableQty      ← case $product.search_attributes.at_visible_store of {
+                                                 true  → 1.0
+                                                 false → 0.0
+                                             }
+                        thcPct            ← $product.search_attributes.percent_thc
+                        cbdPct            ← $product.search_attributes.percent_cbd
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---------- Dispensary header (no HTTP needed) ---------- */
+
+    emit Dispensary {
+        slug     ← $input.dispensarySlug
+        name     ← $input.dispensaryName
+        platform ← "jane"
+        storeId  ← $input.storeId | toString
+        website  ← "{$input.siteOrigin}{$input.menuPath}/"
+    }
+
+    expect { records.where(typeName == "Product").count >= 500 }
+    expect { records.where(typeName == "PriceObservation").count > 0 }
+}
