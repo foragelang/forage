@@ -1,100 +1,170 @@
-// forage-probe — WKWebView-hosted reverse-engineering CLI for Forage recipes.
+// forage-probe — load and run a `.forage` recipe (browser-engine kind), or
+// drop into a passive WKWebView fixture-capture mode for a URL when no
+// recipe is supplied. Used to:
 //
-// Loads a URL in a real macOS browser engine, captures every fetch/XHR fired
-// by the page (via Forage's injected JS wrapper), drives optional pagination
-// (scroll or replay), dumps captures as JSONL + the page's interactable
-// affordances at exit, and terminates after the page goes quiet.
+//   - Reverse-engineer SPA-on-CF sites without being blocked by Cloudflare
+//     (we ARE a real browser, so CF treats us like Safari does).
+//   - Validate browser-engine recipes (does observe pattern match? does
+//     scroll-mode produce progress? are captures.match rules well-formed?).
+//   - Generate fixtures for recipe development.
 //
-// Used to:
-//  - Reverse-engineer SPA-on-CF sites without being blocked by Cloudflare
-//    (we ARE a real browser, so CF treats us like Safari does)
-//  - Validate recipe assumptions (does observe pattern match? does the
-//    seed filter pick the right request? does scroll-mode produce progress?)
-//  - Generate fixtures for recipe development
+// Usage:
+//   .build/debug/forage-probe run <recipe.forage> [--input k=v]…
+//   .build/debug/forage-probe capture <url> [output.jsonl] [settle-s] [timeout-s]
 //
-// Compile + run:
-//   swift build -c release --product forage-probe
-//   .build/release/forage-probe <url> [output.jsonl] [settle-s] \
-//     [hard-timeout-s] [paginate-mode] [observe-pattern] [seed-filter]
-//
-// Defaults: trilogy adult-use menu, /tmp/probe-captures.jsonl, settle=8s,
-// timeout=60s, paginate=off, observe=iheartjane.com/v2/multi.
+// `run` parses the recipe, constructs a Recipe value, runs through
+// BrowserEngine, prints the resulting Snapshot as JSON to stdout.
+// `capture` is the legacy passive-capture mode for reverse-engineering.
 
 import Foundation
 import AppKit
 import WebKit
 import Forage
 
-// MARK: - Args
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
 
-struct Args {
-    let url: URL
-    let outputURL: URL
-    let settleSeconds: TimeInterval
-    let hardTimeoutSeconds: TimeInterval
-    let autoDismiss: Bool
-    let visible: Bool
-    let paginateMode: String
-    let observe: String
-    let replayOverride: [String: Any]
-    let seedFilter: String?
+let args = CommandLine.arguments
+let mode = args.count >= 2 ? args[1] : "capture"
+
+switch mode {
+case "run":
+    runRecipe()
+case "capture":
+    captureMode()
+default:
+    FileHandle.standardError.write("usage: forage-probe run <recipe.forage> | capture <url> [out] [settle] [timeout]\n".data(using: .utf8)!)
+    exit(2)
 }
 
-func parseArgs() -> Args {
-    let argv = CommandLine.arguments
-    let urlStr = argv.count >= 2 ? argv[1] : "https://trilogy.health/shop/adult-use-menu/"
-    let outPath = argv.count >= 3 ? argv[2] : "/tmp/probe-captures.jsonl"
-    let settle = (argv.count >= 4) ? (TimeInterval(argv[3]) ?? 8) : 8
-    let timeout = (argv.count >= 5) ? (TimeInterval(argv[4]) ?? 60) : 60
-    let paginate = argv.count >= 6 ? argv[5].lowercased() : "off"
-    let observe = argv.count >= 7 ? argv[6] : "iheartjane.com/v2/multi"
-    let seedFilter = argv.count >= 8 ? argv[7] : (paginate == "replay" ? "menu_inline_table" : "")
-    return Args(
-        url: URL(string: urlStr)!,
-        outputURL: URL(fileURLWithPath: outPath),
-        settleSeconds: settle,
-        hardTimeoutSeconds: timeout,
-        autoDismiss: true,
-        visible: true,
-        paginateMode: paginate,
-        observe: observe,
-        replayOverride: ["placements.0.page": "$i"],
-        seedFilter: seedFilter.isEmpty ? nil : seedFilter
-    )
+app.activate(ignoringOtherApps: true)
+app.run()
+
+// MARK: - Commands
+
+func runRecipe() {
+    guard CommandLine.arguments.count >= 3 else {
+        FileHandle.standardError.write("forage-probe run: need recipe path\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let path = CommandLine.arguments[2]
+    let extras = Array(CommandLine.arguments.dropFirst(3))
+
+    do {
+        let src = try String(contentsOfFile: path, encoding: .utf8)
+        let recipe = try Parser.parse(source: src)
+        let issues = Validator.validate(recipe)
+        if issues.hasErrors {
+            FileHandle.standardError.write("validation failed:\n".data(using: .utf8)!)
+            for e in issues.errors {
+                FileHandle.standardError.write(" - \(e.message) [\(e.location)]\n".data(using: .utf8)!)
+            }
+            exit(1)
+        }
+        for w in issues.warnings {
+            FileHandle.standardError.write("warning: \(w.message) [\(w.location)]\n".data(using: .utf8)!)
+        }
+
+        let inputs = parseExtras(extras)
+
+        Task { @MainActor in
+            do {
+                let snapshot: Snapshot
+                if recipe.engineKind == .browser {
+                    let engine = BrowserEngine(recipe: recipe, inputs: inputs)
+                    snapshot = try await engine.run()
+                } else {
+                    let runner = RecipeRunner(httpClient: HTTPClient(transport: URLSessionTransport()))
+                    snapshot = try await runner.run(recipe: recipe, inputs: inputs)
+                }
+                let data = try SnapshotIO.encode(snapshot)
+                FileHandle.standardOutput.write(data)
+                FileHandle.standardOutput.write("\n".data(using: .utf8)!)
+                NSApp.terminate(nil)
+            } catch {
+                FileHandle.standardError.write("run failed: \(error)\n".data(using: .utf8)!)
+                exit(1)
+            }
+        }
+    } catch {
+        FileHandle.standardError.write("parse failed: \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
 }
 
-// MARK: - Probe
+/// Parse `--input k=v` arguments into a `[String: JSONValue]`. Values are
+/// best-effort: numeric → int/double, "true"/"false" → bool, JSON literals
+/// (`[1,2]`, `{"a":1}`) are decoded, else string.
+func parseExtras(_ extras: [String]) -> [String: JSONValue] {
+    var out: [String: JSONValue] = [:]
+    var i = 0
+    while i < extras.count {
+        let a = extras[i]
+        if a == "--input", i + 1 < extras.count {
+            let kv = extras[i + 1]
+            if let eq = kv.firstIndex(of: "=") {
+                let key = String(kv[..<eq])
+                let raw = String(kv[kv.index(after: eq)...])
+                out[key] = parseInputValue(raw)
+            }
+            i += 2
+        } else { i += 1 }
+    }
+    return out
+}
+
+func parseInputValue(_ raw: String) -> JSONValue {
+    if let i = Int(raw) { return .int(i) }
+    if let d = Double(raw) { return .double(d) }
+    if raw == "true" { return .bool(true) }
+    if raw == "false" { return .bool(false) }
+    if raw == "null" { return .null }
+    if raw.hasPrefix("[") || raw.hasPrefix("{") {
+        if let data = raw.data(using: .utf8), let v = try? JSONValue.decode(data) { return v }
+    }
+    return .string(raw)
+}
+
+// MARK: - Capture mode (legacy reverse-engineering tool)
+
+func captureMode() {
+    let urlStr = CommandLine.arguments.count >= 3 ? CommandLine.arguments[2] : "https://trilogy.health/shop/adult-use-menu/"
+    let outPath = CommandLine.arguments.count >= 4 ? CommandLine.arguments[3] : "/tmp/probe-captures.jsonl"
+    let settle = (CommandLine.arguments.count >= 5) ? (TimeInterval(CommandLine.arguments[4]) ?? 8) : 8
+    let timeout = (CommandLine.arguments.count >= 6) ? (TimeInterval(CommandLine.arguments[5]) ?? 60) : 60
+
+    Task { @MainActor in
+        let probe = CaptureSession(url: URL(string: urlStr)!, outputURL: URL(fileURLWithPath: outPath), settle: settle, hardTimeout: timeout)
+        probe.run()
+    }
+}
 
 @MainActor
-final class Probe: NSObject, WKNavigationDelegate, WKScriptMessageHandler, BrowserPaginateHost {
-    let args: Args
+final class CaptureSession: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    let url: URL
+    let outputURL: URL
+    let settle: TimeInterval
+    let hardTimeout: TimeInterval
     let webView: WKWebView
     var window: NSWindow?
     var settleTimer: Timer?
     var hardTimer: Timer?
-    var captureCount = 0
-    var didFinishNav = false
-    var paginate: BrowserPaginate?
-    var captures: [Capture] = []
 
-    init(args: Args) {
-        self.args = args
+    init(url: URL, outputURL: URL, settle: TimeInterval, hardTimeout: TimeInterval) {
+        self.url = url
+        self.outputURL = outputURL
+        self.settle = settle
+        self.hardTimeout = hardTimeout
 
         let config = WKWebViewConfiguration()
-        if CommandLine.arguments.contains("--fresh") {
-            config.websiteDataStore = .nonPersistent()
-        } else {
-            config.websiteDataStore = .default()
-        }
+        config.websiteDataStore = .default()
         let ucc = WKUserContentController()
-        let captureScript = WKUserScript(
+        let script = WKUserScript(
             source: InjectedScripts.captureWrapper,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         )
-        ucc.addUserScript(captureScript)
-        config.userContentController = ucc
-
+        ucc.addUserScript(script)
         self.webView = WKWebView(
             frame: NSRect(x: 0, y: 0, width: 1280, height: 900),
             configuration: config
@@ -102,39 +172,25 @@ final class Probe: NSObject, WKNavigationDelegate, WKScriptMessageHandler, Brows
         super.init()
         ucc.add(self, name: "captureNetwork")
         webView.navigationDelegate = self
-
-        if let mode = BrowserPaginate.Mode(rawValue: args.paginateMode), mode != .off {
-            self.paginate = BrowserPaginate(
-                observe: args.observe,
-                mode: mode,
-                replayOverride: args.replayOverride,
-                seedFilter: args.seedFilter
-            )
-            self.paginate?.host = self
-        }
     }
 
     func run() {
-        try? Data().write(to: args.outputURL)
-        log("loading \(args.url.absoluteString)")
-        log("dumping captures to \(args.outputURL.path)")
+        try? Data().write(to: outputURL)
+        log("loading \(url.absoluteString)")
+        log("dumping captures to \(outputURL.path)")
+        let win = NSWindow(
+            contentRect: NSRect(x: 60, y: 60, width: 1280, height: 900),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = "Probe — \(url.host ?? "")"
+        win.contentView = webView
+        win.makeKeyAndOrderFront(nil)
+        self.window = win
+        webView.load(URLRequest(url: url))
 
-        if args.visible {
-            let win = NSWindow(
-                contentRect: NSRect(x: 60, y: 60, width: 1280, height: 900),
-                styleMask: [.titled, .closable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            win.title = "Probe — \(args.url.host ?? "")"
-            win.contentView = webView
-            win.makeKeyAndOrderFront(nil)
-            self.window = win
-        }
-
-        webView.load(URLRequest(url: args.url))
-
-        hardTimer = Timer.scheduledTimer(withTimeInterval: args.hardTimeoutSeconds, repeats: false) { [weak self] _ in
+        hardTimer = Timer.scheduledTimer(withTimeInterval: hardTimeout, repeats: false) { [weak self] _ in
             self?.finish(reason: "hard-timeout")
         }
         resetSettleTimer()
@@ -142,205 +198,64 @@ final class Probe: NSObject, WKNavigationDelegate, WKScriptMessageHandler, Brows
 
     private func resetSettleTimer() {
         settleTimer?.invalidate()
-        settleTimer = Timer.scheduledTimer(withTimeInterval: args.settleSeconds, repeats: false) { [weak self] _ in
+        settleTimer = Timer.scheduledTimer(withTimeInterval: settle, repeats: false) { [weak self] _ in
             self?.finish(reason: "settled")
         }
     }
 
     private func finish(reason: String) {
-        log("finishing (\(reason)) — \(captureCount) captures dumped to \(args.outputURL.path)")
+        log("finishing (\(reason))")
         NSApp.terminate(nil)
     }
 
-    // MARK: - Dismissal orchestration
-
-    private var dismissAttempts = 0
-    private let maxDismissAttempts = 8
-
-    private func attemptAutoDismiss() {
-        guard dismissAttempts < maxDismissAttempts else {
-            log("dismiss: gave up after \(dismissAttempts) attempts")
-            dumpHTMLOnce()
-            return
-        }
-        dismissAttempts += 1
-        webView.evaluateJavaScript(InjectedScripts.ageGateFill) { [weak self] result, _ in
-            guard let self else { return }
-            if let s = result as? String, !s.isEmpty {
-                self.log("dismiss[\(self.dismissAttempts)]: \(s)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                    self?.log("dismiss[\(self?.dismissAttempts ?? 0)]: reloading page after age-gate submit")
-                    self?.webView.reload()
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-                    self?.dismissAttempts = 0
-                    self?.attemptAutoDismiss()
-                }
-                return
-            }
-            self.webView.evaluateJavaScript(InjectedScripts.dismissModal) { [weak self] result, _ in
-                guard let self else { return }
-                if let s = result as? String, !s.isEmpty {
-                    self.log("dismiss[\(self.dismissAttempts)]: clicked '\(s)'")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                        self?.attemptAutoDismiss()
-                    }
-                } else {
-                    self.log("dismiss[\(self.dismissAttempts)]: no match")
-                    self.runWarmupClicksThenPaginate()
-                    self.dumpHTMLOnce()
-                }
-            }
+    private func log(_ s: String) {
+        if let data = "[probe] \(s)\n".data(using: .utf8) {
+            FileHandle.standardError.write(data)
         }
     }
-
-    private var didRunWarmup = false
-    private func runWarmupClicksThenPaginate() {
-        guard !didRunWarmup else { return }
-        didRunWarmup = true
-        let labels: [String] = []  // future: lift into recipe config
-        clickButtonsInSequence(labels) { [weak self] in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.paginate?.start()
-            }
-        }
-    }
-
-    private func clickButtonsInSequence(_ labels: [String], completion: @escaping () -> Void) {
-        var remaining = labels
-        func step() {
-            guard !remaining.isEmpty else { completion(); return }
-            let label = remaining.removeFirst()
-            let js = InjectedScripts.clickButtonByText(label)
-            self.webView.evaluateJavaScript(js) { [weak self] result, _ in
-                let status = (result as? String) ?? "?"
-                self?.log("warmup-click '\(label)': \(status)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { step() }
-            }
-        }
-        step()
-    }
-
-    private var didDumpHTML = false
-    private func dumpHTMLOnce() {
-        guard !didDumpHTML else { return }
-        didDumpHTML = true
-        webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
-            guard let self, let html = result as? String else { return }
-            let url = self.args.outputURL.deletingLastPathComponent().appendingPathComponent("probe-page.html")
-            try? html.data(using: .utf8)?.write(to: url)
-            self.log("dumped page HTML (\(html.count) chars) to \(url.path)")
-        }
-        dumpAffordances()
-    }
-
-    private func dumpAffordances() {
-        webView.evaluateJavaScript(InjectedScripts.dumpAffordances) { [weak self] result, _ in
-            guard let self, let s = result as? String,
-                  let data = s.data(using: .utf8) else { return }
-            let url = self.args.outputURL.deletingLastPathComponent().appendingPathComponent("probe-affordances.json")
-            try? data.write(to: url)
-            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let buttons = (obj["buttons"] as? [Any])?.count ?? 0
-                let links = (obj["links"] as? [Any])?.count ?? 0
-                let roleButtons = (obj["roleButtons"] as? [Any])?.count ?? 0
-                let scrollables = (obj["scrollables"] as? [Any])?.count ?? 0
-                let inputs = (obj["inputs"] as? [Any])?.count ?? 0
-                self.log("affordances: \(buttons) buttons / \(links) links / \(roleButtons) role=button / \(inputs) inputs / \(scrollables) scrollables → \(url.lastPathComponent)")
-            }
-        }
-    }
-
-    // MARK: - WKNavigationDelegate
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        didFinishNav = true
-        log("page loaded — title=\(webView.title ?? "")")
-        if args.autoDismiss {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.attemptAutoDismiss()
-            }
-        }
-    }
-
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        log("nav error: \(error.localizedDescription)")
-    }
-
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        log("nav error (provisional): \(error.localizedDescription)")
-    }
-
-    // MARK: - WKScriptMessageHandler
 
     nonisolated func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
         let body = message.body
         MainActor.assumeIsolated {
             guard let dict = body as? [String: Any],
-                  let capture = Capture(jsBridgePayload: dict) else { return }
-            handleCapture(capture)
+                  let cap = Capture(jsBridgePayload: dict) else { return }
+            resetSettleTimer()
+            // Append as JSONL
+            let record: [String: Any] = [
+                "timestamp": ISO8601DateFormatter().string(from: cap.timestamp),
+                "kind": cap.kind.rawValue,
+                "method": cap.method,
+                "requestUrl": cap.requestUrl,
+                "responseUrl": cap.responseUrl,
+                "requestBody": cap.requestBody,
+                "status": cap.status,
+                "bodyLength": cap.bodyLength,
+                "body": cap.body,
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
+                var line = data
+                line.append(0x0A)
+                if FileManager.default.fileExists(atPath: outputURL.path),
+                   let handle = try? FileHandle(forWritingTo: outputURL) {
+                    defer { try? handle.close() }
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: line)
+                } else {
+                    try? line.write(to: outputURL)
+                }
+            }
+            let host = URL(string: cap.responseUrl)?.host ?? "?"
+            log("\(cap.method) \(host) → \(cap.status) (\(cap.bodyLength) B)")
         }
     }
 
-    private func handleCapture(_ capture: Capture) {
-        captureCount += 1
-        resetSettleTimer()
-        captures.append(capture)
-        appendJSONL(capture)
-        let host = URL(string: capture.responseUrl)?.host ?? "?"
-        log("\(capture.method) \(host) → \(capture.status) (\(capture.bodyLength) B)")
-        paginate?.handleCapture(capture)
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        log("page loaded — title=\(webView.title ?? "")")
     }
-
-    private func appendJSONL(_ capture: Capture) {
-        guard let data = try? JSONSerialization.data(withJSONObject: capture.jsonlDict, options: [.sortedKeys]) else { return }
-        var line = data
-        line.append(0x0A)
-        if FileManager.default.fileExists(atPath: args.outputURL.path),
-           let handle = try? FileHandle(forWritingTo: args.outputURL) {
-            defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: line)
-        } else {
-            try? line.write(to: args.outputURL)
-        }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+        log("nav error: \(error.localizedDescription)")
     }
-
-    // MARK: - BrowserPaginateHost
-
-    func paginateLog(_ message: String) {
-        log(message)
-    }
-
-    func paginateEvalJS(_ js: String, completion: @MainActor @Sendable @escaping (Any?, Error?) -> Void) {
-        webView.evaluateJavaScript(js) { result, err in
-            // WKWebView's completion is called on main thread; assume the
-            // isolation so the @MainActor @Sendable closure can run.
-            MainActor.assumeIsolated { completion(result, err) }
-        }
-    }
-
-    func paginateCountCaptures(matching pattern: String) -> Int {
-        captures.reduce(0) { acc, c in
-            c.responseUrl.contains(pattern) ? acc + 1 : acc
-        }
-    }
-
-    // MARK: - Logging
-
-    fileprivate func log(_ s: String) {
-        if let data = "[probe] \(s)\n".data(using: .utf8) {
-            FileHandle.standardError.write(data)
-        }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+        log("nav error (provisional): \(error.localizedDescription)")
     }
 }
-
-// MARK: - Main
-
-let args = parseArgs()
-let app = NSApplication.shared
-app.setActivationPolicy(.regular)
-let probe = Probe(args: args)
-probe.run()
-app.activate(ignoringOtherApps: true)
-app.run()
