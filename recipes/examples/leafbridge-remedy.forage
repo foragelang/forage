@@ -43,7 +43,6 @@ recipe "leafbridge-remedy" {
         productType: String?
         categoryExternalId: String?
         images: [String]
-        variants: [Variant]
     }
     type PriceObservation {
         productExternalId: String
@@ -142,7 +141,6 @@ recipe "leafbridge-remedy" {
                 productType        ← $product.subcategory | titleCase
                 categoryExternalId ← $product.category | titleCase
                 images             ← $product.images[*].url | dedup
-                variants           ← $product.variants[*] | map(variant)
             }
 
             // Leafbridge's category isn't returned as a separate list; it's

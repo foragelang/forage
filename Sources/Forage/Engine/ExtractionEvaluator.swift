@@ -87,14 +87,20 @@ public struct ExtractionEvaluator: Sendable {
 
     // MARK: - Helpers
 
-    /// Read a path expression that should resolve to a string-shaped enum
-    /// label (e.g. `$menu` whose binding is `.string("RECREATIONAL")`).
+    /// Resolve a case-of scrutinee to a string label. Strings are returned as-
+    /// is; bools / ints / null / doubles get stringified to their canonical
+    /// form so case-of with literal labels (`true → …`, `1 → …`, `null → …`)
+    /// works against any underlying value type.
     private func resolveEnumLabel(_ path: PathExpr, in scope: Scope) throws -> String {
         let v = try PathResolver.resolve(path, in: scope)
-        guard case .string(let s) = v else {
-            throw EvaluationError.expectedEnumLabel(got: v)
+        switch v {
+        case .string(let s): return s
+        case .bool(let b): return String(b)
+        case .int(let i): return String(i)
+        case .double(let d): return String(d)
+        case .null: return "null"
+        default: throw EvaluationError.expectedEnumLabel(got: v)
         }
-        return s
     }
 
     /// Lift a JSON-shaped value to a TypedValue. Object → flat record under

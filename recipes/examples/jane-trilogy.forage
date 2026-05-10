@@ -39,7 +39,6 @@ recipe "jane-trilogy" {
         strainPrevalence: String?
         productType: String?
         images: [String]
-        variants: [Variant]
     }
     type PriceObservation {
         productExternalId: String
@@ -104,7 +103,6 @@ recipe "jane-trilogy" {
                     productType      ← coalesce($product.search_attributes.kind,
                                                  $product.search_attributes.custom_product_subtype)
                     images           ← $product.search_attributes.image_urls
-                    variants         ← $product.search_attributes.available_weights[*] | map(variant_for_weight)
                 }
 
                 for $weight in $product.search_attributes.available_weights[*] {
@@ -119,8 +117,11 @@ recipe "jane-trilogy" {
                         productExternalId ← $product.search_attributes.objectID
                         variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
                         menuType          ← $input.menuType
-                        price             ← $product.search_attributes."price_{$weight}"
-                        promoPrice        ← $product.search_attributes."discounted_price_{$weight}"
+                        // Dynamic field access — $weight is "half ounce" / "gram" etc.,
+                        // so the actual field is `price_half ounce` / `price_gram`.
+                        // getField does a runtime lookup with a templated key.
+                        price             ← getField($product.search_attributes, "price_{$weight}")
+                        promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight}")
                         availableQty      ← case $product.search_attributes.at_visible_store of {
                                                  true  → 1.0
                                                  false → 0.0

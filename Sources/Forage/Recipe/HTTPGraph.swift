@@ -47,8 +47,9 @@ public indirect enum HTTPBody: Hashable, Sendable {
     /// JSON-encoded body. The runtime renders `BodyValue` against the scope.
     case jsonObject([HTTPBodyKV])
     /// `application/x-www-form-urlencoded` body. Keys may contain brackets
-    /// (`wizard_data[retailer_id]`); values are templates.
-    case form([(String, Template)])
+    /// (`wizard_data[retailer_id]`); values are `BodyValue`s, stringified
+    /// at render time so case-of branches and path values both work.
+    case form([(String, BodyValue)])
     /// Raw text body, rendered from a template.
     case raw(Template)
 

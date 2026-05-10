@@ -282,11 +282,12 @@ public actor HTTPEngine {
                 }
             case .form(var pairs):
                 if let p = paginationOverride {
-                    pairs = upsertedForm(pairs, key: p.param, value: TemplateRenderer.stringify(p.value))
+                    pairs = upsertedForm(pairs, key: p.param, value: .literal(p.value))
                 }
                 var rendered: [(String, String)] = []
-                for (k, t) in pairs {
-                    rendered.append((k, try TemplateRenderer.render(t, in: scope)))
+                for (k, v) in pairs {
+                    let any = try renderBodyValue(v, scope: scope)
+                    rendered.append((k, Self.stringifyAny(any)))
                 }
                 request.httpBody = BodyEncoding.formEncoded(rendered)
                 if request.value(forHTTPHeaderField: "Content-Type") == nil {
@@ -340,10 +341,22 @@ public actor HTTPEngine {
         return out
     }
 
-    private func upsertedForm(_ pairs: [(String, Template)], key: String, value: String) -> [(String, Template)] {
+    private func upsertedForm(_ pairs: [(String, BodyValue)], key: String, value: BodyValue) -> [(String, BodyValue)] {
         var out = pairs.filter { $0.0 != key }
-        out.append((key, Template(literal: value)))
+        out.append((key, value))
         return out
+    }
+
+    static func stringifyAny(_ any: Any) -> String {
+        if let s = any as? String { return s }
+        if let i = any as? Int { return String(i) }
+        if let d = any as? Double {
+            if d == d.rounded() && abs(d) < 1e15 { return String(Int(d)) }
+            return String(d)
+        }
+        if let b = any as? Bool { return String(b) }
+        if any is NSNull { return "" }
+        return "\(any)"
     }
 }
 

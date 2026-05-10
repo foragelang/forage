@@ -199,6 +199,20 @@ public struct TransformImpls: Sendable {
             }
         }
 
+        // MARK: - Object / dynamic-field access
+
+        // getField(obj, "fieldName") — dynamic field lookup (where the field
+        // name is computed). Used for Jane's per-weight price columns:
+        // `getField($product.search_attributes, "price_{$weight}")`.
+        register("getField") { v, args in
+            guard args.count >= 1 else { return .null }
+            let obj = v
+            let keyArg = args[0]
+            guard case .string(let key) = keyArg else { return .null }
+            if case .object(let o) = obj { return o[key] ?? .null }
+            return .null
+        }
+
         // MARK: - Coalesce / default
 
         register("coalesce") { v, args in
