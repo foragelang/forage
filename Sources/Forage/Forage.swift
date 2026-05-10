@@ -11,12 +11,11 @@
 //                                browserPaginate{ mode: scroll | replay }
 //   - BrowserPaginateHost      : protocol the WKWebView host implements so
 //                                BrowserPaginate can stay decoupled
-//   - Output catalog           : ScrapedDispensary / ScrapedCategory /
-//                                ScrapedProduct / ScrapedVariant /
-//                                ScrapedPriceObservation / Snapshot — the
-//                                fixed types every recipe is required to
-//                                output. Downstream consumers ingest
-//                                Snapshots and translate to their storage.
+//   - Snapshot / ScrapedRecord / TypedValue — the generic record-and-wrapper
+//                                model. Recipes declare their own types in
+//                                the recipe file; forage stays domain-agnostic.
+//                                Consumers read records by `typeName` and
+//                                translate to their own storage.
 //
 // Coming next:
 //   - Recipe                   : parsed recipe value type
