@@ -154,8 +154,8 @@ recipe "leafbridge-remedy" {
                 emit Variant {
                     externalId ← $variant.id
                     name       ← $variant.option
-                    sizeValue  ← $variant.option | parseSize | normalizeOzToGrams
-                    sizeUnit   ← $variant.option | parseSize | extractUnit | normalizeUnitToGrams
+                    sizeValue  ← $variant.option | parseSize | normalizeOzToGrams | sizeValue
+                    sizeUnit   ← $variant.option | parseSize | normalizeOzToGrams | sizeUnit | normalizeUnitToGrams
                 }
 
                 // Leafbridge surfaces both med + rec prices on every variant; the
