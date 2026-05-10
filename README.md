@@ -2,9 +2,16 @@
 
 A declarative scraping platform: a small DSL for describing how to fetch structured data from a website, plus a Swift runtime that executes recipes against either a plain HTTP engine or a real browser engine (`WKWebView` on macOS).
 
+Will live at **foragelang.com** when the platform stabilizes.
+
 ## Status
 
-**Early / experimental.** Architecture and primitives are being shaken out in `../weed-prices` (a personal cannabis-menu price tracker that's the first consumer). Forage will get its own design docs and identity as it stabilizes; right now the canonical design plan lives at `../weed-prices/notes/scraping-dsl.md` and the empirical platform validation work is in `../weed-prices/notes/jane-platform.md` and `../weed-prices/scripts/probe.swift`.
+**Early / experimental.** Architecture and primitives are being shaken out in [`weed-prices`](https://github.com/...) (a personal cannabis-menu price tracker that's the first consumer). The recipe DSL and engine vocabulary are still in design; the engine code is in the early stages of being carved out of `weed-prices/scripts/probe.swift` (the rough-draft reverse-engineering CLI) into the `Forage` library here.
+
+Canonical artifacts at this point:
+
+- [`DESIGN.md`](./DESIGN.md) — design plan: principles, output type catalog, recipe shape, pagination strategies, dev/test workflow, engine responsibilities.
+- `Sources/Forage/` — placeholder Swift module; engine code lands here in pieces (parser, HTTPEngine, BrowserEngine, Recipe, OutputCatalog, DiagnosticReport).
 
 ## What problems it solves
 
@@ -18,13 +25,13 @@ A declarative scraping platform: a small DSL for describing how to fetch structu
 - Substantive access controls (login, paywall, real CAPTCHA, account-required pages) — recipes don't bypass them. Generic bot-management gates on otherwise-public pages are not in this category.
 - Generic-purpose scraping framework — output types are currently fixed to the consumer's schema. Designed to be liftable later, not yet lifted.
 
-## Layout (planned)
+## Layout
 
 ```
-Sources/Forage/        # Swift runtime: parser, engine, type catalog
+Sources/Forage/        # Swift runtime: engine primitives (capture, BrowserPaginate, …)
+Sources/forage-probe/  # CLI: WKWebView-hosted reverse-engineering tool
 Tests/ForageTests/     # Engine unit tests
-recipes/               # Reference recipes (not yet committed)
-DESIGN.md              # Design plan (will move from ../weed-prices/notes/scraping-dsl.md)
+DESIGN.md              # Design plan
 ```
 
 ## Building
@@ -33,5 +40,3 @@ DESIGN.md              # Design plan (will move from ../weed-prices/notes/scrapi
 swift build
 swift test
 ```
-
-(Both will be no-ops until the engine code lands.)
