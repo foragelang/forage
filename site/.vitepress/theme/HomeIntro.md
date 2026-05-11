@@ -31,9 +31,3 @@ Five real recipes — pick one to see its shape, the run command, and the snapsh
     <div class="run-step-body">Returns a snapshot plus a diagnostic report. Both can be archived to disk for replay.</div>
   </div>
 </div>
-
-The snapshot prints to stdout, a short termination tag to stderr:
-
-```
-stallReason: completed
-```
