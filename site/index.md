@@ -23,8 +23,6 @@ features:
       details: HTTP for documented APIs. Headless WKWebView for JS-rendered SPAs and bot-management gates. Both target the same record types, so downstream code doesn't care which engine ran.
     - title: Fixtures, snapshots, replay
       details: A recipe directory bundles recipe.forage alongside captured HTTP responses and an expected-output snapshot. Tests run offline. Drift is one command to repair.
-    - title: LLM-friendly authoring
-      details: Published grammar, fixed transform vocabulary, validator errors that speak the DSL's own terms. Hand the spec plus a few reference recipes to an AI and let it write the rest.
 ---
 
 ## A recipe, end to end
