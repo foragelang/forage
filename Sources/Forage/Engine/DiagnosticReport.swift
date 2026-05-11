@@ -17,10 +17,8 @@ import Foundation
 ///   patterns or wrong endpoints.
 /// - `unmetExpectations`: filled by Phase 4's `ExpectationEvaluator`. Empty
 ///   for now.
-/// - `unhandledAffordances`: browser-engine only. Filled by Phase 3 follow-up
-///   — the engine will dump clickable elements at settle time and filter for
-///   pagination idioms ("load more", "next page", etc.) that the recipe
-///   didn't drive. Empty for now.
+/// - `unhandledAffordances`: left empty; future expansion may populate based
+///   on engine-observed UI affordances.
 public struct DiagnosticReport: Sendable, Hashable {
     public let stallReason: String
     public let unmatchedCaptures: [UnmatchedCapture]

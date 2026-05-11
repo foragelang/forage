@@ -164,19 +164,20 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private func finish(reason: String, navFailURL: String? = nil) {
         guard let cont = continuation else { return }
         continuation = nil
+        let stallReason = stallReasonString(reason: reason, navFailURL: navFailURL)
         if reason == "settled" {
             progress.setPhase(.done)
         } else {
-            progress.setPhase(.failed(reason))
+            progress.setPhase(.failed(stallReason))
         }
-        let result = buildRunResult(reason: reason, navFailURL: navFailURL)
+        let result = buildRunResult(stallReason: stallReason)
         cont.resume(returning: result)
     }
 
-    private func buildRunResult(reason: String, navFailURL: String?) -> RunResult {
+    private func buildRunResult(stallReason: String) -> RunResult {
         let snapshot = Snapshot(records: collector.records, observedAt: Date())
         let report = DiagnosticReport(
-            stallReason: stallReasonString(reason: reason, navFailURL: navFailURL),
+            stallReason: stallReason,
             unmatchedCaptures: projectedUnmatchedCaptures(),
             unfiredRules: unfiredRulePatterns(),
             unmetExpectations: [],
@@ -203,8 +204,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private static let unmatchedCaptureCap = 50
 
     private func projectedUnmatchedCaptures() -> [UnmatchedCapture] {
-        let tail = unmatchedCaptures.suffix(Self.unmatchedCaptureCap)
-        return tail.map {
+        unmatchedCaptures.map {
             UnmatchedCapture(
                 url: $0.responseUrl,
                 method: $0.method,
@@ -231,6 +231,9 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         }
         if !matched {
             unmatchedCaptures.append(capture)
+            if unmatchedCaptures.count > Self.unmatchedCaptureCap {
+                unmatchedCaptures.removeFirst()
+            }
         }
         progress.setRecordsEmitted(collector.records.count)
     }

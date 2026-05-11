@@ -53,10 +53,11 @@ public actor HTTPEngine {
                 report: DiagnosticReport(stallReason: "completed")
             )
         } catch {
-            await setPhase(.failed("\(error)"))
+            let stallReason = "failed: \(error)"
+            await setPhase(.failed(stallReason))
             return RunResult(
                 snapshot: Snapshot(records: collector.records, observedAt: Date()),
-                report: DiagnosticReport(stallReason: "failed: \(error)")
+                report: DiagnosticReport(stallReason: stallReason)
             )
         }
     }
