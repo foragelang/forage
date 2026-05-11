@@ -48,16 +48,24 @@ public actor HTTPEngine {
             try await runStatements(recipe.body, recipe: recipe, scope: &scope, collector: &collector)
 
             await setPhase(.done)
+            let snapshot = Snapshot(records: collector.records, observedAt: Date())
             return RunResult(
-                snapshot: Snapshot(records: collector.records, observedAt: Date()),
-                report: DiagnosticReport(stallReason: "completed")
+                snapshot: snapshot,
+                report: DiagnosticReport(
+                    stallReason: "completed",
+                    unmetExpectations: ExpectationEvaluator.evaluate(recipe.expectations, against: snapshot)
+                )
             )
         } catch {
             let stallReason = "failed: \(error)"
             await setPhase(.failed(stallReason))
+            let snapshot = Snapshot(records: collector.records, observedAt: Date())
             return RunResult(
-                snapshot: Snapshot(records: collector.records, observedAt: Date()),
-                report: DiagnosticReport(stallReason: stallReason)
+                snapshot: snapshot,
+                report: DiagnosticReport(
+                    stallReason: stallReason,
+                    unmetExpectations: ExpectationEvaluator.evaluate(recipe.expectations, against: snapshot)
+                )
             )
         }
     }

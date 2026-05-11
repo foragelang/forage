@@ -180,7 +180,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             stallReason: stallReason,
             unmatchedCaptures: projectedUnmatchedCaptures(),
             unfiredRules: unfiredRulePatterns(),
-            unmetExpectations: [],
+            unmetExpectations: ExpectationEvaluator.evaluate(recipe.expectations, against: snapshot),
             unhandledAffordances: []
         )
         return RunResult(snapshot: snapshot, report: report)

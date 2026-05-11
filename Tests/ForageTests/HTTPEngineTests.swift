@@ -652,3 +652,95 @@ func recipeRunnerExposesAndResetsProgressAcrossRuns() async throws {
     #expect(requestsAfterSecond == 1)
     #expect(secondResult.report.stallReason == "completed")
 }
+
+// MARK: - Expectation plumbing through RunResult (Phase 4)
+
+/// Recipe whose run emits one `Product` record per element in the response
+/// `data` array. Used by the expectation integration tests below.
+private func productCountRecipe() -> Recipe {
+    Recipe(
+        name: "expect-products",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Product", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "products",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/p"))
+            )),
+            .forLoop(
+                variable: "p",
+                collection: .field(.variable("products"), "data"),
+                body: [
+                    .emit(Emission(
+                        typeName: "Product",
+                        bindings: [
+                            FieldBinding(fieldName: "id", expr: .path(.field(.variable("p"), "id"))),
+                        ]
+                    ))
+                ]
+            )
+        ],
+        expectations: [
+            Expectation(.recordCount(typeName: "Product", op: .ge, value: 100))
+        ]
+    )
+}
+
+@Test
+func unmetExpectationsSurfacedWhenRunFallsShort() async throws {
+    let recipe = productCountRecipe()
+
+    let mock = MockTransport()
+    let products = (1...50).map { ["id": "p\($0)"] }
+    try await mock.registerJSON(urlSubstring: "/p", json: ["data": products])
+    let client = HTTPClient(transport: mock, minRequestInterval: 0)
+    let runner = RecipeRunner(httpClient: client)
+
+    let result = try await runner.run(recipe: recipe, inputs: [:])
+    #expect(result.snapshot.records(of: "Product").count == 50)
+    #expect(result.report.stallReason == "completed")
+    #expect(result.report.unmetExpectations == [
+        "records.where(typeName == \"Product\").count >= 100 (got 50)"
+    ])
+}
+
+@Test
+func unmetExpectationsEmptyWhenRunSatisfiesExpectations() async throws {
+    let recipe = productCountRecipe()
+
+    let mock = MockTransport()
+    let products = (1...200).map { ["id": "p\($0)"] }
+    try await mock.registerJSON(urlSubstring: "/p", json: ["data": products])
+    let client = HTTPClient(transport: mock, minRequestInterval: 0)
+    let runner = RecipeRunner(httpClient: client)
+
+    let result = try await runner.run(recipe: recipe, inputs: [:])
+    #expect(result.snapshot.records(of: "Product").count == 200)
+    #expect(result.report.stallReason == "completed")
+    #expect(result.report.unmetExpectations.isEmpty)
+}
+
+@Test
+func failedRunStillSurfacesUnmetExpectationsAlongsideStallReason() async throws {
+    // Recipe references a URL the mock won't match — MockTransport throws 404,
+    // the engine catches it, surfaces `stallReason: "failed: …"`, and *also*
+    // evaluates expectations against the (empty) partial snapshot so both
+    // signals come through.
+    let recipe = productCountRecipe()
+
+    let mock = MockTransport()
+    // Deliberately register nothing matching "/p".
+    let client = HTTPClient(transport: mock, minRequestInterval: 0)
+    let runner = RecipeRunner(httpClient: client)
+
+    let result = try await runner.run(recipe: recipe, inputs: [:])
+    #expect(result.snapshot.records.isEmpty)
+    #expect(result.report.stallReason.hasPrefix("failed:"))
+    #expect(result.report.unmetExpectations == [
+        "records.where(typeName == \"Product\").count >= 100 (got 0)"
+    ])
+}

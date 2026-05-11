@@ -51,6 +51,9 @@
 //                                 unhandled affordances
 //   - UnmatchedCapture          : thin projection of a Capture that didn't
 //                                 match any captures.match rule
+//   - ExpectationEvaluator      : evaluates a recipe's `expect { … }` clauses
+//                                 against a Snapshot; engines feed the result
+//                                 into DiagnosticReport.unmetExpectations
 //
 // Coming next:
 //   - Parser (Phase C): .forage text → Recipe
