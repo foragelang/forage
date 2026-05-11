@@ -1,0 +1,18 @@
+recipe "validation-errors" {
+    engine http
+
+    type Item { id: String; name: String }
+
+    step s {
+        method "GET"
+        url "https://x.test/s"
+    }
+
+    for $i in $s[*] {
+        emit Item {
+            id   ← $i.id | mysteriousTransform
+            name ← $undeclared.field
+        }
+        emit Widget { id ← $i.id }
+    }
+}

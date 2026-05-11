@@ -1,0 +1,138 @@
+{
+    "description": "Shared test-vector expectations for the Forage parser+validator. Both the Swift implementation and the TypeScript port must produce results consistent with these descriptors; if they diverge, drift has set in. The shape is deliberately structural rather than literal AST, so both implementations can encode the same recipe with their own conventions.",
+    "recipes": [
+        {
+            "file": "01-minimal.forage",
+            "parses": true,
+            "summary": {
+                "name": "minimal",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 2,
+                "stepNames": ["list"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 0
+            },
+            "types": [
+                { "name": "Item", "fieldNames": ["id", "name"], "requiredFieldCount": 2 }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "02-pagination.forage",
+            "parses": true,
+            "summary": {
+                "name": "pagination-modes",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 0,
+                "bodyStatementCount": 4,
+                "stepNames": ["pwt", "ue", "cur"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 0
+            },
+            "paginationModes": ["pageWithTotal", "untilEmpty", "cursor"],
+            "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "03-enums-and-case.forage",
+            "parses": true,
+            "summary": {
+                "name": "enums-and-case",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 1,
+                "inputCount": 1,
+                "bodyStatementCount": 2,
+                "stepNames": ["s"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 0
+            },
+            "enums": [
+                { "name": "Mode", "variants": ["A", "B", "C"] }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "04-pipelines.forage",
+            "parses": true,
+            "summary": {
+                "name": "pipelines",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 2,
+                "stepNames": ["products"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 1,
+                "importCount": 0
+            },
+            "types": [
+                {
+                    "name": "Product",
+                    "fieldNames": ["externalId", "name", "sizeValue", "sizeUnit", "terpenes", "prevalence"],
+                    "requiredFieldCount": 3
+                }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "05-validation-errors.forage",
+            "parses": true,
+            "summary": {
+                "name": "validation-errors",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 0,
+                "bodyStatementCount": 2,
+                "stepNames": ["s"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 0
+            },
+            "validation": {
+                "errorCountMin": 3,
+                "expectedErrorKeywords": [
+                    "mysteriousTransform",
+                    "unbound variable",
+                    "unknown type 'Widget'"
+                ]
+            }
+        },
+        {
+            "file": "06-imports.forage",
+            "parses": true,
+            "summary": {
+                "name": "imports-demo",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 0,
+                "bodyStatementCount": 2,
+                "stepNames": ["s"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 2
+            },
+            "imports": [
+                { "slug": "alice/awesome", "version": 2 },
+                { "slug": "demo", "version": null }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 }
+        }
+    ]
+}

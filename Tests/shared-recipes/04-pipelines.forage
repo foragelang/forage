@@ -1,0 +1,32 @@
+recipe "pipelines" {
+    engine http
+
+    type Product {
+        externalId: String
+        name: String
+        sizeValue: Double?
+        sizeUnit: String?
+        terpenes: [String]
+        prevalence: String?
+    }
+
+    input source: String
+
+    step products {
+        method "GET"
+        url "https://x.test/{$input.source}/products"
+    }
+
+    for $p in $products[*] {
+        emit Product {
+            externalId ← $p.id | toString
+            name       ← $p.name | trim
+            sizeValue  ← $p.size | parseSize | normalizeOzToGrams | sizeValue
+            sizeUnit   ← $p.size | parseSize | sizeUnit
+            terpenes   ← $p.terpenes[*].name | dedup
+            prevalence ← $p.strain?.prevalence | prevalenceNormalize
+        }
+    }
+
+    expect { records.where(typeName == "Product").count >= 1 }
+}

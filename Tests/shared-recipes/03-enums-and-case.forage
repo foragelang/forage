@@ -1,0 +1,35 @@
+recipe "enums-and-case" {
+    engine http
+
+    type Outcome {
+        kind: String
+        label: String
+    }
+
+    enum Mode { A, B, C }
+
+    input mode: Mode
+
+    step s {
+        method "POST"
+        url "https://x.test/s"
+        body.json {
+            mode: case $input.mode of {
+                A → "alpha"
+                B → "beta"
+                C → "gamma"
+            }
+        }
+    }
+
+    for $r in $s.results[*] {
+        emit Outcome {
+            kind  ← case $r.kind of {
+                first  → "F"
+                second → "S"
+                third  → "T"
+            }
+            label ← $r.label
+        }
+    }
+}

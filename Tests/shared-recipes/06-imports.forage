@@ -1,0 +1,17 @@
+import hub://alice/awesome v2
+import hub://demo
+
+recipe "imports-demo" {
+    engine http
+
+    type Note { text: String }
+
+    step s {
+        method "GET"
+        url "https://x.test/s"
+    }
+
+    for $i in $s.items[*] {
+        emit Note { text ← $i.text }
+    }
+}

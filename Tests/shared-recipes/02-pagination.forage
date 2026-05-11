@@ -1,0 +1,39 @@
+recipe "pagination-modes" {
+    engine http
+    type Hit { id: String }
+
+    step pwt {
+        method "POST"
+        url "https://x.test/pwt"
+        body.json { saleType: "Recreational" }
+        paginate pageWithTotal {
+            items: $.list
+            total: $.total
+            pageParam: "page"
+            pageSize: 200
+        }
+    }
+
+    step ue {
+        method "GET"
+        url "https://x.test/ue"
+        paginate untilEmpty {
+            items: $.data
+            pageParam: "n"
+        }
+    }
+
+    step cur {
+        method "GET"
+        url "https://x.test/cur"
+        paginate cursor {
+            items: $.results
+            cursorPath: $.next
+            cursorParam: "after"
+        }
+    }
+
+    for $h in $pwt[*] {
+        emit Hit { id ← $h.id | toString }
+    }
+}
