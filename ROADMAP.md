@@ -444,3 +444,68 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 
 - `forage run recipes/letterboxd-popular` returns ≈70 typed `Film` records with `title`, `url`, `posterUrl`.
 - `captures.document` survives the `BrowserReplayer` round-trip (covered by `DocumentCaptureTests.browserReplayerRoutesDocumentCaptureToDocumentRule`).
+
+---
+
+## M10 — Interactive session bootstrap
+
+**Status: queued.** Next milestone in flight.
+
+**Result:** Recipes that hit a human-in-the-loop gate (CAPTCHA, age verification the recipe can't auto-fill, sign-in flows the recipe can't navigate) bootstrap once via a visible WebView, persist the resulting cookies + storage, and reuse the session for subsequent headless runs until it expires. The bot doesn't bypass the technical control — the *human* does, then the bot reuses the human-authorized session. This is what unlocks eBay-class and Akamai-class targets without violating `notes/legal.md` rule 5.
+
+**Deliverables**
+
+- **D10.1 — Recipe DSL.** `browser.interactive { … }` block declaring the recipe needs interactive bootstrap. Fields: `bootstrapURL: <template>` (defaults to `initialURL`), `cookieDomains: [<host>...]` (which cookies to persist), `gatePattern: <string>?` (substring/regex on document HTML that means "session expired — re-prompt").
+- **D10.2 — Session storage.** `~/Library/Forage/Sessions/<slug>/session.json` — portable JSON: `cookies` (per-domain), `localStorage` (per-origin), `expiresAt` (best-effort, from cookie Max-Age min), `boostrappedAt`. `chmod 600`. Encrypted-at-rest if a Keychain key supplier is wired (M7 D7.10 work composes here).
+- **D10.3 — Visible-window mode in BrowserEngine.** Opens an actual `NSWindow` hosting a `WKWebView` at `bootstrapURL`. A floating "Scrape this page" overlay anchored to the bottom-right. Clicking it: snapshots cookies + storage, runs `captures.document` rule against the current DOM, persists session, closes window.
+- **D10.4 — Expiry detection.** On a non-interactive run, after the initial navigation, if the document HTML matches `gatePattern`, exit with `stallReason: "session-expired: re-run with --interactive"`. Toolkit handles this by re-opening the bootstrap window automatically.
+- **D10.5 — CLI flag.** `forage run --interactive recipes/<slug>` forces interactive bootstrap on a fresh load, ignoring any cached session.
+- **D10.6 — Toolkit integration.** Modal sheet wrapping the same primitive — same overlay, same persistence. Sign-in/session-list pane in Preferences showing active sessions + last-used + expiry.
+- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated to use `browser.interactive { gatePattern: "Security Measure" }`. End-to-end live validation against eBay completed listings.
+- **D10.8 — Tests.** Parser acceptance, session JSON round-trip, expiry detection on a fixture-served gate page, BrowserReplayer continues to work for sessions captured via interactive bootstrap.
+- **D10.9 — Docs.** New `site/docs/interactive-sessions.md`; cross-references from `html-extraction.md` and `engines.md`.
+
+**Out of scope (intentional follow-ups):**
+
+- **Headless CI/CD bootstrap.** No CI can pass a CAPTCHA. The story is: bootstrap on a workstation, copy the session JSON file to the CI host, run headlessly there until expiry. Documented as such.
+
+---
+
+## M11 — GitHub OAuth identity for the hub
+
+**Status: queued.** Follows M10.
+
+**Result:** `hub.foragelang.com` and `api.foragelang.com` use GitHub as identity provider. Per-user JWTs replace the single shared `HUB_PUBLISH_TOKEN`. Recipes carry an `ownerLogin`; publish/delete are ownership-checked. Web IDE auth lives in an httpOnly cookie; CLI + Toolkit auth lives in Keychain.
+
+**Migration model.** The existing `HUB_PUBLISH_TOKEN` is grandfathered as an **admin path**. Existing recipes (published under that token) get `ownerLogin: "admin"`. New OAuth users co-exist; their recipes carry their GitHub login. No manual migration script, no broken existing workflows — OAuth is purely additive on day one.
+
+**Deliverables**
+
+- **D11.1 — Worker OAuth endpoints.** `POST /v1/oauth/start` → returns `{ authorizeURL, state }` for browser flow / `{ deviceCode, userCode, verificationURL, interval, expiresIn }` for device-code (CLI). `GET /v1/oauth/callback?code=...&state=...` (browser). `POST /v1/oauth/device/poll` (CLI). `POST /v1/oauth/refresh`. `POST /v1/oauth/revoke`.
+- **D11.2 — JWT signing.** Per-Worker HS256 signing key in `JWT_SIGNING_KEY` Worker secret. Token claims: `sub: <gh-login>`, `iat`, `exp` (1h), `aud: "forage-hub"`. Refresh token is a separate longer-lived JWT or KV-backed opaque token.
+- **D11.3 — KV schema.** New `user:<gh-login>` namespace storing GH metadata + refresh token. `recipe:<slug>` metadata grows `ownerLogin: string`. Existing recipes get `ownerLogin: "admin"` on first lookup (lazy migration).
+- **D11.4 — Auth middleware.** Worker checks JWT on every protected endpoint; legacy `HUB_PUBLISH_TOKEN` Bearer also accepted and resolves to `ownerLogin: "admin"`. Publish/delete: if recipe exists, its `ownerLogin` must match the caller's identity (or caller must be admin).
+- **D11.5 — Web IDE.** Replace `localStorage["forage.hubToken"]` paste with a "Sign in with GitHub" button kicking off OAuth dance. Resulting JWT lives in httpOnly cookie. RecipeIDE attaches the cookie automatically; no manual token management.
+- **D11.6 — CLI.** `forage auth login` runs the device-code flow: prints `userCode`, polls `device/poll`. On success: persists JWT + refresh token to `~/Library/Forage/Auth/<host>.json` chmod 600 (or Keychain when available). `forage auth logout`. `forage auth whoami`.
+- **D11.7 — Toolkit.** Sign-in pane in Preferences. JWT stored in Keychain alongside the legacy token. App-level menu: Account → Sign in with GitHub / Sign out.
+- **D11.8 — Tests.** Worker unit tests for OAuth flow, JWT issuance, ownership checks. End-to-end curl test: publish as user A, attempt to overwrite as user B, get 403. Client-side flow tests.
+- **D11.9 — Docs.** `site/docs/auth.md` covering all three flows (web / CLI / Toolkit); `hub-site/about.md` updated to reflect multi-author registry.
+
+**Acceptance**
+
+- `forage auth login` → browser opens GH OAuth → device code entered → CLI stores token → `forage publish <recipe>` succeeds without `FORAGE_HUB_TOKEN`.
+- Visiting `hub.foragelang.com/edit` with no cookie shows "Sign in with GitHub"; after the dance, the IDE works without touching localStorage.
+- User A's `forage publish foo` lands; User B's `forage publish foo --overwrite` returns 403 with "owned by A".
+
+---
+
+## Followups in flight (not yet milestoned)
+
+Tracking the smaller polish items called out in the M1–M9 audit:
+
+- **M3.followup — Hub-import sidebar action.** Currently a disabled placeholder in `LibrarySidebar.swift`. Needs the modal sheet + HubClient.list + copy to `~/Library/Forage/Recipes/<slug>/`. Likely sits inside M11 (since hub-import is meaningful once there's an OAuth identity).
+- **M3.followup — AppIcon real PNG slices.** Generate from `site/public/favicon.svg` into the icon slot sizes.
+- **M3.followup — App menu commands.** Add Publish / Validate / Import-from-Hub to the menu bar (currently only New Recipe / Run / Capture / Save are wired).
+- **M5.followup — `foragelang/homebrew-tap` repo.** External GH repo + flip the `ENABLE_HOMEBREW_TAP_UPDATE` flag.
+- **M5.followup — `/download` site CTA.** Add to homepage hero + nav.
+- **M7.followup — Cache encryption key supplier.** `HTTPEngine.symmetricKeyForCache()` returns nil; wire a Keychain-backed key so `auth.session.cacheEncrypted: true` actually encrypts. Compose with M10's session storage.
