@@ -22,6 +22,8 @@ hero:
 features:
     - title: Recipes are data, not code
       details: A recipe describes what to scrape. The engine is the only thing that runs HTTP or emits records.
+    - title: Share recipes via the hub
+      details: Publish once, anyone can use it. Browse, import, and version recipes across projects without copy-paste or forks.
     - title: Two engines, one DSL
       details: HTTP for documented APIs, a headless browser for JS-rendered sites and bot-management gates.
     - title: Live progress, every run
