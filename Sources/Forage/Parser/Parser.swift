@@ -956,6 +956,7 @@ public struct Parser {
         var observe = ""
         var pagination: BrowserPaginationConfig?
         var captures: [CaptureRule] = []
+        var documentCapture: DocumentCaptureRule?
 
         while !check(.rbrace) {
             if matchKeyword("initialURL") {
@@ -1015,11 +1016,21 @@ public struct Parser {
             } else if matchKeyword("captures") {
                 try expect(.dot, ".")
                 let kind = try consumeIdentifierOrKeyword()
-                guard kind == "match" else {
+                switch kind {
+                case "match":
+                    let rule = try parseCaptureRule()
+                    captures.append(rule)
+                case "document":
+                    guard documentCapture == nil else {
+                        throw ParseError.unsupportedConstruct(
+                            "captures.document declared more than once; only one document rule per recipe",
+                            loc: previous().loc
+                        )
+                    }
+                    documentCapture = try parseDocumentCaptureRule()
+                default:
                     throw ParseError.unsupportedConstruct("captures.\(kind) not supported", loc: previous().loc)
                 }
-                let rule = try parseCaptureRule()
-                captures.append(rule)
             } else {
                 throw ParseError.unsupportedConstruct("unknown browser field '\(peek().lexeme)'", loc: peek().loc)
             }
@@ -1033,8 +1044,34 @@ public struct Parser {
             warmupClicks: warmupClicks,
             observe: observe,
             pagination: pagination ?? BrowserPaginationConfig(mode: .scroll, until: .noProgressFor(3)),
-            captures: captures
+            captures: captures,
+            documentCapture: documentCapture
         )
+    }
+
+    /// Parse `captures.document { for $x in <expr> { … } }`. Same body shape
+    /// as `captures.match` but no `urlPattern` — the document body is
+    /// matched by virtue of being the one document the browser settled on.
+    private mutating func parseDocumentCaptureRule() throws -> DocumentCaptureRule {
+        try expect(.lbrace, "{")
+        var iterPath: ExtractionExpr = .path(.current)
+        var body: [Statement] = []
+        while !check(.rbrace) {
+            if matchKeyword("for") {
+                let stmt = try parseForLoop()
+                body.append(stmt)
+                if case .forLoop(_, let coll, _) = stmt { iterPath = coll }
+            } else if checkKeyword("emit") {
+                body.append(try parseStatement())
+            } else {
+                throw ParseError.unsupportedConstruct(
+                    "unknown captures.document field '\(peek().lexeme)'", loc: peek().loc
+                )
+            }
+            _ = match(.semicolon)
+        }
+        try expect(.rbrace, "}")
+        return DocumentCaptureRule(iterPath: iterPath, body: body)
     }
 
     private mutating func parseBrowserPaginationConfig() throws -> BrowserPaginationConfig {

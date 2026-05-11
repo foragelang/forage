@@ -12,6 +12,7 @@ public struct Capture: Hashable, Sendable, Codable {
         case fetch
         case xhr
         case diagnostic   // synthetic — emitted by injected JS for debugging
+        case document     // synthetic — the rendered document body, captured once after settle (M9)
     }
 
     public let id: UUID

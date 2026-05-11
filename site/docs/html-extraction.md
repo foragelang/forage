@@ -69,9 +69,48 @@ For sites that need **Cloudflare-gated** access or are fully JS-rendered with no
 
 The fallback is intentional: an HTML response doesn't crash the recipe; it just lands as a string the recipe explicitly chooses to parse. This makes the parsing step legible at the call site rather than implicit.
 
+## Browser engine: `captures.document`
+
+Some sites lock HTTP scrapers out — Cloudflare, Akamai, and similar serve a JS challenge or a 403 to anything that isn't a real browser. For those, Forage's **browser engine** drives a hidden WKWebView through the gate, and the rendered HTML is captured via a `captures.document { … }` block.
+
+```forage
+recipe "letterboxd-popular" {
+    engine browser
+
+    type Film { title: String, url: String? }
+
+    browser {
+        initialURL: "https://letterboxd.com/films/popular/this/week/"
+        observe:    "letterboxd.com"
+        paginate browserPaginate.scroll {
+            until: noProgressFor(2)
+            maxIterations: 0
+        }
+        captures.document {
+            for $poster in $ | select("div.poster.film-poster") {
+                emit Film {
+                    title ← $poster | select("span.frame-title") | text
+                    url   ← $poster | select("a.frame") | attr("href")
+                }
+            }
+        }
+    }
+}
+```
+
+The `$` inside the block is the parsed root of the post-settle document — recipes walk it with `select(...)` directly, no `parseHtml` call needed. The rest is the same M8 extraction primitive working over a different content source.
+
+Coverage:
+
+- **Works for Cloudflare-protected sites with JS challenges** (Letterboxd, many mid-tier e-commerce sites, smaller news sites). The browser engine passes the challenge by virtue of being a real WebKit.
+- **Does not work for CAPTCHA-walled sites** (eBay's Akamai layer, Datadome on hot-ticket sites). Forage doesn't bypass technical controls — see `notes/legal.md` rule 5. `recipes/ebay-sold/` is in tree as a shape reference but doesn't actually run against live eBay.
+- **Works in replay mode.** Archived runs preserve the document capture in `captures.jsonl`; `BrowserReplayer` routes it back to the document rule without re-navigating.
+
 ## Recipe inventory
 
 - **`recipes/hacker-news-html/`** — HN front page scraped from the rendered HTML, as a companion to the JSON-API version in `recipes/hacker-news/`. Same record shape, different data source.
 - **`recipes/scotus-opinions/`** — US Supreme Court slip opinions for a given term, extracted from supremecourt.gov's HTML table. Typed `Opinion` records with date, docket number, case name, PDF URL, and holding text.
+- **`recipes/letterboxd-popular/`** — Films popular this week on Letterboxd, scraped via the browser engine through Cloudflare. End-to-end demonstration of `captures.document`.
+- **`recipes/ebay-sold/`** — eBay completed listings. Shape reference only; CAPTCHA-walled in practice.
 
-Both are the smallest recipes that exercise the primitive end-to-end; copy either as a starting template.
+The HTTP recipes (HN HTML, SCOTUS) are the smallest end-to-end uses of the M8 primitive. The browser-engine recipe (Letterboxd) is the smallest use of M9. Copy any of them as a starting template.

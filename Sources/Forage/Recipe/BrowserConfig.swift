@@ -14,6 +14,13 @@ public struct BrowserConfig: Hashable, Sendable {
     /// `urlPattern`, walk its body via `iterPath` and run the inner statements
     /// per item. Statements typically emit records using the per-item scope.
     public let captures: [CaptureRule]
+    /// Document-extract rule: fires once after the browser has settled
+    /// (page loaded, pagination done). The capture body is the rendered
+    /// `document.documentElement.outerHTML`. Lets recipes extract from
+    /// server-rendered HTML behind bot management — sites where the data
+    /// is in the initial DOM, not in XHR responses (eBay, Cloudflare-gated
+    /// pages, classic server-rendered listings).
+    public let documentCapture: DocumentCaptureRule?
 
     public init(
         initialURL: Template,
@@ -22,7 +29,8 @@ public struct BrowserConfig: Hashable, Sendable {
         warmupClicks: [String] = [],
         observe: String,
         pagination: BrowserPaginationConfig,
-        captures: [CaptureRule] = []
+        captures: [CaptureRule] = [],
+        documentCapture: DocumentCaptureRule? = nil
     ) {
         self.initialURL = initialURL
         self.ageGate = ageGate
@@ -31,6 +39,7 @@ public struct BrowserConfig: Hashable, Sendable {
         self.observe = observe
         self.pagination = pagination
         self.captures = captures
+        self.documentCapture = documentCapture
     }
 }
 
@@ -106,6 +115,22 @@ public struct CaptureRule: Hashable, Sendable {
 
     public init(urlPattern: String, iterPath: ExtractionExpr, body: [Statement]) {
         self.urlPattern = urlPattern
+        self.iterPath = iterPath
+        self.body = body
+    }
+}
+
+/// Document-extract rule (M9). Fires once after the browser engine
+/// has settled. The capture's "current value" (`$.`) is the parsed
+/// document node — recipes walk it with `select(...)` / `text` / `attr`
+/// directly, no explicit `parseHtml` needed. The grammar mirrors
+/// `captures.match` but with no `urlPattern` (the document body has
+/// no URL of its own).
+public struct DocumentCaptureRule: Hashable, Sendable {
+    public let iterPath: ExtractionExpr
+    public let body: [Statement]
+
+    public init(iterPath: ExtractionExpr, body: [Statement]) {
         self.iterPath = iterPath
         self.body = body
     }

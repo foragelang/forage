@@ -2,6 +2,7 @@
 import Foundation
 import AppKit
 import WebKit
+import SwiftSoup
 
 /// Runs a `Recipe` whose `engineKind` is `.browser`. Hosts a `WKWebView`,
 /// drives navigation / age-gate fill / dismissal / warmup-clicks /
@@ -218,7 +219,15 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         for capture in replayer.captures {
             captures.append(capture)
             progress.noteCapture(responseURL: capture.responseUrl)
-            applyMatchingRules(to: capture)
+            if capture.kind == .document {
+                // M9: route synthesized document captures to the
+                // documentCapture rule rather than the XHR pipeline.
+                if let docRule = recipe.browser?.documentCapture {
+                    applyDocumentRule(docRule, capture: capture)
+                }
+            } else if capture.kind != .diagnostic {
+                applyMatchingRules(to: capture)
+            }
         }
         progress.setPhase(.settling)
         finish(reason: "settled")
@@ -276,18 +285,88 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             cont.resume(returning: buildRunResult(stallReason: stallReason, unhandledAffordances: []))
             return
         }
-        webView.evaluateJavaScript(InjectedScripts.dumpAffordances) { [weak self] result, _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let unhandled = Self.parseUnhandledAffordances(
-                    jsResult: result,
-                    additionalHandledLabels: self.recipe.browser?.warmupClicks ?? []
-                )
-                cont.resume(returning: self.buildRunResult(
-                    stallReason: stallReason,
-                    unhandledAffordances: unhandled
-                ))
+
+        // M9: if the recipe declared a `captures.document` rule, evaluate
+        // `document.documentElement.outerHTML` and feed it through the
+        // rule before finalizing. The rule's emissions accumulate into
+        // the same `collector` the XHR rules write to.
+        let runDocumentCapture: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.webView.evaluateJavaScript(InjectedScripts.dumpAffordances) { [weak self] result, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let unhandled = Self.parseUnhandledAffordances(
+                        jsResult: result,
+                        additionalHandledLabels: self.recipe.browser?.warmupClicks ?? []
+                    )
+                    cont.resume(returning: self.buildRunResult(
+                        stallReason: stallReason,
+                        unhandledAffordances: unhandled
+                    ))
+                }
             }
+        }
+
+        // In replay mode the document capture (if any) is already in the
+        // replayer's captures list and was processed during startReplay.
+        // Don't re-evaluate JS against an unloaded WebView.
+        if let docRule = recipe.browser?.documentCapture, replayer == nil {
+            captureDocumentBody(rule: docRule, then: runDocumentCapture)
+        } else {
+            runDocumentCapture()
+        }
+    }
+
+    /// Evaluate `document.documentElement.outerHTML`, synthesize a
+    /// `Capture` for it (kind = `.document`), and run the recipe's
+    /// `captures.document { … }` rule against it. The synthetic capture
+    /// is also appended to `captures` so it shows up in the archived
+    /// captures.jsonl alongside fetch/XHR exchanges — that lets a later
+    /// `BrowserReplayer` reconstruct the same extraction without a
+    /// fresh navigation.
+    private func captureDocumentBody(rule: DocumentCaptureRule, then continuation: @escaping () -> Void) {
+        let currentURL = webView.url?.absoluteString ?? ""
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self else { continuation(); return }
+                let body = (result as? String) ?? ""
+                let synthetic = Capture(
+                    timestamp: Date(),
+                    kind: .document,
+                    method: "GET",
+                    requestUrl: currentURL,
+                    responseUrl: currentURL,
+                    requestBody: "",
+                    status: 200,
+                    bodyLength: body.utf8.count,
+                    body: body
+                )
+                self.captures.append(synthetic)
+                self.applyDocumentRule(rule, capture: synthetic)
+                self.progress.setRecordsEmitted(self.collector.records.count)
+                continuation()
+            }
+        }
+    }
+
+    /// Apply a `DocumentCaptureRule` to a `.document`-kind capture. The
+    /// capture body is parsed as HTML once and bound as `$.` so the
+    /// recipe can walk it with `select(...)` directly (no need for an
+    /// inner `parseHtml`).
+    fileprivate func applyDocumentRule(_ rule: DocumentCaptureRule, capture: Capture) {
+        let parsed: JSONValue
+        do {
+            let doc = try SwiftSoup.parse(capture.body)
+            parsed = .node(HTMLNode(doc))
+        } catch {
+            parsed = .string(capture.body)
+        }
+        let captureScope = scope.withCurrent(parsed)
+        do {
+            try runCaptureBody(rule.body, scope: captureScope)
+        } catch {
+            // Document-rule errors don't terminate the run; the
+            // diagnostic report surfaces partial output.
         }
     }
 

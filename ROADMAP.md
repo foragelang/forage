@@ -343,18 +343,58 @@ for $row in $page | parseHtml | select("table.opinions tr:has(a)") {
 
 ## M9 — Browser-engine document capture
 
-**Result:** Browser-engine recipes can extract from the rendered document body itself, not just from XHR/fetch responses. This closes the loop on sites like eBay where the listings are server-rendered HTML behind bot management — a real WebKit instance walks through the gate (existing browser engine), and the post-navigation document body becomes a synthetic capture the recipe extracts from via M8's HTML primitives.
+**Result:** Browser-engine recipes can extract from the rendered document body itself, not just from XHR/fetch responses. A real WebKit instance walks through Cloudflare-style JS challenges, and the post-navigation document body becomes a synthetic capture the recipe extracts from via M8's HTML primitives.
 
-**Deliverables**
+**Status: landed.**
 
-- **D9.1 — `captures.document { … }` block.** Sibling to today's `captures.match`. Fires once after the browser has finished navigating (and any age-gate / dismissal / scroll-settle has completed). The capture's body is the post-settle `document.documentElement.outerHTML`. Content-type is `text/html` so the recipe can pipe through `parseHtml`.
-- **D9.2 — Synthetic capture plumbing.** `BrowserEngine` evaluates JS to fetch `document.documentElement.outerHTML`, wraps the result in a `Capture` with the appropriate URL / status, and routes it through the same rule-matching pipeline as XHR captures. Reuses existing capture-archive code so document captures appear in `captures.jsonl` just like fetch ones.
-- **D9.3 — Iteration semantics.** `captures.document` rules take the same shape as `captures.match` rules: `for $x in <ExtractionExpr> { emit … }` over the parsed document.
-- **D9.4 — Reference recipe.** `recipes/ebay-sold/` — eBay completed-listings scrape. Per-input `query`, paginated via "page" param re-navigations rather than XHR replay. Emits `SoldListing { title, soldPrice, soldDate, condition, bidCount, url, image }`. The flagship "this is why you'd use Forage" demo.
-- **D9.5 — Tests.** A fixture-driven test exercising `captures.document` with a saved HTML body (BrowserReplayer extended to synthesize document captures alongside fetch captures).
-- **D9.6 — Docs.** Update `site/docs/engines.md` and `site/docs/html-extraction.md` with the browser-engine path; cross-reference from the eBay recipe.
+**What the primitive looks like (recipe-side):**
+
+```forage
+recipe "letterboxd-popular" {
+    engine browser
+
+    type Film { title: String, url: String? }
+
+    browser {
+        initialURL: "https://letterboxd.com/films/popular/this/week/"
+        observe:    "letterboxd.com"
+        paginate browserPaginate.scroll {
+            until: noProgressFor(2)
+            maxIterations: 0
+        }
+        captures.document {
+            for $poster in $ | select("div.poster.film-poster") {
+                emit Film {
+                    title ← $poster | select("span.frame-title") | text
+                    url   ← $poster | select("a.frame") | attr("href")
+                }
+            }
+        }
+    }
+}
+```
+
+The `$` inside `captures.document { … }` is the parsed root node of the post-settle document — recipes walk it with `select(...)` directly, no `parseHtml` call needed.
+
+**Deliverables (all landed):**
+
+- **D9.1 — `captures.document { … }` block.** Sibling to `captures.match`. Fires once after the browser has finished settling. The capture's body is `document.documentElement.outerHTML`; in the rule's scope `$` is pre-parsed as a node so recipes can `select` immediately.
+- **D9.2 — Synthetic capture plumbing.** `BrowserEngine.captureDocumentBody` evaluates JS to fetch the outerHTML, wraps it as `Capture(kind: .document, …)`, appends it to the run's captures list (so it survives into archived `captures.jsonl`), and routes it through the document rule.
+- **D9.3 — AST additions.** `Capture.Kind.document` variant. New `DocumentCaptureRule` value type. `BrowserConfig.documentCapture: DocumentCaptureRule?` field — one document rule per recipe (multiple XHR `captures.match` rules continue to coexist).
+- **D9.4 — Iteration semantics.** Document rules take the same body shape as XHR rules: `for $x in <ExtractionExpr> { emit … }`, where `<ExtractionExpr>` typically uses M8 transforms (`select`, `text`, `attr`).
+- **D9.5 — Replayer support.** `BrowserReplayer` routes `kind: .document` captures to the document rule (matching how live runs handle them). Archived runs round-trip cleanly.
+- **D9.6 — Reference recipes.**
+  - **`recipes/letterboxd-popular/`** — the flagship live demo. Letterboxd's "films popular this week" page is Cloudflare-gated (`curl` gets a 403); the browser engine drives a WKWebView through the gate, `captures.document` extracts ~70 typed `Film` records per run. End-to-end working.
+  - **`recipes/ebay-sold/`** — kept as a shape reference. eBay's Akamai layer serves a CAPTCHA challenge to WKWebView, which our scraping policy (no bypassing technical controls) rules out solving. The recipe parses and validates; it documents what an eBay completed-listings recipe would look like, with a note about the CAPTCHA limitation.
+- **D9.7 — Tests.** `Tests/ForageTests/DocumentCaptureTests.swift`: parser accepts `captures.document`, rejects duplicates, replayer routes a synthetic `.document` capture through the rule and emits expected records.
+- **D9.8 — Docs.** `site/docs/html-extraction.md` extended with a browser-engine section that pairs M8 (the extraction primitive) with M9 (the document-capture source).
+
+**Out of scope (intentional follow-ups):**
+
+- **CAPTCHA-walled sites** (eBay's Akamai layer, Datadome on hot-ticket sites, sites that require interactive proof-of-humanity). Bypassing these violates our scraping policy. A *user-driven* "show me the page so I can solve the challenge" mode in the Toolkit is a possible future, but it lives outside the headless DSL.
+- **Form submissions** in browser recipes (filling search boxes, posting filter forms). Today's recipes navigate via `initialURL`; multi-page flows through forms would need a new primitive.
 
 **Acceptance**
 
-- `forage run recipes/ebay-sold --input query="polaroid sx-70"` returns N typed `SoldListing` records.
-- The eBay recipe round-trips against an archived run via `BrowserReplayer`.
+- `forage run recipes/letterboxd-popular` returns ≈70 typed `Film` records with `title`, `url`, `posterUrl`.
+- `captures.document` survives the `BrowserReplayer` round-trip (covered by `DocumentCaptureTests.browserReplayerRoutesDocumentCaptureToDocumentRule`).

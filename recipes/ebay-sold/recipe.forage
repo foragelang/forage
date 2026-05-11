@@ -1,0 +1,54 @@
+// eBay completed-listings — sold price + date for items matching a query.
+//
+// **Status:** the syntax is right but eBay's Akamai layer serves a
+// CAPTCHA challenge to WKWebView, so this recipe won't actually
+// scrape live eBay. Forage's scraping policy (notes/legal.md rule 5,
+// "no bypassing technical controls") rules out CAPTCHA solving, so
+// this lands as a *shape demo* — what an eBay completed-listings
+// recipe would look like if eBay's gate only required passing a JS
+// challenge (which M9's browser engine handles cleanly for less
+// aggressively defended sites — see `recipes/letterboxd-popular/`
+// for a recipe that runs end-to-end against a real Cloudflare-gated
+// target).
+//
+// Kept in tree as a reference: the recipe parses, validates, and runs;
+// the only step that fails is `captures.document` returning the
+// "Security Measure" page instead of the listings page.
+
+recipe "ebay-sold" {
+    engine browser
+
+    type SoldListing {
+        title:     String
+        soldPrice: String?
+        condition: String?
+        url:       String?
+        soldDate:  String?
+    }
+
+    input query: String
+
+    browser {
+        initialURL: "https://www.ebay.com/sch/i.html?_nkw={$input.query}&LH_Sold=1&LH_Complete=1"
+        observe:    "ebay.com/sch"
+        paginate browserPaginate.scroll {
+            until:          noProgressFor(2)
+            maxIterations:  0
+            iterationDelay: 1.5
+        }
+
+        captures.document {
+            for $card in $ | select("li.s-item") {
+                emit SoldListing {
+                    title     ← $card | select(".s-item__title span") | text
+                    soldPrice ← $card | select(".s-item__price") | text
+                    condition ← $card | select(".SECONDARY_INFO") | text
+                    url       ← $card | select("a.s-item__link") | attr("href")
+                    soldDate  ← $card | select(".s-item__caption--row .POSITIVE") | text
+                }
+            }
+        }
+    }
+
+    expect { records.where(typeName == "SoldListing").count >= 1 }
+}
