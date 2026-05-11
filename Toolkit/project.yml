@@ -1,0 +1,88 @@
+name: Toolkit
+options:
+  bundleIdPrefix: com.foragelang
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+
+packages:
+  Forage:
+    path: ..
+
+targets:
+  Toolkit:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Toolkit
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: Forage Toolkit
+        CFBundleDisplayName: Forage Toolkit
+        CFBundleIdentifier: com.foragelang.Toolkit
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSHighResolutionCapable: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.foragelang.Toolkit.recipe
+            CFBundleURLSchemes:
+              - forage-toolkit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.Toolkit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_HARDENED_RUNTIME: NO
+    dependencies:
+      - package: Forage
+        product: Forage
+
+  ToolkitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ToolkitTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.ToolkitTests
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Toolkit.app/Contents/MacOS/Toolkit
+    dependencies:
+      - target: Toolkit
+      - package: Forage
+        product: Forage
+
+schemes:
+  Toolkit:
+    build:
+      targets:
+        Toolkit: all
+        ToolkitTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ToolkitTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
