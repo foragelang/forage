@@ -120,16 +120,31 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     /// snapshot plus a `DiagnosticReport` describing how the run terminated
     /// and what wasn't accounted for. Throws only for setup-time errors
     /// (e.g. an unparseable `initialURL` in the recipe); runtime termination
-    /// reasons (settled / hard-timeout / nav-fail) come back through
-    /// `report.stallReason` instead.
+    /// reasons (settled / hard-timeout / nav-fail / cancelled) come back
+    /// through `report.stallReason` instead.
+    ///
+    /// Honors `Task.cancel()`: the cancellation handler hops to the main
+    /// actor (the engine is `@MainActor`-isolated, but the handler runs
+    /// synchronously on whatever queue called `cancel()`) and triggers
+    /// `finish(reason: "cancelled")`, which resolves the continuation with
+    /// `stallReason: "cancelled"` and whatever snapshot has accumulated. If
+    /// the run had already finished, `finish` no-ops via its
+    /// `guard let cont = continuation` idempotency check.
     public func run() async throws -> RunResult {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RunResult, any Error>) in
-            self.continuation = cont
-            do {
-                try start()
-            } catch {
-                progress.setPhase(.failed("\(error)"))
-                cont.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RunResult, any Error>) in
+                self.continuation = cont
+                do {
+                    try start()
+                } catch {
+                    self.continuation = nil
+                    progress.setPhase(.failed("\(error)"))
+                    cont.resume(throwing: error)
+                }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finish(reason: "cancelled")
             }
         }
     }
@@ -228,7 +243,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
     private func stallReasonString(reason: String, navFailURL: String?) -> String {
         switch reason {
-        case "settled", "hard-timeout":
+        case "settled", "hard-timeout", "cancelled":
             return reason
         case "nav-fail":
             return "navigation-failed: \(navFailURL ?? "")"

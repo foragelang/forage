@@ -279,4 +279,41 @@ func browserEngineReplayerCountsUnmatchedCaptures() async throws {
     #expect(result.report.unmatchedCaptures.first?.url == "https://example.test/api/other")
     #expect(result.report.unfiredRules == ["api/products"])
 }
+
+// MARK: - Cancellation
+
+/// Constructing a live (no-replayer) engine and immediately cancelling its
+/// host Task should finish with `stallReason: "cancelled"` and
+/// `phase: .failed("cancelled")`, not hang on the 8s settle or 240s hard
+/// timeout. We use generous safety timeouts (30s hard, 8s settle) so that
+/// if the cancellation handler is wired wrong the test fails by hanging on
+/// the await; if it's wired right, the result returns in milliseconds.
+@MainActor
+@Test
+func browserEngineHonorsTaskCancellation() async throws {
+    let recipe = minimalReplayRecipe()
+    let engine = BrowserEngine(
+        recipe: recipe,
+        inputs: [:],
+        visible: false,
+        settleSeconds: 8,
+        hardTimeoutSeconds: 30
+    )
+
+    let task = Task { @MainActor in
+        try await engine.run()
+    }
+
+    // Yield once so the engine's `start()` runs and the continuation is set
+    // before we cancel. Without this we'd race the cancellation against
+    // continuation setup and the onCancel handler might find no
+    // continuation to resume.
+    await Task.yield()
+    task.cancel()
+
+    let result = try await task.value
+
+    #expect(result.report.stallReason == "cancelled")
+    #expect(engine.progress.phase == .failed("cancelled"))
+}
 #endif
