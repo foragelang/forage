@@ -225,18 +225,36 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         } else {
             progress.setPhase(.failed(stallReason))
         }
-        let result = buildRunResult(stallReason: stallReason)
-        cont.resume(returning: result)
+        settleTimer?.invalidate(); settleTimer = nil
+        hardTimer?.invalidate(); hardTimer = nil
+
+        if reason == "cancelled" {
+            cont.resume(returning: buildRunResult(stallReason: stallReason, unhandledAffordances: []))
+            return
+        }
+        webView.evaluateJavaScript(InjectedScripts.dumpAffordances) { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let unhandled = Self.parseUnhandledAffordances(
+                    jsResult: result,
+                    additionalHandledLabels: self.recipe.browser?.warmupClicks ?? []
+                )
+                cont.resume(returning: self.buildRunResult(
+                    stallReason: stallReason,
+                    unhandledAffordances: unhandled
+                ))
+            }
+        }
     }
 
-    private func buildRunResult(stallReason: String) -> RunResult {
+    private func buildRunResult(stallReason: String, unhandledAffordances: [String]) -> RunResult {
         let snapshot = Snapshot(records: collector.records, observedAt: Date())
         let report = DiagnosticReport(
             stallReason: stallReason,
             unmatchedCaptures: projectedUnmatchedCaptures(),
             unfiredRules: unfiredRulePatterns(),
             unmetExpectations: ExpectationEvaluator.evaluate(recipe.expectations, against: snapshot),
-            unhandledAffordances: []
+            unhandledAffordances: unhandledAffordances
         )
         return RunResult(snapshot: snapshot, report: report)
     }
@@ -258,6 +276,27 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     /// didn't cover — those are the actionable ones for the recipe author.
     private static let unmatchedCaptureCap = 50
 
+    /// Cap on `unhandledAffordances` for the same reason — a stalled run on
+    /// an SPA can have hundreds of visible buttons; 50 is plenty to surface
+    /// the missed pagination targets without blowing up the report.
+    nonisolated static let unhandledAffordanceCap = 50
+
+    /// Case-insensitive substrings that mark a button/link as
+    /// pagination-shaped. Matches the page's *visible label*; e.g. a button
+    /// whose textContent is "Show more results" matches "show more".
+    nonisolated static let paginationKeywords: [String] = [
+        "view more", "load more", "next page", "show more", "see more",
+        "more results", "older", "next ›", "›", "→"
+    ]
+
+    /// Labels the engine's built-in `scrollAndClickLoadMore` JS clicks on
+    /// every pagination iteration. A match here is considered *handled* —
+    /// the engine actively drove the affordance. Keep in sync with the
+    /// `loadMoreLabels` array in `InjectedScripts.scrollAndClickLoadMore`.
+    nonisolated static let engineClickedLabels: [String] = [
+        "shop all products", "show more", "view more", "load more", "see more", "view all"
+    ]
+
     private func projectedUnmatchedCaptures() -> [UnmatchedCapture] {
         unmatchedCaptures.map {
             UnmatchedCapture(
@@ -274,6 +313,53 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         return bcfg.captures
             .map(\.urlPattern)
             .filter { (ruleMatchCounts[$0] ?? 0) == 0 }
+    }
+
+    /// Parse the JSON string `InjectedScripts.dumpAffordances` returns, run
+    /// it through `unhandledAffordances(items:additionalHandledLabels:)`, and
+    /// fall back to `[]` on any parse / shape error. `jsResult` is whatever
+    /// `WKWebView.evaluateJavaScript` handed back — typically a `String`,
+    /// but also `nil` (empty page) or an unexpected `NSError`-bearing
+    /// callback. All non-string paths return `[]`.
+    nonisolated static func parseUnhandledAffordances(
+        jsResult: Any?,
+        additionalHandledLabels: [String]
+    ) -> [String] {
+        guard let s = jsResult as? String, let data = s.data(using: .utf8) else { return [] }
+        guard let dump = try? JSONDecoder().decode(AffordanceDump.self, from: data) else { return [] }
+        let items = dump.buttons + dump.links + dump.roleButtons
+        return unhandledAffordances(items: items, additionalHandledLabels: additionalHandledLabels)
+    }
+
+    /// Pure filter / dedup / cap pipeline — given a flat list of dumped
+    /// affordances and any extra labels the recipe declared as handled,
+    /// returns the formatted strings to surface in `DiagnosticReport`.
+    /// Tested directly without a WKWebView.
+    nonisolated static func unhandledAffordances(
+        items: [AffordanceItem],
+        additionalHandledLabels: [String]
+    ) -> [String] {
+        let handled = Set(
+            (engineClickedLabels + additionalHandledLabels).map { $0.lowercased() }
+        )
+        var out: [String] = []
+        var seen = Set<String>()
+        for item in items {
+            let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let lower = text.lowercased()
+            guard paginationKeywords.contains(where: { lower.contains($0) }) else { continue }
+            if handled.contains(lower) { continue }
+            let formatted: String = {
+                if let sel = item.selector, !sel.isEmpty { return "\(text) (\(sel))" }
+                return text
+            }()
+            if seen.insert(formatted).inserted {
+                out.append(formatted)
+                if out.count >= unhandledAffordanceCap { break }
+            }
+        }
+        return out
     }
 
     private func applyMatchingRules(to capture: Capture) {
@@ -485,6 +571,26 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     public func paginateDidFinish() {
         progress.setPhase(.settling)
     }
+}
+
+/// One row from `InjectedScripts.dumpAffordances`. The JS emits five
+/// buckets (buttons, links, role=button, scrollables, inputs); only the
+/// first three are pagination-shaped and end up in `AffordanceDump`'s
+/// payload after filtering. Other fields the JS emits (`x`, `y`, `href`,
+/// `type`, etc.) are decoded as `nil` and dropped — we only care about
+/// the label and a CSS-style locator.
+public struct AffordanceItem: Sendable, Hashable, Codable {
+    public let selector: String?
+    public let text: String
+}
+
+/// Top-level shape of the JSON `InjectedScripts.dumpAffordances` returns.
+/// Mirrors the JS object keys exactly; only the three actionable buckets
+/// participate in unhandled-affordance scoring.
+struct AffordanceDump: Decodable {
+    let buttons: [AffordanceItem]
+    let links: [AffordanceItem]
+    let roleButtons: [AffordanceItem]
 }
 
 public enum BrowserEngineError: Error, CustomStringConvertible {

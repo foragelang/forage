@@ -57,7 +57,14 @@ records.where(typeName == "Product").count >= 500 (got 247)
 
 ### unhandledAffordances
 
-Reserved for future use. Currently always empty.
+Browser engine only. At settle / hard-timeout / nav-fail the engine dumps every visible button / link / `role=button` on the page, keeps those whose label matches a pagination idiom — `view more`, `load more`, `next page`, `show more`, `see more`, `more results`, `older`, `next ›`, `›`, `→` — then subtracts (a) the labels the built-in load-more clicker drives, and (b) labels the recipe declared in `warmupClicks`. What's left is pagination-shaped UI the recipe didn't drive.
+
+```
+View more products (button.load-more-btn)
+Older posts (a.archive-link)
+```
+
+This is the "the engine saw a pagination button but didn't click it" signal — directly actionable for recipe authors. Capped at 50 entries.
 
 ## Reading a report
 

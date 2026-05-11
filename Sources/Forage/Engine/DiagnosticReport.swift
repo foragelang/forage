@@ -17,8 +17,15 @@ import Foundation
 ///   patterns or wrong endpoints.
 /// - `unmetExpectations`: filled by Phase 4's `ExpectationEvaluator`. Empty
 ///   for now.
-/// - `unhandledAffordances`: left empty; future expansion may populate based
-///   on engine-observed UI affordances.
+/// - `unhandledAffordances`: browser-engine only. At settle / hard-timeout
+///   the engine dumps every visible button / link / `role=button` on the
+///   page, keeps those whose label matches a pagination idiom ("View more",
+///   "Load more", "Next page", "Show more", "See more", "more results",
+///   "older", "next ›", "›", "→"), and subtracts the labels the engine's
+///   built-in load-more clicker handles plus the recipe's `warmupClicks`.
+///   What's left is pagination-shaped UI the recipe didn't drive — the
+///   actionable signal "the engine saw a button but didn't click it".
+///   Capped at 50 entries.
 public struct DiagnosticReport: Sendable, Hashable, Codable {
     public let stallReason: String
     public let unmatchedCaptures: [UnmatchedCapture]
