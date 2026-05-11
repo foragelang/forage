@@ -28,6 +28,7 @@ export type TokenKind =
     | { tag: 'bang' }
     | { tag: 'dollarRoot' }
     | { tag: 'dollarInput' }
+    | { tag: 'dollarSecret' }
     | { tag: 'dollarVariable'; name: string }
     | { tag: 'stringLit'; value: string }
     | { tag: 'intLit'; value: number }
@@ -67,6 +68,13 @@ export const KEYWORDS: ReadonlySet<string> = new Set([
     'initialURL', 'loadMoreLabels', 'extraLabels', 'captureExtractions',
     'iterPath', 'urlPattern', 'withCookies', 'as',
     'String', 'Int', 'Double', 'Bool',
+    // Session auth (M7)
+    'secret',
+    'session', 'formLogin', 'bearerLogin', 'cookiePersist',
+    'captureCookies', 'maxReauthRetries', 'cache', 'cacheEncrypted',
+    'requiresMFA', 'mfaFieldName',
+    'tokenPath', 'headerName', 'headerPrefix',
+    'sourcePath', 'format',
 ])
 
 export class LexError extends Error {
@@ -141,6 +149,8 @@ export class Lexer {
                     const name = this.readIdent()
                     if (name === 'input') {
                         tokens.push({ kind: { tag: 'dollarInput' }, lexeme: '$input', loc: startLoc })
+                    } else if (name === 'secret') {
+                        tokens.push({ kind: { tag: 'dollarSecret' }, lexeme: '$secret', loc: startLoc })
                     } else {
                         tokens.push({ kind: { tag: 'dollarVariable', name }, lexeme: `$${name}`, loc: startLoc })
                     }

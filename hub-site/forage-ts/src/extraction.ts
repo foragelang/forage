@@ -23,21 +23,26 @@ export class Scope {
         public readonly inputs: Record<string, JSONValue> = {},
         public readonly frames: Array<Record<string, JSONValue>> = [],
         public readonly current: JSONValue | null = null,
+        public readonly secrets: Record<string, string> = {},
     ) {}
 
     with(name: string, value: JSONValue): Scope {
         const newFrames = this.frames.map(f => ({ ...f }))
         if (newFrames.length === 0) newFrames.push({})
         newFrames[newFrames.length - 1][name] = value
-        return new Scope(this.inputs, newFrames, this.current)
+        return new Scope(this.inputs, newFrames, this.current, this.secrets)
     }
 
     pushed(): Scope {
-        return new Scope(this.inputs, [...this.frames, {}], this.current)
+        return new Scope(this.inputs, [...this.frames, {}], this.current, this.secrets)
     }
 
     withCurrent(value: JSONValue | null): Scope {
-        return new Scope(this.inputs, this.frames, value)
+        return new Scope(this.inputs, this.frames, value, this.secrets)
+    }
+
+    withSecrets(secrets: Record<string, string>): Scope {
+        return new Scope(this.inputs, this.frames, this.current, secrets)
     }
 
     variable(name: string): JSONValue | null {
@@ -55,6 +60,11 @@ export function resolvePath(expr: PathExpr, scope: Scope): JSONValue {
             return scope.current
         case 'input':
             return { tag: 'object', entries: scope.inputs }
+        case 'secret': {
+            const v = scope.secrets[expr.name]
+            if (v === undefined) throw new ScopeError(`secret '${expr.name}' was not pre-resolved (was it declared and supplied?)`)
+            return { tag: 'string', value: v }
+        }
         case 'variable': {
             const v = scope.variable(expr.name)
             if (v === null) throw new ScopeError(`undefined variable $${expr.name}`)

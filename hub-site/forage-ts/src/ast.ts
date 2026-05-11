@@ -37,6 +37,42 @@ export interface InputDecl {
 export type AuthStrategy =
     | { tag: 'staticHeader'; name: string; value: Template }
     | { tag: 'htmlPrime'; stepName: string; capturedVars: HtmlPrimeVar[] }
+    | { tag: 'session'; session: SessionAuth }
+
+export interface SessionAuth {
+    kind: SessionAuthKind
+    maxReauthRetries: number      // default 1; 0 disables
+    cacheDuration: number | null  // seconds; null = no caching
+    cacheEncrypted: boolean
+    requiresMFA: boolean
+    mfaFieldName: string          // default "code"
+}
+
+export type SessionAuthKind =
+    | { tag: 'formLogin'; formLogin: FormLogin }
+    | { tag: 'bearerLogin'; bearerLogin: BearerLogin }
+    | { tag: 'cookiePersist'; cookiePersist: CookiePersist }
+
+export interface FormLogin {
+    url: Template
+    method: string                // default "POST"
+    body: HTTPBody
+    captureCookies: boolean
+}
+
+export interface BearerLogin {
+    url: Template
+    method: string
+    body: HTTPBody
+    tokenPath: PathExpr
+    headerName: string            // default "Authorization"
+    headerPrefix: string          // default "Bearer "
+}
+
+export interface CookiePersist {
+    sourcePath: Template
+    format: 'json' | 'netscape'
+}
 
 export interface HtmlPrimeVar {
     varName: string
@@ -47,6 +83,7 @@ export interface HtmlPrimeVar {
 export type PathExpr =
     | { tag: 'current' }
     | { tag: 'input' }
+    | { tag: 'secret'; name: string }
     | { tag: 'variable'; name: string }
     | { tag: 'field'; base: PathExpr; name: string }
     | { tag: 'optField'; base: PathExpr; name: string }
@@ -183,4 +220,5 @@ export interface Recipe {
     browser: BrowserConfig | null
     expectations: Expectation[]
     imports: HubRecipeRef[]
+    secrets: string[]
 }

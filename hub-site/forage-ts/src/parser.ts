@@ -2,15 +2,18 @@
 
 import {
     type AuthStrategy,
+    type BearerLogin,
     type BodyValue,
     type BrowserConfig,
     type ComparisonOp,
+    type CookiePersist,
     type EngineKind,
     type Emission,
     type Expectation,
     type ExtractionExpr,
     type FieldBinding,
     type FieldType,
+    type FormLogin,
     type HTTPBody,
     type HTTPBodyKV,
     type HTTPRequest,
@@ -25,6 +28,8 @@ import {
     type RecipeEnum,
     type RecipeField,
     type RecipeType,
+    type SessionAuth,
+    type SessionAuthKind,
     type Statement,
     type Template,
     type TemplatePart,
@@ -69,6 +74,7 @@ export class Parser {
         let browser: BrowserConfig | null = null
         const body: Statement[] = []
         const expectations: Expectation[] = []
+        const secrets: string[] = []
 
         while (!this.check('rbrace') && !this.check('eof')) {
             if (this.matchKeyword('engine')) {
@@ -82,6 +88,10 @@ export class Parser {
                 enums.push(this.parseEnumDecl())
             } else if (this.matchKeyword('input')) {
                 inputs.push(this.parseInputDecl())
+            } else if (this.matchKeyword('secret')) {
+                const n = this.consumeIdentifierOrKeyword()
+                this.match('semicolon')
+                secrets.push(n)
             } else if (this.matchKeyword('auth')) {
                 this.expect('dot', '.')
                 auth = this.parseAuthStrategy()
@@ -108,6 +118,7 @@ export class Parser {
             browser,
             expectations,
             imports,
+            secrets,
         }
     }
 
@@ -215,6 +226,12 @@ export class Parser {
 
     private parseAuthStrategy(): AuthStrategy {
         const kind = this.consumeIdentifierOrKeyword()
+        if (kind === 'session') {
+            this.expect('dot', '.')
+            const variant = this.consumeIdentifierOrKeyword()
+            this.expect('lbrace', '{')
+            return this.parseSessionAuth(variant)
+        }
         this.expect('lbrace', '{')
         switch (kind) {
             case 'staticHeader': {
@@ -272,6 +289,148 @@ export class Parser {
             default:
                 throw new ParseError(this.previous().loc, `unknown auth strategy '${kind}'`)
         }
+    }
+
+    // ---- Session auth ----
+
+    private parseSessionAuth(variant: string): AuthStrategy {
+        let maxReauthRetries = 1
+        let cacheDuration: number | null = null
+        let cacheEncrypted = false
+        let requiresMFA = false
+        let mfaFieldName = 'code'
+
+        let url: Template | null = null
+        let method: string | null = null
+        let body: HTTPBody | null = null
+        let captureCookies = true
+        let tokenPath: PathExpr | null = null
+        let headerName = 'Authorization'
+        let headerPrefix = 'Bearer '
+        let sourcePath: Template | null = null
+        let format: 'json' | 'netscape' = 'json'
+
+        while (!this.check('rbrace')) {
+            if (this.matchKeyword('body')) {
+                this.expect('dot', '.')
+                const kind = this.consumeIdentifierOrKeyword()
+                switch (kind) {
+                    case 'json':
+                        body = { tag: 'jsonObject', entries: this.parseJSONBodyKVs() }
+                        break
+                    case 'form':
+                        body = { tag: 'form', entries: this.parseFormBodyKVs() }
+                        break
+                    case 'raw':
+                        body = { tag: 'raw', template: this.parseTemplateLiteral() }
+                        break
+                    default:
+                        throw new ParseError(this.previous().loc, `body.${kind} not supported`)
+                }
+                this.match('semicolon'); this.match('comma')
+                continue
+            }
+            const key = this.consumeIdentifierOrKeyword()
+            this.expect('colon', ':')
+            switch (key) {
+                case 'maxReauthRetries':
+                    maxReauthRetries = this.consumeIntLit()
+                    break
+                case 'cache': {
+                    const i = this.matchIntLit()
+                    if (i !== null) cacheDuration = i
+                    else {
+                        const d = this.matchDoubleLit()
+                        if (d !== null) cacheDuration = d
+                        else throw new ParseError(this.peek().loc, `expected duration in seconds`)
+                    }
+                    break
+                }
+                case 'cacheEncrypted':
+                    cacheEncrypted = this.consumeBoolLit()
+                    break
+                case 'requiresMFA':
+                    requiresMFA = this.consumeBoolLit()
+                    break
+                case 'mfaFieldName':
+                    mfaFieldName = this.consumeStringLit()
+                    break
+                case 'url':
+                    url = this.parseTemplateLiteral()
+                    break
+                case 'method':
+                    method = this.consumeStringLit()
+                    break
+                case 'captureCookies':
+                    captureCookies = this.consumeBoolLit()
+                    break
+                case 'tokenPath':
+                    tokenPath = this.parsePathExpr()
+                    break
+                case 'headerName':
+                    headerName = this.consumeStringLit()
+                    break
+                case 'headerPrefix':
+                    headerPrefix = this.consumeStringLit()
+                    break
+                case 'sourcePath':
+                    sourcePath = this.parseTemplateLiteral()
+                    break
+                case 'format': {
+                    const raw = this.consumeIdentifierOrKeyword()
+                    if (raw === 'json' || raw === 'netscape') format = raw
+                    else throw new ParseError(this.previous().loc, `unknown cookie format '${raw}' (expected json | netscape)`)
+                    break
+                }
+                default:
+                    throw new ParseError(this.previous().loc, `unknown auth.session.${variant} field '${key}'`)
+            }
+            this.match('semicolon'); this.match('comma')
+        }
+        this.expect('rbrace', '}')
+
+        let kind: SessionAuthKind
+        switch (variant) {
+            case 'formLogin': {
+                if (url === null || body === null) {
+                    throw new ParseError(this.peek().loc, `missing required field 'url/body' in auth.session.formLogin`)
+                }
+                const f: FormLogin = {
+                    url, method: method ?? 'POST', body, captureCookies,
+                }
+                kind = { tag: 'formLogin', formLogin: f }
+                break
+            }
+            case 'bearerLogin': {
+                if (url === null || body === null || tokenPath === null) {
+                    throw new ParseError(this.peek().loc, `missing required field 'url/body/tokenPath' in auth.session.bearerLogin`)
+                }
+                const b: BearerLogin = {
+                    url, method: method ?? 'POST', body, tokenPath, headerName, headerPrefix,
+                }
+                kind = { tag: 'bearerLogin', bearerLogin: b }
+                break
+            }
+            case 'cookiePersist': {
+                if (sourcePath === null) {
+                    throw new ParseError(this.peek().loc, `missing required field 'sourcePath' in auth.session.cookiePersist`)
+                }
+                const c: CookiePersist = { sourcePath, format }
+                kind = { tag: 'cookiePersist', cookiePersist: c }
+                break
+            }
+            default:
+                throw new ParseError(this.previous().loc, `unknown auth.session.${variant}`)
+        }
+        const session: SessionAuth = {
+            kind,
+            maxReauthRetries,
+            cacheDuration,
+            cacheEncrypted,
+            requiresMFA,
+            mfaFieldName,
+        }
+        return { tag: 'session', session }
     }
 
     // ---- Statements ----
@@ -606,12 +765,17 @@ export class Parser {
         } else if (this.check('dollarInput')) {
             this.advance()
             head = { tag: 'input' }
+        } else if (this.check('dollarSecret')) {
+            this.advance()
+            this.expect('dot', '.')
+            const secretName = this.consumeIdentifierOrKeyword()
+            head = { tag: 'secret', name: secretName }
         } else {
             const varName = this.matchDollarVariable()
             if (varName !== null) {
                 head = { tag: 'variable', name: varName }
             } else {
-                throw new ParseError(this.peek().loc, `expected path-expression head ($ / $input / $name), got ${this.peek().lexeme}`)
+                throw new ParseError(this.peek().loc, `expected path-expression head ($ / $input / $secret.<name> / $name), got ${this.peek().lexeme}`)
             }
         }
         while (true) {
@@ -761,7 +925,7 @@ export class Parser {
 
     private checkPathStart(): boolean {
         const t = this.peek().kind.tag
-        return t === 'dollarRoot' || t === 'dollarInput' || t === 'dollarVariable'
+        return t === 'dollarRoot' || t === 'dollarInput' || t === 'dollarSecret' || t === 'dollarVariable'
     }
 
     private match(tag: TokenKind['tag']): boolean {

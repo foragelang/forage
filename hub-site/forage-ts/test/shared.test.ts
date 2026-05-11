@@ -27,6 +27,8 @@ interface ExpectedRecipe {
     enums?: ExpectedEnum[]
     imports?: ExpectedImport[]
     paginationModes?: string[]
+    secrets?: string[]
+    authSessionVariant?: string
     validation: ExpectedValidation
 }
 
@@ -127,6 +129,17 @@ describe('shared recipes', () => {
 
             if (rec.paginationModes) {
                 expect(collectPaginationModes(recipe.body)).toEqual(rec.paginationModes)
+            }
+
+            if (rec.secrets) {
+                expect(recipe.secrets).toEqual(rec.secrets)
+            }
+
+            if (rec.authSessionVariant) {
+                expect(recipe.auth?.tag).toBe('session')
+                if (recipe.auth?.tag === 'session') {
+                    expect(recipe.auth.session.kind.tag).toBe(rec.authSessionVariant)
+                }
             }
 
             const issues = validate(recipe)

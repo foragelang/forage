@@ -79,6 +79,19 @@ export async function run(
                 },
             }
         }
+        // Session auth is a stateful flow with credentials, cookie threading,
+        // re-auth on 401, and an MFA hook — not viable inside a browser tab
+        // without leaking creds into localStorage. Sessioned recipes belong
+        // in the CLI or Toolkit; the web IDE just parses + validates them.
+        if (recipe.auth?.tag === 'session') {
+            return {
+                records: [],
+                diagnostic: {
+                    stallReason: 'failed: auth.session.* not supported in web runner — run via CLI or Toolkit',
+                    unmetExpectations: [],
+                },
+            }
+        }
 
         scope = await runStatements(recipe.body, recipe, scope, collector, evaluator, fetchImpl)
         return {
