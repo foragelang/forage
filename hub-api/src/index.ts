@@ -10,6 +10,16 @@ import {
     deleteRecipe,
     validateSlugSegments,
 } from './routes/recipes'
+import {
+    oauthStart,
+    oauthCallback,
+    oauthDevice,
+    oauthDevicePoll,
+    oauthRefresh,
+    oauthRevoke,
+    oauthWhoami,
+} from './oauth'
+import { identifyCaller } from './auth'
 
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
@@ -35,6 +45,23 @@ async function route(
 ): Promise<Response> {
     if (path === '/v1/health' && request.method === 'GET') {
         return json({ status: 'ok', time: new Date().toISOString() })
+    }
+
+    // M11 OAuth endpoints.
+    if (path === '/v1/oauth/start' && request.method === 'POST') return oauthStart(request, env)
+    if (path === '/v1/oauth/callback' && request.method === 'GET') return oauthCallback(request, env)
+    if (path === '/v1/oauth/device' && request.method === 'POST') return oauthDevice(request, env)
+    if (path === '/v1/oauth/device/poll' && request.method === 'POST') return oauthDevicePoll(request, env)
+    if (path === '/v1/oauth/refresh' && request.method === 'POST') return oauthRefresh(request, env)
+    if (path === '/v1/oauth/whoami' && request.method === 'GET') {
+        const caller = await identifyCaller(request, env)
+        const login = caller?.kind === 'user' ? caller.login : null
+        return oauthWhoami(request, env, login)
+    }
+    if (path === '/v1/oauth/revoke' && request.method === 'POST') {
+        const caller = await identifyCaller(request, env)
+        if (caller?.kind !== 'user') return jsonError(401, 'unauthorized', 'sign-in required')
+        return oauthRevoke(request, env, caller.login)
     }
 
     if (path === '/v1/recipes' && request.method === 'GET') {

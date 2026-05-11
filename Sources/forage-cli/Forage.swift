@@ -12,6 +12,7 @@ struct ForageCLI: AsyncParsableCommand {
             ScaffoldCommand.self,
             TestCommand.self,
             PublishCommand.self,
+            AuthCommand.self,
         ]
     )
 }

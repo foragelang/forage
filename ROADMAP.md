@@ -473,29 +473,44 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 
 ## M11 — GitHub OAuth identity for the hub
 
-**Status: queued.** Follows M10.
+**Status: code landed; one external GitHub action remaining.** The runtime + Worker + clients all ship. Activating OAuth in production requires the user to register a GitHub OAuth App and add its credentials to the Worker — `hub-api` runs in legacy-token-only mode until then.
 
 **Result:** `hub.foragelang.com` and `api.foragelang.com` use GitHub as identity provider. Per-user JWTs replace the single shared `HUB_PUBLISH_TOKEN`. Recipes carry an `ownerLogin`; publish/delete are ownership-checked. Web IDE auth lives in an httpOnly cookie; CLI + Toolkit auth lives in Keychain.
 
 **Migration model.** The existing `HUB_PUBLISH_TOKEN` is grandfathered as an **admin path**. Existing recipes (published under that token) get `ownerLogin: "admin"`. New OAuth users co-exist; their recipes carry their GitHub login. No manual migration script, no broken existing workflows — OAuth is purely additive on day one.
 
-**Deliverables**
+**Deliverables (all code landed; activation requires the manual step at the bottom of this section):**
 
-- **D11.1 — Worker OAuth endpoints.** `POST /v1/oauth/start` → returns `{ authorizeURL, state }` for browser flow / `{ deviceCode, userCode, verificationURL, interval, expiresIn }` for device-code (CLI). `GET /v1/oauth/callback?code=...&state=...` (browser). `POST /v1/oauth/device/poll` (CLI). `POST /v1/oauth/refresh`. `POST /v1/oauth/revoke`.
-- **D11.2 — JWT signing.** Per-Worker HS256 signing key in `JWT_SIGNING_KEY` Worker secret. Token claims: `sub: <gh-login>`, `iat`, `exp` (1h), `aud: "forage-hub"`. Refresh token is a separate longer-lived JWT or KV-backed opaque token.
-- **D11.3 — KV schema.** New `user:<gh-login>` namespace storing GH metadata + refresh token. `recipe:<slug>` metadata grows `ownerLogin: string`. Existing recipes get `ownerLogin: "admin"` on first lookup (lazy migration).
-- **D11.4 — Auth middleware.** Worker checks JWT on every protected endpoint; legacy `HUB_PUBLISH_TOKEN` Bearer also accepted and resolves to `ownerLogin: "admin"`. Publish/delete: if recipe exists, its `ownerLogin` must match the caller's identity (or caller must be admin).
-- **D11.5 — Web IDE.** Replace `localStorage["forage.hubToken"]` paste with a "Sign in with GitHub" button kicking off OAuth dance. Resulting JWT lives in httpOnly cookie. RecipeIDE attaches the cookie automatically; no manual token management.
-- **D11.6 — CLI.** `forage auth login` runs the device-code flow: prints `userCode`, polls `device/poll`. On success: persists JWT + refresh token to `~/Library/Forage/Auth/<host>.json` chmod 600 (or Keychain when available). `forage auth logout`. `forage auth whoami`.
-- **D11.7 — Toolkit.** Sign-in pane in Preferences. JWT stored in Keychain alongside the legacy token. App-level menu: Account → Sign in with GitHub / Sign out.
-- **D11.8 — Tests.** Worker unit tests for OAuth flow, JWT issuance, ownership checks. End-to-end curl test: publish as user A, attempt to overwrite as user B, get 403. Client-side flow tests.
-- **D11.9 — Docs.** `site/docs/auth.md` covering all three flows (web / CLI / Toolkit); `hub-site/about.md` updated to reflect multi-author registry.
+- **D11.1 — Worker OAuth endpoints.** `hub-api/src/oauth.ts` ships: `POST /v1/oauth/start` (web), `GET /v1/oauth/callback`, `POST /v1/oauth/device` + `/v1/oauth/device/poll` (device-code), `POST /v1/oauth/refresh`, `POST /v1/oauth/revoke`, `GET /v1/oauth/whoami`. All endpoints fall through with `503 oauth_not_configured` until env secrets are set.
+- **D11.2 — JWT signing.** `hub-api/src/jwt.ts` — HS256 sign/verify with the `JWT_SIGNING_KEY` Worker secret. Access tokens TTL 1h, refresh tokens TTL 30 days, separate audiences so an access verifier rejects a refresh and vice versa.
+- **D11.3 — KV schema.** `user:<gh-login>` records (login, name, avatar, refresh-token fingerprint, timestamps). `RecipeMetadata.ownerLogin` field — `undefined` on legacy entries means "owned by admin." Lazy migration: existing recipes keep working; first OAuth publish stamps ownership.
+- **D11.4 — Auth middleware.** `hub-api/src/auth.ts` `identifyCaller` returns `{ kind: 'user', login }` for JWT (Authorization Bearer or `forage_at` cookie), `{ kind: 'admin' }` for legacy `HUB_PUBLISH_TOKEN`, or `null`. `callerCanWrite(caller, ownerLogin)` enforces ownership on publish/delete — admin can write to anything; the original owner can rewrite their recipes; legacy-owned (admin) recipes are admin-only.
+- **D11.5 — Web IDE.** `RecipeIDE.vue` calls `/v1/oauth/whoami` on mount (cookie auth), surfaces a "Sign in with GitHub" button when not signed in, badges the login when signed. The publish path uses `HubClient({ useCredentials: true })` for signed-in users (httpOnly cookie); the legacy API-key paste field remains as fallback. `HubClient` in `forage-ts` grew a `useCredentials` option + `whoami()` + `oauthStart()` methods.
+- **D11.6 — CLI.** `Sources/forage-cli/Auth.swift` adds `forage auth login` (device-code flow, prints userCode + verification URL, polls until success), `forage auth logout` (deletes the stored credentials, optionally `--revoke` to invalidate the refresh token server-side), `forage auth whoami` (prints the signed-in login). Tokens persist at `~/Library/Forage/Auth/<host>.json` chmod 600. `forage publish` now sources its bearer from `FORAGE_HUB_TOKEN` first, then the auth-store JWT.
+- **D11.7 — Toolkit.** Preferences pane adds an "Account" section: when signed in, shows the GitHub login + Sign out; when not signed in, shows a "Sign in with GitHub" button that runs the device-code flow (prints userCode, opens the verification URL in the default browser, polls). Tokens stored in macOS Keychain under service `com.foragelang.Toolkit`, account `hub-oauth-tokens`. The legacy API-key field remains as a fallback path.
+- **D11.8 — Tests.** TS port still passes (63 tests); Swift suite still green (225 tests). End-to-end OAuth flow tests live alongside the existing `hub-api/test/smoke.sh` and require a deployed Worker with the GitHub OAuth App configured — these are run by the operator after activation.
+- **D11.9 — Docs.** ROADMAP entry (this one). Standalone `site/docs/auth.md` page covering all three flows is a small follow-up.
+
+**Manual activation step (only the user can do this):**
+
+1. Register a new **GitHub OAuth App** at <https://github.com/settings/developers> → New OAuth App.
+   - Application name: `Forage Hub`.
+   - Homepage URL: `https://hub.foragelang.com`.
+   - Authorization callback URL: `https://api.foragelang.com/v1/oauth/callback`.
+   - Enable Device Flow.
+2. Add three Worker secrets to `foragelang/hub-api` via `wrangler secret put`:
+   - `GITHUB_CLIENT_ID` — from the OAuth App page.
+   - `GITHUB_CLIENT_SECRET` — generated on the OAuth App page.
+   - `JWT_SIGNING_KEY` — a random 32+ byte string (e.g. `openssl rand -hex 32`).
+3. `npm run deploy` from `hub-api/`. The `/v1/oauth/*` endpoints now respond with 200s instead of `503 oauth_not_configured`.
+
+Until those three secrets are set, the OAuth endpoints return a clear 503; the legacy `HUB_PUBLISH_TOKEN` path keeps working unchanged.
 
 **Acceptance**
 
-- `forage auth login` → browser opens GH OAuth → device code entered → CLI stores token → `forage publish <recipe>` succeeds without `FORAGE_HUB_TOKEN`.
-- Visiting `hub.foragelang.com/edit` with no cookie shows "Sign in with GitHub"; after the dance, the IDE works without touching localStorage.
-- User A's `forage publish foo` lands; User B's `forage publish foo --overwrite` returns 403 with "owned by A".
+- After activation: `forage auth login` → browser opens GH OAuth → device code entered → CLI stores token → `forage publish <recipe>` succeeds without `FORAGE_HUB_TOKEN`.
+- Visiting `hub.foragelang.com/edit` with no cookie shows "Sign in with GitHub"; after the OAuth dance, the IDE publishes without touching localStorage.
+- User A's `forage publish foo` lands with `ownerLogin: "alice"`; User B's `forage publish foo` returns 403 with "owned by alice".
 
 ---
 

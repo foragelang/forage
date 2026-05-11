@@ -22,7 +22,7 @@ import {
     putBlob,
     getBlob,
 } from '../storage'
-import { isAuthorized } from '../auth'
+import { identifyCaller, callerCanWrite } from '../auth'
 import { json, jsonError, streamFromR2 } from '../http'
 
 // Each namespace / name segment matches the Worker's published shape.
@@ -199,7 +199,8 @@ export async function publishRecipe(
     request: Request,
     env: Env,
 ): Promise<Response> {
-    if (!isAuthorized(request, env)) {
+    const caller = await identifyCaller(request, env)
+    if (caller === null) {
         return jsonError(401, 'unauthorized', 'missing or invalid bearer token')
     }
 
@@ -214,6 +215,13 @@ export async function publishRecipe(
     if (validationError) return jsonError(400, 'invalid', validationError)
 
     const existing = await getRecipeMetadata(env, payload.slug)
+    if (existing && !callerCanWrite(caller, existing.ownerLogin)) {
+        return jsonError(
+            403,
+            'forbidden',
+            `recipe ${payload.slug} is owned by ${existing.ownerLogin ?? 'admin'}; sign in as that user to publish a new version`
+        )
+    }
     const now = new Date().toISOString()
     const version = (existing?.version ?? 0) + 1
     const sha256 = await sha256Hex(payload.body)
@@ -239,6 +247,14 @@ export async function publishRecipe(
         )
     }
 
+    // M11: first-time publish via OAuth establishes ownership; subsequent
+    // versions retain the existing owner. Admin publishes (legacy
+    // HUB_PUBLISH_TOKEN) stamp `ownerLogin: "admin"` unless overriding
+    // an existing user-owned recipe (which the ownership check above
+    // already permits for admin).
+    const ownerLogin: string = existing?.ownerLogin
+        ?? (caller.kind === 'user' ? caller.login : 'admin')
+
     const meta: RecipeMetadata = {
         slug: payload.slug,
         author: payload.author ?? existing?.author ?? null,
@@ -252,6 +268,7 @@ export async function publishRecipe(
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         deleted: false,
+        ownerLogin,
     }
 
     await putBlob(
@@ -321,11 +338,19 @@ export async function deleteRecipe(
     env: Env,
     slug: string,
 ): Promise<Response> {
-    if (!isAuthorized(request, env)) {
+    const caller = await identifyCaller(request, env)
+    if (caller === null) {
         return jsonError(401, 'unauthorized', 'missing or invalid bearer token')
     }
     const meta = await getRecipeMetadata(env, slug)
     if (!meta) return jsonError(404, 'not_found', `unknown slug: ${slug}`)
+    if (!callerCanWrite(caller, meta.ownerLogin)) {
+        return jsonError(
+            403,
+            'forbidden',
+            `recipe ${slug} is owned by ${meta.ownerLogin ?? 'admin'}; sign in as that user to delete it`
+        )
+    }
     if (meta.deleted) return new Response(null, { status: 204 })
     meta.deleted = true
     meta.updatedAt = new Date().toISOString()

@@ -123,16 +123,24 @@ struct PublishCommand: AsyncParsableCommand {
             return
         }
 
-        guard let token = ProcessInfo.processInfo.environment["FORAGE_HUB_TOKEN"],
-              !token.isEmpty
-        else {
+        // Token sourcing order (post-M11):
+        // 1. `FORAGE_HUB_TOKEN` env var — admin / legacy / CI override.
+        // 2. Auth-store JWT from `forage auth login` (per-host).
+        let baseURL = RunCommand.hubURL()
+        let envToken = ProcessInfo.processInfo.environment["FORAGE_HUB_TOKEN"]
+        let storedToken = AuthStore.read(host: baseURL)?.accessToken
+        let token: String
+        if let env = envToken, !env.isEmpty {
+            token = env
+        } else if let stored = storedToken {
+            token = stored
+        } else {
             FileHandle.standardError.write(
-                "--publish requires FORAGE_HUB_TOKEN to be set in the environment\n".data(using: .utf8)!
+                "--publish requires a hub token: set FORAGE_HUB_TOKEN or run `forage auth login`\n".data(using: .utf8)!
             )
             throw ExitCode.failure
         }
 
-        let baseURL = RunCommand.hubURL()
         let client = HubClient(baseURL: baseURL, token: token)
         do {
             let result = try await client.publish(payload)

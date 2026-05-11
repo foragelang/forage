@@ -72,6 +72,12 @@ const publish = ref({
 })
 const apiToken = ref(typeof localStorage !== 'undefined' ? (localStorage.getItem('forage_hub_token') || '') : '')
 const rememberToken = ref(typeof localStorage !== 'undefined' ? !!localStorage.getItem('forage_hub_token') : false)
+
+// M11 OAuth state: who's signed in via the httpOnly forage_at cookie?
+// `null` means unknown / unauthenticated. The web IDE shows a "Sign in
+// with GitHub" button when null and badges the signed-in login when set.
+const signedInUser = ref(null)
+const signInError = ref('')
 const publishPreview = ref('')
 const publishStatus = ref('')
 
@@ -280,6 +286,11 @@ onMounted(async () => {
         }
         validateNow()
     }
+
+    // M11: detect whether the user is already signed in (cookie auth).
+    // Runs after the initial editor setup so the publish-tab UI reflects
+    // sign-in state on first render.
+    checkSignedIn()
 })
 
 onBeforeUnmount(() => {
@@ -377,8 +388,8 @@ async function publishRecipe() {
         publishStatus.value = 'Cannot publish: validation errors. Fix them first.'
         return
     }
-    if (!apiToken.value) {
-        publishStatus.value = 'Cannot publish: no API token. Paste one in the field below.'
+    if (!apiToken.value && !signedInUser.value) {
+        publishStatus.value = 'Cannot publish: sign in with GitHub above, or paste an API token in the field below.'
         return
     }
     const payload = buildPayload()
@@ -387,12 +398,44 @@ async function publishRecipe() {
         return
     }
     try {
-        const client = new HubClient({ base: props.apiBase, token: apiToken.value })
+        // Prefer the OAuth cookie when signed in; the Bearer-token field
+        // is the fallback for admin / legacy / pre-OAuth usage.
+        const client = signedInUser.value
+            ? new HubClient({ base: props.apiBase, useCredentials: true })
+            : new HubClient({ base: props.apiBase, token: apiToken.value })
         const result = await client.publish(payload)
         publishStatus.value = `Published ${result.slug} v${result.version}.`
     } catch (e) {
         publishStatus.value = `Failed: ${e?.message || String(e)}`
     }
+}
+
+async function checkSignedIn() {
+    try {
+        const client = new HubClient({ base: props.apiBase, useCredentials: true })
+        const r = await client.whoami()
+        signedInUser.value = r.authenticated ? r.user : null
+    } catch (e) {
+        signedInUser.value = null
+    }
+}
+
+async function signInWithGitHub() {
+    signInError.value = ''
+    try {
+        const client = new HubClient({ base: props.apiBase, useCredentials: true })
+        const { authorizeURL } = await client.oauthStart(window.location.href)
+        window.location.href = authorizeURL
+    } catch (e) {
+        signInError.value = e?.message || String(e)
+    }
+}
+
+function signOut() {
+    // The cookie is httpOnly so we can't expire it from JS; best-effort
+    // visual logout. Server-side revoke would need a `/v1/oauth/revoke`
+    // call (already wired) — done via the Toolkit / CLI for now.
+    signedInUser.value = null
 }
 
 const errorIssues = computed(() => validationIssues.value.filter(i => i.severity === 'error'))
@@ -503,14 +546,25 @@ function inputTypeLabel(i) {
                     <label><span>Author</span><input v-model="publish.author" placeholder="alice" /></label>
                     <label><span>License</span><input v-model="publish.license" placeholder="MIT" /></label>
                 </div>
-                <div class="ide-token-row">
-                    <label class="ide-token">
-                        <span>API token</span>
-                        <input :type="rememberToken ? 'text' : 'password'" v-model="apiToken" placeholder="Bearer token" />
-                    </label>
-                    <label class="ide-remember">
-                        <input type="checkbox" v-model="rememberToken" /> remember
-                    </label>
+                <div class="ide-auth-row">
+                    <div v-if="signedInUser" class="ide-signed-in">
+                        <span>Signed in as <strong>{{ signedInUser.login }}</strong></span>
+                        <button class="ide-button" @click="signOut">Sign out</button>
+                    </div>
+                    <div v-else class="ide-sign-in">
+                        <button class="ide-button ide-button-primary" @click="signInWithGitHub">
+                            Sign in with GitHub
+                        </button>
+                        <span class="ide-sign-in-or">or</span>
+                        <label class="ide-token">
+                            <span>API token</span>
+                            <input :type="rememberToken ? 'text' : 'password'" v-model="apiToken" placeholder="Bearer token" />
+                        </label>
+                        <label class="ide-remember">
+                            <input type="checkbox" v-model="rememberToken" /> remember
+                        </label>
+                    </div>
+                    <p v-if="signInError" class="ide-warn">{{ signInError }}</p>
                 </div>
                 <div class="ide-button-row">
                     <button class="ide-button" @click="previewPublishPayload">Preview payload</button>

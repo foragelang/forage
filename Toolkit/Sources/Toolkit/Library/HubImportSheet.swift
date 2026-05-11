@@ -217,7 +217,8 @@ struct HubImportSheet: View {
         defer { importing = nil }
         let client = makeClient()
         do {
-            let recipe = try await client.get(HubRecipeRef(slug: meta.slug, version: nil))
+            let ref = try HubRecipeRef(parsing: meta.slug, version: nil)
+            let recipe = try await client.get(ref)
             try library.importHubRecipe(slug: meta.slug, body: recipe.body)
             isPresented = false
         } catch {
