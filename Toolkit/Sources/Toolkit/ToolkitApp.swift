@@ -5,6 +5,7 @@ struct ToolkitApp: App {
     @State private var library = LibraryStore()
     @State private var preferences = ToolkitPreferences()
     @State private var runResults = RunResultStore()
+    @StateObject private var mfa = MFAPromptCoordinator()
 
     var body: some Scene {
         WindowGroup("Forage Toolkit") {
@@ -12,9 +13,13 @@ struct ToolkitApp: App {
                 .environment(library)
                 .environment(preferences)
                 .environment(runResults)
+                .environmentObject(mfa)
                 .frame(minWidth: 1100, minHeight: 700)
                 .task {
                     library.refresh()
+                }
+                .sheet(isPresented: $mfa.isPresented) {
+                    MFAPromptSheet(coordinator: mfa)
                 }
         }
         .commands {

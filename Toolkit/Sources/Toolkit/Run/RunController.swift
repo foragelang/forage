@@ -16,6 +16,12 @@ struct RunController {
         case replay
     }
 
+    let mfaCoordinator: MFAPromptCoordinator?
+
+    init(mfaCoordinator: MFAPromptCoordinator? = nil) {
+        self.mfaCoordinator = mfaCoordinator
+    }
+
     func run(entry: RecipeEntry, mode: Mode, source: String) async throws -> RunResult {
         let recipe = try Parser.parse(source: source)
         let issues = Validator.validate(recipe)
@@ -36,9 +42,14 @@ struct RunController {
 
     private func runHTTP(recipe: Recipe, entry: RecipeEntry, mode: Mode) async throws -> RunResult {
         let inputs = try Self.loadInputs(at: entry)
+        let mfa: MFAProvider? = mfaCoordinator.map { SheetMFAProvider(coordinator: $0) }
         switch mode {
         case .live:
-            let runner = RecipeRunner(httpClient: HTTPClient(transport: URLSessionTransport()))
+            let runner = RecipeRunner(
+                httpClient: HTTPClient(transport: URLSessionTransport()),
+                secretResolver: EnvironmentSecretResolver(),
+                mfaProvider: mfa
+            )
             return try await runner.run(recipe: recipe, inputs: inputs)
         case .replay:
             let fixtures = try Self.loadHTTPFixtures(at: entry.fixturesDir)
@@ -46,11 +57,15 @@ struct RunController {
                 throw RunError.noFixtures(entry.fixturesDir.path)
             }
             let replayer = HTTPReplayer(fixtures: fixtures)
-            let runner = RecipeRunner(httpClient: HTTPClient(
-                transport: replayer,
-                minRequestInterval: 0,
-                maxRetries: 0
-            ))
+            let runner = RecipeRunner(
+                httpClient: HTTPClient(
+                    transport: replayer,
+                    minRequestInterval: 0,
+                    maxRetries: 0
+                ),
+                secretResolver: EnvironmentSecretResolver(),
+                mfaProvider: mfa
+            )
             return try await runner.run(recipe: recipe, inputs: inputs)
         }
     }

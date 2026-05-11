@@ -8,6 +8,7 @@ struct RecipeEditorView: View {
 
     @Environment(LibraryStore.self) private var library
     @Environment(RunResultStore.self) private var runResults
+    @EnvironmentObject private var mfa: MFAPromptCoordinator
 
     @State private var source: String = ""
     @State private var selectedTab: EditorTab = .source
@@ -166,7 +167,7 @@ struct RecipeEditorView: View {
             runMode = nil
         }
         do {
-            let controller = RunController()
+            let controller = RunController(mfaCoordinator: mfa)
             let result = try await controller.run(entry: entry, mode: mode, source: source)
             runResults.setLatest(result, for: slug)
             selectedTab = .snapshot

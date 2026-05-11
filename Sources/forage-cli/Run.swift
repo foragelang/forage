@@ -16,6 +16,10 @@ struct RunCommand: AsyncParsableCommand {
             help: "k=v input bindings. Numbers, true/false/null, and JSON literals are parsed; everything else is a string.")
     var inputs: [String] = []
 
+    @Flag(name: .customLong("mfa"), inversion: .prefixedNo,
+          help: "Prompt on stdin when the recipe declares auth.session.requiresMFA: true. Default: on.")
+    var mfa: Bool = true
+
     func run() async throws {
         let path = try Self.resolveRecipePath(recipePath)
         let src: String
@@ -68,7 +72,11 @@ struct RunCommand: AsyncParsableCommand {
         if recipe.engineKind == .browser {
             try await runBrowser(recipe: recipe, inputs: inputValues)
         } else {
-            let runner = RecipeRunner(httpClient: HTTPClient(transport: URLSessionTransport()))
+            let runner = RecipeRunner(
+                httpClient: HTTPClient(transport: URLSessionTransport()),
+                secretResolver: EnvironmentSecretResolver(),
+                mfaProvider: mfa ? StdinMFAProvider() : nil
+            )
             let result = try await runner.run(recipe: recipe, inputs: inputValues)
             try Self.emitResult(result)
         }
