@@ -1,0 +1,26 @@
+---
+layout: home
+
+hero:
+    name: Forage Hub
+    text: Recipes for declarative scraping
+    tagline: Browse community recipes for the Forage runtime. Pull them with the CLI, edit them in the Toolkit, or publish your own.
+    image:
+        src: /favicon.svg
+        alt: Forage
+    actions:
+        - theme: brand
+          text: Publish a recipe
+          link: /publish
+        - theme: alt
+          text: foragelang.com
+          link: https://foragelang.com
+
+features:
+    - title: Recipes, not scrapers
+      details: Every entry is a Forage recipe — declarative, replayable, validated by the runtime.
+    - title: Pull from the CLI
+      details: 'forage import hub://&lt;slug&gt; — the runtime resolves the body, caches it locally, runs it.'
+    - title: Open in the Toolkit
+      details: Each recipe page has an `open in Toolkit` deep link that loads it straight into the editor.
+---

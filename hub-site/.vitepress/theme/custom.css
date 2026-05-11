@@ -1,0 +1,70 @@
+/* Forage hub-site theme — mirrors foragelang.com's brand palette. */
+
+:root {
+    --vp-c-brand-1: #4d7843;
+    --vp-c-brand-2: #5c8a4f;
+    --vp-c-brand-3: #6a9b5c;
+    --vp-c-brand-soft: rgba(92, 138, 79, 0.14);
+
+    --vp-c-brand: var(--vp-c-brand-1);
+    --vp-c-brand-light: var(--vp-c-brand-2);
+    --vp-c-brand-lighter: var(--vp-c-brand-3);
+    --vp-c-brand-dark: #3d6235;
+    --vp-c-brand-darker: #2c4926;
+
+    --vp-button-brand-border: var(--vp-c-brand-1);
+    --vp-button-brand-text: #ffffff;
+    --vp-button-brand-bg: var(--vp-c-brand-1);
+    --vp-button-brand-hover-border: var(--vp-c-brand-2);
+    --vp-button-brand-hover-text: #ffffff;
+    --vp-button-brand-hover-bg: var(--vp-c-brand-2);
+
+    --vp-home-hero-name-color: var(--vp-c-brand-1);
+}
+
+.dark {
+    --vp-c-brand-1: #8db77f;
+    --vp-c-brand-2: #9cc28e;
+    --vp-c-brand-3: #aacd9d;
+    --vp-c-brand-soft: rgba(141, 183, 127, 0.16);
+
+    --vp-c-brand: var(--vp-c-brand-1);
+    --vp-c-brand-light: var(--vp-c-brand-2);
+    --vp-c-brand-lighter: var(--vp-c-brand-3);
+
+    --vp-home-hero-name-color: var(--vp-c-brand-2);
+}
+
+.vp-doc div[class*='language-'] {
+    border-radius: 8px;
+}
+
+/* Recipe detail metadata badges. */
+.recipe-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    color: var(--vp-c-text-2);
+    font-size: 14px;
+    margin: 12px 0 16px;
+}
+
+.recipe-meta .sha code {
+    font-size: 12px;
+}
+
+.recipe-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 24px;
+}
+
+.recipe-tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
+    font-size: 12px;
+}
