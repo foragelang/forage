@@ -116,47 +116,59 @@ struct PublishTab: View {
 
     private func generatePayloadString() -> String {
         let payload = buildPayload()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         do {
-            let data = try JSONSerialization.data(
-                withJSONObject: payload,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            )
+            let data = try encoder.encode(payload)
             return String(data: data, encoding: .utf8) ?? "(failed to encode)"
         } catch {
             return "(encode error: \(error))"
         }
     }
 
-    private func buildPayload() -> [String: Any] {
+    private func buildPayload() -> HubPublishPayload {
         let tags = tagsText
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        return [
-            "slug": slug,
-            "displayName": displayName,
-            "summary": summary,
-            "tags": tags,
-            "license": license,
-            "body": source,
-        ]
+        return HubPublishPayload(
+            slug: slug,
+            displayName: displayName,
+            summary: summary.isEmpty ? nil : summary,
+            tags: tags,
+            body: source
+        )
     }
 
     @MainActor
     private func runPublish() async {
         isPublishing = true
         defer { isPublishing = false }
-        let client = HubClient(
-            baseURL: preferences.hubURL,
-            apiKey: try? Keychain.readAPIKey()
-        )
+
+        let token: String?
         do {
-            let payloadJSON = try JSONSerialization.data(
-                withJSONObject: buildPayload(),
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            )
-            let response = try await client.publish(payloadJSON: payloadJSON)
-            publishOutput = response
+            token = try Keychain.readAPIKey()
+        } catch {
+            publishOutput = "Configure your API key in Preferences (Cmd-,) before publishing."
+            return
+        }
+        guard let token, !token.isEmpty else {
+            publishOutput = "Configure your API key in Preferences (Cmd-,) before publishing."
+            return
+        }
+
+        guard let baseURL = URL(string: preferences.hubURL) else {
+            publishOutput = "Hub URL is not a valid URL: \(preferences.hubURL)"
+            return
+        }
+
+        let client = HubClient(baseURL: baseURL, token: token)
+        do {
+            let result = try await client.publish(buildPayload())
+            publishOutput = """
+                Published \(result.slug) v\(result.version)
+                sha256: \(result.sha256)
+                """
         } catch {
             publishOutput = "Publish failed: \(error)"
         }
