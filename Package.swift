@@ -6,7 +6,10 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "Forage", targets: ["Forage"]),
-        .executable(name: "forage-probe", targets: ["forage-probe"]),
+        .executable(name: "forage", targets: ["forage-cli"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -14,9 +17,12 @@ let package = Package(
             path: "Sources/Forage"
         ),
         .executableTarget(
-            name: "forage-probe",
-            dependencies: ["Forage"],
-            path: "Sources/forage-probe"
+            name: "forage-cli",
+            dependencies: [
+                "Forage",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/forage-cli"
         ),
         .testTarget(
             name: "ForageTests",
