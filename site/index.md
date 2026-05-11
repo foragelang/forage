@@ -10,6 +10,9 @@ hero:
         alt: Forage
     actions:
         - theme: brand
+          text: Install
+          link: /docs/install
+        - theme: alt
           text: Get started
           link: /docs/getting-started
         - theme: alt

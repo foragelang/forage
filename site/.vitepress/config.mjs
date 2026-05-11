@@ -45,6 +45,7 @@ export default defineConfig({
 
         nav: [
             { text: 'Docs', link: '/docs/', activeMatch: '/docs/' },
+            { text: 'Install', link: '/docs/install' },
             { text: 'GitHub', link: 'https://github.com/foragelang/forage' },
         ],
 
@@ -75,6 +76,7 @@ export default defineConfig({
                 {
                     text: 'Tooling',
                     items: [
+                        { text: 'Install', link: '/docs/install' },
                         { text: 'CLI reference', link: '/docs/cli' },
                         { text: 'Toolkit (macOS app)', link: '/docs/toolkit' },
                         { text: 'Hub (publish & import)', link: '/docs/hub' },
