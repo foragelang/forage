@@ -137,7 +137,7 @@
  * Visually distinct from the .VPFeature card grid that follows below. */
 .run-flow {
     display: flex;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 8px;
     margin: 24px 0 32px;
     flex-wrap: wrap;
