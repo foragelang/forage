@@ -107,13 +107,13 @@ Two new directories in this repo: `hub-api/` (Cloudflare Worker), `hub-site/` (V
 
 ## M3 — Toolkit app
 
-**Status: mostly landed.** `Toolkit.app` builds via `xcodegen` + `xcodebuild` and launches; all five editor tabs (Source/Fixtures/Snapshot/Diagnostic/Publish), the capture scene, run controller (live + replay), library sidebar, MFA prompt, Keychain, and Preferences are wired. PublishTab actually POSTs via `HubClient`. Remaining gaps, in decreasing order of visible:
+**Status: landed.** `Toolkit.app` builds via `xcodegen` + `xcodebuild` and launches; all five editor tabs (Source/Fixtures/Snapshot/Diagnostic/Publish), the capture scene, run controller (live + replay), library sidebar, MFA prompt, Keychain, and Preferences are wired. PublishTab POSTs via `HubClient`.
 
-- **D3.2: "Import from hub" button is a disabled placeholder** (`LibrarySidebar.swift`). Hub-side browse + import flow not yet built.
-- **D3.7: AppIcon ships no PNG slices** — only the `Contents.json` manifest. Default Xcode placeholder icon today.
-- **D3.7: app menu set is incomplete** — New Recipe / Run Live / Run Replay / Capture / Save are wired; no explicit "Publish" / "Validate" / "Import from Hub" menu commands.
+Gap-fill landed in `f96aad9`:
 
-The Toolkit is operational for everything except hub-import; users can still pull a recipe by checking out the file or by `gh api` against `api.foragelang.com`.
+- **D3.2 — Hub-import sidebar action.** `HubImportSheet.swift` lists recipes from `api.foragelang.com`, filters by slug or display name, prompts before overwriting, writes to `~/Library/Forage/Recipes/<slug>/recipe.forage`. Sidebar `Import` button enabled. Also available via the `Recipe → Import from Hub…` menu command (`⇧⌘I`).
+- **D3.7 — AppIcon PNG slices.** Ten slices rendered from `site/public/favicon.svg` via `rsvg-convert` (16/32/64/128/256/512/1024 across @1x/@2x); `Contents.json` references them by filename.
+- **D3.7 — Menu commands.** Recipe menu now carries `Validate` (`⇧⌘V`), `Publish to Hub…` (`⇧⌘P`), `Import from Hub…` (`⇧⌘I`) alongside the existing Run / Save / Capture commands.
 
 **Result:** A `Toolkit.app` (macOS SwiftUI) that authors recipes interactively and publishes to the hub.
 
@@ -198,10 +198,11 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 
 ## M5 — Distribution
 
-**Status: mostly landed.** `.github/workflows/release.yml` builds + signs + notarizes + packages on `v*.*.*` tags. `site/public/install.sh` is the curl-pipe-sh installer; `site/docs/install.md` documents brew / curl / build-from-source paths. Remaining gaps:
+**Status: landed.** `.github/workflows/release.yml` builds + signs + notarizes + packages on `v*.*.*` tags. `site/public/install.sh` is the curl-pipe-sh installer; `site/docs/install.md` documents brew / curl / build-from-source; the homepage hero has an `Install` CTA + nav entry pointing at it (the audit miscategorized this — it was already in place).
 
-- **D5.2: external `foragelang/homebrew-tap` GitHub repo doesn't exist yet.** The local `homebrew-tap/` directory contains the formula with a `PLACEHOLDER_SHA256_FROM_RELEASE` placeholder; the `update-homebrew-tap` job in the release workflow is gated behind `ENABLE_HOMEBREW_TAP_UPDATE` + `HOMEBREW_TAP_TOKEN`. `brew install foragelang/forage/forage` will work only once the tap repo is created and the workflow flag is flipped on.
-- **D5.5: homepage `/download` CTA / nav entry not yet added to `site/`.** The install page exists at `/docs/install`; no top-level "Download" entry from the nav, no homepage hero CTA pointing at it.
+Gap-fill landed:
+
+- **D5.2 — `foragelang/homebrew-tap` repo.** Public GitHub repo created at `github.com/foragelang/homebrew-tap`; initial `Formula/forage.rb` pushed. The release workflow's `update-homebrew-tap` job is gated on `ENABLE_HOMEBREW_TAP_UPDATE` (now set to `1` in repo variables) + `HOMEBREW_TAP_TOKEN` secret. **One manual step remains:** create a fine-grained PAT scoped to `foragelang/homebrew-tap` with `contents: write` and add it as `HOMEBREW_TAP_TOKEN` secret in `foragelang/forage`. Until then the workflow job will skip silently — formula updates on tag pushes happen by hand.
 
 **Result:** `forage` and `Toolkit.app` are installable via `brew`, `curl | sh`, and `.dmg`.
 
@@ -267,7 +268,7 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 
 **Status: landed.** `auth.session.{formLogin,bearerLogin,cookiePersist}` parses end-to-end. `SecretResolver` resolves `$secret.*` from `FORAGE_SECRET_<NAME>` env vars (CLI) or Keychain (Toolkit). `MFAProvider` protocol with stdin-prompt (CLI) and modal-sheet (Toolkit) implementations. Session caching at `~/Library/Forage/Cache/`; re-auth + retry on 401/403 with configurable `maxReauthRetries`. `Tests/ForageTests/SessionAuthTests.swift` covers the cases; `site/docs/auth-sessions.md` is the guide; `recipes/sample-login/` is the exemplar.
 
-One small caveat: **D7.10's `cacheEncrypted` flag** is wired through the parser/AST but the encryption-at-rest step in the engine path may still need the file-mode + key-derivation hardening described in the deliverable. Worth a focused security pass before recommending the cache for sensitive credentials.
+D7.10 cache-encryption gap-fill landed in `f96aad9`: `SessionCacheKeyProvider` protocol with three implementations — `KeychainSessionCacheKeyProvider` (default, persists a 256-bit AES key as a `kSecClassGenericPassword` SecItem under service `com.foragelang.forage.session-cache`), `InMemorySessionCacheKeyProvider` (tests), `NullSessionCacheKeyProvider` (fallback). `HTTPEngine.symmetricKeyForCache()` delegates to the provider; `auth.session.cacheEncrypted: true` now actually encrypts (round-trip + chmod-600 + wrong-key-fails covered by `Tests/ForageTests/SessionCacheEncryptionTests.swift`).
 
 **Result:** recipes can declare a login flow and maintain authenticated state across requests. Today's `auth` block supports `staticHeader` (API key in a header) and `htmlPrime` (one-shot GET to extract a CSRF token + set cookies). Neither covers "log in as me, maintain a session across requests, refresh when it expires." M7 adds that as a first-class DSL feature.
 
@@ -317,20 +318,17 @@ One small caveat: **D7.10's `cacheEncrypted` flag** is wired through the parser/
 
 ## Current state (2026-05-11)
 
-M1–M9 are all in some state of landed. The original M1→M7 path was followed serially; M6 took a TypeScript-port route instead of SwiftWasm; M8 and M9 followed up after M7 to handle HTML extraction and browser-engine document capture. The audit notes per milestone above are the up-to-date truth — the original "Order of execution" notes below are kept for the historical record.
+M1–M9 are all landed. The original M1→M7 path was followed serially; M6 took a TypeScript-port route instead of SwiftWasm; M8 and M9 followed up after M7 to handle HTML extraction and browser-engine document capture. The post-audit gap-fill pass closed the M3 (hub-import, icon, menu commands) and M5 (homebrew-tap repo) and M7 (cache encryption) followups. The audit notes per milestone above are the up-to-date truth.
 
-Followups that *should* land but haven't:
+Remaining:
 
-- M3 hub-import sidebar action (currently disabled placeholder).
-- M3 AppIcon real PNG slices + Publish/Validate/Import menu commands.
-- M5 external `homebrew-tap` repo + the `update-homebrew-tap` workflow flag flipped on.
-- M5 homepage `/download` CTA + nav entry.
-- M6 OAuth replacement for the bearer-token-in-localStorage in the web IDE.
-- M7 D7.10 cache-encryption-at-rest review (parser/AST exposes `cacheEncrypted` but engine implementation deserves a focused pass).
+- **M5 manual step:** `HOMEBREW_TAP_TOKEN` repo secret in `foragelang/forage`. Wired but won't activate the auto-update job until the PAT is added.
+- **M6 OAuth path:** promoted to its own milestone, **M11**.
 
-Next milestone in flight:
+Next two milestones in flight:
 
-- **M10 — Interactive session bootstrap.** Human-in-the-loop CAPTCHA / age-gate / sign-in handshake; persisted session is reused headlessly until expiry. Covers eBay-class sites without violating the "no bypassing technical controls" policy (a human *did* pass the control; the bot reuses the human-authorized session). See bottom of file once landed.
+- **M10 — Interactive session bootstrap.** Human-in-the-loop CAPTCHA / age-gate / sign-in handshake; persisted session is reused headlessly until expiry. Covers eBay-class sites without violating the "no bypassing technical controls" policy (a human *did* pass the control; the bot reuses the human-authorized session). Detail at bottom of file.
+- **M11 — GitHub OAuth identity for the hub.** Replaces the shared `HUB_PUBLISH_TOKEN` model with per-user JWTs. Detail at bottom of file.
 
 ---
 
@@ -501,11 +499,6 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 
 ## Followups in flight (not yet milestoned)
 
-Tracking the smaller polish items called out in the M1–M9 audit:
+All audit followups closed in this session except one manual step that requires user action outside the codebase:
 
-- **M3.followup — Hub-import sidebar action.** Currently a disabled placeholder in `LibrarySidebar.swift`. Needs the modal sheet + HubClient.list + copy to `~/Library/Forage/Recipes/<slug>/`. Likely sits inside M11 (since hub-import is meaningful once there's an OAuth identity).
-- **M3.followup — AppIcon real PNG slices.** Generate from `site/public/favicon.svg` into the icon slot sizes.
-- **M3.followup — App menu commands.** Add Publish / Validate / Import-from-Hub to the menu bar (currently only New Recipe / Run / Capture / Save are wired).
-- **M5.followup — `foragelang/homebrew-tap` repo.** External GH repo + flip the `ENABLE_HOMEBREW_TAP_UPDATE` flag.
-- **M5.followup — `/download` site CTA.** Add to homepage hero + nav.
-- **M7.followup — Cache encryption key supplier.** `HTTPEngine.symmetricKeyForCache()` returns nil; wire a Keychain-backed key so `auth.session.cacheEncrypted: true` actually encrypts. Compose with M10's session storage.
+- **M5.followup — `HOMEBREW_TAP_TOKEN` secret.** The `update-homebrew-tap` workflow job is wired up (repo created, formula pushed, `ENABLE_HOMEBREW_TAP_UPDATE=1` set). The remaining step is creating a fine-grained PAT scoped to `foragelang/homebrew-tap` with `contents: write` and adding it as a repo secret. Can't be done programmatically — the user holds the GitHub account that mints the PAT.
