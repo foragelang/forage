@@ -1,4 +1,6 @@
 // Minimal hub-api client. Mirrors `hub-api/src/routes/recipes.ts` endpoints.
+// Slugs are always `<namespace>/<name>`; the URL path encodes them as two
+// segments so the Worker can route on `:namespace/:name`.
 
 export const DEFAULT_HUB_API = 'https://api.foragelang.com'
 
@@ -64,7 +66,8 @@ export class HubClient {
     }
 
     async get(slug: string, version?: number): Promise<RecipeDetail> {
-        const url = `${this.base}/v1/recipes/${encodeURIComponent(slug)}${version ? `?version=${version}` : ''}`
+        const path = encodeSlugPath(slug)
+        const url = `${this.base}/v1/recipes/${path}${version ? `?version=${version}` : ''}`
         const r = await this.fetchImpl(url)
         if (!r.ok) throw new Error(`HTTP ${r.status} on GET ${url}`)
         return await r.json()
@@ -101,4 +104,10 @@ export class HubClient {
             },
         }
     }
+}
+
+/// URL-encode a `<namespace>/<name>` slug while preserving the `/`. The
+/// Worker routes on two path segments.
+function encodeSlugPath(slug: string): string {
+    return slug.split('/').map(encodeURIComponent).join('/')
 }

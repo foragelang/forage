@@ -6,7 +6,8 @@ export interface Env {
     HUB_PUBLISH_TOKEN: string
 }
 
-// Metadata stored at `recipe:<slug>` in KV. Latest pointer for the recipe.
+// Metadata stored at `recipe:<namespace>/<name>` in KV. `slug` is the
+// `<namespace>/<name>` composite used as the path under `/v1/recipes/...`.
 export interface RecipeMetadata {
     slug: string
     author: string | null
@@ -22,7 +23,7 @@ export interface RecipeMetadata {
     deleted?: boolean
 }
 
-// One entry in `recipe:<slug>:versions`.
+// One entry in `recipe:<namespace>/<name>:versions`.
 export interface VersionRecord {
     version: number
     blobKey: string
@@ -30,10 +31,11 @@ export interface VersionRecord {
     sha256: string
 }
 
-// `index:list` — a flat array of slugs in publish-order. Re-written on every publish.
+// `index:list` — a flat array of `<namespace>/<name>` slugs in publish
+// order. Re-written on every publish.
 export type SlugIndex = string[]
 
-// Request shape for POST /v1/recipes.
+// Request shape for POST /v1/recipes. The `slug` is `<namespace>/<name>`.
 export interface PublishRequest {
     slug: string
     author?: string | null
@@ -72,7 +74,7 @@ export interface ListingResponse {
     nextCursor: string | null
 }
 
-// Recipe-detail response (GET /v1/recipes/:slug).
+// Recipe-detail response (GET /v1/recipes/:namespace/:name).
 export interface RecipeDetailResponse extends ListingItem {
     body: string
 }

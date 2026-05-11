@@ -51,7 +51,10 @@ private struct ExpectedEnum: Decodable {
 }
 
 private struct ExpectedImport: Decodable {
-    let slug: String
+    let raw: String
+    let registry: String?
+    let namespace: String?
+    let name: String
     let version: Int?
 }
 
@@ -141,7 +144,10 @@ func sharedRecipesParseAndValidateConsistently() throws {
         if let imports = rec.imports {
             #expect(recipe.imports.count == imports.count, "\(rec.file): import count")
             for (expected, actual) in zip(imports, recipe.imports) {
-                #expect(actual.slug == expected.slug, "\(rec.file): import slug")
+                #expect(actual.raw == expected.raw, "\(rec.file): import raw")
+                #expect(actual.registry == expected.registry, "\(rec.file): import registry")
+                #expect(actual.namespace == expected.namespace, "\(rec.file): import namespace")
+                #expect(actual.name == expected.name, "\(rec.file): import name")
                 #expect(actual.version == expected.version, "\(rec.file): import version")
             }
         }

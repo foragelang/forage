@@ -15,10 +15,10 @@ public struct Recipe: Hashable, Sendable {
     public let body: [Statement]
     public let browser: BrowserConfig?
     public let expectations: [Expectation]
-    /// Top-level `import hub://<slug>` directives, in source order. These
-    /// are unresolved pointers — `RecipeImporter.flatten` is the runtime
-    /// pass that fetches and merges the imported recipes into a single
-    /// flattened `Recipe`.
+    /// Top-level `import <ref>` directives (Docker-style refs), in source
+    /// order. These are unresolved pointers — `RecipeImporter.flatten` is
+    /// the runtime pass that fetches and merges the imported recipes into
+    /// a single flattened `Recipe`.
     public let imports: [HubRecipeRef]
     /// Top-level `secret <name>` declarations. The validator uses these to
     /// catch typos in `$secret.<name>` references. Order preserved.

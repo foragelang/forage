@@ -49,6 +49,12 @@ public struct Lexer {
     private var index: String.Index
     private var line: Int = 1
     private var column: Int = 1
+    /// After emitting `.keyword("import")` we switch into a one-shot mode
+    /// that scans the next non-whitespace blob as a `.refLit(String)`. This
+    /// is how `import alice/zen-leaf` works without needing dedicated
+    /// `/`/`:` tokens elsewhere — Docker-style refs include characters that
+    /// would otherwise mean different things in the grammar.
+    private var pendingRefScan = false
 
     public init(source: String) {
         self.source = source
@@ -60,6 +66,26 @@ public struct Lexer {
         while !isEOF {
             skipWhitespaceAndComments()
             if isEOF { break }
+
+            // After `import`, scan the next blob as a ref literal.
+            if pendingRefScan {
+                pendingRefScan = false
+                let refLoc = SourceLoc(line: line, column: column)
+                var raw = ""
+                while !isEOF {
+                    let ch = peek()
+                    if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == ";" {
+                        break
+                    }
+                    raw.append(ch); advance()
+                }
+                if raw.isEmpty {
+                    throw LexError.unexpectedCharacter(peek(), loc: refLoc)
+                }
+                tokens.append(Token(kind: .refLit(raw), lexeme: raw, loc: refLoc))
+                continue
+            }
+
             let startLoc = SourceLoc(line: line, column: column)
             let c = peek()
 
@@ -132,24 +158,6 @@ public struct Lexer {
 
             if isLetter(c) || c == "_" {
                 let name = readIdent()
-                // `hub://...` — bare bone slug-literal token. Only triggered
-                // when the identifier is exactly `hub` followed immediately
-                // by `://`; otherwise `hub` stays an identifier (so a recipe
-                // can name a variable `hub` if it really wants to).
-                if name == "hub" && peek() == ":" && peek(offset: 1) == "/" && peek(offset: 2) == "/" {
-                    advance(); advance(); advance() // consume `://`
-                    var slug = ""
-                    while !isEOF {
-                        let ch = peek()
-                        if isLetter(ch) || isDigit(ch) || ch == "-" || ch == "_" || ch == "/" {
-                            slug.append(ch); advance()
-                        } else {
-                            break
-                        }
-                    }
-                    tokens.append(Token(kind: .hubURL(slug), lexeme: "hub://\(slug)", loc: startLoc))
-                    continue
-                }
                 if Lexer.keywords.contains(name) {
                     if name == "true" {
                         tokens.append(Token(kind: .boolLit(true), lexeme: name, loc: startLoc))
@@ -159,6 +167,7 @@ public struct Lexer {
                         tokens.append(Token(kind: .nullLit, lexeme: name, loc: startLoc))
                     } else {
                         tokens.append(Token(kind: .keyword(name), lexeme: name, loc: startLoc))
+                        if name == "import" { pendingRefScan = true }
                     }
                 } else if let first = name.first, first.isUppercase {
                     tokens.append(Token(kind: .typeName(name), lexeme: name, loc: startLoc))

@@ -32,7 +32,7 @@ struct HubClientSuite {
     func listDecodesItems() async throws {
         let session = makeMockSession()
         let body = """
-        {"items":[{"slug":"foo","author":null,"displayName":"Foo","summary":"hi","tags":["a"],"platform":null,"version":1,"sha256":"abc","createdAt":"2026-05-10T12:00:00Z","updatedAt":"2026-05-10T12:00:00Z"}],"nextCursor":null}
+        {"items":[{"slug":"forage/foo","author":null,"displayName":"Foo","summary":"hi","tags":["a"],"platform":null,"version":1,"sha256":"abc","createdAt":"2026-05-10T12:00:00Z","updatedAt":"2026-05-10T12:00:00Z"}],"nextCursor":null}
         """.data(using: .utf8)!
         MockHubProtocol.register(.init(
             match: { $0.url?.path == "/v1/recipes" },
@@ -44,7 +44,7 @@ struct HubClientSuite {
         let client = HubClient(baseURL: testBase, session: session)
         let (items, next) = try await client.list(limit: 25)
         #expect(items.count == 1)
-        #expect(items[0].slug == "foo")
+        #expect(items[0].slug == "forage/foo")
         #expect(items[0].displayName == "Foo")
         #expect(items[0].tags == ["a"])
         #expect(items[0].version == 1)
@@ -61,25 +61,26 @@ struct HubClientSuite {
     func getDecodesRecipe() async throws {
         let session = makeMockSession()
         let body = """
-        {"slug":"bar","author":"alice","displayName":"Bar","summary":"","tags":[],"platform":null,"version":3,"sha256":"deadbeef","createdAt":"2026-05-10T11:00:00Z","updatedAt":"2026-05-10T11:00:00Z","body":"recipe \\"bar\\" { engine http }"}
+        {"slug":"forage/bar","author":"alice","displayName":"Bar","summary":"","tags":[],"platform":null,"version":3,"sha256":"deadbeef","createdAt":"2026-05-10T11:00:00Z","updatedAt":"2026-05-10T11:00:00Z","body":"recipe \\"bar\\" { engine http }"}
         """.data(using: .utf8)!
         MockHubProtocol.register(.init(
-            match: { $0.url?.path == "/v1/recipes/bar" },
+            match: { $0.url?.path == "/v1/recipes/forage/bar" },
             body: body,
             status: 200,
             headers: ["Content-Type": "application/json"]
         ))
 
         let client = HubClient(baseURL: testBase, session: session)
-        let recipe = try await client.get(HubRecipeRef(slug: "bar"))
-        #expect(recipe.meta.slug == "bar")
+        let ref = try HubRecipeRef(parsing: "bar")
+        let recipe = try await client.get(ref)
+        #expect(recipe.meta.slug == "forage/bar")
         #expect(recipe.meta.author == "alice")
         #expect(recipe.meta.version == 3)
         #expect(recipe.body.contains("engine http"))
     }
 
     @Test
-    func getEncodesAuthorSlashName() async throws {
+    func getEncodesNamespaceSlashName() async throws {
         let session = makeMockSession()
         let body = """
         {"slug":"alice/awesome","author":"alice","displayName":"Awesome","summary":null,"tags":[],"platform":null,"version":1,"sha256":"x","createdAt":"2026-05-10T11:00:00Z","updatedAt":"2026-05-10T11:00:00Z","body":"recipe \\"awesome\\" { engine http }"}
@@ -91,7 +92,8 @@ struct HubClientSuite {
             headers: ["Content-Type": "application/json"]
         ))
         let client = HubClient(baseURL: testBase, session: session)
-        let recipe = try await client.get(HubRecipeRef(slug: "alice/awesome"))
+        let ref = try HubRecipeRef(parsing: "alice/awesome")
+        let recipe = try await client.get(ref)
         #expect(recipe.meta.slug == "alice/awesome")
 
         let observed = MockHubProtocol.requests()
@@ -103,17 +105,18 @@ struct HubClientSuite {
     func getForwardsVersionQueryParam() async throws {
         let session = makeMockSession()
         let body = """
-        {"slug":"baz","author":null,"displayName":"Baz","summary":null,"tags":[],"platform":null,"version":2,"sha256":"x","createdAt":"2026-05-10T11:00:00Z","updatedAt":"2026-05-10T11:00:00Z","body":"recipe \\"baz\\" {}"}
+        {"slug":"forage/baz","author":null,"displayName":"Baz","summary":null,"tags":[],"platform":null,"version":2,"sha256":"x","createdAt":"2026-05-10T11:00:00Z","updatedAt":"2026-05-10T11:00:00Z","body":"recipe \\"baz\\" {}"}
         """.data(using: .utf8)!
         MockHubProtocol.register(.init(
-            match: { $0.url?.path == "/v1/recipes/baz" },
+            match: { $0.url?.path == "/v1/recipes/forage/baz" },
             body: body,
             status: 200,
             headers: ["Content-Type": "application/json"]
         ))
 
         let client = HubClient(baseURL: testBase, session: session)
-        _ = try await client.get(HubRecipeRef(slug: "baz", version: 2))
+        let ref = try HubRecipeRef(parsing: "baz", version: 2)
+        _ = try await client.get(ref)
         let observed = MockHubProtocol.requests()
         let q = URLComponents(url: observed[0].url!, resolvingAgainstBaseURL: false)?.queryItems
         #expect(q?.contains(where: { $0.name == "version" && $0.value == "2" }) == true)
@@ -130,11 +133,11 @@ struct HubClientSuite {
         ))
         let client = HubClient(baseURL: testBase, session: session)
         do {
-            _ = try await client.get(HubRecipeRef(slug: "ghost"))
+            _ = try await client.get(HubRecipeRef(parsing: "ghost"))
             Issue.record("expected notFound")
         } catch let e as HubClient.Error {
             if case .notFound(let slug) = e {
-                #expect(slug == "ghost")
+                #expect(slug == "forage/ghost")
             } else {
                 Issue.record("expected .notFound, got \(e)")
             }
@@ -145,7 +148,7 @@ struct HubClientSuite {
     func publishRequiresToken() async throws {
         let client = HubClient(baseURL: testBase, session: makeMockSession())
         do {
-            _ = try await client.publish(HubPublishPayload(slug: "x", displayName: "X", body: "x"))
+            _ = try await client.publish(HubPublishPayload(slug: "forage/x", displayName: "X", body: "x"))
             Issue.record("expected missingToken")
         } catch let e as HubClient.Error {
             if case .missingToken = e {} else {
@@ -159,7 +162,7 @@ struct HubClientSuite {
         let session = makeMockSession()
         MockHubProtocol.register(.init(
             match: { $0.url?.path == "/v1/recipes" && $0.httpMethod == "POST" },
-            body: #"{"slug":"foo","version":1,"sha256":"deadbeef"}"#.data(using: .utf8)!,
+            body: #"{"slug":"forage/foo","version":1,"sha256":"deadbeef"}"#.data(using: .utf8)!,
             status: 201,
             headers: ["Content-Type": "application/json"]
         ))
@@ -167,7 +170,7 @@ struct HubClientSuite {
         let client = HubClient(baseURL: testBase, token: "test-token", session: session)
         let result = try await client.publish(
             HubPublishPayload(
-                slug: "foo",
+                slug: "forage/foo",
                 author: "alice",
                 displayName: "Foo",
                 summary: "a thing",
@@ -178,7 +181,7 @@ struct HubClientSuite {
             )
         )
 
-        #expect(result.slug == "foo")
+        #expect(result.slug == "forage/foo")
         #expect(result.version == 1)
         #expect(result.sha256 == "deadbeef")
 
@@ -199,7 +202,7 @@ struct HubClientSuite {
             body = Data()
         }
         let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
-        #expect(json["slug"] as? String == "foo")
+        #expect(json["slug"] as? String == "forage/foo")
         #expect(json["author"] as? String == "alice")
         #expect(json["displayName"] as? String == "Foo")
         #expect(json["summary"] as? String == "a thing")
@@ -230,13 +233,72 @@ struct HubClientSuite {
     }
 
     @Test
-    func hubRecipeRefParsesValidSlugs() {
-        #expect(HubRecipeRef.parse("foo") == HubRecipeRef(slug: "foo"))
-        #expect(HubRecipeRef.parse("foo-bar") == HubRecipeRef(slug: "foo-bar"))
-        #expect(HubRecipeRef.parse("alice/awesome-recipe") == HubRecipeRef(slug: "alice/awesome-recipe"))
-        #expect(HubRecipeRef.parse("") == nil)
-        #expect(HubRecipeRef.parse("a/b/c") == nil)
-        #expect(HubRecipeRef.parse("UPPER") != nil) // letters allowed (server lowercases its own check)
+    func hubRecipeRefParsesBareName() throws {
+        let ref = try HubRecipeRef(parsing: "foo")
+        #expect(ref.registry == nil)
+        #expect(ref.namespace == nil)
+        #expect(ref.name == "foo")
+        #expect(ref.effectiveNamespace == "forage")
+        #expect(ref.slugPath == "forage/foo")
+    }
+
+    @Test
+    func hubRecipeRefParsesNamespacedName() throws {
+        let ref = try HubRecipeRef(parsing: "alice/awesome-recipe")
+        #expect(ref.registry == nil)
+        #expect(ref.namespace == "alice")
+        #expect(ref.name == "awesome-recipe")
+        #expect(ref.slugPath == "alice/awesome-recipe")
+    }
+
+    @Test
+    func hubRecipeRefParsesCustomRegistry() throws {
+        let ref = try HubRecipeRef(parsing: "hub.example.com/team/scraper")
+        #expect(ref.registry == "hub.example.com")
+        #expect(ref.namespace == "team")
+        #expect(ref.name == "scraper")
+        #expect(ref.slugPath == "team/scraper")
+    }
+
+    @Test
+    func hubRecipeRefParsesLocalhostPort() throws {
+        let ref = try HubRecipeRef(parsing: "localhost:5000/me/test")
+        #expect(ref.registry == "localhost:5000")
+        #expect(ref.namespace == "me")
+        #expect(ref.name == "test")
+        let base = ref.resolveBaseURL(defaultBase: URL(string: "https://api.foragelang.com")!)
+        #expect(base.absoluteString == "http://localhost:5000")
+    }
+
+    @Test
+    func hubRecipeRefResolvesDefaultBase() throws {
+        let ref = try HubRecipeRef(parsing: "sweed")
+        let base = ref.resolveBaseURL(defaultBase: URL(string: "https://api.foragelang.com")!)
+        #expect(base.absoluteString == "https://api.foragelang.com")
+    }
+
+    @Test
+    func hubRecipeRefRejectsEmpty() {
+        #expect(throws: HubRecipeRef.ParseError.empty) {
+            _ = try HubRecipeRef(parsing: "")
+        }
+    }
+
+    @Test
+    func hubRecipeRefRejectsTooManySegments() {
+        // No `.` / `:` / `localhost` in first segment so it's not a registry;
+        // three plain segments is too many.
+        #expect(throws: (any Swift.Error).self) {
+            _ = try HubRecipeRef(parsing: "a/b/c")
+        }
+    }
+
+    @Test
+    func hubRecipeRefRejectsBadNameShape() {
+        // UPPERCASE name violates ^[a-z0-9][a-z0-9-]{1,63}$.
+        #expect(throws: (any Swift.Error).self) {
+            _ = try HubRecipeRef(parsing: "UPPER")
+        }
     }
 
     // MARK: - RecipeImporter
@@ -250,13 +312,13 @@ struct HubClientSuite {
             type Item { id: String }
         }
         """
-        registerHubRecipeStub(slug: "common", body: importedRecipe)
+        registerHubRecipeStub(slugPath: "forage/common", body: importedRecipe)
 
         let client = HubClient(baseURL: testBase, session: session)
         let importer = RecipeImporter(client: client)
 
         let rootSrc = """
-        import hub://common
+        import common
 
         recipe "uses-common" {
             engine http
@@ -281,13 +343,13 @@ struct HubClientSuite {
             type Conflict { id: String }
         }
         """
-        registerHubRecipeStub(slug: "lib", body: imported)
+        registerHubRecipeStub(slugPath: "forage/lib", body: imported)
 
         let client = HubClient(baseURL: testBase, session: session)
         let importer = RecipeImporter(client: client)
 
         let rootOK = try Parser.parse(source: """
-        import hub://lib
+        import lib
 
         recipe "r" {
             engine http
@@ -312,7 +374,7 @@ struct HubClientSuite {
         let importer = RecipeImporter(client: client)
 
         let root = try Parser.parse(source: """
-        import hub://does-not-exist
+        import does-not-exist
 
         recipe "r" { engine http }
         """)
@@ -327,21 +389,21 @@ struct HubClientSuite {
     @Test
     func importerDetectsCycle() async throws {
         let session = makeMockSession()
-        registerHubRecipeStub(slug: "a", body: """
-        import hub://b
+        registerHubRecipeStub(slugPath: "forage/aa", body: """
+        import bb
 
-        recipe "a" { engine http }
+        recipe "aa" { engine http }
         """)
-        registerHubRecipeStub(slug: "b", body: """
-        import hub://a
+        registerHubRecipeStub(slugPath: "forage/bb", body: """
+        import aa
 
-        recipe "b" { engine http }
+        recipe "bb" { engine http }
         """)
         let client = HubClient(baseURL: testBase, session: session)
         let importer = RecipeImporter(client: client)
 
         let root = try Parser.parse(source: """
-        import hub://a
+        import aa
 
         recipe "root" { engine http }
         """)
@@ -446,12 +508,12 @@ func readStream(_ stream: InputStream) -> Data {
 /// Convenience for tests that need to serve a single recipe body via the
 /// MockHubProtocol stub. Crafts a `RecipeDetailResponse`-shaped JSON
 /// payload (metadata + `body`) and registers a 200 OK on
-/// `/v1/recipes/<slug>`.
-func registerHubRecipeStub(slug: String, body source: String) {
+/// `/v1/recipes/<slugPath>`. `slugPath` is `<namespace>/<name>`.
+func registerHubRecipeStub(slugPath: String, body source: String) {
     let payload: [String: Any] = [
-        "slug": slug,
+        "slug": slugPath,
         "author": NSNull(),
-        "displayName": slug,
+        "displayName": slugPath,
         "summary": NSNull(),
         "tags": [],
         "platform": NSNull(),
@@ -463,7 +525,7 @@ func registerHubRecipeStub(slug: String, body source: String) {
     ]
     let data = try! JSONSerialization.data(withJSONObject: payload)
     MockHubProtocol.register(.init(
-        match: { $0.url?.path == "/v1/recipes/\(slug)" },
+        match: { $0.url?.path == "/v1/recipes/\(slugPath)" },
         body: data,
         status: 200,
         headers: ["Content-Type": "application/json"]

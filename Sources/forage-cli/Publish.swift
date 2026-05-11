@@ -13,8 +13,11 @@ struct PublishCommand: AsyncParsableCommand {
 
     // Metadata: read from recipe.json / recipe.yml if present, otherwise the
     // user supplies via flags. CLI flags always win when both are present.
-    @Option(help: "Slug to publish under. Defaults to recipe.name if no recipe.json.")
-    var slug: String?
+    @Option(help: "Recipe name to publish under. Defaults to recipe.name if no recipe.json.")
+    var name: String?
+
+    @Option(help: "Namespace to publish under. Defaults to 'forage' (the official namespace).")
+    var namespace: String?
 
     @Option(help: "Human-readable display name.")
     var displayName: String?
@@ -83,7 +86,8 @@ struct PublishCommand: AsyncParsableCommand {
 
         // Merge metadata: CLI flags override file metadata; file metadata
         // overrides recipe-derived defaults.
-        let resolvedSlug = slug ?? fileMeta?.slug ?? defaultSlug(for: recipe)
+        let resolvedName = name ?? fileMeta?.name ?? defaultName(for: recipe)
+        let resolvedNamespace = namespace ?? fileMeta?.namespace ?? "forage"
         let resolvedDisplayName = displayName ?? fileMeta?.displayName ?? recipe.name
         let resolvedSummary = summary ?? fileMeta?.summary
         let resolvedAuthor = author ?? fileMeta?.author
@@ -91,9 +95,10 @@ struct PublishCommand: AsyncParsableCommand {
             ? (fileMeta?.tags ?? [])
             : tags.flatMap { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
 
+        let resolvedSlug = "\(resolvedNamespace)/\(resolvedName)"
         guard validateSlug(resolvedSlug) else {
             FileHandle.standardError.write(
-                "invalid slug '\(resolvedSlug)' — expected lowercase letters, digits, and dashes (1–64 chars, optionally <author>/<name>)\n"
+                "invalid slug '\(resolvedSlug)' — namespace and name must each match ^[a-z0-9][a-z0-9-]{1,63}$\n"
                     .data(using: .utf8)!
             )
             throw ExitCode.failure
@@ -154,7 +159,8 @@ struct PublishCommand: AsyncParsableCommand {
     /// Sibling `recipe.json` (or `recipe.yml`) — optional metadata.
     /// JSON only for v1; we don't ship a YAML decoder.
     private struct FileMetadata: Decodable {
-        let slug: String?
+        let name: String?
+        let namespace: String?
         let displayName: String?
         let summary: String?
         let author: String?
@@ -168,7 +174,7 @@ struct PublishCommand: AsyncParsableCommand {
         return try? JSONDecoder().decode(FileMetadata.self, from: data)
     }
 
-    private func defaultSlug(for recipe: Recipe) -> String {
+    private func defaultName(for recipe: Recipe) -> String {
         // recipe.name is already lowercase-ish in our convention; lower it
         // explicitly and replace stray spaces. Real slug validation runs
         // after this, so a bad name will be rejected with a clear error.
@@ -178,15 +184,12 @@ struct PublishCommand: AsyncParsableCommand {
     private func validateSlug(_ slug: String) -> Bool {
         // Server-side regex is /^[a-z0-9][a-z0-9-]{1,63}$/ per segment.
         let parts = slug.split(separator: "/").map(String.init)
-        guard !parts.isEmpty, parts.count <= 2 else { return false }
+        guard parts.count == 2 else { return false }
         for p in parts {
             guard let first = p.first,
-                  first.isLowercase || first.isNumber
+                  (first.isLowercase && first.isLetter) || first.isNumber
             else { return false }
-            guard p.count >= 2, p.count <= 64 else {
-                // server allows 1; tighten to 2 to keep slugs sane
-                return p.count >= 1 && p.count <= 64
-            }
+            guard p.count >= 2, p.count <= 64 else { return false }
             for c in p {
                 let ok = (c.isLowercase && c.isLetter) || c.isNumber || c == "-"
                 if !ok { return false }

@@ -83,15 +83,52 @@ describe('parser', () => {
     })
 
     it('parses imports', () => {
-        const src = `import hub://alice/awesome v3
+        const src = `import alice/awesome v3
 recipe "x" {
     engine http
     step s { method "GET"; url "https://x.test/s" }
 }`
         const recipe = Parser.parse(src)
         expect(recipe.imports).toHaveLength(1)
-        expect(recipe.imports[0].slug).toBe('alice/awesome')
-        expect(recipe.imports[0].version).toBe(3)
+        const ref = recipe.imports[0]
+        expect(ref.raw).toBe('alice/awesome')
+        expect(ref.namespace).toBe('alice')
+        expect(ref.name).toBe('awesome')
+        expect(ref.registry).toBeNull()
+        expect(ref.version).toBe(3)
+    })
+
+    it('parses bare-name imports (default namespace)', () => {
+        const src = `import sweed
+
+recipe "x" {
+    engine http
+    step s { method "GET"; url "https://x.test/s" }
+}`
+        const recipe = Parser.parse(src)
+        expect(recipe.imports).toHaveLength(1)
+        const ref = recipe.imports[0]
+        expect(ref.raw).toBe('sweed')
+        expect(ref.registry).toBeNull()
+        expect(ref.namespace).toBeNull()
+        expect(ref.name).toBe('sweed')
+        expect(ref.version).toBeNull()
+    })
+
+    it('parses custom-registry imports', () => {
+        const src = `import hub.example.com/team/scraper v2
+
+recipe "x" {
+    engine http
+    step s { method "GET"; url "https://x.test/s" }
+}`
+        const recipe = Parser.parse(src)
+        expect(recipe.imports).toHaveLength(1)
+        const ref = recipe.imports[0]
+        expect(ref.registry).toBe('hub.example.com')
+        expect(ref.namespace).toBe('team')
+        expect(ref.name).toBe('scraper')
+        expect(ref.version).toBe(2)
     })
 
     it('throws on broken syntax', () => {

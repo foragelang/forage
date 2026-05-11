@@ -21,10 +21,10 @@ title: "{{ $params.displayName }}"
 
 <!-- @content -->
 
-## Use it in the CLI
+## Use it from a recipe
 
-```sh
-forage import hub://{{ $params.slug }}
+```forage
+import {{ $params.slug }}
 ```
 
 ## Edit on web

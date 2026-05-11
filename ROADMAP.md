@@ -169,7 +169,7 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 
 ---
 
-## M4 — Integration: runtime `hub://` imports + `forage publish` live
+## M4 — Integration: runtime Docker-style imports + `forage publish` live
 
 **Status: landed.** `Sources/Forage/Hub/HubClient.swift` (get / list / publish, reads `FORAGE_HUB_URL` + `FORAGE_HUB_TOKEN`). `Sources/Forage/Hub/RecipeImporter.swift` resolves `import hub://author/slug` directives recursively, unions types/enums/inputs, caches at `~/Library/Forage/Cache/hub/`. CLI publish goes live via `HubClient.publish` (with `--no-dry-run`). Toolkit publish goes live. `scripts/e2e-publish.sh` is the documented round-trip flow. `site/docs/hub.md` covers it.
 
@@ -178,7 +178,7 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 **Deliverables**
 
 - **D4.1 — `HubClient` in the runtime.** `Sources/Forage/Hub/HubClient.swift`. Get / list / publish. Reads `FORAGE_HUB_URL` (default `https://api.foragelang.com`). Auth via `FORAGE_HUB_TOKEN` or app-supplied key.
-- **D4.2 — Recipe `import` directive.** Parser support for `import hub://author/slug` as a top-level recipe-file statement. Validator resolves the import via `HubClient.get(slug:)`; recipe is fetched + cached at `~/Library/Forage/Cache/hub/<author>/<slug>/<version>/recipe.forage`. The imported recipe's types + transforms + emit blocks become available in the importing recipe. (Simpler v1: imports are "include" — flat text concatenation pre-parse. v2: namespaced.)
+- **D4.2 — Recipe `import` directive.** Parser support for Docker-style refs as top-level statements: `import sweed`, `import alice/zen-leaf v3`, `import hub.example.com/team/scraper`. Validator resolves the import via `HubClient.get(ref:)`; recipe is fetched + cached at `~/Library/Forage/Cache/hub/<registry-or-_default>/<namespace>/<name>/<version>/recipe.forage`. The imported recipe's types + transforms + emit blocks become available in the importing recipe.
 - **D4.3 — CLI publish goes live.** `forage publish <recipe-dir>` actually POSTs. `--dry-run` keeps the M1 behavior.
 - **D4.4 — Toolkit publish goes live.** Same — Publish button writes to api.foragelang.com.
 - **D4.5 — End-to-end smoke test.** A `scripts/e2e-publish.sh` that:
@@ -186,13 +186,13 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
   2. Runs `forage scaffold` on a checked-in synthetic captures file.
   3. Runs `forage publish --dry-run` against the resulting recipe.
   4. Then runs `forage publish` for real (requires `FORAGE_HUB_TOKEN`).
-  5. Curls the resulting `GET /v1/recipes/<slug>` and asserts the body round-trips.
+  5. Curls the resulting `GET /v1/recipes/<namespace>/<name>` and asserts the body round-trips.
 - **D4.6 — Docs.** `site/docs/hub.md` — how publish + import work.
 
 **Acceptance**
 
 - `forage publish recipes/sample/` succeeds.
-- `import hub://forage/sample` resolves; importing recipe runs.
+- `import sample` resolves to `forage/sample`; importing recipe runs.
 
 ---
 

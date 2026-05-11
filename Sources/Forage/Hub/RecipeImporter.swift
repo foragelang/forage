@@ -1,12 +1,11 @@
 import Foundation
 
-/// Resolves `import hub://...` directives by fetching each imported recipe
-/// from the hub, parsing it, and unioning its declarations into the
-/// importing recipe. The result is a flat `Recipe` whose
-/// `types`/`enums`/`inputs` are the union across the root and all
-/// imports, and whose `body` is the original root's body (imports
-/// contribute declarations, not statements — body re-execution would
-/// double-fire HTTP traffic).
+/// Resolves `import <ref>` directives by fetching each imported recipe from
+/// the hub, parsing it, and unioning its declarations into the importing
+/// recipe. The result is a flat `Recipe` whose `types`/`enums`/`inputs`
+/// are the union across the root and all imports, and whose `body` is the
+/// original root's body (imports contribute declarations, not statements —
+/// body re-execution would double-fire HTTP traffic).
 ///
 /// Conflict policy (v1, simple):
 /// - Same type / enum name in two imports → error.
@@ -14,16 +13,17 @@ import Foundation
 /// - The root recipe always wins over an import (so a recipe can override
 ///   an imported type by declaring it locally).
 ///
-/// Cycle detection: each fetch records the (slug, version) it's resolving;
-/// re-entering the same pair throws.
+/// Cycle detection: each fetch records the fully-resolved ref it's
+/// resolving (registry + namespace + name + version); re-entering the same
+/// tuple throws.
 public actor RecipeImporter {
     public enum Error: Swift.Error, Sendable, CustomStringConvertible {
         case cycle([String])
         case typeCollision(String, between: String, and: String)
         case enumCollision(String, between: String, and: String)
         case inputCollision(String, between: String, and: String)
-        case hub(HubClient.Error, slug: String)
-        case parse(String, slug: String)
+        case hub(HubClient.Error, ref: String)
+        case parse(String, ref: String)
 
         public var description: String {
             switch self {
@@ -35,10 +35,10 @@ public actor RecipeImporter {
                 return "import: enum '\(n)' is declared in both '\(a)' and '\(b)'"
             case .inputCollision(let n, let a, let b):
                 return "import: input '\(n)' is declared in both '\(a)' and '\(b)'"
-            case .hub(let err, let slug):
-                return "import: hub fetch failed for '\(slug)': \(err)"
-            case .parse(let msg, let slug):
-                return "import: failed to parse '\(slug)': \(msg)"
+            case .hub(let err, let ref):
+                return "import: hub fetch failed for '\(ref)': \(err)"
+            case .parse(let msg, let ref):
+                return "import: failed to parse '\(ref)': \(msg)"
             }
         }
     }
@@ -47,7 +47,8 @@ public actor RecipeImporter {
     private let cacheRoot: URL?
 
     /// `cacheRoot` is the directory where fetched recipe bodies are cached
-    /// (one file per slug+version). Pass `nil` to skip on-disk caching.
+    /// (one file per registry+namespace+name+version). Pass `nil` to skip
+    /// on-disk caching.
     public init(client: HubClient, cacheRoot: URL? = nil) {
         self.client = client
         self.cacheRoot = cacheRoot
@@ -108,7 +109,7 @@ public actor RecipeImporter {
             }
             if visited.contains(key) {
                 // Already merged in this run; skip duplicate imports of the
-                // same slug+version.
+                // same ref+version.
                 continue
             }
             inProgress.insert(key)
@@ -119,13 +120,14 @@ public actor RecipeImporter {
             do {
                 imported = try Parser.parse(source: body)
             } catch {
-                throw Error.parse("\(error)", slug: ref.slug)
+                throw Error.parse("\(error)", ref: ref.raw)
             }
 
             // Recurse into the imported recipe's own imports first.
+            let importLabel = ref.raw
             let resolved = try await flattenRecursive(
                 imported,
-                label: "hub://\(ref.slug)",
+                label: importLabel,
                 inProgress: &inProgress,
                 visited: &visited
             )
@@ -136,26 +138,26 @@ public actor RecipeImporter {
             for t in resolved.types {
                 if let existing = typeOwner[t.name] {
                     if existing == label { continue }    // root override beats import
-                    throw Error.typeCollision(t.name, between: existing, and: "hub://\(ref.slug)")
+                    throw Error.typeCollision(t.name, between: existing, and: importLabel)
                 }
                 mergedTypes.append(t)
-                typeOwner[t.name] = "hub://\(ref.slug)"
+                typeOwner[t.name] = importLabel
             }
             for e in resolved.enums {
                 if let existing = enumOwner[e.name] {
                     if existing == label { continue }
-                    throw Error.enumCollision(e.name, between: existing, and: "hub://\(ref.slug)")
+                    throw Error.enumCollision(e.name, between: existing, and: importLabel)
                 }
                 mergedEnums.append(e)
-                enumOwner[e.name] = "hub://\(ref.slug)"
+                enumOwner[e.name] = importLabel
             }
             for inp in resolved.inputs {
                 if let existing = inputOwner[inp.name] {
                     if existing == label { continue }
-                    throw Error.inputCollision(inp.name, between: existing, and: "hub://\(ref.slug)")
+                    throw Error.inputCollision(inp.name, between: existing, and: importLabel)
                 }
                 mergedInputs.append(inp)
-                inputOwner[inp.name] = "hub://\(ref.slug)"
+                inputOwner[inp.name] = importLabel
             }
         }
 
@@ -175,19 +177,36 @@ public actor RecipeImporter {
 
     // MARK: - Cache + fetch
 
+    /// Stable identity for `(ref, version)` — used for cycle detection and
+    /// to dedupe within a run.
     private func cacheKey(for ref: HubRecipeRef) -> String {
+        let r = ref.registry ?? "_default"
         let v = ref.version.map(String.init) ?? "latest"
-        return "\(ref.slug)@\(v)"
+        return "\(r)/\(ref.effectiveNamespace)/\(ref.name)@\(v)"
     }
 
+    /// On-disk cache location. Layout:
+    /// `<cacheRoot>/<registry-or-_default>/<namespace>/<name>/<version>/recipe.forage`.
     private func cachePath(for ref: HubRecipeRef) -> URL? {
         guard let root = cacheRoot else { return nil }
-        let safeSlug = ref.slug.replacingOccurrences(of: "/", with: "__")
+        let registrySegment = (ref.registry.map(sanitizeForFS) ?? "_default")
+        let nsSegment = sanitizeForFS(ref.effectiveNamespace)
+        let nameSegment = sanitizeForFS(ref.name)
         let v = ref.version.map(String.init) ?? "latest"
         return root
-            .appendingPathComponent(safeSlug, isDirectory: true)
+            .appendingPathComponent(registrySegment, isDirectory: true)
+            .appendingPathComponent(nsSegment, isDirectory: true)
+            .appendingPathComponent(nameSegment, isDirectory: true)
             .appendingPathComponent(v, isDirectory: true)
             .appendingPathComponent("recipe.forage")
+    }
+
+    /// Replace path-unsafe characters (the only one in practice is `:` for
+    /// `localhost:5000`-style registries) with `_` so the cache layout stays
+    /// flat-readable.
+    private func sanitizeForFS(_ s: String) -> String {
+        s.replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
     }
 
     private func fetchBody(for ref: HubRecipeRef) async throws -> String {
@@ -200,7 +219,7 @@ public actor RecipeImporter {
         do {
             recipe = try await client.get(ref)
         } catch let err as HubClient.Error {
-            throw Error.hub(err, slug: ref.slug)
+            throw Error.hub(err, ref: ref.raw)
         }
         writeCache(for: ref, body: recipe.body)
         return recipe.body

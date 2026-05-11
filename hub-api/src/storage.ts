@@ -5,7 +5,8 @@ import type {
     SlugIndex,
 } from './types'
 
-// Key conventions.
+// Key conventions. `slug` is `<namespace>/<name>`; KV keys keep it whole so
+// the rest of the code can treat the composite as one opaque string.
 const METADATA_KEY = (slug: string) => `recipe:${slug}`
 const VERSIONS_KEY = (slug: string) => `recipe:${slug}:versions`
 const INDEX_KEY = 'index:list'
@@ -23,7 +24,7 @@ export async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
         .join('')
 }
 
-// --- KV: metadata pointer (`recipe:<slug>`) -------------------------------
+// --- KV: metadata pointer (`recipe:<namespace>/<name>`) -------------------
 
 export async function getRecipeMetadata(
     env: Env,
@@ -41,7 +42,7 @@ export async function putRecipeMetadata(
     await env.METADATA.put(METADATA_KEY(meta.slug), JSON.stringify(meta))
 }
 
-// --- KV: version log (`recipe:<slug>:versions`) ---------------------------
+// --- KV: version log (`recipe:<namespace>/<name>:versions`) ---------------
 
 export async function getRecipeVersions(
     env: Env,

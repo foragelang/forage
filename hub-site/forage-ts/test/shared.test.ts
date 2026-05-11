@@ -58,7 +58,10 @@ interface ExpectedEnum {
 }
 
 interface ExpectedImport {
-    slug: string
+    raw: string
+    registry: string | null
+    namespace: string | null
+    name: string
     version: number | null
 }
 
@@ -122,8 +125,13 @@ describe('shared recipes', () => {
             if (rec.imports) {
                 expect(recipe.imports).toHaveLength(rec.imports.length)
                 for (let i = 0; i < rec.imports.length; i++) {
-                    expect(recipe.imports[i].slug).toBe(rec.imports[i].slug)
-                    expect(recipe.imports[i].version).toBe(rec.imports[i].version)
+                    const actual = recipe.imports[i]
+                    const expected = rec.imports[i]
+                    expect(actual.raw).toBe(expected.raw)
+                    expect(actual.registry).toBe(expected.registry)
+                    expect(actual.namespace).toBe(expected.namespace)
+                    expect(actual.name).toBe(expected.name)
+                    expect(actual.version).toBe(expected.version)
                 }
             }
 

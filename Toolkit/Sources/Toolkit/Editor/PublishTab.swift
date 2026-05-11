@@ -1,16 +1,20 @@
 import SwiftUI
 import Forage
 
-/// Publish form. Slug / name / summary / tags / license. Buttons: Validate,
-/// Preview payload, Publish. The hub wiring is stubbed for M3 — Publish
-/// calls `HubClient.publish` which prints "would POST" and returns the
-/// payload to the UI.
+/// Publish form. Namespace + name + displayName / summary / tags / license.
+/// Buttons: Validate, Preview payload, Publish. The hub wiring is stubbed
+/// for M3 — Publish calls `HubClient.publish` which prints "would POST" and
+/// returns the payload to the UI.
 struct PublishTab: View {
+    /// On-disk recipe directory name. Used as the default for the recipe
+    /// `name` field; the user can override before publishing.
     let slug: String
     let source: String
 
     @Environment(ToolkitPreferences.self) private var preferences
 
+    @State private var namespace: String = "forage"
+    @State private var name: String = ""
     @State private var displayName: String = ""
     @State private var summary: String = ""
     @State private var tagsText: String = ""
@@ -25,8 +29,10 @@ struct PublishTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 Form {
                     Section("Metadata") {
+                        TextField("Namespace", text: $namespace, prompt: Text("forage"))
+                        TextField("Name", text: $name, prompt: Text(slug))
                         LabeledContent("Slug") {
-                            Text(slug)
+                            Text(composedSlug)
                                 .font(.system(.body, design: .monospaced))
                                 .textSelection(.enabled)
                                 .foregroundStyle(.secondary)
@@ -39,6 +45,9 @@ struct PublishTab: View {
                 }
                 .formStyle(.grouped)
                 .scrollDisabled(true)
+                .onAppear {
+                    if name.isEmpty { name = slug }
+                }
 
                 actionsBar
 
@@ -55,6 +64,14 @@ struct PublishTab: View {
             .padding(20)
             .frame(maxWidth: 800, alignment: .topLeading)
         }
+    }
+
+    private var composedSlug: String {
+        let ns = namespace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nm = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveNs = ns.isEmpty ? "forage" : ns
+        let effectiveName = nm.isEmpty ? slug : nm
+        return "\(effectiveNs)/\(effectiveName)"
     }
 
     private var actionsBar: some View {
@@ -132,7 +149,7 @@ struct PublishTab: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return HubPublishPayload(
-            slug: slug,
+            slug: composedSlug,
             displayName: displayName,
             summary: summary.isEmpty ? nil : summary,
             tags: tags,

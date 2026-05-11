@@ -126,15 +126,12 @@ export class Parser {
         const importLoc = this.peek().loc
         this.expectKeyword('import')
         const tok = this.peek()
-        if (tok.kind.tag !== 'hubURL') {
-            throw new ParseError(tok.loc, `expected 'hub://<slug>' after 'import'`)
+        if (tok.kind.tag !== 'refLit') {
+            throw new ParseError(tok.loc, `expected import reference after 'import' at ${importLoc.line}:${importLoc.column}`)
         }
-        const slug = tok.kind.slug
+        const raw = tok.kind.raw
+        const refLoc = tok.loc
         this.advance()
-        // Validate slug shape: `<name>` or `<author>/<name>`
-        if (slug.length === 0 || slug.split('/').length > 2) {
-            throw new ParseError(importLoc, `malformed hub slug 'hub://${slug}'`)
-        }
         let version: number | null = null
         if (this.peek().kind.tag === 'identifier') {
             const ident = (this.peek().kind as { tag: 'identifier'; name: string }).name
@@ -147,7 +144,11 @@ export class Parser {
             }
         }
         this.match('semicolon')
-        return { slug, version }
+        try {
+            return parseHubRecipeRef(raw, version)
+        } catch (e) {
+            throw new ParseError(refLoc, (e as Error).message)
+        }
     }
 
     // ---- Type / enum / input decls ----
@@ -1072,4 +1073,71 @@ function parseExtractionSnippet(snippet: string): ExtractionExpr {
     const toks = lex.tokenize()
     const p = new Parser(toks)
     return p['parseExtractionExpr']()
+}
+
+/// Parse a Docker-style recipe reference. Mirrors
+/// `HubRecipeRef.init(parsing:version:)` in Swift.
+///
+///   sweed                          → namespace: null,     name: sweed
+///   alice/zen-leaf                 → namespace: alice,    name: zen-leaf
+///   hub.example.com/team/scraper   → registry: hub.example.com, namespace: team, name: scraper
+///   localhost:5000/me/test         → registry: localhost:5000,  namespace: me,   name: test
+export function parseHubRecipeRef(raw: string, version: number | null): HubRecipeRef {
+    const trimmed = raw.trim()
+    if (trimmed.length === 0) throw new Error(`import ref: empty`)
+
+    const segments = trimmed.split('/')
+    for (const s of segments) {
+        if (s === '' || s === '.' || s === '..') {
+            throw new Error(`import ref: invalid segment '${s}'`)
+        }
+    }
+
+    let registry: string | null = null
+    let rest = segments
+    if (looksLikeRegistry(segments[0])) {
+        validateRegistry(segments[0])
+        registry = segments[0]
+        rest = segments.slice(1)
+    }
+    for (const s of rest) {
+        validateNameSegment(s)
+    }
+
+    if (rest.length === 0) throw new Error(`import ref: missing name component`)
+    if (rest.length === 1) {
+        if (registry !== null) {
+            throw new Error(`import ref: missing name component`)
+        }
+        return { raw: trimmed, version, registry: null, namespace: null, name: rest[0] }
+    }
+    if (rest.length === 2) {
+        return { raw: trimmed, version, registry, namespace: rest[0], name: rest[1] }
+    }
+    throw new Error(`import ref: too many '/'-separated segments (expected at most <registry>/<namespace>/<name>)`)
+}
+
+function looksLikeRegistry(s: string): boolean {
+    return s.includes('.') || s.includes(':') || s.toLowerCase() === 'localhost'
+}
+
+function validateRegistry(s: string): void {
+    const parts = s.split(':')
+    if (parts.length > 2) throw new Error(`import ref: invalid registry '${s}'`)
+    const host = parts[0]
+    if (host.length === 0) throw new Error(`import ref: invalid registry '${s}'`)
+    if (!/^[A-Za-z0-9._-]+$/.test(host)) {
+        throw new Error(`import ref: invalid registry '${s}'`)
+    }
+    if (parts.length === 2) {
+        if (!/^[0-9]+$/.test(parts[1])) {
+            throw new Error(`import ref: invalid registry '${s}'`)
+        }
+    }
+}
+
+function validateNameSegment(s: string): void {
+    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(s)) {
+        throw new Error(`import ref: invalid name '${s}' (expected ^[a-z0-9][a-z0-9-]{1,63}$)`)
+    }
 }

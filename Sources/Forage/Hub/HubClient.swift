@@ -3,53 +3,167 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Pointer to a recipe in the hub. `slug` is either `name` (e.g.
-/// `sample-recipe`) or `author/name` (e.g. `alice/awesome-recipe`). The
-/// hub URL is always `/v1/recipes/<slug>` — author-qualified slugs use a
-/// `/` in the slug; the runtime URL-encodes it when building requests.
-public struct HubRecipeRef: Sendable, Hashable {
-    public let slug: String
+/// Docker-style reference to a recipe in the hub. Parsed from the form
+/// written after `import` in a recipe source file. Resolution rules mirror
+/// Docker's image-reference grammar:
+///
+/// - `sweed` → official namespace on the default hub. Resolves to
+///   `<defaultHub>/forage/sweed`.
+/// - `alice/zen-leaf` → `alice`'s namespace on the default hub.
+/// - `hub.example.com/team/scraper` → custom hub.
+/// - `localhost:5000/me/test` → local hub on port 5000.
+///
+/// Detection rule: the first slash-separated component is treated as a
+/// **registry hostname** if it contains `.`, contains `:`, or equals
+/// `localhost` (case-insensitive). Otherwise it's a namespace, or — with no
+/// slash — the bare name in the default namespace.
+public struct HubRecipeRef: Sendable, Hashable, Codable {
+    /// Original textual reference as written in the recipe source.
+    public let raw: String
     public let version: Int?
 
-    public init(slug: String, version: Int? = nil) {
-        self.slug = slug
+    /// `nil` means "default hub" (whatever the `HubClient.baseURL` is).
+    public let registry: String?
+    /// `nil` means "default namespace" (only valid when `registry == nil`).
+    public let namespace: String?
+    public let name: String
+
+    public init(
+        raw: String,
+        version: Int? = nil,
+        registry: String? = nil,
+        namespace: String? = nil,
+        name: String
+    ) {
+        self.raw = raw
         self.version = version
+        self.registry = registry
+        self.namespace = namespace
+        self.name = name
     }
 
-    /// Parse `hub://<slug>` or `hub://<author>/<name>` (with optional ` v<N>`
-    /// version suffix handled by the parser, not here). The string is what
-    /// the parser sees after stripping `hub://`.
-    public static func parse(_ raw: String) -> HubRecipeRef? {
+    /// Parse a Docker-style reference. Throws on malformed input.
+    public init(parsing raw: String, version: Int? = nil) throws {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return nil }
-        // Slug may be `name` or `author/name`. Validate each segment lightly.
-        let segments = trimmed.split(separator: "/").map(String.init)
-        if segments.count == 1 {
-            return validSlugSegment(segments[0])
-                ? HubRecipeRef(slug: segments[0])
-                : nil
+        if trimmed.isEmpty { throw ParseError.empty }
+
+        let segments = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) {
+            throw ParseError.invalidSegment(trimmed)
         }
-        if segments.count == 2 {
-            return validSlugSegment(segments[0]) && validSlugSegment(segments[1])
-                ? HubRecipeRef(slug: "\(segments[0])/\(segments[1])")
-                : nil
+
+        // Detect registry: first segment contains `.`, contains `:`, or is `localhost`.
+        var rest = segments
+        var registry: String? = nil
+        if let first = rest.first, Self.looksLikeRegistry(first) {
+            try Self.validateRegistry(first)
+            registry = first
+            rest.removeFirst()
         }
-        return nil
+
+        // Validate the remaining segments — namespace and/or name.
+        for s in rest {
+            try Self.validateNameSegment(s)
+        }
+
+        switch rest.count {
+        case 0:
+            throw ParseError.missingName
+        case 1:
+            // Bare `name`. Only legal with no explicit registry — a registry
+            // prefix needs at least `<registry>/<name>` (a registry without
+            // a name is meaningless).
+            if registry != nil {
+                throw ParseError.missingName
+            }
+            self.init(raw: trimmed, version: version, registry: nil, namespace: nil, name: rest[0])
+        case 2:
+            self.init(raw: trimmed, version: version, registry: registry, namespace: rest[0], name: rest[1])
+        default:
+            throw ParseError.tooManySegments
+        }
     }
 
-    private static func validSlugSegment(_ s: String) -> Bool {
-        guard let first = s.first, first.isLetter || first.isNumber else { return false }
-        for c in s {
-            let ok = c.isLetter || c.isNumber || c == "-" || c == "_"
-            if !ok { return false }
+    /// Effective namespace: explicit, or `forage` (the default).
+    public var effectiveNamespace: String { namespace ?? "forage" }
+
+    /// Path under `/v1/recipes/...`. Always `<namespace>/<name>`.
+    public var slugPath: String { "\(effectiveNamespace)/\(name)" }
+
+    /// Resolution rule: the registry segment determines the base URL. For
+    /// the default registry (`registry == nil`), the caller's configured
+    /// `HubClient.baseURL` wins. For `localhost[:port]`, we use `http://`.
+    /// For other hosts we assume `https://`.
+    public func resolveBaseURL(defaultBase: URL) -> URL {
+        guard let r = registry else { return defaultBase }
+        let lower = r.lowercased()
+        let scheme = lower.hasPrefix("localhost") ? "http" : "https"
+        // URL(string:) handles the optional port — `localhost:5000` becomes
+        // host=localhost, port=5000.
+        return URL(string: "\(scheme)://\(r)")!
+    }
+
+    public enum ParseError: Swift.Error, Equatable, CustomStringConvertible {
+        case empty
+        case invalidSegment(String)
+        case invalidName(String)
+        case invalidRegistry(String)
+        case missingName
+        case tooManySegments
+
+        public var description: String {
+            switch self {
+            case .empty: return "import ref: empty"
+            case .invalidSegment(let s): return "import ref: invalid segment '\(s)'"
+            case .invalidName(let n): return "import ref: invalid name '\(n)' (expected ^[a-z0-9][a-z0-9-]{1,63}$)"
+            case .invalidRegistry(let r): return "import ref: invalid registry '\(r)'"
+            case .missingName: return "import ref: missing name component"
+            case .tooManySegments: return "import ref: too many '/'-separated segments (expected at most <registry>/<namespace>/<name>)"
+            }
         }
-        return s.count >= 1 && s.count <= 64
+    }
+
+    // MARK: - Internal helpers
+
+    static func looksLikeRegistry(_ s: String) -> Bool {
+        s.contains(".") || s.contains(":") || s.lowercased() == "localhost"
+    }
+
+    static func validateRegistry(_ s: String) throws {
+        // Allow letters, digits, `-`, `.`, `_`, and a single `:port` suffix
+        // where port is digits.
+        let parts = s.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let host = parts[0]
+        guard !host.isEmpty else { throw ParseError.invalidRegistry(s) }
+        for c in host {
+            let ok = c.isLetter || c.isNumber || c == "-" || c == "." || c == "_"
+            if !ok { throw ParseError.invalidRegistry(s) }
+        }
+        if parts.count == 2 {
+            let port = parts[1]
+            if port.isEmpty || port.contains(where: { !$0.isNumber }) {
+                throw ParseError.invalidRegistry(s)
+            }
+        }
+    }
+
+    static func validateNameSegment(_ s: String) throws {
+        // Same shape the Worker enforces: ^[a-z0-9][a-z0-9-]{1,63}$.
+        guard let first = s.first, (first.isLowercase && first.isLetter) || first.isNumber else {
+            throw ParseError.invalidName(s)
+        }
+        for c in s {
+            let ok = (c.isLowercase && c.isLetter) || c.isNumber || c == "-"
+            if !ok { throw ParseError.invalidName(s) }
+        }
+        guard s.count >= 2, s.count <= 64 else { throw ParseError.invalidName(s) }
     }
 }
 
 /// Lightweight metadata returned by `list` / `versions`. Mirrors the hub's
 /// `ListingItem` shape.
 public struct HubRecipeMeta: Sendable, Hashable, Codable {
+    /// `<namespace>/<name>` slug.
     public let slug: String
     public let author: String?
     public let displayName: String
@@ -162,7 +276,9 @@ public struct HubRecipe: Sendable, Hashable, Codable {
     }
 }
 
-/// Request body for `publish`. Mirrors `hub-api`'s `PublishRequest`.
+/// Request body for `publish`. Mirrors `hub-api`'s `PublishRequest`. The
+/// `slug` field is `<namespace>/<name>`; the server splits it back on `/`
+/// for storage.
 public struct HubPublishPayload: Sendable, Hashable, Codable {
     public let slug: String
     public let author: String?
@@ -256,7 +372,7 @@ public actor HubClient {
     // MARK: - Endpoints
 
     public func health() async throws -> Bool {
-        let req = try makeRequest(method: "GET", path: "/v1/health")
+        let req = try makeRequest(method: "GET", path: "/v1/health", overrideBase: nil)
         let (data, resp) = try await send(req)
         guard let http = resp as? HTTPURLResponse else {
             throw Error.malformed(reason: "non-HTTP response")
@@ -285,7 +401,7 @@ public actor HubClient {
         items.append(URLQueryItem(name: "limit", value: String(limit)))
         if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
 
-        let req = try makeRequest(method: "GET", path: "/v1/recipes", query: items)
+        let req = try makeRequest(method: "GET", path: "/v1/recipes", query: items, overrideBase: nil)
         let (data, resp) = try await send(req)
         guard let http = resp as? HTTPURLResponse else {
             throw Error.malformed(reason: "non-HTTP response")
@@ -311,15 +427,16 @@ public actor HubClient {
         if let v = ref.version { items.append(URLQueryItem(name: "version", value: String(v))) }
         let req = try makeRequest(
             method: "GET",
-            path: "/v1/recipes/\(escapeSlugPath(ref.slug))",
-            query: items.isEmpty ? nil : items
+            path: "/v1/recipes/\(escapeSlugPath(ref.slugPath))",
+            query: items.isEmpty ? nil : items,
+            overrideBase: ref.resolveBaseURL(defaultBase: baseURL)
         )
         let (data, resp) = try await send(req)
         guard let http = resp as? HTTPURLResponse else {
             throw Error.malformed(reason: "non-HTTP response")
         }
         if http.statusCode == 404 {
-            throw Error.notFound(slug: ref.slug)
+            throw Error.notFound(slug: ref.slugPath)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw Error.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
@@ -331,10 +448,12 @@ public actor HubClient {
         }
     }
 
+    /// Versions endpoint takes the same `<namespace>/<name>` slug shape.
     public func versions(slug: String) async throws -> [HubRecipeMeta] {
         let req = try makeRequest(
             method: "GET",
-            path: "/v1/recipes/\(escapeSlugPath(slug))/versions"
+            path: "/v1/recipes/\(escapeSlugPath(slug))/versions",
+            overrideBase: nil
         )
         let (data, resp) = try await send(req)
         guard let http = resp as? HTTPURLResponse else {
@@ -374,7 +493,7 @@ public actor HubClient {
         guard let token, !token.isEmpty else {
             throw Error.missingToken
         }
-        var req = try makeRequest(method: "POST", path: "/v1/recipes", authToken: token)
+        var req = try makeRequest(method: "POST", path: "/v1/recipes", authToken: token, overrideBase: nil)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let encoder = JSONEncoder()
         // The server tolerates either `null` or omitted, but we mirror its
@@ -403,18 +522,20 @@ public actor HubClient {
         method: String,
         path: String,
         query: [URLQueryItem]? = nil,
-        authToken: String? = nil
+        authToken: String? = nil,
+        overrideBase: URL?
     ) throws -> URLRequest {
+        let base = overrideBase ?? baseURL
         var comps = URLComponents()
-        comps.scheme = baseURL.scheme
-        comps.host = baseURL.host
-        comps.port = baseURL.port
-        let basePath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        comps.scheme = base.scheme
+        comps.host = base.host
+        comps.port = base.port
+        let basePath = base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let joined = basePath.isEmpty ? path : "/" + basePath + path
         comps.path = joined
         comps.queryItems = query
         guard let url = comps.url else {
-            throw Error.malformed(reason: "could not assemble URL from \(baseURL) + \(path)")
+            throw Error.malformed(reason: "could not assemble URL from \(base) + \(path)")
         }
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -433,9 +554,9 @@ public actor HubClient {
         }
     }
 
-    /// Path component encoding that leaves `/` intact (so `author/name`
-    /// slugs become a single URL path segment) but URL-encodes other
-    /// reserved characters.
+    /// Path component encoding that leaves `/` intact (so `<namespace>/<name>`
+    /// becomes a single URL path segment) but URL-encodes other reserved
+    /// characters.
     private func escapeSlugPath(_ slug: String) -> String {
         var allowed = CharacterSet.urlPathAllowed
         allowed.insert(charactersIn: "/")

@@ -129,8 +129,8 @@
                 "importCount": 2
             },
             "imports": [
-                { "slug": "alice/awesome", "version": 2 },
-                { "slug": "demo", "version": null }
+                { "raw": "alice/awesome", "registry": null, "namespace": "alice", "name": "awesome", "version": 2 },
+                { "raw": "demo", "registry": null, "namespace": null, "name": "demo", "version": null }
             ],
             "validation": { "errorCount": 0, "warningCount": 0 }
         },

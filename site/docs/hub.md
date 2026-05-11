@@ -6,7 +6,7 @@ source plus optional fixtures and a snapshot — and serves them to:
 
 - the `forage` CLI's `forage publish` command;
 - the Toolkit app's Publish tab;
-- recipes that declare `import hub://<slug>` at the top of their source.
+- recipes that declare `import <ref>` at the top of their source.
 
 ## Authoring a recipe
 
@@ -16,7 +16,7 @@ sibling assets.
 ```
 my-recipe/
 ├── recipe.forage         # required
-├── recipe.json           # optional: slug / displayName / summary / tags / author
+├── recipe.json           # optional: namespace / name / displayName / summary / tags / author
 ├── fixtures/
 │   └── captures.jsonl    # optional: replayable fixtures
 └── expected.snapshot.json # optional: golden snapshot
@@ -26,7 +26,8 @@ my-recipe/
 
 ```json
 {
-    "slug": "my-recipe",
+    "namespace": "alice",
+    "name": "my-recipe",
     "displayName": "My recipe",
     "summary": "What this recipe does",
     "tags": ["dispensary", "sweed"],
@@ -34,8 +35,14 @@ my-recipe/
 }
 ```
 
-Slug shape: `^[a-z0-9][a-z0-9-]{0,63}$` per segment. Slugs may be
-`<name>` or `<author>/<name>`.
+Shape rules:
+
+- **`name`**: `^[a-z0-9][a-z0-9-]{1,63}$`. Lowercase letters, digits, and
+  hyphens; 2–64 chars; must start with a letter or digit.
+- **`namespace`**: same regex as `name`. Defaults to `forage` (the official
+  namespace) if you omit it. Pick your own handle for personal recipes.
+
+The published slug is always `<namespace>/<name>`.
 
 ## Publishing
 
@@ -51,7 +58,7 @@ hitting the network:
 ```bash
 forage publish path/to/my-recipe
 # {
-#   "slug": "my-recipe",
+#   "slug": "forage/my-recipe",
 #   "displayName": "My recipe",
 #   …
 # }
@@ -63,9 +70,9 @@ payload:
 
 ```bash
 forage publish path/to/my-recipe --publish
-# published my-recipe v1
+# published forage/my-recipe v1
 # sha256: deadbeef…
-# curl -fsSL https://api.foragelang.com/v1/recipes/my-recipe
+# curl -fsSL https://api.foragelang.com/v1/recipes/forage/my-recipe
 ```
 
 Override metadata from the command line when there's no `recipe.json` (or
@@ -73,7 +80,8 @@ when you want to tweak just one field for one run):
 
 ```bash
 forage publish path/to/my-recipe \
-    --slug my-recipe \
+    --namespace alice \
+    --name my-recipe \
     --display-name "My recipe" \
     --summary "What this recipe does" \
     --tags cannabis,sweed \
@@ -91,12 +99,11 @@ export FORAGE_HUB_URL="http://127.0.0.1:8787"
 ## Importing from a recipe
 
 Recipes can pull declarations from another published recipe by adding an
-`import hub://…` directive at the very top of the file (before
-`recipe "…"`):
+`import <ref>` directive at the very top of the file (before `recipe "…"`):
 
 ```forage
-import hub://shared-types
-import hub://alice/awesome-utils v3
+import shared-types
+import alice/awesome-utils v3
 
 recipe "my-recipe" {
     engine http
@@ -107,13 +114,29 @@ recipe "my-recipe" {
 Grammar:
 
 ```
-ImportStatement := "import" "hub://" Slug [ "v" Integer ]
-Slug            := AuthorOrName ("/" Name)?
+ImportStatement := "import" Ref [ "v" Integer ]
+Ref             := [ Registry "/" ] [ Namespace "/" ] Name
 ```
 
-- The slug after `hub://` is either `name` or `author/name`.
-- `v<N>` pins a specific version. Without it, the latest published
-  version is fetched at run time.
+### How references resolve
+
+The reference grammar mirrors Docker image references. Given `import a/b/c`,
+the first slash-separated component is treated as a **registry hostname**
+if it contains `.`, contains `:`, or equals `localhost`. Otherwise it's a
+namespace.
+
+| Reference                            | Registry           | Namespace | Name      | Resolves to                                            |
+|--------------------------------------|--------------------|-----------|-----------|--------------------------------------------------------|
+| `sweed`                              | (default hub)      | `forage`  | `sweed`   | `https://api.foragelang.com/v1/recipes/forage/sweed`   |
+| `alice/zen-leaf`                     | (default hub)      | `alice`   | `zen-leaf`| `https://api.foragelang.com/v1/recipes/alice/zen-leaf` |
+| `hub.example.com/team/scraper`       | `hub.example.com`  | `team`    | `scraper` | `https://hub.example.com/v1/recipes/team/scraper`      |
+| `localhost:5000/me/test`             | `localhost:5000`   | `me`      | `test`    | `http://localhost:5000/v1/recipes/me/test`             |
+
+`v<N>` pins a specific version. Without it, the latest published version is
+fetched at run time.
+
+`localhost`-prefixed registries use `http://`; everything else uses
+`https://`.
 
 ### What gets imported?
 
@@ -132,21 +155,22 @@ as an imported one **wins** — that's how you override an import.
 ### Caching
 
 Imports are cached on disk at
-`~/Library/Forage/Cache/hub/<slug>/<version>/recipe.forage`. Pinned
-versions are read straight from cache once seen; `import hub://x` without
-a version always hits the network so you get the latest.
+`~/Library/Forage/Cache/hub/<registry>/<namespace>/<name>/<version>/recipe.forage`,
+with `_default` standing in for the default-hub registry. Pinned versions
+are read straight from cache once seen; an `import` without `v<N>` always
+hits the network so you get the latest.
 
 ## API endpoints (reference)
 
-| Method | Path                                | Auth     | Returns                                                |
-|--------|-------------------------------------|----------|--------------------------------------------------------|
-| GET    | `/v1/health`                        | —        | `{"status":"ok"}`                                      |
-| GET    | `/v1/recipes`                       | —        | `{items, nextCursor}` — paginated listing              |
-| GET    | `/v1/recipes/:slug`                 | —        | full recipe (metadata + body). `?version=N` for history|
-| GET    | `/v1/recipes/:slug/versions`        | —        | version history                                        |
-| GET    | `/v1/recipes/:slug/fixtures`        | —        | fixtures.jsonl (if uploaded)                           |
-| GET    | `/v1/recipes/:slug/snapshot`        | —        | snapshot.json (if uploaded)                            |
-| POST   | `/v1/recipes`                       | Bearer   | publish — returns `{slug, version, sha256}`            |
+| Method | Path                                              | Auth     | Returns                                                |
+|--------|---------------------------------------------------|----------|--------------------------------------------------------|
+| GET    | `/v1/health`                                      | —        | `{"status":"ok"}`                                      |
+| GET    | `/v1/recipes`                                     | —        | `{items, nextCursor}` — paginated listing              |
+| GET    | `/v1/recipes/:namespace/:name`                    | —        | full recipe (metadata + body). `?version=N` for history|
+| GET    | `/v1/recipes/:namespace/:name/versions`           | —        | version history                                        |
+| GET    | `/v1/recipes/:namespace/:name/fixtures`           | —        | fixtures.jsonl (if uploaded)                           |
+| GET    | `/v1/recipes/:namespace/:name/snapshot`           | —        | snapshot.json (if uploaded)                            |
+| POST   | `/v1/recipes`                                     | Bearer   | publish — returns `{slug, version, sha256}`            |
 
 Hand-roll a publish if you don't want to use the CLI:
 
@@ -161,7 +185,7 @@ Where `payload.json` matches:
 
 ```json
 {
-    "slug": "my-recipe",
+    "slug": "alice/my-recipe",
     "displayName": "My recipe",
     "summary": "What this recipe does",
     "tags": ["dispensary"],
@@ -171,5 +195,5 @@ Where `payload.json` matches:
 }
 ```
 
-`fixtures` and `snapshot` are optional; both are stored verbatim in R2
-under `recipes/<slug>/<version>/`.
+The `slug` is `<namespace>/<name>`. `fixtures` and `snapshot` are optional;
+both are stored verbatim in R2 under `recipes/<namespace>/<name>/<version>/`.

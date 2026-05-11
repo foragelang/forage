@@ -20,8 +20,9 @@ public struct Parser {
     // MARK: - Top-level
 
     public mutating func parseRecipe() throws -> Recipe {
-        // Top-level `import hub://...` directives appear before the `recipe`
-        // header. Multiple are allowed; the order is preserved.
+        // Top-level `import <ref>` directives (Docker-style refs) appear
+        // before the `recipe` header. Multiple are allowed; the order is
+        // preserved.
         var imports: [HubRecipeRef] = []
         while checkKeyword("import") {
             imports.append(try parseImportDirective())
@@ -93,25 +94,24 @@ public struct Parser {
 
     // MARK: - Import directives
 
-    /// `import hub://<slug>` or `import hub://<author>/<name> v<N>`.
+    /// `import <ref> [v<N>]` — Docker-style reference. Examples:
+    ///
+    ///     import sweed
+    ///     import alice/zen-leaf v3
+    ///     import hub.example.com/team/scraper
+    ///     import localhost:5000/me/test v1
     private mutating func parseImportDirective() throws -> HubRecipeRef {
         let importLoc = peek().loc
         try expectKeyword("import")
 
-        // The lexer recognizes the whole `hub://<slug>` as one token.
-        guard case .hubURL(let slug) = peek().kind else {
+        guard case .refLit(let raw) = peek().kind else {
             throw ParseError.unsupportedConstruct(
-                "expected 'hub://<slug>' after 'import' at \(importLoc.line):\(importLoc.column)",
+                "expected import reference after 'import' at \(importLoc.line):\(importLoc.column)",
                 loc: peek().loc
             )
         }
+        let refLoc = peek().loc
         advance()
-        guard let ref = HubRecipeRef.parse(slug) else {
-            throw ParseError.unsupportedConstruct(
-                "malformed hub slug 'hub://\(slug)' — expected <name> or <author>/<name>",
-                loc: importLoc
-            )
-        }
 
         // Optional `v<N>` version pin. Lexer reads `v3` as one identifier
         // (letter then digits), so we sniff the identifier text.
@@ -125,7 +125,12 @@ public struct Parser {
             version = n
         }
         _ = match(.semicolon)
-        return HubRecipeRef(slug: ref.slug, version: version)
+
+        do {
+            return try HubRecipeRef(parsing: raw, version: version)
+        } catch let err as HubRecipeRef.ParseError {
+            throw ParseError.unsupportedConstruct(err.description, loc: refLoc)
+        }
     }
 
     // MARK: - Type / enum / input decls

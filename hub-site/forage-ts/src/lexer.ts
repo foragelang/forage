@@ -36,7 +36,7 @@ export type TokenKind =
     | { tag: 'boolLit'; value: boolean }
     | { tag: 'nullLit' }
     | { tag: 'dateLit'; year: number; month: number; day: number }
-    | { tag: 'hubURL'; slug: string }
+    | { tag: 'refLit'; raw: string }
     | { tag: 'identifier'; name: string }
     | { tag: 'typeName'; name: string }
     | { tag: 'keyword'; name: string }
@@ -88,6 +88,11 @@ export class Lexer {
     private index = 0
     private line = 1
     private column = 1
+    /// After emitting `keyword "import"` we switch into a one-shot mode
+    /// that scans the next non-whitespace blob as a `refLit`. Docker-style
+    /// refs include `:` / `/` / `.` which would otherwise be tokenized
+    /// individually; scanning as one blob keeps the grammar simple.
+    private pendingRefScan = false
 
     constructor(private readonly source: string) {}
 
@@ -96,6 +101,25 @@ export class Lexer {
         while (!this.isEOF()) {
             this.skipWhitespaceAndComments()
             if (this.isEOF()) break
+
+            if (this.pendingRefScan) {
+                this.pendingRefScan = false
+                const refLoc = this.loc()
+                let raw = ''
+                while (!this.isEOF()) {
+                    const ch = this.peek()
+                    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === ';') {
+                        break
+                    }
+                    raw += ch; this.advance()
+                }
+                if (raw.length === 0) {
+                    throw new LexError(refLoc, `expected import reference`)
+                }
+                tokens.push({ kind: { tag: 'refLit', raw }, lexeme: raw, loc: refLoc })
+                continue
+            }
+
             const startLoc = this.loc()
             const c = this.peek()
 
@@ -167,21 +191,6 @@ export class Lexer {
 
             if (isLetter(c) || c === '_') {
                 const name = this.readIdent()
-                // `hub://<slug>`
-                if (name === 'hub' && this.peek() === ':' && this.peek(1) === '/' && this.peek(2) === '/') {
-                    this.advance(); this.advance(); this.advance()
-                    let slug = ''
-                    while (!this.isEOF()) {
-                        const ch = this.peek()
-                        if (isLetter(ch) || isDigit(ch) || ch === '-' || ch === '_' || ch === '/') {
-                            slug += ch; this.advance()
-                        } else {
-                            break
-                        }
-                    }
-                    tokens.push({ kind: { tag: 'hubURL', slug }, lexeme: `hub://${slug}`, loc: startLoc })
-                    continue
-                }
                 if (KEYWORDS.has(name)) {
                     if (name === 'true') {
                         tokens.push({ kind: { tag: 'boolLit', value: true }, lexeme: name, loc: startLoc })
@@ -191,6 +200,7 @@ export class Lexer {
                         tokens.push({ kind: { tag: 'nullLit' }, lexeme: name, loc: startLoc })
                     } else {
                         tokens.push({ kind: { tag: 'keyword', name }, lexeme: name, loc: startLoc })
+                        if (name === 'import') this.pendingRefScan = true
                     }
                 } else if (name.length > 0 && name[0] === name[0].toUpperCase() && /[A-Z]/.test(name[0])) {
                     tokens.push({ kind: { tag: 'typeName', name }, lexeme: name, loc: startLoc })

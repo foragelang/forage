@@ -23,7 +23,7 @@ features:
     - title: Recipes, not scrapers
       details: Every entry is a Forage recipe — declarative, replayable, validated by the runtime.
     - title: Pull from the CLI
-      details: 'forage import hub://&lt;slug&gt; — the runtime resolves the body, caches it locally, runs it.'
+      details: 'Reference recipes Docker-style — <code>import alice/zen-leaf</code> in your <code>.forage</code> file and the runtime fetches, caches, and runs.'
     - title: Open in the Toolkit
       details: Each recipe page has an `open in Toolkit` deep link that loads it straight into the editor.
 ---

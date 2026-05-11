@@ -25,7 +25,9 @@ import {
 import { isAuthorized } from '../auth'
 import { json, jsonError, streamFromR2 } from '../http'
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
+// Each namespace / name segment matches the Worker's published shape.
+const SEGMENT_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}\/[a-z0-9][a-z0-9-]{1,63}$/
 const RECIPE_HEAD_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"/
 
 // --- Listing -------------------------------------------------------------
@@ -272,7 +274,7 @@ export async function publishRecipe(
 function validatePublish(payload: PublishRequest): string | null {
     if (!payload || typeof payload !== 'object') return 'body must be an object'
     if (typeof payload.slug !== 'string' || !SLUG_RE.test(payload.slug)) {
-        return 'slug must match ^[a-z0-9][a-z0-9-]{1,63}$'
+        return 'slug must be <namespace>/<name>; each segment matches ^[a-z0-9][a-z0-9-]{1,63}$'
     }
     if (typeof payload.displayName !== 'string' || !payload.displayName.trim()) {
         return 'displayName is required'
@@ -298,6 +300,18 @@ function validatePublish(payload: PublishRequest): string | null {
         return 'fixtures must be a string if provided'
     }
     return null
+}
+
+// --- Slug routing helpers -------------------------------------------------
+
+/// Validate that a parsed `<namespace>/<name>` slug matches the published
+/// shape. Returns the validated slug or `null` if either segment is bad.
+export function validateSlugSegments(
+    namespace: string,
+    name: string,
+): string | null {
+    if (!SEGMENT_RE.test(namespace) || !SEGMENT_RE.test(name)) return null
+    return `${namespace}/${name}`
 }
 
 // --- Delete (soft) --------------------------------------------------------

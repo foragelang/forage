@@ -1,5 +1,5 @@
-import hub://alice/awesome v2
-import hub://demo
+import alice/awesome v2
+import demo
 
 recipe "imports-demo" {
     engine http

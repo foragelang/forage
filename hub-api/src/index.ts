@@ -8,6 +8,7 @@ import {
     getRecipeSnapshot,
     publishRecipe,
     deleteRecipe,
+    validateSlugSegments,
 } from './routes/recipes'
 
 export default {
@@ -43,9 +44,30 @@ async function route(
         return publishRecipe(request, env)
     }
 
-    const detailMatch = path.match(/^\/v1\/recipes\/([^/]+)$/)
+    // Versions / fixtures / snapshot live under `/v1/recipes/:ns/:name/:sub`.
+    // Match these *before* the bare detail route below, since the detail
+    // route is also a two-segment match.
+    const subMatch = path.match(/^\/v1\/recipes\/([^/]+)\/([^/]+)\/(versions|fixtures|snapshot)$/)
+    if (subMatch) {
+        const ns = decodeURIComponent(subMatch[1])
+        const name = decodeURIComponent(subMatch[2])
+        const slug = validateSlugSegments(ns, name)
+        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`)
+        if (request.method !== 'GET') {
+            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`)
+        }
+        if (subMatch[3] === 'versions') return getRecipeVersionsHandler(request, env, slug)
+        if (subMatch[3] === 'fixtures') return getRecipeFixtures(request, env, slug)
+        if (subMatch[3] === 'snapshot') return getRecipeSnapshot(request, env, slug)
+    }
+
+    // Detail / delete: `/v1/recipes/:namespace/:name`.
+    const detailMatch = path.match(/^\/v1\/recipes\/([^/]+)\/([^/]+)$/)
     if (detailMatch) {
-        const slug = decodeURIComponent(detailMatch[1])
+        const ns = decodeURIComponent(detailMatch[1])
+        const name = decodeURIComponent(detailMatch[2])
+        const slug = validateSlugSegments(ns, name)
+        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`)
         if (request.method === 'GET') {
             const url = new URL(request.url)
             return getRecipe(request, env, slug, url.searchParams.get('version'))
@@ -53,33 +75,6 @@ async function route(
         if (request.method === 'DELETE') {
             return deleteRecipe(request, env, slug)
         }
-    }
-
-    const versionsMatch = path.match(/^\/v1\/recipes\/([^/]+)\/versions$/)
-    if (versionsMatch && request.method === 'GET') {
-        return getRecipeVersionsHandler(
-            request,
-            env,
-            decodeURIComponent(versionsMatch[1]),
-        )
-    }
-
-    const fixturesMatch = path.match(/^\/v1\/recipes\/([^/]+)\/fixtures$/)
-    if (fixturesMatch && request.method === 'GET') {
-        return getRecipeFixtures(
-            request,
-            env,
-            decodeURIComponent(fixturesMatch[1]),
-        )
-    }
-
-    const snapshotMatch = path.match(/^\/v1\/recipes\/([^/]+)\/snapshot$/)
-    if (snapshotMatch && request.method === 'GET') {
-        return getRecipeSnapshot(
-            request,
-            env,
-            decodeURIComponent(snapshotMatch[1]),
-        )
     }
 
     return jsonError(404, 'no_route', `no route for ${request.method} ${path}`)

@@ -203,9 +203,17 @@ export interface Expectation {
     kind: { tag: 'recordCount'; typeName: string; op: ComparisonOp; value: number }
 }
 
+/// Docker-style recipe reference. `raw` is the textual form the user wrote
+/// after `import`; the other fields are the parsed shape.
+///   - `registry === null` means "default hub".
+///   - `namespace === null` means "default namespace" (only valid when
+///     `registry === null`).
 export interface HubRecipeRef {
-    slug: string
+    raw: string
     version: number | null
+    registry: string | null
+    namespace: string | null
+    name: string
 }
 
 // Browser config is parsed but not run in the TS port; we keep it as an
