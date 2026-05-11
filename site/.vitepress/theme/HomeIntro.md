@@ -1,37 +1,8 @@
 ## A recipe, end to end
 
-Hit Wikipedia's REST API and emit one typed `Article`.
+Five real recipes — pick one to see its shape, the run command, and the snapshot it produces.
 
-```forage
-recipe "wikipedia" {
-    engine http
-
-    type Article {
-        title:   String
-        extract: String
-        url:     String
-    }
-
-    input topic: String
-
-    step page {
-        method "GET"
-        url    "https://en.wikipedia.org/api/rest_v1/page/summary/{$input.topic}"
-    }
-
-    emit Article {
-        title   ← $page.title
-        extract ← $page.extract
-        url     ← $page.content_urls.desktop.page
-    }
-}
-```
-
-Run it:
-
-```sh
-forage run recipes/wikipedia --input topic=Foraging
-```
+<RecipeCarousel />
 
 ## What happens during a run
 
@@ -62,22 +33,6 @@ forage run recipes/wikipedia --input topic=Foraging
 </div>
 
 The snapshot prints to stdout, a short termination tag to stderr:
-
-```json
-{
-  "observedAt": "2026-05-10T15:23:11Z",
-  "records": [
-    {
-      "_typeName": "Article",
-      "fields": {
-        "title": "Foraging",
-        "extract": "Foraging is searching for wild food resources...",
-        "url": "https://en.wikipedia.org/wiki/Foraging"
-      }
-    }
-  ]
-}
-```
 
 ```
 stallReason: completed

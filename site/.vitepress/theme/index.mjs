@@ -1,6 +1,7 @@
 import DefaultTheme from 'vitepress/theme'
 import { h } from 'vue'
 import HomeIntro from './HomeIntro.md'
+import RecipeCarousel from './RecipeCarousel.vue'
 import './custom.css'
 
 export default {
@@ -11,4 +12,7 @@ export default {
                 h('div', { class: 'home-intro' },
                     h('div', { class: 'home-intro-inner vp-doc' }, h(HomeIntro))),
         }),
+    enhanceApp({ app }) {
+        app.component('RecipeCarousel', RecipeCarousel)
+    },
 }

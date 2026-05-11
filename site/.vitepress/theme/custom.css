@@ -78,6 +78,47 @@
     margin-top: 0;
 }
 
+/* Recipe carousel: clickable tabs that swap between example recipes. */
+.recipe-carousel {
+    margin: 24px 0 0;
+}
+
+.recipe-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--vp-c-divider);
+    margin-bottom: 16px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.recipe-tab {
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--vp-c-text-2);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.recipe-tab:hover {
+    color: var(--vp-c-text-1);
+}
+
+.recipe-tab.active {
+    color: var(--vp-c-brand-1);
+    border-bottom-color: var(--vp-c-brand-1);
+}
+
+.recipe-pane > div > :first-child {
+    margin-top: 0;
+}
+
 .run-flow {
     display: flex;
     align-items: stretch;
