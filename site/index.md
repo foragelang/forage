@@ -3,7 +3,7 @@ layout: home
 
 hero:
     name: Forage
-    text: A declarative DSL for structured web extraction
+    text: A declarative DSL for web scraping
     tagline: Recipes describe what to fetch. The engine runs the HTTP, the pagination, and the type-directed extraction.
     image:
         src: /favicon.svg
