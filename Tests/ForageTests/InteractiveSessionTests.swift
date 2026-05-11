@@ -31,7 +31,7 @@ struct InteractiveSessionTests {
                     interactive {
                         bootstrapURL:  "https://www.ebay.com/sch/i.html?_nkw={$input.query}&LH_Sold=1"
                         cookieDomains: ["ebay.com", ".ebay.com"]
-                        gatePattern:   "Security Measure"
+                        sessionExpiredPattern: "Security Measure"
                     }
 
                     captures.document {
@@ -49,7 +49,7 @@ struct InteractiveSessionTests {
         let cfg = recipe.browser?.interactive
         #expect(cfg != nil)
         #expect(cfg?.cookieDomains == ["ebay.com", ".ebay.com"])
-        #expect(cfg?.gatePattern == "Security Measure")
+        #expect(cfg?.sessionExpiredPattern == "Security Measure")
     }
 
     @Test func parserRejectsDuplicateInteractiveBlock() {
@@ -66,10 +66,10 @@ struct InteractiveSessionTests {
                         until: noProgressFor(3)
                     }
                     interactive {
-                        gatePattern: "gate-a"
+                        sessionExpiredPattern: "stale-a"
                     }
                     interactive {
-                        gatePattern: "gate-b"
+                        sessionExpiredPattern: "stale-b"
                     }
                 }
             }

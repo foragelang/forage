@@ -42,7 +42,7 @@ public struct Lexer {
         "tokenPath", "headerName", "headerPrefix",
         "sourcePath", "format",
         // Interactive bootstrap (M10)
-        "interactive", "bootstrapURL", "cookieDomains", "gatePattern",
+        "interactive", "bootstrapURL", "cookieDomains", "sessionExpiredPattern",
     ]
 
     public static let typeKeywords: Set<String> = ["String", "Int", "Double", "Bool"]

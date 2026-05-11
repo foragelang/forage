@@ -666,7 +666,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
            let json = try? String(data: JSONEncoder().encode(storage), encoding: .utf8) {
             webView.evaluateJavaScript(InjectedScripts.restoreLocalStorage(json)) { _, _ in }
         }
-        if let pattern = bcfg.interactive?.gatePattern {
+        if let pattern = bcfg.interactive?.sessionExpiredPattern {
             webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }

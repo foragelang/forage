@@ -1,20 +1,27 @@
 // eBay completed-listings — sold price + date for items matching a query.
 //
-// eBay's Akamai layer serves a "Security Measure" CAPTCHA challenge to
-// any browser the site doesn't recognize. Our scraping policy
-// (notes/legal.md rule 5: "no bypassing technical controls") rules out
-// solving the CAPTCHA programmatically — but a human pressing it is
-// the technical control working as designed, not a bypass.
+// eBay's Akamai layer serves a CAPTCHA challenge to any browser the
+// site doesn't recognize. Our scraping policy (notes/legal.md rule 5:
+// "no bypassing technical controls") rules out solving the CAPTCHA
+// programmatically — but a *human* solving it is the technical control
+// working as designed, not a bypass.
 //
 // M10's `browser.interactive { … }` block handles this: first run with
 // `--interactive` opens a real WKWebView window, the user solves the
-// CAPTCHA, then clicks the on-page "✓ Scrape this page" overlay. The
-// engine snapshots cookies + localStorage to
-// `~/Library/Forage/Sessions/ebay-sold/`. Subsequent `forage run
-// recipes/ebay-sold ...` runs headlessly using that session until eBay
-// re-challenges (detected via `gatePattern: "Security Measure"`), at
-// which point the engine exits with `stallReason: "session-expired"`
-// and the user re-runs with `--interactive` to refresh.
+// CAPTCHA in the normal browser flow, then clicks the on-page
+// "✓ Scrape this page" overlay. The engine snapshots cookies +
+// localStorage to `~/Library/Forage/Sessions/ebay-sold/`. Subsequent
+// `forage run recipes/ebay-sold ...` runs headlessly using that
+// session.
+//
+// `sessionExpiredPattern` below is the literal text that appears on
+// eBay's challenge page when our session has timed out and they want
+// to re-challenge the human. Forage does **not** try to defeat that
+// page — when it sees this string in the rendered HTML, it exits with
+// `stallReason: "session-expired"` and asks the user to re-run with
+// `--interactive` to re-handshake. The pattern is a signal that the
+// human's prior authorization is no longer valid, not a hook to bypass
+// anything.
 
 recipe "ebay-sold" {
     engine browser
@@ -40,7 +47,7 @@ recipe "ebay-sold" {
 
         interactive {
             cookieDomains: ["ebay.com", ".ebay.com"]
-            gatePattern:   "Security Measure"
+            sessionExpiredPattern: "Security Measure"
         }
 
         captures.document {

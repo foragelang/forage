@@ -76,7 +76,7 @@ export const KEYWORDS: ReadonlySet<string> = new Set([
     'tokenPath', 'headerName', 'headerPrefix',
     'sourcePath', 'format',
     // Interactive bootstrap (M10)
-    'interactive', 'bootstrapURL', 'cookieDomains', 'gatePattern',
+    'interactive', 'bootstrapURL', 'cookieDomains', 'sessionExpiredPattern',
 ])
 
 export class LexError extends Error {

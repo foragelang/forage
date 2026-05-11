@@ -26,8 +26,9 @@ public struct BrowserConfig: Hashable, Sendable {
     /// at least once. A visible WebView opens, the human handles the
     /// challenge, clicks the "Scrape this page" overlay, and the engine
     /// snapshots cookies/localStorage to `~/Library/Forage/Sessions/<slug>/`.
-    /// Subsequent runs reuse the session headlessly until `gatePattern`
-    /// reappears in the document body (signaling re-prompt needed).
+    /// Subsequent runs reuse the session headlessly until
+    /// `sessionExpiredPattern` reappears in the document body
+    /// (signaling re-prompt needed).
     public let interactive: InteractiveConfig?
 
     public init(
@@ -64,20 +65,30 @@ public struct InteractiveConfig: Hashable, Sendable {
     /// Domain substrings whose cookies should be persisted. Empty = all
     /// cookies from the bootstrap URL's host and its subdomains.
     public let cookieDomains: [String]
-    /// Substring on the rendered document body that means "session
-    /// expired, re-prompt the human." Headless runs check this after
-    /// navigation and exit with `stallReason: "session-expired"` if it
-    /// matches.
-    public let gatePattern: String?
+    /// Substring on the rendered document body that signals **the
+    /// stored session has expired** and the human needs to re-handshake.
+    /// On a headless run, if this substring appears in the post-navigation
+    /// HTML, Forage stops, evicts the cached session, and surfaces
+    /// `stallReason: "session-expired"`. The user then re-runs with
+    /// `--interactive` to bootstrap a fresh session.
+    ///
+    /// This is **not** a bypass mechanism — Forage doesn't try to
+    /// defeat the challenge, it just recognizes it as a signal that
+    /// the prior human authorization is no longer valid. The literal
+    /// text is whatever the target site shows when it re-prompts
+    /// (e.g. eBay shows "Security Measure" on its Akamai challenge
+    /// page; that text is the *trigger* for re-prompting the human,
+    /// not for bypassing the page).
+    public let sessionExpiredPattern: String?
 
     public init(
         bootstrapURL: Template? = nil,
         cookieDomains: [String] = [],
-        gatePattern: String? = nil
+        sessionExpiredPattern: String? = nil
     ) {
         self.bootstrapURL = bootstrapURL
         self.cookieDomains = cookieDomains
-        self.gatePattern = gatePattern
+        self.sessionExpiredPattern = sessionExpiredPattern
     }
 }
 

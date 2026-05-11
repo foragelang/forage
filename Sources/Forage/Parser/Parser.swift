@@ -1064,13 +1064,17 @@ public struct Parser {
         )
     }
 
-    /// Parse `browser.interactive { bootstrapURL: …, cookieDomains: […], gatePattern: "…" }`
+    /// Parse `browser.interactive { bootstrapURL: …, cookieDomains: […], sessionExpiredPattern: "…" }`
     /// Used by M10 recipes that need a human handshake on first run.
+    /// `sessionExpiredPattern` is the substring that, when it reappears
+    /// in the rendered HTML, signals the human's prior session is no
+    /// longer valid and the recipe needs to re-prompt for an interactive
+    /// re-bootstrap (it's *not* a pattern to bypass, defeat, or evade).
     private mutating func parseInteractiveConfig() throws -> InteractiveConfig {
         try expect(.lbrace, "{")
         var bootstrapURL: Template? = nil
         var cookieDomains: [String] = []
-        var gatePattern: String? = nil
+        var sessionExpiredPattern: String? = nil
         while !check(.rbrace) {
             if matchKeyword("bootstrapURL") {
                 try expect(.colon, ":")
@@ -1078,10 +1082,10 @@ public struct Parser {
             } else if matchKeyword("cookieDomains") {
                 try expect(.colon, ":")
                 cookieDomains = try consumeStringArray()
-            } else if matchKeyword("gatePattern") {
+            } else if matchKeyword("sessionExpiredPattern") {
                 try expect(.colon, ":")
                 let (s, _) = try consumeStringLit()
-                gatePattern = s
+                sessionExpiredPattern = s
             } else {
                 throw ParseError.unsupportedConstruct(
                     "unknown interactive field '\(peek().lexeme)'", loc: peek().loc
@@ -1093,7 +1097,7 @@ public struct Parser {
         return InteractiveConfig(
             bootstrapURL: bootstrapURL,
             cookieDomains: cookieDomains,
-            gatePattern: gatePattern
+            sessionExpiredPattern: sessionExpiredPattern
         )
     }
 

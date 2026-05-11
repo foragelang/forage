@@ -36,7 +36,7 @@ public struct InteractiveSession: Codable, Sendable, Equatable {
 
     /// True when `expiresAt` is in the past. Sessions without an
     /// `expiresAt` are not considered expired by this check — the
-    /// runtime's `gatePattern` is the source of truth for "this session
+    /// runtime's `sessionExpiredPattern` is the source of truth for "this session
     /// still works."
     public func isExpired(now: Date = Date()) -> Bool {
         guard let e = expiresAt else { return false }
