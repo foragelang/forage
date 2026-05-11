@@ -72,6 +72,12 @@ export default defineConfig({
                         { text: 'Archive & replay', link: '/docs/archive-replay' },
                     ],
                 },
+                {
+                    text: 'Tooling',
+                    items: [
+                        { text: 'CLI reference', link: '/docs/cli' },
+                    ],
+                },
             ],
         },
 

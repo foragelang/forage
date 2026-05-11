@@ -14,7 +14,7 @@ What you can do today:
 - Run an HTTP-engine recipe end-to-end via `RecipeRunner.run(recipe:inputs:)` against `URLSessionTransport` for live or `HTTPReplayer` for fixture replay.
 - Run a browser-engine recipe via `BrowserEngine.run()` on the main actor (consumer drives `NSApplication`).
 - Statically validate any recipe via `Validator.validate(_:)` — catches unknown types/fields/transforms, unbound path variables, missing required fields.
-- Reverse-engineer a new platform with `forage-probe capture <url>` (legacy mode) and inspect the captured JSONL.
+- Reverse-engineer a new platform with `forage capture <url>` and inspect the captured JSONL.
 - Encode/decode `Snapshot` values via `SnapshotIO.encode(_:)` / `.decode(_:)` for offline snapshot round-tripping.
 
 What lands next: capture per-platform fixtures alongside each recipe so reviewers can verify a recipe extracts what its snapshot claims without running anything; surface the WKWebView the browser engine drives inside the consumer app so Jane (Trilogy) can ship; explore Dutchie as a fourth platform recipe.
@@ -25,7 +25,7 @@ Canonical artifacts:
 - [`PLANS.md`](./PLANS.md) — execution plan for phases A-H with files, types, validator checks, anti-patterns.
 - [`recipes/sweed/`](./recipes/sweed/), [`recipes/leafbridge/`](./recipes/leafbridge/), [`recipes/jane/`](./recipes/jane/) — bundled platform recipes (parameterized by per-store inputs supplied by the consumer).
 - [`Sources/Forage/`](./Sources/Forage/) — runtime library (parser, engines, validator, fixture replay).
-- [`Sources/forage-probe/`](./Sources/forage-probe/) — `forage-probe run <recipe>` and `forage-probe capture <url>` CLI.
+- [`Sources/forage-cli/`](./Sources/forage-cli/) — `forage run | capture | scaffold | test | publish` CLI.
 
 ## What problems it solves
 
@@ -43,7 +43,7 @@ Canonical artifacts:
 
 ```
 Sources/Forage/        # Swift runtime: parser, HTTP/browser engines, validator, fixture replay
-Sources/forage-probe/  # CLI: forage-probe run <recipe> | capture <url>
+Sources/forage-cli/    # CLI: forage run | capture | scaffold | test | publish
 Tests/ForageTests/     # Engine unit tests (27 green)
 recipes/<platform>/    # Bundled platform recipes — recipe.forage, optional fixtures/
 DESIGN.md              # Design plan

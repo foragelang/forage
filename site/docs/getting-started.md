@@ -20,7 +20,7 @@ swift build
 swift test
 ```
 
-That produces `.build/debug/forage-probe`, the CLI you'll use to run recipes.
+That produces `.build/debug/forage`, the CLI you'll use to run recipes. See the [CLI reference](/docs/cli) for the full subcommand surface.
 
 To use Forage as a library in your own Swift package, point at the local checkout while we work toward a tagged release:
 
@@ -81,10 +81,10 @@ Four things to notice:
 
 ## Run it
 
-Use `forage-probe` to parse, validate, and run the recipe:
+Use `forage run` to parse, validate, and run the recipe:
 
 ```sh
-.build/debug/forage-probe run recipes/hello/recipe.forage --input userId=1
+.build/debug/forage run recipes/hello/recipe.forage --input userId=1
 ```
 
 The CLI parses the recipe, validates it against the type catalog, runs the HTTP graph, and prints the resulting snapshot — a JSON list of every emitted record — to stdout.
