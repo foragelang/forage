@@ -44,6 +44,13 @@
 //                                 HTTPEngine (phase, requests-sent,
 //                                 records-emitted, current URL) — sibling of
 //                                 BrowserProgress
+//   - RunResult                 : (snapshot, report) tuple every engine run
+//                                 returns
+//   - DiagnosticReport          : post-run forensics — stall reason, unmatched
+//                                 captures, unfired rules, unmet expectations,
+//                                 unhandled affordances
+//   - UnmatchedCapture          : thin projection of a Capture that didn't
+//                                 match any captures.match rule
 //
 // Coming next:
 //   - Parser (Phase C): .forage text → Recipe

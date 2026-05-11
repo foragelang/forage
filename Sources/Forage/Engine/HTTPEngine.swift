@@ -23,11 +23,18 @@ public actor HTTPEngine {
         self.progress = progress ?? HTTPProgress()
     }
 
-    /// Run a recipe with the given inputs.
-    public func run(recipe: Recipe, inputs: [String: JSONValue]) async throws -> Snapshot {
+    /// Run a recipe with the given inputs. Returns a `RunResult` carrying
+    /// the snapshot plus a `DiagnosticReport`. A successful run reports
+    /// `stallReason == "completed"`; an interrupted run reports
+    /// `stallReason == "failed: <description>"` and the snapshot reflects
+    /// whatever the walker had emitted before the error. The HTTP engine
+    /// has no `captures.match` concept, so `unmatchedCaptures`,
+    /// `unfiredRules`, and `unhandledAffordances` are always empty.
+    public func run(recipe: Recipe, inputs: [String: JSONValue]) async -> RunResult {
         precondition(recipe.engineKind == .http, "HTTPEngine requires recipe.engineKind == .http")
 
         var scope = Scope(inputs: inputs, frames: [[:]], current: nil)
+        var collector = EmissionCollector()
 
         do {
             // Auth: prime step (htmlPrime) runs before the body and binds
@@ -38,14 +45,19 @@ public actor HTTPEngine {
                 scope = try await runHtmlPrime(recipe: recipe, stepName: stepName, captures: captures, scope: scope)
             }
 
-            var collector = EmissionCollector()
             try await runStatements(recipe.body, recipe: recipe, scope: &scope, collector: &collector)
 
             await setPhase(.done)
-            return Snapshot(records: collector.records, observedAt: Date())
+            return RunResult(
+                snapshot: Snapshot(records: collector.records, observedAt: Date()),
+                report: DiagnosticReport(stallReason: "completed")
+            )
         } catch {
             await setPhase(.failed("\(error)"))
-            throw error
+            return RunResult(
+                snapshot: Snapshot(records: collector.records, observedAt: Date()),
+                report: DiagnosticReport(stallReason: "failed: \(error)")
+            )
         }
     }
 

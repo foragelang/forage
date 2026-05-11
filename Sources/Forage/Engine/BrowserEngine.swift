@@ -40,12 +40,15 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private var captures: [Capture] = []
     private var collector = EmissionCollector()
     private var unmatchedCaptures: [Capture] = []
+    /// Per-rule match counter, keyed by `CaptureRule.urlPattern`. Rules that
+    /// never see a matching capture surface as `unfiredRules` in the report.
+    private var ruleMatchCounts: [String: Int] = [:]
     private let scope: Scope
     private var didFireWarmup = false
     private var dismissAttempts = 0
     private var didFinishNav = false
 
-    private var continuation: CheckedContinuation<Snapshot, any Error>?
+    private var continuation: CheckedContinuation<RunResult, any Error>?
 
     public init(
         recipe: Recipe,
@@ -103,10 +106,14 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         self.paginate?.host = self
     }
 
-    /// Run the recipe. Returns the accumulated snapshot. Throws on hard
-    /// timeout or navigation error.
-    public func run() async throws -> Snapshot {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Snapshot, any Error>) in
+    /// Run the recipe. Returns a `RunResult` carrying the accumulated
+    /// snapshot plus a `DiagnosticReport` describing how the run terminated
+    /// and what wasn't accounted for. Throws only for setup-time errors
+    /// (e.g. an unparseable `initialURL` in the recipe); runtime termination
+    /// reasons (settled / hard-timeout / nav-fail) come back through
+    /// `report.stallReason` instead.
+    public func run() async throws -> RunResult {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RunResult, any Error>) in
             self.continuation = cont
             do {
                 try start()
@@ -154,7 +161,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         }
     }
 
-    private func finish(reason: String) {
+    private func finish(reason: String, navFailURL: String? = nil) {
         guard let cont = continuation else { return }
         continuation = nil
         if reason == "settled" {
@@ -162,12 +169,56 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         } else {
             progress.setPhase(.failed(reason))
         }
-        let snapshot = buildSnapshot()
-        cont.resume(returning: snapshot)
+        let result = buildRunResult(reason: reason, navFailURL: navFailURL)
+        cont.resume(returning: result)
     }
 
-    private func buildSnapshot() -> Snapshot {
-        Snapshot(records: collector.records, observedAt: Date())
+    private func buildRunResult(reason: String, navFailURL: String?) -> RunResult {
+        let snapshot = Snapshot(records: collector.records, observedAt: Date())
+        let report = DiagnosticReport(
+            stallReason: stallReasonString(reason: reason, navFailURL: navFailURL),
+            unmatchedCaptures: projectedUnmatchedCaptures(),
+            unfiredRules: unfiredRulePatterns(),
+            unmetExpectations: [],
+            unhandledAffordances: []
+        )
+        return RunResult(snapshot: snapshot, report: report)
+    }
+
+    private func stallReasonString(reason: String, navFailURL: String?) -> String {
+        switch reason {
+        case "settled", "hard-timeout":
+            return reason
+        case "nav-fail":
+            return "navigation-failed: \(navFailURL ?? "")"
+        default:
+            return reason
+        }
+    }
+
+    /// Browser runs on a long-lived SPA can produce thousands of captures.
+    /// 50 is a soft cap that keeps the report bounded for logging / JSON
+    /// dumps while still surfacing the *most recent* endpoints the recipe
+    /// didn't cover — those are the actionable ones for the recipe author.
+    private static let unmatchedCaptureCap = 50
+
+    private func projectedUnmatchedCaptures() -> [UnmatchedCapture] {
+        let tail = unmatchedCaptures.suffix(Self.unmatchedCaptureCap)
+        return tail.map {
+            UnmatchedCapture(
+                url: $0.responseUrl,
+                method: $0.method,
+                status: $0.status,
+                bodyBytes: $0.body.utf8.count
+            )
+        }
+    }
+
+    private func unfiredRulePatterns() -> [String] {
+        guard let bcfg = recipe.browser else { return [] }
+        return bcfg.captures
+            .map(\.urlPattern)
+            .filter { (ruleMatchCounts[$0] ?? 0) == 0 }
     }
 
     private func applyMatchingRules(to capture: Capture) {
@@ -175,6 +226,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         var matched = false
         for rule in bcfg.captures where capture.responseUrl.contains(rule.urlPattern) {
             matched = true
+            ruleMatchCounts[rule.urlPattern, default: 0] += 1
             applyRule(rule, capture: capture)
         }
         if !matched {
@@ -252,11 +304,11 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
-        finish(reason: "nav-fail")
+        finish(reason: "nav-fail", navFailURL: webView.url?.absoluteString)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
-        finish(reason: "nav-fail")
+        finish(reason: "nav-fail", navFailURL: webView.url?.absoluteString)
     }
 
     // MARK: - Dismissal orchestration

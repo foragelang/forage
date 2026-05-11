@@ -69,17 +69,18 @@ func runRecipe() {
 
         Task { @MainActor in
             do {
-                let snapshot: Snapshot
+                let result: RunResult
                 if recipe.engineKind == .browser {
                     let engine = BrowserEngine(recipe: recipe, inputs: inputs)
-                    snapshot = try await engine.run()
+                    result = try await engine.run()
                 } else {
                     let runner = RecipeRunner(httpClient: HTTPClient(transport: URLSessionTransport()))
-                    snapshot = try await runner.run(recipe: recipe, inputs: inputs)
+                    result = try await runner.run(recipe: recipe, inputs: inputs)
                 }
-                let data = try SnapshotIO.encode(snapshot)
+                let data = try SnapshotIO.encode(result.snapshot)
                 FileHandle.standardOutput.write(data)
                 FileHandle.standardOutput.write("\n".data(using: .utf8)!)
+                FileHandle.standardError.write("stallReason: \(result.report.stallReason)\n".data(using: .utf8)!)
                 NSApp.terminate(nil)
             } catch {
                 FileHandle.standardError.write("run failed: \(error)\n".data(using: .utf8)!)

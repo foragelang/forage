@@ -1,7 +1,8 @@
 import Foundation
 
 /// Top-level entry point. Picks the right engine for a recipe and runs it.
-/// Returns a `Snapshot` with the records the recipe emitted.
+/// Returns a `RunResult` carrying the snapshot plus a `DiagnosticReport`
+/// explaining how the run terminated.
 ///
 /// `progress` is a long-lived `HTTPProgress` instance the runner reuses
 /// across runs (reset at the start of each `run(...)`). Consumers grab the
@@ -22,12 +23,12 @@ public actor RecipeRunner {
         self.progress = HTTPProgress()
     }
 
-    public func run(recipe: Recipe, inputs: [String: JSONValue]) async throws -> Snapshot {
+    public func run(recipe: Recipe, inputs: [String: JSONValue]) async throws -> RunResult {
         switch recipe.engineKind {
         case .http:
             await MainActor.run { progress.reset() }
             let engine = HTTPEngine(client: httpClient, evaluator: evaluator, progress: progress)
-            return try await engine.run(recipe: recipe, inputs: inputs)
+            return await engine.run(recipe: recipe, inputs: inputs)
         case .browser:
             // BrowserEngine requires NSApplication + main-actor isolation,
             // so the runner can't drive it directly from this actor. Hosts

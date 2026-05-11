@@ -94,13 +94,15 @@ func minimalRecipeRunsAndEmitsRecord() async throws {
     let client = HTTPClient(transport: transport, minRequestInterval: 0)
     let runner = RecipeRunner(httpClient: client)
 
-    let snapshot = try await runner.run(recipe: recipe, inputs: [:])
+    let result = try await runner.run(recipe: recipe, inputs: [:])
+    let snapshot = result.snapshot
 
     let items = snapshot.records(of: "Item")
     #expect(items.count == 2)
     #expect(items[0].fields["id"] == .string("1"))
     #expect(items[0].fields["name"] == .string("Alpha"))
     #expect(items[1].fields["id"] == .string("2"))
+    #expect(result.report.stallReason == "completed")
 }
 
 // MARK: - Sweed-shaped recipe with pagination + transforms
@@ -188,7 +190,8 @@ func sweedShapedRecipeWithPaginationAndTransforms() async throws {
     let client = HTTPClient(transport: transport, minRequestInterval: 0)
     let runner = RecipeRunner(httpClient: client)
 
-    let snapshot = try await runner.run(recipe: recipe, inputs: ["storeId": .string("577")])
+    let result = try await runner.run(recipe: recipe, inputs: ["storeId": .string("577")])
+    let snapshot = result.snapshot
 
     let products = snapshot.records(of: "Product")
     #expect(products.count == 3)
@@ -264,10 +267,11 @@ func caseOfBranchesByEnumLabel() async throws {
     let client = HTTPClient(transport: transport, minRequestInterval: 0)
     let runner = RecipeRunner(httpClient: client)
 
-    let snapshot = try await runner.run(
+    let result = try await runner.run(
         recipe: recipe,
         inputs: ["menuTypes": .array([.string("RECREATIONAL"), .string("MEDICAL")])]
     )
+    let snapshot = result.snapshot
 
     let obs = snapshot.records(of: "Obs")
     #expect(obs.count == 2)
@@ -466,7 +470,8 @@ func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws
     let client = HTTPClient(transport: phaseTransport, minRequestInterval: 0)
     let engine = HTTPEngine(client: client, progress: progress)
 
-    let snapshot = try await engine.run(recipe: recipe, inputs: [:])
+    let result = await engine.run(recipe: recipe, inputs: [:])
+    let snapshot = result.snapshot
 
     // Final state: .done, 3 records emitted.
     let finalPhase = await MainActor.run { progress.phase }
@@ -476,6 +481,7 @@ func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws
     #expect(finalPhase == .done)
     #expect(finalCount == 3)
     #expect(snapshot.records(of: "Product").count == 3)
+    #expect(result.report.stallReason == "completed")
 
     // Total requests: 1 (priming via htmlPrime) + 1 (paginated step — total=3,
     // list has 3, breaks after first page). The walker skips the prime step
@@ -535,7 +541,7 @@ func httpEngineMarksDoneWithoutHtmlPrime() async throws {
     let client = HTTPClient(transport: phaseTransport, minRequestInterval: 0)
     let engine = HTTPEngine(client: client, progress: progress)
 
-    _ = try await engine.run(recipe: recipe, inputs: [:])
+    let result = await engine.run(recipe: recipe, inputs: [:])
 
     let finalPhase = await MainActor.run { progress.phase }
     let finalCount = await MainActor.run { progress.recordsEmitted }
@@ -543,6 +549,7 @@ func httpEngineMarksDoneWithoutHtmlPrime() async throws {
     #expect(finalPhase == .done)
     #expect(finalCount == 2)
     #expect(finalRequests == 1)
+    #expect(result.report.stallReason == "completed")
 
     let phases = await recorder.phases
     #expect(phases == [.stepping(name: "items")])
@@ -574,9 +581,14 @@ func httpEngineMarksFailedOnTransportError() async throws {
     let progress = HTTPProgress()
     let engine = HTTPEngine(client: client, progress: progress)
 
-    await #expect(throws: (any Error).self) {
-        _ = try await engine.run(recipe: recipe, inputs: [:])
-    }
+    let result = await engine.run(recipe: recipe, inputs: [:])
+
+    // The engine no longer rethrows — it captures the error in
+    // `report.stallReason` and returns the partial snapshot.
+    #expect(result.report.stallReason.hasPrefix("failed: "))
+    #expect(result.snapshot.records.isEmpty)
+    #expect(result.report.unmatchedCaptures.isEmpty)
+    #expect(result.report.unfiredRules.isEmpty)
 
     let finalPhase = await MainActor.run { progress.phase }
     switch finalPhase {
@@ -623,18 +635,20 @@ func recipeRunnerExposesAndResetsProgressAcrossRuns() async throws {
     // Grab the long-lived progress reference up front (the consumer pattern).
     let progress = runner.progress
 
-    _ = try await runner.run(recipe: recipe, inputs: [:])
+    let firstResult = try await runner.run(recipe: recipe, inputs: [:])
     let phaseAfterFirst = await MainActor.run { progress.phase }
     let countAfterFirst = await MainActor.run { progress.recordsEmitted }
     #expect(phaseAfterFirst == .done)
     #expect(countAfterFirst == 2)
+    #expect(firstResult.report.stallReason == "completed")
 
     // Second run on the same runner: progress should reset, not accumulate.
-    _ = try await runner.run(recipe: recipe, inputs: [:])
+    let secondResult = try await runner.run(recipe: recipe, inputs: [:])
     let phaseAfterSecond = await MainActor.run { progress.phase }
     let countAfterSecond = await MainActor.run { progress.recordsEmitted }
     let requestsAfterSecond = await MainActor.run { progress.requestsSent }
     #expect(phaseAfterSecond == .done)
     #expect(countAfterSecond == 2)
     #expect(requestsAfterSecond == 1)
+    #expect(secondResult.report.stallReason == "completed")
 }
