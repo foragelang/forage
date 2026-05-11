@@ -3,16 +3,24 @@ import Foundation
 /// Executes an HTTP-engine `Recipe`. Walks the recipe's `body` (steps,
 /// emissions, for-loops), maintains the runtime scope, accumulates emitted
 /// records into a `Snapshot`.
+///
+/// Live progress is exposed via `progress` (an `HTTPProgress`) so consumers
+/// can render phase / requests-sent / records-emitted without polling. The
+/// engine drives all mutations as it runs.
 public actor HTTPEngine {
     public let client: HTTPClient
     public let evaluator: ExtractionEvaluator
 
+    public nonisolated let progress: HTTPProgress
+
     public init(
         client: HTTPClient,
-        evaluator: ExtractionEvaluator = ExtractionEvaluator()
+        evaluator: ExtractionEvaluator = ExtractionEvaluator(),
+        progress: HTTPProgress? = nil
     ) {
         self.client = client
         self.evaluator = evaluator
+        self.progress = progress ?? HTTPProgress()
     }
 
     /// Run a recipe with the given inputs.
@@ -21,16 +29,53 @@ public actor HTTPEngine {
 
         var scope = Scope(inputs: inputs, frames: [[:]], current: nil)
 
-        // Auth: prime step (htmlPrime) runs before the body and binds variables
-        // into the top frame. staticHeader is applied per-request inside `run(step:)`.
-        if case .htmlPrime(let stepName, let captures) = recipe.auth {
-            scope = try await runHtmlPrime(recipe: recipe, stepName: stepName, captures: captures, scope: scope)
+        do {
+            // Auth: prime step (htmlPrime) runs before the body and binds
+            // variables into the top frame. staticHeader is applied per-request
+            // inside `run(step:)`.
+            if case .htmlPrime(let stepName, let captures) = recipe.auth {
+                await setPhase(.priming)
+                scope = try await runHtmlPrime(recipe: recipe, stepName: stepName, captures: captures, scope: scope)
+            }
+
+            var collector = EmissionCollector()
+            try await runStatements(recipe.body, recipe: recipe, scope: &scope, collector: &collector)
+
+            await setPhase(.done)
+            return Snapshot(records: collector.records, observedAt: Date())
+        } catch {
+            await setPhase(.failed("\(error)"))
+            throw error
         }
+    }
 
-        var collector = EmissionCollector()
-        try await runStatements(recipe.body, recipe: recipe, scope: &scope, collector: &collector)
+    // MARK: - Progress helpers
+    //
+    // Hop to MainActor for every mutation; HTTPProgress is `@MainActor`. The
+    // terminal-phase guard mirrors BrowserEngine: a late transition after
+    // `.done` / `.failed("…")` (e.g. an in-flight emit landing after an error
+    // in a sibling task) must not regress the phase.
 
-        return Snapshot(records: collector.records, observedAt: Date())
+    private func setPhase(_ phase: HTTPProgress.Phase) async {
+        await MainActor.run {
+            if progress.isTerminal { return }
+            progress.setPhase(phase)
+        }
+    }
+
+    private func noteRequest(_ url: String?) async {
+        await MainActor.run { progress.noteRequestSent(url: url) }
+    }
+
+    private func noteEmission(count: Int) async {
+        await MainActor.run { progress.setRecordsEmitted(count) }
+    }
+
+    /// Single send-point so `requestsSent` / `currentURL` are bumped once per
+    /// real network call, regardless of which pagination strategy invoked it.
+    private func sendRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        await noteRequest(request.url?.absoluteString)
+        return try await client.send(request)
     }
 
     // MARK: - Statement walker
@@ -54,12 +99,14 @@ public actor HTTPEngine {
     ) async throws {
         switch statement {
         case .step(let step):
+            await setPhase(.stepping(name: step.name))
             let result = try await runStep(step, recipe: recipe, scope: scope)
             scope = scope.with(step.name, result)
 
         case .emit(let emission):
             let record = try evaluator.emit(emission, in: scope)
             collector.append(record)
+            await noteEmission(count: collector.records.count)
 
         case .forLoop(let varName, let collection, let body):
             let listValue = try PathResolver.resolve(collection, in: scope)
@@ -86,7 +133,7 @@ public actor HTTPEngine {
             return try await runPaginated(step: step, recipe: recipe, scope: scope, pagination: pagination)
         }
         let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: nil)
-        let (data, _) = try await client.send(request)
+        let (data, _) = try await sendRequest(request)
         return try JSONValue.decode(data)
     }
 
@@ -123,10 +170,12 @@ public actor HTTPEngine {
     ) async throws -> JSONValue {
         var collected: [JSONValue] = []
         var page = zeroIndexed ? 0 : 1
+        var humanPage = 1
         while true {
+            await setPhase(.paginating(name: step.name, page: humanPage))
             let pageOverride = PaginationOverride(param: pageParam, value: .int(page))
             let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: pageOverride)
-            let (data, _) = try await client.send(request)
+            let (data, _) = try await sendRequest(request)
             let response = try JSONValue.decode(data)
 
             let pageScope = scope.withCurrent(response)
@@ -146,6 +195,7 @@ public actor HTTPEngine {
             }
 
             page += 1
+            humanPage += 1
             if page > 200 { break }   // safety cap
         }
         return .array(collected)
@@ -157,10 +207,12 @@ public actor HTTPEngine {
     ) async throws -> JSONValue {
         var collected: [JSONValue] = []
         var page = zeroIndexed ? 0 : 1
+        var humanPage = 1
         while true {
+            await setPhase(.paginating(name: step.name, page: humanPage))
             let pageOverride = PaginationOverride(param: pageParam, value: .int(page))
             let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: pageOverride)
-            let (data, _) = try await client.send(request)
+            let (data, _) = try await sendRequest(request)
             let response = try JSONValue.decode(data)
             let items = try PathResolver.resolve(itemsPath, in: scope.withCurrent(response))
             if case .array(let xs) = items, !xs.isEmpty {
@@ -169,6 +221,7 @@ public actor HTTPEngine {
                 break
             }
             page += 1
+            humanPage += 1
             if page > 500 { break }
         }
         return .array(collected)
@@ -182,13 +235,14 @@ public actor HTTPEngine {
         var cursor: JSONValue = .null
         var iter = 0
         while true {
+            await setPhase(.paginating(name: step.name, page: iter + 1))
             let cursorString: String? = {
                 if case .string(let s) = cursor, !s.isEmpty { return s }
                 return nil
             }()
             let override = cursorString.map { PaginationOverride(param: cursorParam, value: .string($0)) }
             let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: override)
-            let (data, _) = try await client.send(request)
+            let (data, _) = try await sendRequest(request)
             let response = try JSONValue.decode(data)
             let pageScope = scope.withCurrent(response)
             let items = try PathResolver.resolve(itemsPath, in: pageScope)
@@ -217,7 +271,7 @@ public actor HTTPEngine {
             throw EngineError.htmlPrimeStepNotFound(stepName)
         }
         let request = try buildRequest(primeStep.request, recipe: recipe, scope: scope, paginationOverride: nil)
-        let (data, _) = try await client.send(request)
+        let (data, _) = try await sendRequest(request)
         guard let html = String(data: data, encoding: .utf8) else {
             throw EngineError.htmlPrimeNotText
         }

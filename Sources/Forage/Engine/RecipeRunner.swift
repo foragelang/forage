@@ -2,9 +2,16 @@ import Foundation
 
 /// Top-level entry point. Picks the right engine for a recipe and runs it.
 /// Returns a `Snapshot` with the records the recipe emitted.
+///
+/// `progress` is a long-lived `HTTPProgress` instance the runner reuses
+/// across runs (reset at the start of each `run(...)`). Consumers grab the
+/// reference once and observe it for the lifetime of the runner; SwiftUI
+/// tracking on `@Observable` does the rest.
 public actor RecipeRunner {
     public let httpClient: HTTPClient
     public let evaluator: ExtractionEvaluator
+
+    public nonisolated let progress: HTTPProgress
 
     public init(
         httpClient: HTTPClient,
@@ -12,12 +19,14 @@ public actor RecipeRunner {
     ) {
         self.httpClient = httpClient
         self.evaluator = evaluator
+        self.progress = HTTPProgress()
     }
 
     public func run(recipe: Recipe, inputs: [String: JSONValue]) async throws -> Snapshot {
         switch recipe.engineKind {
         case .http:
-            let engine = HTTPEngine(client: httpClient, evaluator: evaluator)
+            await MainActor.run { progress.reset() }
+            let engine = HTTPEngine(client: httpClient, evaluator: evaluator, progress: progress)
             return try await engine.run(recipe: recipe, inputs: inputs)
         case .browser:
             // BrowserEngine requires NSApplication + main-actor isolation,

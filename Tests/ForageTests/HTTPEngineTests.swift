@@ -358,3 +358,294 @@ func transformVocabularyCovers_parseSize_normalizeOzToGrams_prevalence() async t
     // titleCase
     #expect(try transforms.apply("titleCase", value: .string("flower flowers"), args: []) == .string("Flower Flowers"))
 }
+
+// MARK: - HTTPProgress integration: phases observed during a paginated run
+
+/// Per-test recorder for `HTTPProgress.phase` snapshots taken at each
+/// transport-level send. The actor chain through `HTTPClient → Transport →
+/// MockTransport` already deadlocks if Transport itself is an actor (Swift
+/// Concurrency can't unwind the nested isolation hops with the engine actor
+/// awaiting). Keeping the recorder `@MainActor` and the transport a value
+/// type sidesteps that.
+@MainActor
+final class PhaseRecorder {
+    var phases: [HTTPProgress.Phase] = []
+    init() {}
+}
+
+struct PhaseRecordingTransport: Transport {
+    let inner: MockTransport
+    let progress: HTTPProgress
+    let recorder: PhaseRecorder
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        await MainActor.run {
+            recorder.phases.append(progress.phase)
+        }
+        return try await inner.send(request)
+    }
+}
+
+@Test
+func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws {
+    // Recipe: htmlPrime auth + a paginated step that runs three pages.
+    let recipe = Recipe(
+        name: "progress-test",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Product", fields: [
+                RecipeField(name: "externalId", type: .string, optional: false),
+            ]),
+        ],
+        auth: .htmlPrime(
+            stepName: "prime",
+            capturedVars: [
+                HtmlPrimeVar(varName: "nonce", regexPattern: "\"nonce\":\"([a-z0-9]+)\"", groupIndex: 1),
+            ]
+        ),
+        body: [
+            .step(HTTPStep(
+                name: "prime",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/prime"))
+            )),
+            .step(HTTPStep(
+                name: "products",
+                request: HTTPRequest(
+                    method: "POST",
+                    url: Template(literal: "https://example.com/products"),
+                    body: .jsonObject([
+                        HTTPBodyKV(key: "page", value: .literal(.int(1))),
+                    ])
+                ),
+                pagination: .pageWithTotal(
+                    itemsPath: .field(.current, "list"),
+                    totalPath: .field(.current, "total"),
+                    pageParam: "page",
+                    pageSize: 1
+                )
+            )),
+            .forLoop(
+                variable: "product",
+                collection: .variable("products"),
+                body: [
+                    .emit(Emission(
+                        typeName: "Product",
+                        bindings: [
+                            FieldBinding(
+                                fieldName: "externalId",
+                                expr: .pipe(
+                                    .path(.field(.variable("product"), "id")),
+                                    [TransformCall(name: "toString")]
+                                )
+                            ),
+                        ]
+                    ))
+                ]
+            )
+        ]
+    )
+
+    // Mock the prime body and three product pages (pageSize=1, total=3).
+    //
+    // The prime body has to be (a) text the regex can scan, AND (b) valid
+    // JSON, because the engine's main walker re-dispatches every step in
+    // `recipe.body` — including the prime step — through `runStep`, which
+    // JSON-decodes the response. That re-dispatch is pre-existing engine
+    // behavior; not our concern in Phase 2. We just serve a body that
+    // satisfies both readers.
+    let mock = MockTransport()
+    let primeBody = "{\"nonce\":\"deadbeef\"}"
+    await mock.register(
+        { ($0.url?.absoluteString ?? "").contains("example.com/prime") },
+        body: primeBody.data(using: .utf8)!,
+        status: 200
+    )
+    try await mock.registerJSON(
+        urlSubstring: "example.com/products",
+        json: [
+            "list": [["id": 100], ["id": 101], ["id": 102]],
+            "total": 3,
+        ]
+    )
+
+    let recorder = await PhaseRecorder()
+    let progress = HTTPProgress()
+    let phaseTransport = PhaseRecordingTransport(inner: mock, progress: progress, recorder: recorder)
+    let client = HTTPClient(transport: phaseTransport, minRequestInterval: 0)
+    let engine = HTTPEngine(client: client, progress: progress)
+
+    let snapshot = try await engine.run(recipe: recipe, inputs: [:])
+
+    // Final state: .done, 3 records emitted.
+    let finalPhase = await MainActor.run { progress.phase }
+    let finalCount = await MainActor.run { progress.recordsEmitted }
+    let finalRequests = await MainActor.run { progress.requestsSent }
+    let finalURL = await MainActor.run { progress.currentURL }
+    #expect(finalPhase == .done)
+    #expect(finalCount == 3)
+    #expect(snapshot.records(of: "Product").count == 3)
+
+    // Total requests: 1 (priming via htmlPrime) + 1 (main walker re-dispatches
+    // the prime step) + 1 (paginated step — total=3, list has 3, breaks after
+    // first page). The prime-step re-dispatch is pre-existing engine behavior
+    // (out of scope for Phase 2); we just count it.
+    #expect(finalRequests == 3)
+    #expect(finalURL?.contains("example.com/products") == true)
+
+    // Phases observed at each network call, in order:
+    //   1. .priming                       (htmlPrime auth fetch)
+    //   2. .stepping("prime")             (main walker re-dispatches prime)
+    //   3. .paginating("products", 1)     (only one page — total=3, list=3)
+    let phases = await recorder.phases
+    #expect(phases.count == 3)
+    #expect(phases[0] == .priming)
+    #expect(phases[1] == .stepping(name: "prime"))
+    #expect(phases[2] == .paginating(name: "products", page: 1))
+}
+
+@Test
+func httpEngineMarksDoneWithoutHtmlPrime() async throws {
+    // No auth.htmlPrime → engine should skip .priming and start with .stepping.
+    let recipe = Recipe(
+        name: "no-prime",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Item", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "items",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/items"))
+            )),
+            .forLoop(
+                variable: "item",
+                collection: .field(.variable("items"), "data"),
+                body: [
+                    .emit(Emission(
+                        typeName: "Item",
+                        bindings: [
+                            FieldBinding(fieldName: "id", expr: .path(.field(.variable("item"), "id"))),
+                        ]
+                    ))
+                ]
+            )
+        ]
+    )
+
+    let mock = MockTransport()
+    try await mock.registerJSON(
+        urlSubstring: "items",
+        json: ["data": [["id": "x"], ["id": "y"]]]
+    )
+
+    let recorder = await PhaseRecorder()
+    let progress = HTTPProgress()
+    let phaseTransport = PhaseRecordingTransport(inner: mock, progress: progress, recorder: recorder)
+    let client = HTTPClient(transport: phaseTransport, minRequestInterval: 0)
+    let engine = HTTPEngine(client: client, progress: progress)
+
+    _ = try await engine.run(recipe: recipe, inputs: [:])
+
+    let finalPhase = await MainActor.run { progress.phase }
+    let finalCount = await MainActor.run { progress.recordsEmitted }
+    let finalRequests = await MainActor.run { progress.requestsSent }
+    #expect(finalPhase == .done)
+    #expect(finalCount == 2)
+    #expect(finalRequests == 1)
+
+    let phases = await recorder.phases
+    #expect(phases == [.stepping(name: "items")])
+}
+
+@Test
+func httpEngineMarksFailedOnTransportError() async throws {
+    let recipe = Recipe(
+        name: "fail-test",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Item", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "items",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/missing"))
+            )),
+        ]
+    )
+
+    // MockTransport has no matchers registered → it throws on send.
+    // maxRetries: 0 keeps the test fast; default retries do exponential
+    // backoff (2s, 4s, 8s) which would balloon the test runtime.
+    let mock = MockTransport()
+    let client = HTTPClient(transport: mock, minRequestInterval: 0, maxRetries: 0)
+    let progress = HTTPProgress()
+    let engine = HTTPEngine(client: client, progress: progress)
+
+    await #expect(throws: (any Error).self) {
+        _ = try await engine.run(recipe: recipe, inputs: [:])
+    }
+
+    let finalPhase = await MainActor.run { progress.phase }
+    switch finalPhase {
+    case .failed: break
+    default: Issue.record("expected .failed, got \(finalPhase)")
+    }
+}
+
+@Test
+func recipeRunnerExposesAndResetsProgressAcrossRuns() async throws {
+    let recipe = Recipe(
+        name: "runner-progress",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Item", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "items",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/r"))
+            )),
+            .forLoop(
+                variable: "item",
+                collection: .field(.variable("items"), "data"),
+                body: [
+                    .emit(Emission(
+                        typeName: "Item",
+                        bindings: [
+                            FieldBinding(fieldName: "id", expr: .path(.field(.variable("item"), "id"))),
+                        ]
+                    ))
+                ]
+            )
+        ]
+    )
+
+    let mock = MockTransport()
+    try await mock.registerJSON(urlSubstring: "/r", json: ["data": [["id": "1"], ["id": "2"]]])
+    let client = HTTPClient(transport: mock, minRequestInterval: 0)
+    let runner = RecipeRunner(httpClient: client)
+
+    // Grab the long-lived progress reference up front (the consumer pattern).
+    let progress = runner.progress
+
+    _ = try await runner.run(recipe: recipe, inputs: [:])
+    let phaseAfterFirst = await MainActor.run { progress.phase }
+    let countAfterFirst = await MainActor.run { progress.recordsEmitted }
+    #expect(phaseAfterFirst == .done)
+    #expect(countAfterFirst == 2)
+
+    // Second run on the same runner: progress should reset, not accumulate.
+    _ = try await runner.run(recipe: recipe, inputs: [:])
+    let phaseAfterSecond = await MainActor.run { progress.phase }
+    let countAfterSecond = await MainActor.run { progress.recordsEmitted }
+    let requestsAfterSecond = await MainActor.run { progress.requestsSent }
+    #expect(phaseAfterSecond == .done)
+    #expect(countAfterSecond == 2)
+    #expect(requestsAfterSecond == 1)
+}

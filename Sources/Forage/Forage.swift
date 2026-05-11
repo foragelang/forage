@@ -40,6 +40,10 @@
 //   - HTTPClient / Transport / URLSessionTransport
 //   - HTTPEngine                : run an HTTP-engine Recipe
 //   - RecipeRunner              : top-level entry point
+//   - HTTPProgress              : @Observable live progress signal driven by
+//                                 HTTPEngine (phase, requests-sent,
+//                                 records-emitted, current URL) — sibling of
+//                                 BrowserProgress
 //
 // Coming next:
 //   - Parser (Phase C): .forage text → Recipe
