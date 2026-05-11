@@ -71,7 +71,7 @@ public actor HTTPClient {
                 let body = String(data: data, encoding: .utf8)?.prefix(200).description
                 throw HTTPClientError.badStatus(code: response.statusCode, snippet: body)
             } catch {
-                if attempt < maxRetries {
+                if Self.isTransientNetworkError(error) && attempt < maxRetries {
                     attempt += 1
                     let delay = pow(2.0, Double(attempt))
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -82,6 +82,17 @@ public actor HTTPClient {
         }
     }
 
+    /// True for thrown errors that represent a transient network condition
+    /// worth retrying (connection drops, DNS hiccups, timeouts). Everything
+    /// else — `HTTPClientError.badStatus`, decode failures, mock-transport
+    /// failures, programmer mistakes — fails fast.
+    static func isTransientNetworkError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return urlError.isTransient
+        }
+        return false
+    }
+
     private func waitIfNeeded(host: String) async {
         if let last = lastRequestAt[host] {
             let elapsed = Date().timeIntervalSince(last)
@@ -90,6 +101,25 @@ public actor HTTPClient {
             }
         }
         lastRequestAt[host] = Date()
+    }
+}
+
+extension URLError {
+    /// Network-layer codes that are worth retrying — packet loss, DNS,
+    /// timeouts, transient unreachability. 4xx/5xx HTTP responses surface
+    /// as `HTTPURLResponse` (handled separately) and aren't covered here.
+    var isTransient: Bool {
+        switch code {
+        case .notConnectedToInternet,
+             .timedOut,
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .cannotConnectToHost,
+             .cannotFindHost:
+            return true
+        default:
+            return false
+        }
     }
 }
 

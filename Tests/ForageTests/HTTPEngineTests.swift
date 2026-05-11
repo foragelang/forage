@@ -44,6 +44,76 @@ actor MockTransport: Transport {
     }
 }
 
+// MARK: - HTTPClient retry policy
+
+/// Transport that throws a configured error for the first `failuresBeforeSuccess`
+/// calls, then returns 200 OK with empty body. Counts every call.
+actor RetryProbeTransport: Transport {
+    let error: Error
+    let failuresBeforeSuccess: Int
+    private(set) var calls: Int = 0
+
+    init(throwing error: Error, failuresBeforeSuccess: Int = .max) {
+        self.error = error
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+    }
+
+    func callCount() -> Int { calls }
+
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await self.handle(request)
+    }
+
+    private func handle(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
+        calls += 1
+        if calls <= failuresBeforeSuccess {
+            throw error
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil
+        )!
+        return (Data(), response)
+    }
+}
+
+@Test
+func httpClientRetriesTransientURLErrorThenSucceeds() async throws {
+    // Two transient timeouts, then 200 — client retries (delay 2s + 4s = ~6s)
+    // and succeeds. Bound the assertion loosely so CI scheduling jitter doesn't
+    // flake.
+    let transport = RetryProbeTransport(
+        throwing: URLError(.timedOut),
+        failuresBeforeSuccess: 2
+    )
+    let client = HTTPClient(transport: transport, minRequestInterval: 0, maxRetries: 3)
+    let url = URL(string: "https://example.com/retry")!
+
+    let (_, response) = try await client.send(URLRequest(url: url))
+    let calls = await transport.callCount()
+    #expect(response.statusCode == 200)
+    #expect(calls == 3)
+}
+
+@Test
+func httpClientFailsFastOnNonURLError() async throws {
+    // NSError (not URLError) should not be retried — first throw bubbles out.
+    let nsError = NSError(domain: "Probe", code: 404, userInfo: nil)
+    let transport = RetryProbeTransport(throwing: nsError)
+    let client = HTTPClient(transport: transport, minRequestInterval: 0, maxRetries: 3)
+    let url = URL(string: "https://example.com/fail")!
+
+    let start = Date()
+    await #expect(throws: (any Error).self) {
+        _ = try await client.send(URLRequest(url: url))
+    }
+    let elapsed = Date().timeIntervalSince(start)
+    let calls = await transport.callCount()
+    #expect(calls == 1)
+    // Sanity: zero retries means no 2s/4s/8s sleeps — well under a second.
+    #expect(elapsed < 1.0)
+}
+
 // MARK: - Smoke test: minimal recipe runs end-to-end
 
 @Test
