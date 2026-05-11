@@ -5,15 +5,48 @@ import Forage
 struct PublishCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "publish",
-        abstract: "Push a recipe to the Forage hub. (stub for now — wires to live hub once available.)"
+        abstract: "Push a recipe to the Forage hub. Dry-run by default; pass --publish to POST."
     )
 
-    @Argument(help: "Recipe directory (must contain recipe.forage).")
+    @Argument(help: "Recipe directory (or `.forage` file). Optional sibling files: fixtures/captures.jsonl, expected.snapshot.json, recipe.json.")
     var recipeDir: String
 
+    // Metadata: read from recipe.json / recipe.yml if present, otherwise the
+    // user supplies via flags. CLI flags always win when both are present.
+    @Option(help: "Slug to publish under. Defaults to recipe.name if no recipe.json.")
+    var slug: String?
+
+    @Option(help: "Human-readable display name.")
+    var displayName: String?
+
+    @Option(help: "One-line summary.")
+    var summary: String?
+
+    @Option(help: "Author handle (defaults to omitted).")
+    var author: String?
+
+    @Option(parsing: .singleValue, help: "Tag (repeatable). Comma-split if a single arg contains commas.")
+    var tags: [String] = []
+
+    @Flag(help: "Actually POST to the hub. Default behaviour is dry-run: print the payload, exit.")
+    var publish = false
+
+    @Flag(help: "Alias of --publish (mirrors hub-api expectations).")
+    var noDryRun = false
+
     func run() async throws {
-        let recipePath = try RunCommand.resolveRecipePath(recipeDir)
-        let src = try String(contentsOfFile: recipePath, encoding: .utf8)
+        let recipeFile = try RunCommand.resolveRecipePath(recipeDir)
+        let recipeURL = URL(fileURLWithPath: recipeFile)
+        let dirURL = recipeURL.deletingLastPathComponent()
+
+        let src: String
+        do {
+            src = try String(contentsOf: recipeURL, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write("read failed: \(error)\n".data(using: .utf8)!)
+            throw ExitCode.failure
+        }
+
         let recipe: Recipe
         do {
             recipe = try Parser.parse(source: src)
@@ -21,52 +54,153 @@ struct PublishCommand: AsyncParsableCommand {
             FileHandle.standardError.write("parse failed: \(error)\n".data(using: .utf8)!)
             throw ExitCode.failure
         }
-        let issues = Validator.validate(recipe)
-        if issues.hasErrors {
-            FileHandle.standardError.write("validation failed:\n".data(using: .utf8)!)
-            for e in issues.errors {
-                FileHandle.standardError.write(" - \(e.message) [\(e.location)]\n".data(using: .utf8)!)
+
+        // We validate the *parsed* recipe — imports aren't flattened for
+        // publish since the body that lands in the registry is exactly the
+        // text the user shipped (consumers of the published recipe will
+        // resolve imports themselves at run time).
+        // To still catch silly errors, we run the validator only when there
+        // are no unresolved imports.
+        if recipe.imports.isEmpty {
+            let issues = Validator.validate(recipe)
+            if issues.hasErrors {
+                FileHandle.standardError.write("validation failed:\n".data(using: .utf8)!)
+                for e in issues.errors {
+                    FileHandle.standardError.write(" - \(e.message) [\(e.location)]\n".data(using: .utf8)!)
+                }
+                throw ExitCode.failure
             }
+        }
+
+        // Optional sibling files.
+        let fixturesURL = dirURL.appendingPathComponent("fixtures/captures.jsonl")
+        let snapshotURL = dirURL.appendingPathComponent("expected.snapshot.json")
+        let metaJSONURL = dirURL.appendingPathComponent("recipe.json")
+
+        let fixturesText: String? = readIfExists(fixturesURL)
+        let snapshotText: String? = readIfExists(snapshotURL)
+        let fileMeta = readMetadataFile(metaJSONURL)
+
+        // Merge metadata: CLI flags override file metadata; file metadata
+        // overrides recipe-derived defaults.
+        let resolvedSlug = slug ?? fileMeta?.slug ?? defaultSlug(for: recipe)
+        let resolvedDisplayName = displayName ?? fileMeta?.displayName ?? recipe.name
+        let resolvedSummary = summary ?? fileMeta?.summary
+        let resolvedAuthor = author ?? fileMeta?.author
+        let resolvedTags = tags.isEmpty
+            ? (fileMeta?.tags ?? [])
+            : tags.flatMap { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+
+        guard validateSlug(resolvedSlug) else {
+            FileHandle.standardError.write(
+                "invalid slug '\(resolvedSlug)' — expected lowercase letters, digits, and dashes (1–64 chars, optionally <author>/<name>)\n"
+                    .data(using: .utf8)!
+            )
             throw ExitCode.failure
         }
 
-        let env = ProcessInfo.processInfo.environment
-        let hubURL = env["FORAGE_HUB_URL"] ?? "https://api.foragelang.com"
-        let token = env["FORAGE_HUB_TOKEN"]
-        let endpoint = "\(hubURL)/v1/recipes"
+        let payload = HubPublishPayload(
+            slug: resolvedSlug,
+            author: resolvedAuthor,
+            displayName: resolvedDisplayName,
+            summary: resolvedSummary,
+            tags: resolvedTags,
+            body: src,
+            fixtures: fixturesText,
+            snapshot: snapshotText
+        )
 
-        guard let token, !token.isEmpty else {
-            print("would POST recipe \"\(recipe.name)\" to \(endpoint)")
-            print("(set FORAGE_HUB_TOKEN to actually publish)")
+        let shouldPublish = publish || noDryRun
+
+        if !shouldPublish {
+            try printPayload(payload)
+            print("# dry-run — pass --publish to POST")
             return
         }
 
-        guard let url = URL(string: endpoint) else {
-            FileHandle.standardError.write("invalid FORAGE_HUB_URL: \(hubURL)\n".data(using: .utf8)!)
+        guard let token = ProcessInfo.processInfo.environment["FORAGE_HUB_TOKEN"],
+              !token.isEmpty
+        else {
+            FileHandle.standardError.write(
+                "--publish requires FORAGE_HUB_TOKEN to be set in the environment\n".data(using: .utf8)!
+            )
             throw ExitCode.failure
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let payload: [String: String] = [
-            "name": recipe.name,
-            "source": src,
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            FileHandle.standardError.write("non-HTTP response\n".data(using: .utf8)!)
+        let baseURL = RunCommand.hubURL()
+        let client = HubClient(baseURL: baseURL, token: token)
+        do {
+            let result = try await client.publish(payload)
+            print("published \(result.slug) v\(result.version)")
+            print("sha256: \(result.sha256)")
+            let detailURL = baseURL
+                .appendingPathComponent("v1")
+                .appendingPathComponent("recipes")
+                .appendingPathComponent(result.slug)
+            print("curl -fsSL \(detailURL.absoluteString)")
+        } catch {
+            FileHandle.standardError.write("publish failed: \(error)\n".data(using: .utf8)!)
             throw ExitCode.failure
         }
-        let body = String(data: data, encoding: .utf8) ?? ""
-        if (200..<300).contains(http.statusCode) {
-            print("published \"\(recipe.name)\" → \(endpoint)")
-            if !body.isEmpty { print(body) }
-        } else {
-            FileHandle.standardError.write("publish failed (\(http.statusCode)):\n\(body)\n".data(using: .utf8)!)
-            throw ExitCode.failure
+    }
+
+    // MARK: - Helpers
+
+    private func readIfExists(_ url: URL) -> String? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Sibling `recipe.json` (or `recipe.yml`) — optional metadata.
+    /// JSON only for v1; we don't ship a YAML decoder.
+    private struct FileMetadata: Decodable {
+        let slug: String?
+        let displayName: String?
+        let summary: String?
+        let author: String?
+        let tags: [String]?
+    }
+
+    private func readMetadataFile(_ url: URL) -> FileMetadata? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url)
+        else { return nil }
+        return try? JSONDecoder().decode(FileMetadata.self, from: data)
+    }
+
+    private func defaultSlug(for recipe: Recipe) -> String {
+        // recipe.name is already lowercase-ish in our convention; lower it
+        // explicitly and replace stray spaces. Real slug validation runs
+        // after this, so a bad name will be rejected with a clear error.
+        recipe.name.lowercased().replacingOccurrences(of: " ", with: "-")
+    }
+
+    private func validateSlug(_ slug: String) -> Bool {
+        // Server-side regex is /^[a-z0-9][a-z0-9-]{1,63}$/ per segment.
+        let parts = slug.split(separator: "/").map(String.init)
+        guard !parts.isEmpty, parts.count <= 2 else { return false }
+        for p in parts {
+            guard let first = p.first,
+                  first.isLowercase || first.isNumber
+            else { return false }
+            guard p.count >= 2, p.count <= 64 else {
+                // server allows 1; tighten to 2 to keep slugs sane
+                return p.count >= 1 && p.count <= 64
+            }
+            for c in p {
+                let ok = (c.isLowercase && c.isLetter) || c.isNumber || c == "-"
+                if !ok { return false }
+            }
+        }
+        return true
+    }
+
+    private func printPayload(_ payload: HubPublishPayload) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(payload)
+        if let s = String(data: data, encoding: .utf8) {
+            print(s)
         }
     }
 }

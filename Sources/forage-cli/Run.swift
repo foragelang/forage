@@ -26,12 +26,29 @@ struct RunCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let recipe: Recipe
+        var recipe: Recipe
         do {
             recipe = try Parser.parse(source: src)
         } catch {
             FileHandle.standardError.write("parse failed: \(error)\n".data(using: .utf8)!)
             throw ExitCode.failure
+        }
+
+        if !recipe.imports.isEmpty {
+            do {
+                let client = HubClient(
+                    baseURL: Self.hubURL(),
+                    token: ProcessInfo.processInfo.environment["FORAGE_HUB_TOKEN"]
+                )
+                let importer = RecipeImporter(
+                    client: client,
+                    cacheRoot: RecipeImporter.defaultCacheRoot()
+                )
+                recipe = try await importer.flatten(recipe)
+            } catch {
+                FileHandle.standardError.write("import failed: \(error)\n".data(using: .utf8)!)
+                throw ExitCode.failure
+            }
         }
 
         let issues = Validator.validate(recipe)
@@ -129,5 +146,16 @@ struct RunCommand: AsyncParsableCommand {
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write("\n".data(using: .utf8)!)
         FileHandle.standardError.write("stallReason: \(result.report.stallReason)\n".data(using: .utf8)!)
+    }
+
+    /// Hub URL from `FORAGE_HUB_URL` env var (else the production default).
+    /// Trailing slashes stripped so path-joining is unambiguous.
+    static func hubURL() -> URL {
+        let raw = ProcessInfo.processInfo.environment["FORAGE_HUB_URL"] ?? ""
+        let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        if trimmed.isEmpty {
+            return HubClient.defaultBaseURL
+        }
+        return URL(string: trimmed) ?? HubClient.defaultBaseURL
     }
 }
