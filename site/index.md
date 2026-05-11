@@ -27,53 +27,42 @@ features:
       details: Published grammar, fixed transform vocabulary, validator errors that speak the DSL's own terms. Hand the spec plus a few reference recipes to an AI and let it write the rest.
 ---
 
-## This is what scraping looks like in Forage
+## A recipe, end to end
 
-A `.forage` file describes one site: its HTTP graph, how it paginates, and how each response maps into typed records. The engine does the rest.
+The smallest useful recipe: hit Wikipedia's REST API and emit one typed `Article`.
 
 ```forage
-recipe "store" {
+recipe "wikipedia" {
     engine http
 
-    type Product {
-        externalId: String
-        name:       String
-        brand:      String?
-        price:      Double?
-        tags:       [String]
+    type Article {
+        title:   String
+        extract: String
+        url:     String
     }
 
-    input storeId: String
+    input topic: String
 
-    auth.staticHeader {
-        name:  "X-Store-Id"
-        value: $input.storeId
+    step page {
+        method "GET"
+        url    "https://en.wikipedia.org/api/rest_v1/page/summary/{$input.topic}"
     }
 
-    step products {
-        method "POST"
-        url    "https://api.example.com/products"
-        paginate pageWithTotal {
-            items:     $.list
-            total:     $.total
-            pageParam: "page"
-            pageSize:  50
-        }
-    }
-
-    for $p in $products[*] {
-        emit Product {
-            externalId ← $p.id | toString
-            name       ← $p.name
-            brand      ← $p.brand?.name
-            price      ← $p.price
-            tags       ← $p.tags[*].name | dedup
-        }
+    emit Article {
+        title   ← $page.title
+        extract ← $page.extract
+        url     ← $page.content_urls.desktop.page
     }
 }
 ```
 
-Run it with `forage-probe run recipes/store --input storeId=abc123` against either the live site or a directory of saved HTTP fixtures.
+Run it:
+
+```sh
+forage-probe run recipes/wikipedia --input topic=Foraging
+```
+
+That's the whole shape: declare the records you want, name the HTTP requests, bind fields to paths in the response. Add `for` loops to iterate, `paginate` blocks for paginated APIs, `auth` strategies for gated endpoints — all on the same template.
 
 ## Status
 
