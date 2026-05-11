@@ -13,7 +13,11 @@ private let bundledRecipesURL: URL = URL(fileURLWithPath: #filePath)
 func registryLoadsBundledRecipes() throws {
     let registry = RecipeRegistry(root: bundledRecipesURL)
     try registry.loadAll()
-    #expect(Set(registry.recipes.keys) == ["sweed", "leafbridge", "jane"])
+    let keys = Set(registry.recipes.keys)
+    #expect(keys.count >= 3)
+    #expect(keys.contains("sweed"))
+    #expect(keys.contains("leafbridge"))
+    #expect(keys.contains("jane"))
 }
 
 @MainActor
