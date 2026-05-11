@@ -51,14 +51,10 @@ public actor HTTPEngine {
 
     // MARK: - Progress helpers
     //
-    // Hop to MainActor for every mutation; HTTPProgress is `@MainActor`. The
-    // terminal-phase guard mirrors BrowserEngine: a late transition after
-    // `.done` / `.failed("…")` (e.g. an in-flight emit landing after an error
-    // in a sibling task) must not regress the phase.
+    // Hop to MainActor for every mutation; HTTPProgress is `@MainActor`.
 
     private func setPhase(_ phase: HTTPProgress.Phase) async {
         await MainActor.run {
-            if progress.isTerminal { return }
             progress.setPhase(phase)
         }
     }
@@ -86,7 +82,17 @@ public actor HTTPEngine {
         scope: inout Scope,
         collector: inout EmissionCollector
     ) async throws {
+        // htmlPrime consumed its named step during the priming phase; skip it
+        // here so the walker doesn't fire the same request twice.
+        let primeStepName: String? = {
+            if case .htmlPrime(let name, _) = recipe.auth { return name }
+            return nil
+        }()
         for statement in statements {
+            if let primeStepName,
+               case .step(let s) = statement, s.name == primeStepName {
+                continue
+            }
             try await runStatement(statement, recipe: recipe, scope: &scope, collector: &collector)
         }
     }

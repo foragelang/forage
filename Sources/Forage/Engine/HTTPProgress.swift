@@ -41,6 +41,7 @@ public final class HTTPProgress {
     public nonisolated init() {}
 
     internal func setPhase(_ phase: Phase) {
+        if isTerminal { return }
         self.phase = phase
     }
 

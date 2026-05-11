@@ -105,35 +105,40 @@ func browserProgressIsTerminalIsFalseForInFlightPhases() {
 @MainActor
 @Test
 func browserProgressIsTerminalIsTrueForDoneAndFailed() {
-    let p = BrowserProgress()
-    p.setPhase(.done)
-    #expect(p.isTerminal == true)
-    p.setPhase(.failed("hard-timeout"))
-    #expect(p.isTerminal == true)
-    p.setPhase(.failed("nav-fail"))
-    #expect(p.isTerminal == true)
+    // One fresh progress per phase: terminal phases are sticky, so chaining
+    // .done → .failed → .failed on a single instance would be ambiguous.
+    let done = BrowserProgress()
+    done.setPhase(.done)
+    #expect(done.isTerminal == true)
+
+    let hardTimeout = BrowserProgress()
+    hardTimeout.setPhase(.failed("hard-timeout"))
+    #expect(hardTimeout.isTerminal == true)
+
+    let navFail = BrowserProgress()
+    navFail.setPhase(.failed("nav-fail"))
+    #expect(navFail.isTerminal == true)
 }
 
 @MainActor
 @Test
 func browserProgressTerminalGuardPreventsSettlingAfterDone() {
-    // Mirrors the engine's guard in `paginateDidFinish()`:
-    // a late pagination-settle transition that fires after `finish(reason:)`
-    // already moved us to .done must not regress the phase.
+    // Terminal phases are sticky: setPhase ignores transitions out of
+    // .done / .failed so a late paginateDidFinish can't regress the state.
     let p = BrowserProgress()
     p.setPhase(.done)
-    if !p.isTerminal { p.setPhase(.settling) }
+    p.setPhase(.settling)
     #expect(p.phase == .done)
 }
 
 @MainActor
 @Test
 func browserProgressTerminalGuardPreservesFailedPhase() {
-    // Same guard, for the hard-timeout path: a late paginateDidFinish
-    // after `.failed("hard-timeout")` must not rewrite to .settling.
+    // Same stickiness on the hard-timeout path: a late paginateDidFinish
+    // after `.failed("hard-timeout")` is dropped.
     let p = BrowserProgress()
     p.setPhase(.failed("hard-timeout"))
-    if !p.isTerminal { p.setPhase(.settling) }
+    p.setPhase(.settling)
     #expect(p.phase == .failed("hard-timeout"))
 }
 #endif

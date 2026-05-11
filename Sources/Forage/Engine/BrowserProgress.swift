@@ -45,6 +45,7 @@ public final class BrowserProgress {
     public init() {}
 
     internal func setPhase(_ phase: Phase) {
+        if isTerminal { return }
         self.phase = phase
     }
 

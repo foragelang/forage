@@ -373,7 +373,6 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     public func paginateDidFinish() {
-        guard !progress.isTerminal else { return }
         progress.setPhase(.settling)
     }
 }

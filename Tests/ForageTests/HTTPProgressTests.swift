@@ -104,24 +104,29 @@ func httpProgressIsTerminalIsFalseForInFlightPhases() {
 @MainActor
 @Test
 func httpProgressIsTerminalIsTrueForDoneAndFailed() {
-    let p = HTTPProgress()
-    p.setPhase(.done)
-    #expect(p.isTerminal == true)
-    p.setPhase(.failed("parse-error"))
-    #expect(p.isTerminal == true)
-    p.setPhase(.failed("404"))
-    #expect(p.isTerminal == true)
+    // One fresh progress per phase: terminal phases are sticky, so chaining
+    // .done → .failed → .failed on a single instance would be ambiguous.
+    let done = HTTPProgress()
+    done.setPhase(.done)
+    #expect(done.isTerminal == true)
+
+    let parseError = HTTPProgress()
+    parseError.setPhase(.failed("parse-error"))
+    #expect(parseError.isTerminal == true)
+
+    let notFound = HTTPProgress()
+    notFound.setPhase(.failed("404"))
+    #expect(notFound.isTerminal == true)
 }
 
 @MainActor
 @Test
 func httpProgressTerminalGuardPreventsStepRegressAfterDone() {
-    // Mirrors the engine's guard: if the run already terminated, a late
-    // transition (e.g. a stale `stepping` from a sibling task) must not
-    // rewrite the terminal state.
+    // Terminal phases are sticky: a late transition (e.g. a stale `stepping`
+    // from a sibling task) can't rewrite the terminal state.
     let p = HTTPProgress()
     p.setPhase(.done)
-    if !p.isTerminal { p.setPhase(.stepping(name: "products")) }
+    p.setPhase(.stepping(name: "products"))
     #expect(p.phase == .done)
 }
 
@@ -130,7 +135,7 @@ func httpProgressTerminalGuardPreventsStepRegressAfterDone() {
 func httpProgressTerminalGuardPreservesFailedPhase() {
     let p = HTTPProgress()
     p.setPhase(.failed("connection-reset"))
-    if !p.isTerminal { p.setPhase(.paginating(name: "products", page: 4)) }
+    p.setPhase(.paginating(name: "products", page: 4))
     #expect(p.phase == .failed("connection-reset"))
 }
 

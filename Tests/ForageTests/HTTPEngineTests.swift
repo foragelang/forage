@@ -445,14 +445,6 @@ func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws
         ]
     )
 
-    // Mock the prime body and three product pages (pageSize=1, total=3).
-    //
-    // The prime body has to be (a) text the regex can scan, AND (b) valid
-    // JSON, because the engine's main walker re-dispatches every step in
-    // `recipe.body` — including the prime step — through `runStep`, which
-    // JSON-decodes the response. That re-dispatch is pre-existing engine
-    // behavior; not our concern in Phase 2. We just serve a body that
-    // satisfies both readers.
     let mock = MockTransport()
     let primeBody = "{\"nonce\":\"deadbeef\"}"
     await mock.register(
@@ -485,22 +477,19 @@ func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws
     #expect(finalCount == 3)
     #expect(snapshot.records(of: "Product").count == 3)
 
-    // Total requests: 1 (priming via htmlPrime) + 1 (main walker re-dispatches
-    // the prime step) + 1 (paginated step — total=3, list has 3, breaks after
-    // first page). The prime-step re-dispatch is pre-existing engine behavior
-    // (out of scope for Phase 2); we just count it.
-    #expect(finalRequests == 3)
+    // Total requests: 1 (priming via htmlPrime) + 1 (paginated step — total=3,
+    // list has 3, breaks after first page). The walker skips the prime step
+    // by name so it isn't re-dispatched.
+    #expect(finalRequests == 2)
     #expect(finalURL?.contains("example.com/products") == true)
 
     // Phases observed at each network call, in order:
     //   1. .priming                       (htmlPrime auth fetch)
-    //   2. .stepping("prime")             (main walker re-dispatches prime)
-    //   3. .paginating("products", 1)     (only one page — total=3, list=3)
+    //   2. .paginating("products", 1)     (only one page — total=3, list=3)
     let phases = await recorder.phases
-    #expect(phases.count == 3)
+    #expect(phases.count == 2)
     #expect(phases[0] == .priming)
-    #expect(phases[1] == .stepping(name: "prime"))
-    #expect(phases[2] == .paginating(name: "products", page: 1))
+    #expect(phases[1] == .paginating(name: "products", page: 1))
 }
 
 @Test
