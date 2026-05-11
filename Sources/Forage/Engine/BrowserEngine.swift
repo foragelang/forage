@@ -21,6 +21,13 @@ import WebKit
 /// `captures.match` rule on arrival and emits records into a long-lived
 /// `EmissionCollector` — so `progress.recordsEmitted` is meaningful while
 /// the run is in flight, not just after it completes.
+///
+/// **Replay mode.** Pass a `BrowserReplayer` (typically built from a
+/// `captures.jsonl` an earlier `Archive.write(...)` produced) and the
+/// engine skips `WKWebView.load(...)`, the age-gate, dismissals, warmup,
+/// pagination, and the settle / hard-timeout timers. It feeds each
+/// captured exchange through the same `captures.match` pipeline and
+/// returns the resulting `RunResult` without ever hitting the network.
 @MainActor
 public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessageHandler, BrowserPaginateHost {
     public let recipe: Recipe
@@ -49,6 +56,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private var didFinishNav = false
 
     private var continuation: CheckedContinuation<RunResult, any Error>?
+    private let replayer: BrowserReplayer?
 
     public init(
         recipe: Recipe,
@@ -56,7 +64,8 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         evaluator: ExtractionEvaluator = ExtractionEvaluator(),
         visible: Bool = true,
         settleSeconds: TimeInterval = 8,
-        hardTimeoutSeconds: TimeInterval = 240
+        hardTimeoutSeconds: TimeInterval = 240,
+        replayer: BrowserReplayer? = nil
     ) {
         precondition(recipe.engineKind == .browser, "BrowserEngine requires browser-engine Recipe")
         precondition(recipe.browser != nil, "browser-engine Recipe must have a `browser { … }` block")
@@ -66,6 +75,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         self.visible = visible
         self.settleSeconds = settleSeconds
         self.hardTimeoutSeconds = hardTimeoutSeconds
+        self.replayer = replayer
         self.scope = Scope(inputs: inputs, frames: [[:]], current: nil)
         super.init()
 
@@ -125,6 +135,11 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     private func start() throws {
+        if replayer != nil {
+            try startReplay()
+            return
+        }
+
         let bcfg = recipe.browser!
         let url = try TemplateRenderer.render(bcfg.initialURL, in: scope)
         guard let urlValue = URL(string: url) else {
@@ -152,6 +167,31 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             self?.finish(reason: "hard-timeout")
         }
         resetSettleTimer()
+    }
+
+    /// Replay-mode entry: skip `WKWebView.load`, the age-gate, dismissals,
+    /// warmup, paginate, and the settle / hard-timeout timers; feed each
+    /// captured exchange through the same `applyMatchingRules` path the live
+    /// JS bridge uses, then finish. The WKWebView is still constructed so
+    /// consumer code that touches `engine.webView` doesn't crash — it just
+    /// never navigates.
+    ///
+    /// Phase ordering during replay: `.loading` → `.paginating(0, 0)` →
+    /// `.settling` → `.done`. Skipped: `.ageGate`, `.dismissing`,
+    /// `.warmupClicks`. The transitions are mostly cosmetic — a Phase F
+    /// status strip can render them — and `.done` is the only one that
+    /// matters for completion.
+    private func startReplay() throws {
+        guard let replayer else { return }
+        progress.setPhase(.loading)
+        progress.setPhase(.paginating(iteration: 0, maxIterations: 0))
+        for capture in replayer.captures {
+            captures.append(capture)
+            progress.noteCapture(responseURL: capture.responseUrl)
+            applyMatchingRules(to: capture)
+        }
+        progress.setPhase(.settling)
+        finish(reason: "settled")
     }
 
     private func resetSettleTimer() {

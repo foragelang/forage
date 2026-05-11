@@ -60,6 +60,12 @@
 //   - ArchiveMeta               : recipe name, inputs, runtime, observedAt
 //   - ArchiveRunHandle          : reference to one persisted run
 //
+// Replay (drive a browser-engine run from saved captures, no network):
+//   - BrowserReplayer           : loads Capture lists from a captures.jsonl
+//                                 or an in-memory array; passed to
+//                                 BrowserEngine.init to short-circuit the
+//                                 live SPA pipeline
+//
 // Recipe registry (loads recipes/<platform>/recipe.forage):
 //   - RecipeRegistry            : @Observable; loads + optionally watches a
 //                                 directory tree of recipes. Consumers point
