@@ -42,3 +42,96 @@
 .vp-doc div[class*='language-'] {
     border-radius: 8px;
 }
+
+/* Home intro: example + run flow + sample output, sits between hero and features. */
+.home-intro {
+    max-width: 1152px;
+    margin: 0 auto;
+    padding: 32px 24px 0;
+}
+
+@media (min-width: 640px) {
+    .home-intro {
+        padding: 48px 48px 0;
+    }
+}
+
+@media (min-width: 960px) {
+    .home-intro {
+        padding: 64px 64px 0;
+    }
+}
+
+.home-intro h2 {
+    margin-top: 48px;
+    border-top: none;
+    padding-top: 0;
+}
+
+.home-intro h2:first-child {
+    margin-top: 0;
+}
+
+.run-flow {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    margin: 24px 0 16px;
+    flex-wrap: wrap;
+}
+
+.run-step {
+    flex: 1 1 0;
+    min-width: 180px;
+    padding: 16px 18px;
+    border: 1px solid var(--vp-c-divider);
+    border-radius: 12px;
+    background: var(--vp-c-bg-soft);
+    display: flex;
+    flex-direction: column;
+}
+
+.run-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--vp-c-brand-1);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.run-step-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--vp-c-text-1);
+}
+
+.run-step-body {
+    font-size: 14px;
+    color: var(--vp-c-text-2);
+    line-height: 1.5;
+}
+
+.run-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--vp-c-text-3);
+    font-size: 22px;
+    user-select: none;
+}
+
+@media (max-width: 768px) {
+    .run-flow {
+        flex-direction: column;
+    }
+    .run-arrow {
+        transform: rotate(90deg);
+        align-self: center;
+        margin: 4px 0;
+    }
+}
