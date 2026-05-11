@@ -29,3 +29,5 @@
     <div class="run-step-body">Returns a snapshot plus a diagnostic report. Both can be archived to disk for replay.</div>
   </div>
 </div>
+
+## What you get
