@@ -57,7 +57,7 @@ public actor HTTPEngine {
                 )
             )
         } catch {
-            let stallReason = "failed: \(error)"
+            let stallReason: String = Self.isCancellation(error) ? "cancelled" : "failed: \(error)"
             await setPhase(.failed(stallReason))
             let snapshot = Snapshot(records: collector.records, observedAt: Date())
             return RunResult(
@@ -68,6 +68,17 @@ public actor HTTPEngine {
                 )
             )
         }
+    }
+
+    /// Recognize task cancellation, however it arrived. `Task.cancel()` from
+    /// the consumer throws `CancellationError` at the next `checkCancellation`
+    /// site; in-flight `URLSession.data(for:)` calls surface the same signal
+    /// as `URLError(.cancelled)`. Both should reduce to a "cancelled" stall
+    /// reason rather than the generic "failed: …" envelope.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
     }
 
     // MARK: - Progress helpers
@@ -156,6 +167,7 @@ public actor HTTPEngine {
     // MARK: - Step execution
 
     private func runStep(_ step: HTTPStep, recipe: Recipe, scope: Scope) async throws -> JSONValue {
+        try Task.checkCancellation()
         if let pagination = step.pagination {
             return try await runPaginated(step: step, recipe: recipe, scope: scope, pagination: pagination)
         }
@@ -199,6 +211,7 @@ public actor HTTPEngine {
         var page = zeroIndexed ? 0 : 1
         var humanPage = 1
         while true {
+            try Task.checkCancellation()
             await setPhase(.paginating(name: step.name, page: humanPage))
             let pageOverride = PaginationOverride(param: pageParam, value: .int(page))
             let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: pageOverride)
@@ -236,6 +249,7 @@ public actor HTTPEngine {
         var page = zeroIndexed ? 0 : 1
         var humanPage = 1
         while true {
+            try Task.checkCancellation()
             await setPhase(.paginating(name: step.name, page: humanPage))
             let pageOverride = PaginationOverride(param: pageParam, value: .int(page))
             let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: pageOverride)
@@ -262,6 +276,7 @@ public actor HTTPEngine {
         var cursor: JSONValue = .null
         var iter = 0
         while true {
+            try Task.checkCancellation()
             await setPhase(.paginating(name: step.name, page: iter + 1))
             let cursorString: String? = {
                 if case .string(let s) = cursor, !s.isEmpty { return s }
@@ -291,6 +306,7 @@ public actor HTTPEngine {
         captures: [HtmlPrimeVar],
         scope: Scope
     ) async throws -> Scope {
+        try Task.checkCancellation()
         guard let primeStmt = recipe.body.first(where: {
             if case .step(let s) = $0, s.name == stepName { return true }
             return false

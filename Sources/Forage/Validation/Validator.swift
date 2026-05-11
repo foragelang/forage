@@ -200,7 +200,9 @@ public enum Validator {
             if !knownTypes.contains(em.typeName) {
                 issues.append(.error("\(location): map-to references unknown type '\(em.typeName)'", location))
             }
-        case .literal, .template: break
+        case .literal: break
+        case .template(let t):
+            validateTemplate(t, transforms: transforms, knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, location: location, issues: &issues)
         case .call(let name, let args):
             if !transforms.has(name) {
                 issues.append(.error("\(location): unknown transform '\(name)'", location))

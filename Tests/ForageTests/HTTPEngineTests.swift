@@ -814,3 +814,171 @@ func failedRunStillSurfacesUnmetExpectationsAlongsideStallReason() async throws 
         "records.where(typeName == \"Product\").count >= 100 (got 0)"
     ])
 }
+
+// MARK: - Cancellation
+
+/// Transport that throws `URLError(.cancelled)` on the second send. Models
+/// the in-flight `URLSession.data(for:)` outcome when the consumer fires
+/// `Task.cancel()` while a request is on the wire — the transport doesn't
+/// see the Swift `CancellationError`, it sees the URL-layer signal.
+actor CancelMidwayTransport: Transport {
+    private var calls = 0
+    private let body: Data
+
+    init(body: Data) {
+        self.body = body
+    }
+
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await self.handle(request)
+    }
+
+    private func handle(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
+        calls += 1
+        if calls == 2 {
+            throw URLError(.cancelled)
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil
+        )!
+        return (body, response)
+    }
+}
+
+@Test
+func httpEngineMapsURLErrorCancelledToCancelledStallReason() async throws {
+    // Recipe paginates until total is reached; the second page request
+    // throws `URLError(.cancelled)` and we expect the engine to surface
+    // that as `stallReason == "cancelled"` rather than the generic
+    // `"failed: …"` envelope.
+    let recipe = Recipe(
+        name: "cancel-midway",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Product", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "products",
+                request: HTTPRequest(
+                    method: "GET",
+                    url: Template(literal: "https://example.com/products"),
+                    body: .jsonObject([
+                        HTTPBodyKV(key: "page", value: .literal(.int(1))),
+                    ])
+                ),
+                pagination: .pageWithTotal(
+                    itemsPath: .field(.current, "list"),
+                    totalPath: .field(.current, "total"),
+                    pageParam: "page",
+                    pageSize: 1
+                )
+            )),
+            .forLoop(
+                variable: "product",
+                collection: .variable("products"),
+                body: [
+                    .emit(Emission(
+                        typeName: "Product",
+                        bindings: [
+                            FieldBinding(fieldName: "id",
+                                expr: .pipe(.path(.field(.variable("product"), "id")),
+                                            [TransformCall(name: "toString")])),
+                        ]
+                    ))
+                ]
+            )
+        ]
+    )
+
+    let body = try JSONSerialization.data(
+        withJSONObject: ["list": [["id": 1]], "total": 10],
+        options: [.fragmentsAllowed]
+    )
+    let transport = CancelMidwayTransport(body: body)
+    // maxRetries: 0 — even though URLError(.cancelled) isn't in `isTransient`,
+    // this keeps the test bounds tight in case that ever drifts.
+    let client = HTTPClient(transport: transport, minRequestInterval: 0, maxRetries: 0)
+    let engine = HTTPEngine(client: client)
+
+    let start = Date()
+    let result = await engine.run(recipe: recipe, inputs: [:])
+    let elapsed = Date().timeIntervalSince(start)
+
+    #expect(result.report.stallReason == "cancelled")
+    // Pagination collects the full list before the for-loop emits, so a
+    // mid-pagination cancellation discards the in-flight buffer — what
+    // matters for this fix is the stall reason, not how many records made
+    // it through.
+    #expect(result.snapshot.records.isEmpty)
+    // No retry storm — should return promptly, not after 14s of backoff.
+    #expect(elapsed < 2.0)
+
+    let phase = await MainActor.run { engine.progress.phase }
+    #expect(phase == .failed("cancelled"))
+}
+
+/// Transport that blocks indefinitely until cancelled, so a `Task.cancel()`
+/// from outside can race the `try Task.checkCancellation()` sites we just
+/// added.
+actor BlockingTransport: Transport {
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await self.handle(request)
+    }
+
+    private func handle(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        // Sleep until cancelled. `Task.sleep` is cancellation-aware and
+        // surfaces `CancellationError` on cancel.
+        try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+        // If we get here, the test timed out anyway.
+        return (Data(), HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil
+        )!)
+    }
+}
+
+@Test
+func httpEngineHonorsExternalTaskCancellation() async throws {
+    // External `Task.cancel()` while the transport is in flight should
+    // surface as `stallReason == "cancelled"` and the run should return
+    // promptly. The transport sleeps until its enclosing task is cancelled.
+    let recipe = Recipe(
+        name: "cancel-external",
+        engineKind: .http,
+        types: [
+            RecipeType(name: "Item", fields: [
+                RecipeField(name: "id", type: .string, optional: false),
+            ]),
+        ],
+        body: [
+            .step(HTTPStep(
+                name: "items",
+                request: HTTPRequest(method: "GET", url: Template(literal: "https://example.com/items"))
+            )),
+        ]
+    )
+
+    let transport = BlockingTransport()
+    let client = HTTPClient(transport: transport, minRequestInterval: 0, maxRetries: 0)
+    let engine = HTTPEngine(client: client)
+
+    let task = Task {
+        await engine.run(recipe: recipe, inputs: [:])
+    }
+    // Yield so the engine actor starts the run and dispatches the request
+    // before we cancel.
+    await Task.yield()
+    task.cancel()
+
+    let start = Date()
+    let result = await task.value
+    let elapsed = Date().timeIntervalSince(start)
+
+    #expect(result.report.stallReason == "cancelled")
+    #expect(result.snapshot.records.isEmpty)
+    #expect(elapsed < 2.0)
+}

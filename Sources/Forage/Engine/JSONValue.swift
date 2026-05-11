@@ -28,6 +28,15 @@ extension JSONValue: Codable {
         }
     }
 
+    /// **Round-trip caveat — `.double(N.0)` decodes back as `.int(N)`.** JSON has
+    /// one numeric tower and the decoder tries `Int` before `Double`, so a
+    /// whole-valued `Double` (e.g. `39.0` written by `JSONEncoder`) comes
+    /// back as `.int(39)`. Recipes don't care — downstream coercions handle
+    /// both — but any caller relying on the `.int` vs `.double` distinction
+    /// surviving an encode/decode (e.g. `meta.inputs` round-trip via
+    /// `ArchiveMeta`) needs to plan around this. Distinguishing them would
+    /// require a `_kind` discriminator on the wire, which isn't worth the
+    /// noise for the cases that currently exist.
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null; return }

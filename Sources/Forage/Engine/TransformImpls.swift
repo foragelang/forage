@@ -119,15 +119,7 @@ public struct TransformImpls: Sendable {
         // pipe through normalizeOzToGrams next.
         register("parseSize") { v, _ in
             guard case .string(let s) = v else { return .null }
-            let pattern = #"^([0-9]+(?:\.[0-9]+)?)\s*(g|mg|oz|ml)\b"#
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-                  let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
-                  let valueRange = Range(match.range(at: 1), in: s),
-                  let unitRange = Range(match.range(at: 2), in: s),
-                  let value = Double(s[valueRange])
-            else { return .null }
-            let unit = String(s[unitRange]).uppercased()
-            return .object(["value": .double(value), "unit": .string(unit)])
+            return Self.parseSizeString(s)
         }
 
         // normalizeOzToGrams: takes the {value, unit} object from parseSize (or
@@ -186,9 +178,14 @@ public struct TransformImpls: Sendable {
             case "ounce":         return .double(28.0)
             case "each":          return .null
             default:
-                // Try numeric prefix fallback ("1g", "3.5g")
-                let parts = s.split(separator: " ").first.map(String.init) ?? s
-                return .double(Double(parts) ?? 0)
+                // Numeric prefix fallback ("1g", "3.5g", "100mg", "1oz") —
+                // reuse parseSize so a unit-suffixed string actually returns
+                // its value instead of `Double("1g") == nil → 0`.
+                let parsed = Self.parseSizeString(s)
+                if case .object(let obj) = parsed, case .double(let value) = (obj["value"] ?? .null) {
+                    return .double(value)
+                }
+                return .double(Double(s) ?? 0)
             }
         }
         register("janeWeightUnit") { v, _ in
@@ -233,6 +230,22 @@ public struct TransformImpls: Sendable {
             if !v.isNull { return v }
             return args.first ?? .null
         }
+    }
+
+    /// Shared `parseSize` implementation. Matches a numeric prefix with an
+    /// optional g/mg/oz/ml unit and returns `{value, unit}`. Used by the
+    /// `parseSize` transform and by `parseJaneWeight`'s unit-suffixed
+    /// fallback so `"1g"` / `"3.5g"` resolve to the right scalar.
+    fileprivate static func parseSizeString(_ s: String) -> JSONValue {
+        let pattern = #"^([0-9]+(?:\.[0-9]+)?)\s*(g|mg|oz|ml)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+              let valueRange = Range(match.range(at: 1), in: s),
+              let unitRange = Range(match.range(at: 2), in: s),
+              let value = Double(s[valueRange])
+        else { return .null }
+        let unit = String(s[unitRange]).uppercased()
+        return .object(["value": .double(value), "unit": .string(unit)])
     }
 }
 

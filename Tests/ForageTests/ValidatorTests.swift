@@ -62,6 +62,26 @@ func validatorCatchesUnknownTransform() throws {
 }
 
 @Test
+func validatorCatchesUnknownTransformInsideEmitTemplate() throws {
+    // Templates inside emit bindings (`"prefix_{$x | someTransform}"`) used
+    // to silently bypass validation — the validator hit `case .template:
+    // break` and never recursed in. A typo'd transform would then throw
+    // TransformError.unknown at runtime, get swallowed by the engine's
+    // best-effort catch, and the emit would just drop silently. This test
+    // pins that the validator now catches the unknown transform statically.
+    let recipe = try Parser.parse(source: """
+    recipe "bad-template" {
+        engine http
+        type Item { id: String }
+        emit Item { id ← "prefix_{$.id | thisDoesNotExist}" }
+    }
+    """)
+    let issues = Validator.validate(recipe)
+    #expect(issues.hasErrors)
+    #expect(issues.errors.contains(where: { $0.message.contains("thisDoesNotExist") }))
+}
+
+@Test
 func validatorWarnsAboutUnboundRequiredField() throws {
     let recipe = try Parser.parse(source: """
     recipe "bad" {
