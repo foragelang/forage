@@ -150,6 +150,31 @@ The right-hand side of an emit field is a path expression with optional pipes th
 | `[*]`        | Iterate over a list (in for-loops) or map over a list (in expressions).       |
 | `[N]`        | Index a list by integer.                                                      |
 
+## String templates
+
+A string literal in a URL, header, or body becomes a *template* — every `{...}` interpolation is a full extraction expression, evaluated against the current scope and stringified into the surrounding text.
+
+```forage
+url "https://api.example.com/stores/{$input.storeId}/products?page={$i}"
+
+headers {
+    "X-Trace": "page-{$i | toString}"
+}
+
+body.json {
+    key: "price_{$weight | janeWeightKey}"   // dynamic key built from a transform
+}
+```
+
+Inside `{...}`, you can use the same forms an extraction supports:
+
+- bare paths — `{$input.x}`, `{$step.list[0].id}`
+- pipe transforms — `{$weight | janeWeightKey}`, `{$count | toString}`
+- function-call transforms — `{coalesce($a, $b, "fallback")}`
+- `case … of { … }` branches
+
+Transforms inside template interpolations are checked by the validator at load time, so a typo'd `{$x | snak_case}` fails before any HTTP request fires — not at runtime, three pages into a paginated scrape.
+
 ## Transforms
 
 Transforms are named, engine-implemented functions chained with `|`. The vocabulary is fixed — new transforms are added in Swift as real platforms surface them, not invented per-recipe.
@@ -165,7 +190,7 @@ Transforms are named, engine-implemented functions chained with `|`. The vocabul
 | `dedup`                                             | Remove duplicates from a list, preserving order.                      |
 | `getField(name)`                                    | Look up a field on an object whose name is computed at runtime.       |
 
-Forage also ships a small set of cannabis-domain transforms used by the bundled platform recipes — `parseSize`, `normalizeOzToGrams`, `normalizeUnitToGrams`, `prevalenceNormalize`, `parseJaneWeight`, `janeWeightUnit`. These will move out of the engine and into consumer-supplied registrations once the type catalog is lifted.
+Forage also ships a small set of cannabis-domain transforms used by the bundled platform recipes — `parseSize`, `normalizeOzToGrams`, `normalizeUnitToGrams`, `prevalenceNormalize`, `parseJaneWeight`, `janeWeightUnit`, `janeWeightKey`. The last is a generic snake-caser (`"Half Ounce" → "half_ounce"`), useful for building dynamic-key getField lookups. These will move out of the engine and into consumer-supplied registrations once the type catalog is lifted.
 
 ## case expressions
 
@@ -182,13 +207,15 @@ The validator requires every variant of the enum to be covered.
 
 ## Expectations
 
-An `expect` block declares an invariant about the snapshot the recipe is supposed to produce. The engine fails the run if it doesn't hold, surfacing the gap as a structured diagnostic rather than letting the consumer wonder why output looks thin.
+An `expect` block declares an invariant about the snapshot the recipe is supposed to produce. The engine evaluates each clause at the end of a run and adds any failures to `report.unmetExpectations` — a structured diagnostic instead of leaving the consumer to wonder why the output looks thin.
 
 ```forage
 expect { records.where(typeName == "Product").count >= 50 }
 expect { records.where(typeName == "Variant").count > 0 }
 ```
 
+See the [expectations page](/docs/expectations) for the full grammar and failure rendering.
+
 ::: tip The validator is your first reader
-Most mistakes — unknown types, unbound paths, missing required fields, unknown transforms, non-exhaustive case branches — are caught statically before any HTTP request fires. Errors point at the line and column with terms from the DSL.
+Most mistakes — unknown types, unbound paths, missing required fields, unknown transforms (including ones inside `{...}` template interpolations), non-exhaustive case branches — are caught statically before any HTTP request fires. Errors point at the line and column with terms from the DSL.
 :::

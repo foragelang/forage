@@ -20,6 +20,7 @@ Drives the recipe over `URLSession`. Cheap, fast, deterministic. Use it when the
 - Templated URLs, headers, JSON and form-encoded bodies.
 - `auth.staticHeader` and `auth.htmlPrime` strategies.
 - Two HTTP pagination strategies, below.
+- Transient-error retry only — `URLError.timedOut`, `.notConnectedToInternet`, etc. 404s and parse errors fail fast instead of retrying.
 
 ### Browser engine
 
@@ -34,6 +35,59 @@ The browser engine doesn't construct the page's API requests itself. It loads th
 ::: warning Recipes don't bypass access controls
 Neither engine logs in for you, solves real CAPTCHAs, or works against pages that require a paid account. Generic bot-management gates on otherwise-public pages are a different category and are cleared by the browser engine.
 :::
+
+## What an engine returns
+
+Both engines return a `RunResult`:
+
+```swift
+public struct RunResult: Sendable, Hashable {
+    public let snapshot: Snapshot           // emitted records
+    public let report:   DiagnosticReport   // how the run terminated
+}
+```
+
+The snapshot is the produced records; the report is the post-run forensics. A successful HTTP run reports `stallReason == "completed"`. A successful browser run reports `stallReason == "settled"`. Cancelled runs report `stallReason == "cancelled"`. See [Diagnostics](/docs/diagnostics) for the full set of report fields.
+
+## Live progress
+
+Each engine exposes a `progress` value the consumer reads concurrently with the run. Both are `@MainActor @Observable` so SwiftUI sees per-field updates without `@Published` or polling.
+
+```swift
+public final class HTTPProgress {
+    public enum Phase {
+        case starting, priming
+        case stepping(name: String)
+        case paginating(name: String, page: Int)
+        case done
+        case failed(String)
+    }
+    public var phase:           Phase
+    public var requestsSent:    Int
+    public var recordsEmitted:  Int
+    public var currentURL:      String?
+}
+
+public final class BrowserProgress {
+    public enum Phase {
+        case starting, loading, ageGate, dismissing, warmupClicks
+        case paginating(iteration: Int, maxIterations: Int)
+        case settling, done
+        case failed(String)
+    }
+    public var phase:             Phase
+    public var capturesObserved:  Int
+    public var recordsEmitted:    Int
+    public var currentURL:        String?
+    public var lastObservedURL:   String?
+}
+```
+
+Wire `progress.recordsEmitted` straight into a counter view; the browser engine applies capture rules incrementally, so the count is meaningful *during* the run, not just after it settles.
+
+## Cancellation
+
+Both engines honor `Task.cancel()`. The in-flight `URLSession.data(...)` or pagination loop unwinds, the run terminates, and the diagnostic report carries `stallReason: "cancelled"` with the corresponding `progress.phase: .failed("cancelled")`. The snapshot reflects whatever records the engine had emitted before the cancellation arrived.
 
 ## Pagination
 

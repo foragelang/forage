@@ -62,6 +62,14 @@ export default defineConfig({
                     items: [
                         { text: 'Syntax reference', link: '/docs/syntax' },
                         { text: 'Engines & pagination', link: '/docs/engines' },
+                        { text: 'Expectations', link: '/docs/expectations' },
+                    ],
+                },
+                {
+                    text: 'Runtime',
+                    items: [
+                        { text: 'Diagnostics', link: '/docs/diagnostics' },
+                        { text: 'Archive & replay', link: '/docs/archive-replay' },
                     ],
                 },
             ],
