@@ -32,6 +32,13 @@ containing `recipe.forage`. The engine is selected from the recipe's
   as: `true` / `false` / `null` literals; integers; doubles; JSON
   literals when the value starts with `[` or `{`; everything else is
   a string.
+- `--mfa` / `--no-mfa` — toggle stdin-based MFA prompting for recipes
+  whose `auth.session.<...>` block declares `requiresMFA: true`.
+  Defaults to on; `--no-mfa` makes such recipes fail with
+  `auth-mfa-cancelled` rather than blocking on input. See
+  [Authenticated sessions](/docs/auth-sessions) for the full session-auth
+  contract — including where credentials come from
+  (`FORAGE_SECRET_<NAME>` env vars) and how re-auth on 401/403 works.
 
 ### Output
 

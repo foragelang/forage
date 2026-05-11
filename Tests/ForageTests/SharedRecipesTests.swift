@@ -20,6 +20,8 @@ private struct ExpectedRecipe: Decodable {
     let enums: [ExpectedEnum]?
     let imports: [ExpectedImport]?
     let paginationModes: [String]?
+    let secrets: [String]?
+    let authSessionVariant: String?
     let validation: ExpectedValidation
 }
 
@@ -147,6 +149,24 @@ func sharedRecipesParseAndValidateConsistently() throws {
         if let modes = rec.paginationModes {
             let actualModes = collectPaginationModes(recipe.body)
             #expect(actualModes == modes, "\(rec.file): paginationModes \(actualModes) != \(modes)")
+        }
+
+        if let secrets = rec.secrets {
+            #expect(recipe.secrets == secrets, "\(rec.file): secrets \(recipe.secrets) != \(secrets)")
+        }
+
+        if let variant = rec.authSessionVariant {
+            guard case .session(let s) = recipe.auth else {
+                Issue.record("\(rec.file): expected auth.session.\(variant), got \(String(describing: recipe.auth))")
+                continue
+            }
+            let actualVariant: String
+            switch s.kind {
+            case .formLogin: actualVariant = "formLogin"
+            case .bearerLogin: actualVariant = "bearerLogin"
+            case .cookiePersist: actualVariant = "cookiePersist"
+            }
+            #expect(actualVariant == variant, "\(rec.file): authSessionVariant \(actualVariant) != \(variant)")
         }
 
         // Validation

@@ -133,6 +133,29 @@
                 { "slug": "demo", "version": null }
             ],
             "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "07-auth-session.forage",
+            "parses": true,
+            "summary": {
+                "name": "auth-session-demo",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 0,
+                "bodyStatementCount": 2,
+                "stepNames": ["items"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0,
+                "importCount": 0
+            },
+            "types": [
+                { "name": "Item", "fieldNames": ["id", "name"], "requiredFieldCount": 2 }
+            ],
+            "secrets": ["username", "password", "apiToken"],
+            "authSessionVariant": "formLogin",
+            "validation": { "errorCount": 0, "warningCount": 0 }
         }
     ]
 }

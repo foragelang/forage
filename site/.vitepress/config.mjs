@@ -63,6 +63,7 @@ export default defineConfig({
                     items: [
                         { text: 'Syntax reference', link: '/docs/syntax' },
                         { text: 'Engines & pagination', link: '/docs/engines' },
+                        { text: 'Authenticated sessions', link: '/docs/auth-sessions' },
                         { text: 'Expectations', link: '/docs/expectations' },
                     ],
                 },
