@@ -1,8 +1,4 @@
-## Examples
-
-<RecipeCarousel />
-
-## What happens during a run
+## How it works
 
 <div class="run-flow">
   <div class="run-step">
@@ -30,4 +26,8 @@
   </div>
 </div>
 
-## What you get
+## Examples
+
+<RecipeCarousel />
+
+## Features

@@ -132,47 +132,50 @@
     margin-top: 0;
 }
 
+/* Run-flow reads as a linear stepper, not a grid of cards.
+ * No surface chrome — sequential numbered nodes connected by arrows.
+ * Visually distinct from the .VPFeature card grid that follows below. */
 .run-flow {
     display: flex;
-    align-items: stretch;
-    gap: 12px;
-    margin: 24px 0 16px;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 24px 0 32px;
     flex-wrap: wrap;
 }
 
 .run-step {
     flex: 1 1 0;
-    min-width: 180px;
-    padding: 16px 18px;
-    border: 1px solid var(--vp-c-divider);
-    border-radius: 12px;
-    background: var(--vp-c-bg-soft);
+    min-width: 160px;
+    padding: 4px 8px 4px 0;
     display: flex;
     flex-direction: column;
+    border-left: 2px solid var(--vp-c-brand-1);
+    padding-left: 14px;
 }
 
 .run-step-num {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     border-radius: 50%;
-    background: var(--vp-c-brand-1);
-    color: #fff;
+    background: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
     font-size: 12px;
-    font-weight: 600;
-    margin-bottom: 8px;
+    font-weight: 700;
+    margin-bottom: 10px;
 }
 
 .run-step-title {
     font-weight: 600;
     margin-bottom: 4px;
     color: var(--vp-c-text-1);
+    font-size: 15px;
 }
 
 .run-step-body {
-    font-size: 14px;
+    font-size: 13px;
     color: var(--vp-c-text-2);
     line-height: 1.5;
 }
@@ -180,9 +183,11 @@
 .run-arrow {
     display: flex;
     align-items: center;
-    color: var(--vp-c-text-3);
-    font-size: 22px;
+    color: var(--vp-c-brand-1);
+    font-size: 18px;
     user-select: none;
+    padding-top: 4px;
+    opacity: 0.5;
 }
 
 @media (max-width: 768px) {
