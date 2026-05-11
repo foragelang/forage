@@ -15,6 +15,8 @@ Each milestone has a result-statement, concrete deliverables (acceptance-testabl
 
 ## M1 — Finish the CLI
 
+**Status: landed.** All five subcommands (`run`, `capture`, `scaffold`, `test`, `publish`) live in `Sources/forage-cli/`; `Tests/ForageTests/ScaffoldTests.swift` + `TestCommandTests.swift` cover the heuristics + harness; `site/docs/cli.md` is the subcommand reference. `publish` shipped beyond the M1 stub — it actually POSTs via `HubClient` when `FORAGE_HUB_TOKEN` is set (M4 wiring landed alongside).
+
 **Result:** `forage` is a polished single-binary CLI with subcommands `run`, `capture`, `scaffold`, `test`, `publish` (publish prints what it would do until M4 wires it live).
 
 Builds on A1's in-progress work in `Sources/forage-cli/`. Phase 8 (`unhandledAffordances`) is already committed (`68da6bf`); the rename + ArgumentParser skeleton is uncommitted.
@@ -52,6 +54,8 @@ Builds on A1's in-progress work in `Sources/forage-cli/`. Phase 8 (`unhandledAff
 ---
 
 ## M2 — Hub: backend + frontend
+
+**Status: landed.** `hub-api/` is the Cloudflare Worker (KV `METADATA`, R2 `BLOBS`, Bearer auth in `src/auth.ts`, all `/v1/*` endpoints in `src/index.ts`, smoke-test scripts in `hub-api/test/`). `hub-site/` is the VitePress browse + detail UI (`index.md`, `r/[slug].md` + `[slug].paths.mjs` dynamic loader, `publish.md`, `about.md`). Both deploy via wrangler; production is at api.foragelang.com / hub.foragelang.com.
 
 **Result:** `api.foragelang.com` serves a working recipe registry; `hub.foragelang.com` renders a browse + detail UI on top of it.
 
@@ -102,6 +106,14 @@ Two new directories in this repo: `hub-api/` (Cloudflare Worker), `hub-site/` (V
 ---
 
 ## M3 — Toolkit app
+
+**Status: mostly landed.** `Toolkit.app` builds via `xcodegen` + `xcodebuild` and launches; all five editor tabs (Source/Fixtures/Snapshot/Diagnostic/Publish), the capture scene, run controller (live + replay), library sidebar, MFA prompt, Keychain, and Preferences are wired. PublishTab actually POSTs via `HubClient`. Remaining gaps, in decreasing order of visible:
+
+- **D3.2: "Import from hub" button is a disabled placeholder** (`LibrarySidebar.swift`). Hub-side browse + import flow not yet built.
+- **D3.7: AppIcon ships no PNG slices** — only the `Contents.json` manifest. Default Xcode placeholder icon today.
+- **D3.7: app menu set is incomplete** — New Recipe / Run Live / Run Replay / Capture / Save are wired; no explicit "Publish" / "Validate" / "Import from Hub" menu commands.
+
+The Toolkit is operational for everything except hub-import; users can still pull a recipe by checking out the file or by `gh api` against `api.foragelang.com`.
 
 **Result:** A `Toolkit.app` (macOS SwiftUI) that authors recipes interactively and publishes to the hub.
 
@@ -159,6 +171,8 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 
 ## M4 — Integration: runtime `hub://` imports + `forage publish` live
 
+**Status: landed.** `Sources/Forage/Hub/HubClient.swift` (get / list / publish, reads `FORAGE_HUB_URL` + `FORAGE_HUB_TOKEN`). `Sources/Forage/Hub/RecipeImporter.swift` resolves `import hub://author/slug` directives recursively, unions types/enums/inputs, caches at `~/Library/Forage/Cache/hub/`. CLI publish goes live via `HubClient.publish` (with `--no-dry-run`). Toolkit publish goes live. `scripts/e2e-publish.sh` is the documented round-trip flow. `site/docs/hub.md` covers it.
+
 **Result:** The runtime can pull recipes from the hub; CLI `forage publish` and Toolkit's publish button both write to the live hub.
 
 **Deliverables**
@@ -183,6 +197,11 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 ---
 
 ## M5 — Distribution
+
+**Status: mostly landed.** `.github/workflows/release.yml` builds + signs + notarizes + packages on `v*.*.*` tags. `site/public/install.sh` is the curl-pipe-sh installer; `site/docs/install.md` documents brew / curl / build-from-source paths. Remaining gaps:
+
+- **D5.2: external `foragelang/homebrew-tap` GitHub repo doesn't exist yet.** The local `homebrew-tap/` directory contains the formula with a `PLACEHOLDER_SHA256_FROM_RELEASE` placeholder; the `update-homebrew-tap` job in the release workflow is gated behind `ENABLE_HOMEBREW_TAP_UPDATE` + `HOMEBREW_TAP_TOKEN`. `brew install foragelang/forage/forage` will work only once the tap repo is created and the workflow flag is flipped on.
+- **D5.5: homepage `/download` CTA / nav entry not yet added to `site/`.** The install page exists at `/docs/install`; no top-level "Download" entry from the nav, no homepage hero CTA pointing at it.
 
 **Result:** `forage` and `Toolkit.app` are installable via `brew`, `curl | sh`, and `.dmg`.
 
@@ -211,9 +230,13 @@ New directory `Toolkit/` in the forage repo. xcodegen-generated `Toolkit.xcodepr
 
 ## M6 — In-browser tooling (web IDE on hub.foragelang.com)
 
-**Result:** Recipes can be browsed, edited, validated, and published from `hub.foragelang.com` without installing anything.
+**Status: mostly landed (architecture diverged).** The user-facing goal is met — `hub.foragelang.com/edit` and `/r/<slug>/edit` host a Monaco-based editor with live parse + validate + run + publish via the `<RecipeIDE />` Vue component (`hub-site/.vitepress/theme/components/RecipeIDE.vue`). The parser/validator/runner run in-browser through the **TypeScript port** (`hub-site/forage-ts/src/`), not the SwiftWasm artifact originally specified in D6.1. Same goal, cheaper-to-maintain route. Remaining gaps relative to the original deliverable shape:
 
-This is the most exotic engineering — it requires the parser+validator to run in the browser.
+- **D6.1 SwiftWasm artifact not built.** Replaced by `forage-ts`, which is kept in lockstep with the Swift implementation via `Tests/shared-recipes/` drift-detection vectors. The original ROADMAP wording is wrong on the route; the spirit is met.
+- **D6.3 auth flow is bearer-token in localStorage**, not GitHub OAuth. Acceptable for a v1.
+- **D6.4 "New recipe" entry point**: editable via direct nav to `/edit`, hero CTA in place; haven't verified a "New" link from the recipe-list view.
+
+**Result:** Recipes can be browsed, edited, validated, and published from `hub.foragelang.com` without installing anything.
 
 **Deliverables**
 
@@ -241,6 +264,10 @@ This is the most exotic engineering — it requires the parser+validator to run 
 ---
 
 ## M7 — Authenticated sessions
+
+**Status: landed.** `auth.session.{formLogin,bearerLogin,cookiePersist}` parses end-to-end. `SecretResolver` resolves `$secret.*` from `FORAGE_SECRET_<NAME>` env vars (CLI) or Keychain (Toolkit). `MFAProvider` protocol with stdin-prompt (CLI) and modal-sheet (Toolkit) implementations. Session caching at `~/Library/Forage/Cache/`; re-auth + retry on 401/403 with configurable `maxReauthRetries`. `Tests/ForageTests/SessionAuthTests.swift` covers the cases; `site/docs/auth-sessions.md` is the guide; `recipes/sample-login/` is the exemplar.
+
+One small caveat: **D7.10's `cacheEncrypted` flag** is wired through the parser/AST but the encryption-at-rest step in the engine path may still need the file-mode + key-derivation hardening described in the deliverable. Worth a focused security pass before recommending the cache for sensitive credentials.
 
 **Result:** recipes can declare a login flow and maintain authenticated state across requests. Today's `auth` block supports `staticHeader` (API key in a header) and `htmlPrime` (one-shot GET to extract a CSRF token + set cookies). Neither covers "log in as me, maintain a session across requests, refresh when it expires." M7 adds that as a first-class DSL feature.
 
@@ -288,7 +315,26 @@ This is the most exotic engineering — it requires the parser+validator to run 
 
 ---
 
-## Order of execution
+## Current state (2026-05-11)
+
+M1–M9 are all in some state of landed. The original M1→M7 path was followed serially; M6 took a TypeScript-port route instead of SwiftWasm; M8 and M9 followed up after M7 to handle HTML extraction and browser-engine document capture. The audit notes per milestone above are the up-to-date truth — the original "Order of execution" notes below are kept for the historical record.
+
+Followups that *should* land but haven't:
+
+- M3 hub-import sidebar action (currently disabled placeholder).
+- M3 AppIcon real PNG slices + Publish/Validate/Import menu commands.
+- M5 external `homebrew-tap` repo + the `update-homebrew-tap` workflow flag flipped on.
+- M5 homepage `/download` CTA + nav entry.
+- M6 OAuth replacement for the bearer-token-in-localStorage in the web IDE.
+- M7 D7.10 cache-encryption-at-rest review (parser/AST exposes `cacheEncrypted` but engine implementation deserves a focused pass).
+
+Next milestone in flight:
+
+- **M10 — Interactive session bootstrap.** Human-in-the-loop CAPTCHA / age-gate / sign-in handshake; persisted session is reused headlessly until expiry. Covers eBay-class sites without violating the "no bypassing technical controls" policy (a human *did* pass the control; the bot reuses the human-authorized session). See bottom of file once landed.
+
+---
+
+## Order of execution (historical)
 
 Serial, top-to-bottom. Each milestone gets a `product-engineer` agent dispatch with the full milestone brief, followed by a `code-review-auditor` pass on the resulting diff. Findings from the auditor get a focused fixup pass before moving on.
 
