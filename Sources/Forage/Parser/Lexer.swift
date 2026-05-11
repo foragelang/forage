@@ -7,6 +7,7 @@ import Foundation
 public struct Lexer {
 
     public static let keywords: Set<String> = [
+        "import",
         "recipe", "engine", "http", "browser", "type", "enum", "input",
         "step", "method", "url", "headers", "body", "json", "form", "raw",
         "auth", "staticHeader", "htmlPrime", "extract", "regex", "groups",
@@ -122,6 +123,24 @@ public struct Lexer {
 
             if isLetter(c) || c == "_" {
                 let name = readIdent()
+                // `hub://...` — bare bone slug-literal token. Only triggered
+                // when the identifier is exactly `hub` followed immediately
+                // by `://`; otherwise `hub` stays an identifier (so a recipe
+                // can name a variable `hub` if it really wants to).
+                if name == "hub" && peek() == ":" && peek(offset: 1) == "/" && peek(offset: 2) == "/" {
+                    advance(); advance(); advance() // consume `://`
+                    var slug = ""
+                    while !isEOF {
+                        let ch = peek()
+                        if isLetter(ch) || isDigit(ch) || ch == "-" || ch == "_" || ch == "/" {
+                            slug.append(ch); advance()
+                        } else {
+                            break
+                        }
+                    }
+                    tokens.append(Token(kind: .hubURL(slug), lexeme: "hub://\(slug)", loc: startLoc))
+                    continue
+                }
                 if Lexer.keywords.contains(name) {
                     if name == "true" {
                         tokens.append(Token(kind: .boolLit(true), lexeme: name, loc: startLoc))

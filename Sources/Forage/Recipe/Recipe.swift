@@ -15,6 +15,11 @@ public struct Recipe: Hashable, Sendable {
     public let body: [Statement]
     public let browser: BrowserConfig?
     public let expectations: [Expectation]
+    /// Top-level `import hub://<slug>` directives, in source order. These
+    /// are unresolved pointers — `RecipeImporter.flatten` is the runtime
+    /// pass that fetches and merges the imported recipes into a single
+    /// flattened `Recipe`.
+    public let imports: [HubRecipeRef]
 
     public init(
         name: String,
@@ -25,7 +30,8 @@ public struct Recipe: Hashable, Sendable {
         auth: AuthStrategy? = nil,
         body: [Statement] = [],
         browser: BrowserConfig? = nil,
-        expectations: [Expectation] = []
+        expectations: [Expectation] = [],
+        imports: [HubRecipeRef] = []
     ) {
         self.name = name
         self.engineKind = engineKind
@@ -36,6 +42,7 @@ public struct Recipe: Hashable, Sendable {
         self.body = body
         self.browser = browser
         self.expectations = expectations
+        self.imports = imports
     }
 
     public func type(_ name: String) -> RecipeType? {

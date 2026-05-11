@@ -46,6 +46,10 @@ public enum TokenKind: Hashable, Sendable {
     case nullLit
     case dateLit(year: Int, month: Int, day: Int)
 
+    // `hub://<slug>` token. Value is the raw slug after the prefix
+    // (e.g. `sample-recipe` or `alice/awesome-recipe`).
+    case hubURL(String)
+
     // Identifier (lowercased) and type-name (capitalized).
     // The parser disambiguates by context, so we use one identifier token here.
     case identifier(String)

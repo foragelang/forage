@@ -20,6 +20,13 @@ public struct Parser {
     // MARK: - Top-level
 
     public mutating func parseRecipe() throws -> Recipe {
+        // Top-level `import hub://...` directives appear before the `recipe`
+        // header. Multiple are allowed; the order is preserved.
+        var imports: [HubRecipeRef] = []
+        while checkKeyword("import") {
+            imports.append(try parseImportDirective())
+        }
+
         try expectKeyword("recipe")
         let nameTok = try consumeStringLit()
         let name = nameTok.0
@@ -73,8 +80,46 @@ public struct Parser {
             auth: auth,
             body: body,
             browser: browser,
-            expectations: expectations
+            expectations: expectations,
+            imports: imports
         )
+    }
+
+    // MARK: - Import directives
+
+    /// `import hub://<slug>` or `import hub://<author>/<name> v<N>`.
+    private mutating func parseImportDirective() throws -> HubRecipeRef {
+        let importLoc = peek().loc
+        try expectKeyword("import")
+
+        // The lexer recognizes the whole `hub://<slug>` as one token.
+        guard case .hubURL(let slug) = peek().kind else {
+            throw ParseError.unsupportedConstruct(
+                "expected 'hub://<slug>' after 'import' at \(importLoc.line):\(importLoc.column)",
+                loc: peek().loc
+            )
+        }
+        advance()
+        guard let ref = HubRecipeRef.parse(slug) else {
+            throw ParseError.unsupportedConstruct(
+                "malformed hub slug 'hub://\(slug)' — expected <name> or <author>/<name>",
+                loc: importLoc
+            )
+        }
+
+        // Optional `v<N>` version pin. Lexer reads `v3` as one identifier
+        // (letter then digits), so we sniff the identifier text.
+        var version: Int? = nil
+        if case .identifier(let ident) = peek().kind,
+           ident.hasPrefix("v"),
+           ident.count >= 2,
+           let n = Int(ident.dropFirst())
+        {
+            advance()
+            version = n
+        }
+        _ = match(.semicolon)
+        return HubRecipeRef(slug: ref.slug, version: version)
     }
 
     // MARK: - Type / enum / input decls
