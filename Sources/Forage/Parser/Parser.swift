@@ -40,6 +40,7 @@ public struct Parser {
         var browser: BrowserConfig? = nil
         var body: [Statement] = []
         var expectations: [Expectation] = []
+        var secrets: [String] = []
 
         while !check(.rbrace) && !check(.eof) {
             if matchKeyword("engine") {
@@ -55,6 +56,10 @@ public struct Parser {
                 enums.append(try parseEnumDecl())
             } else if matchKeyword("input") {
                 inputs.append(try parseInputDecl())
+            } else if matchKeyword("secret") {
+                let n = try consumeIdentifierOrKeyword()
+                _ = match(.semicolon)
+                secrets.append(n)
             } else if matchKeyword("auth") {
                 try expect(.dot, ".")
                 auth = try parseAuthStrategy()
@@ -81,7 +86,8 @@ public struct Parser {
             body: body,
             browser: browser,
             expectations: expectations,
-            imports: imports
+            imports: imports,
+            secrets: secrets
         )
     }
 
@@ -202,6 +208,13 @@ public struct Parser {
 
     private mutating func parseAuthStrategy() throws -> AuthStrategy {
         let kindTok = try consumeIdentifierOrKeyword()
+        // `auth.session.<variant> { … }` — session has a second discriminator.
+        if kindTok == "session" {
+            try expect(.dot, ".")
+            let variant = try consumeIdentifierOrKeyword()
+            try expect(.lbrace, "{")
+            return try parseSessionAuth(variant: variant)
+        }
         try expect(.lbrace, "{")
         switch kindTok {
         case "staticHeader":
@@ -268,6 +281,142 @@ public struct Parser {
         default:
             throw ParseError.unknownAuthStrategy(kindTok, loc: previous().loc)
         }
+    }
+
+    // MARK: - Session auth (auth.session.<variant>)
+
+    /// Parse the body of `auth.session.<variant> { ... }` after the opening
+    /// `{` has been consumed. Variants share the option vocabulary
+    /// (`maxReauthRetries`, `cache`, `cacheEncrypted`, `requiresMFA`,
+    /// `mfaFieldName`); kind-specific keys are dispatched here.
+    private mutating func parseSessionAuth(variant: String) throws -> AuthStrategy {
+        // Shared session options.
+        var maxReauthRetries: Int = 1
+        var cacheDuration: TimeInterval? = nil
+        var cacheEncrypted: Bool = false
+        var requiresMFA: Bool = false
+        var mfaFieldName: String = "code"
+
+        // Variant-specific.
+        var url: Template? = nil
+        var method: String? = nil
+        var body: HTTPBody? = nil
+        var captureCookies: Bool = true
+        var tokenPath: PathExpr? = nil
+        var headerName: String = "Authorization"
+        var headerPrefix: String = "Bearer "
+        var sourcePath: Template? = nil
+        var format: CookieFormat = .json
+
+        while !check(.rbrace) {
+            // `body.<kind>` block: keyword "body" + "." + variant + block.
+            if matchKeyword("body") {
+                try expect(.dot, ".")
+                let kindTok = try consumeIdentifierOrKeyword()
+                switch kindTok {
+                case "json":
+                    body = .jsonObject(try parseJSONBodyKVs())
+                case "form":
+                    body = .form(try parseFormBodyKVs())
+                case "raw":
+                    body = .raw(try parseTemplateLiteral())
+                default:
+                    throw ParseError.unsupportedConstruct("body.\(kindTok) not supported", loc: previous().loc)
+                }
+                _ = match(.semicolon); _ = match(.comma)
+                continue
+            }
+
+            let key = try consumeIdentifierOrKeyword()
+            try expect(.colon, ":")
+            switch key {
+            // Shared
+            case "maxReauthRetries":
+                maxReauthRetries = try consumeIntLit()
+            case "cache":
+                // Accept int (seconds) or double.
+                if let i = matchIntLit() {
+                    cacheDuration = TimeInterval(i)
+                } else if let d = matchDoubleLit() {
+                    cacheDuration = d
+                } else {
+                    throw ParseError.unexpected(peek(), expected: "duration in seconds")
+                }
+            case "cacheEncrypted":
+                cacheEncrypted = try consumeBoolLit()
+            case "requiresMFA":
+                requiresMFA = try consumeBoolLit()
+            case "mfaFieldName":
+                let (s, _) = try consumeStringLit()
+                mfaFieldName = s
+
+            // Variant-specific
+            case "url":
+                url = try parseTemplateLiteral()
+            case "method":
+                let (s, _) = try consumeStringLit()
+                method = s
+            case "captureCookies":
+                captureCookies = try consumeBoolLit()
+            case "tokenPath":
+                tokenPath = try parsePathExpr()
+            case "headerName":
+                let (s, _) = try consumeStringLit()
+                headerName = s
+            case "headerPrefix":
+                let (s, _) = try consumeStringLit()
+                headerPrefix = s
+            case "sourcePath":
+                sourcePath = try parseTemplateLiteral()
+            case "format":
+                // Bare identifier `json` / `netscape` (keyword or ident).
+                let raw = try consumeIdentifierOrKeyword()
+                switch raw {
+                case "json": format = .json
+                case "netscape": format = .netscape
+                default:
+                    throw ParseError.unsupportedConstruct("unknown cookie format '\(raw)' (expected json | netscape)", loc: previous().loc)
+                }
+            default:
+                throw ParseError.unsupportedConstruct("unknown auth.session.\(variant) field '\(key)'", loc: previous().loc)
+            }
+            _ = match(.semicolon); _ = match(.comma)
+        }
+        try expect(.rbrace, "}")
+
+        let kind: SessionAuth.Kind
+        switch variant {
+        case "formLogin":
+            guard let u = url, let b = body else {
+                throw ParseError.missingRequiredField("url/body", container: "auth.session.formLogin", loc: peek().loc)
+            }
+            kind = .formLogin(FormLogin(
+                url: u, method: method ?? "POST", body: b, captureCookies: captureCookies
+            ))
+        case "bearerLogin":
+            guard let u = url, let b = body, let tp = tokenPath else {
+                throw ParseError.missingRequiredField("url/body/tokenPath", container: "auth.session.bearerLogin", loc: peek().loc)
+            }
+            kind = .bearerLogin(BearerLogin(
+                url: u, method: method ?? "POST", body: b,
+                tokenPath: tp, headerName: headerName, headerPrefix: headerPrefix
+            ))
+        case "cookiePersist":
+            guard let sp = sourcePath else {
+                throw ParseError.missingRequiredField("sourcePath", container: "auth.session.cookiePersist", loc: peek().loc)
+            }
+            kind = .cookiePersist(CookiePersist(sourcePath: sp, format: format))
+        default:
+            throw ParseError.unsupportedConstruct("unknown auth.session.\(variant)", loc: previous().loc)
+        }
+        return .session(SessionAuth(
+            kind: kind,
+            maxReauthRetries: maxReauthRetries,
+            cacheDuration: cacheDuration,
+            cacheEncrypted: cacheEncrypted,
+            requiresMFA: requiresMFA,
+            mfaFieldName: mfaFieldName
+        ))
     }
 
     // MARK: - Statements
@@ -698,10 +847,16 @@ public struct Parser {
         } else if check(.dollarInput) {
             advance()
             head = .input
+        } else if check(.dollarSecret) {
+            // `$secret.<name>` — must be followed by `.<ident>`.
+            advance()
+            try expect(.dot, ".")
+            let secretName = try consumeIdentifierOrKeyword()
+            head = .secret(secretName)
         } else if let varName = matchDollarVariable() {
             head = .variable(varName)
         } else {
-            throw ParseError.unexpected(peek(), expected: "path-expression head ($ / $input / $name)")
+            throw ParseError.unexpected(peek(), expected: "path-expression head ($ / $input / $secret.<name> / $name)")
         }
 
         // Trailing chain
@@ -1029,6 +1184,7 @@ public struct Parser {
              (.equal, .equal), (.gt, .gt), (.lt, .lt), (.bang, .bang),
              (.dollarRoot, .dollarRoot),
              (.dollarInput, .dollarInput),
+             (.dollarSecret, .dollarSecret),
              (.eof, .eof), (.nullLit, .nullLit):
             return true
         default: return false
@@ -1042,7 +1198,7 @@ public struct Parser {
 
     private func checkPathStart() -> Bool {
         switch peek().kind {
-        case .dollarRoot, .dollarInput, .dollarVariable: return true
+        case .dollarRoot, .dollarInput, .dollarSecret, .dollarVariable: return true
         default: return false
         }
     }

@@ -36,6 +36,7 @@ public enum TokenKind: Hashable, Sendable {
     // Path-expression heads
     case dollarRoot            // $   (just `$`, normally followed by .)
     case dollarInput           // $input
+    case dollarSecret          // $secret  (resolved via SecretResolver at runtime)
     case dollarVariable(String) // $<ident>
 
     // Literals

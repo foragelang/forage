@@ -38,6 +38,12 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     public let hardTimeoutSeconds: TimeInterval
     public private(set) var webView: WKWebView!
 
+    /// Pre-resolved session cookies to seed into the WKWebView before
+    /// navigation. Populated by the host before calling `run()` — typically
+    /// the host runs an HTTPEngine login flow first, captures the resulting
+    /// `SessionState.payload == .cookies(...)`, and hands them in here.
+    public var seedCookies: [SessionCookie] = []
+
     public let progress = BrowserProgress()
 
     private var window: NSWindow?
@@ -176,7 +182,16 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
         progress.setPhase(.loading)
         progress.setCurrentURL(url)
-        webView.load(URLRequest(url: urlValue))
+
+        // If the host (or session-auth bootstrap) supplied seed cookies,
+        // install them in both HTTPCookieStorage.shared (so URLSession-backed
+        // fetches inherit) and the webView's data store (so the SPA's own
+        // fetch/XHR see them too). We have to seed before `load(...)` so the
+        // first navigation request goes out with cookies attached.
+        installSeedCookies(forURL: urlValue) { [weak self] in
+            guard let self else { return }
+            self.webView.load(URLRequest(url: urlValue))
+        }
 
         hardTimer = Timer.scheduledTimer(withTimeInterval: hardTimeoutSeconds, repeats: false) { [weak self] _ in
             self?.finish(reason: "hard-timeout")
@@ -207,6 +222,35 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         }
         progress.setPhase(.settling)
         finish(reason: "settled")
+    }
+
+    /// Seed `seedCookies` into both `HTTPCookieStorage.shared` and the
+    /// WKWebView's data store, then invoke `then`. WKHTTPCookieStore writes
+    /// are async (callback-based), so we chain them and call back on
+    /// completion. If `seedCookies` is empty, calls back synchronously.
+    private func installSeedCookies(forURL url: URL, then: @escaping () -> Void) {
+        if seedCookies.isEmpty { then(); return }
+        let host = url.host ?? ""
+        let httpCookies: [HTTPCookie] = seedCookies.compactMap { sc in
+            var props: [HTTPCookiePropertyKey: Any] = [
+                .name: sc.name,
+                .value: sc.value,
+                .path: sc.path ?? "/",
+            ]
+            // Cookie domain: prefer the recipe's; else fall back to the
+            // target host so the cookie is at least scoped to this navigation.
+            props[.domain] = sc.domain ?? host
+            return HTTPCookie(properties: props)
+        }
+        for c in httpCookies { HTTPCookieStorage.shared.setCookie(c) }
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        var remaining = httpCookies
+        func step() {
+            guard !remaining.isEmpty else { then(); return }
+            let next = remaining.removeFirst()
+            store.setCookie(next) { step() }
+        }
+        step()
     }
 
     private func resetSettleTimer() {

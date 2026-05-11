@@ -11,15 +11,24 @@ import Foundation
 public actor RecipeRunner {
     public let httpClient: HTTPClient
     public let evaluator: ExtractionEvaluator
+    public let secretResolver: SecretResolver?
+    public let mfaProvider: MFAProvider?
+    public let sessionCacheRoot: URL?
 
     public nonisolated let progress: HTTPProgress
 
     public init(
         httpClient: HTTPClient,
-        evaluator: ExtractionEvaluator = ExtractionEvaluator()
+        evaluator: ExtractionEvaluator = ExtractionEvaluator(),
+        secretResolver: SecretResolver? = nil,
+        mfaProvider: MFAProvider? = nil,
+        sessionCacheRoot: URL? = nil
     ) {
         self.httpClient = httpClient
         self.evaluator = evaluator
+        self.secretResolver = secretResolver
+        self.mfaProvider = mfaProvider
+        self.sessionCacheRoot = sessionCacheRoot
         self.progress = HTTPProgress()
     }
 
@@ -27,7 +36,14 @@ public actor RecipeRunner {
         switch recipe.engineKind {
         case .http:
             await MainActor.run { progress.reset() }
-            let engine = HTTPEngine(client: httpClient, evaluator: evaluator, progress: progress)
+            let engine = HTTPEngine(
+                client: httpClient,
+                evaluator: evaluator,
+                progress: progress,
+                secretResolver: secretResolver,
+                mfaProvider: mfaProvider,
+                sessionCacheRoot: sessionCacheRoot
+            )
             return await engine.run(recipe: recipe, inputs: inputs)
         case .browser:
             // BrowserEngine requires NSApplication + main-actor isolation,

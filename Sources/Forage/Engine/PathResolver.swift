@@ -15,6 +15,9 @@ public enum PathResolver {
         case .input:
             // Bare `$input` (without trailing field) — return the inputs as an object
             return .object(scope.inputs)
+        case .secret(let name):
+            guard let v = scope.secrets[name] else { throw ScopeError.undefinedSecret(name) }
+            return .string(v)
         case .variable(let name):
             guard let v = scope.variable(name) else { throw ScopeError.undefinedVariable(name) }
             return v

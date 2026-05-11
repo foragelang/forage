@@ -34,6 +34,13 @@ public struct Lexer {
         "withCookies",
         "as",
         "String", "Int", "Double", "Bool",
+        // Session auth (M7)
+        "secret",
+        "session", "formLogin", "bearerLogin", "cookiePersist",
+        "captureCookies", "maxReauthRetries", "cache", "cacheEncrypted",
+        "requiresMFA", "mfaFieldName",
+        "tokenPath", "headerName", "headerPrefix",
+        "sourcePath", "format",
     ]
 
     public static let typeKeywords: Set<String> = ["String", "Int", "Double", "Bool"]
@@ -106,6 +113,8 @@ public struct Lexer {
                     let name = readIdent()
                     if name == "input" {
                         tokens.append(Token(kind: .dollarInput, lexeme: "$input", loc: startLoc))
+                    } else if name == "secret" {
+                        tokens.append(Token(kind: .dollarSecret, lexeme: "$secret", loc: startLoc))
                     } else {
                         tokens.append(Token(kind: .dollarVariable(name), lexeme: "$\(name)", loc: startLoc))
                     }

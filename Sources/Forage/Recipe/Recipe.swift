@@ -20,6 +20,9 @@ public struct Recipe: Hashable, Sendable {
     /// pass that fetches and merges the imported recipes into a single
     /// flattened `Recipe`.
     public let imports: [HubRecipeRef]
+    /// Top-level `secret <name>` declarations. The validator uses these to
+    /// catch typos in `$secret.<name>` references. Order preserved.
+    public let secrets: [String]
 
     public init(
         name: String,
@@ -31,7 +34,8 @@ public struct Recipe: Hashable, Sendable {
         body: [Statement] = [],
         browser: BrowserConfig? = nil,
         expectations: [Expectation] = [],
-        imports: [HubRecipeRef] = []
+        imports: [HubRecipeRef] = [],
+        secrets: [String] = []
     ) {
         self.name = name
         self.engineKind = engineKind
@@ -43,6 +47,7 @@ public struct Recipe: Hashable, Sendable {
         self.browser = browser
         self.expectations = expectations
         self.imports = imports
+        self.secrets = secrets
     }
 
     public func type(_ name: String) -> RecipeType? {

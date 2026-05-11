@@ -21,6 +21,25 @@ public enum Validator {
         }
         let inputNames = topLevelNames
         let transforms = TransformImpls()
+        let declaredSecrets = Set(recipe.secrets)
+
+        // Collect every `$secret.<name>` referenced anywhere in the recipe
+        // (auth block, step requests, emit bindings). Any reference whose
+        // name isn't declared via `secret <name>` surfaces as a warning;
+        // a `secret` declaration that isn't referenced surfaces too.
+        let referencedSecrets = collectReferencedSecrets(recipe: recipe)
+        for n in referencedSecrets where !declaredSecrets.contains(n) {
+            issues.append(.warning(
+                "referenced secret '\(n)' is not declared via `secret \(n)` at the top of the recipe",
+                "secrets"
+            ))
+        }
+        for n in declaredSecrets where !referencedSecrets.contains(n) {
+            issues.append(.warning(
+                "declared secret '\(n)' is never referenced",
+                "secrets"
+            ))
+        }
 
         // 1. Type field references resolve.
         for type in recipe.types {
@@ -135,11 +154,116 @@ public enum Validator {
 
     private static func validatePath(_ p: PathExpr, knownVars: (String) -> Bool, knownInputs: Set<String>, location: String, issues: inout [ValidationIssue]) {
         switch p {
-        case .current, .input: return
+        case .current, .input, .secret: return
         case .variable(let n):
             if !knownVars(n) { issues.append(.error("\(location): unbound variable $\(n)", location)) }
         case .field(let inner, _), .optField(let inner, _), .index(let inner, _), .wildcard(let inner):
             validatePath(inner, knownVars: knownVars, knownInputs: knownInputs, location: location, issues: &issues)
+        }
+    }
+
+    // MARK: - Secret collection
+
+    /// Walk the recipe's auth block, step requests, and emit bindings to
+    /// gather every `$secret.<name>` referenced anywhere. Used by validation
+    /// to warn on undeclared secrets and unused declarations.
+    private static func collectReferencedSecrets(recipe: Recipe) -> Set<String> {
+        var out = Set<String>()
+        if case .session(let s) = recipe.auth {
+            switch s.kind {
+            case .formLogin(let f):
+                out.formUnion(secretsIn(template: f.url))
+                out.formUnion(secretsIn(body: f.body))
+            case .bearerLogin(let b):
+                out.formUnion(secretsIn(template: b.url))
+                out.formUnion(secretsIn(body: b.body))
+                out.formUnion(b.tokenPath.referencedSecrets)
+            case .cookiePersist(let c):
+                out.formUnion(secretsIn(template: c.sourcePath))
+            }
+        }
+        if case .staticHeader(_, let v) = recipe.auth {
+            out.formUnion(secretsIn(template: v))
+        }
+        for stmt in recipe.body { collectInStatement(stmt, into: &out) }
+        return out
+    }
+
+    private static func collectInStatement(_ stmt: Statement, into out: inout Set<String>) {
+        switch stmt {
+        case .step(let s):
+            out.formUnion(secretsIn(template: s.request.url))
+            for (_, hv) in s.request.headers { out.formUnion(secretsIn(template: hv)) }
+            if let body = s.request.body { out.formUnion(secretsIn(body: body)) }
+        case .emit(let em):
+            for b in em.bindings { out.formUnion(secretsIn(expr: b.expr)) }
+        case .forLoop(_, let coll, let body):
+            out.formUnion(coll.referencedSecrets)
+            for s in body { collectInStatement(s, into: &out) }
+        }
+    }
+
+    private static func secretsIn(template t: Template) -> Set<String> {
+        var out = Set<String>()
+        for part in t.parts {
+            if case .interp(let expr) = part {
+                out.formUnion(secretsIn(expr: expr))
+            }
+        }
+        return out
+    }
+
+    private static func secretsIn(body: HTTPBody) -> Set<String> {
+        var out = Set<String>()
+        switch body {
+        case .jsonObject(let kvs):
+            for kv in kvs { out.formUnion(secretsIn(bodyValue: kv.value)) }
+        case .form(let kvs):
+            for (_, v) in kvs { out.formUnion(secretsIn(bodyValue: v)) }
+        case .raw(let t):
+            out.formUnion(secretsIn(template: t))
+        }
+        return out
+    }
+
+    private static func secretsIn(bodyValue: BodyValue) -> Set<String> {
+        switch bodyValue {
+        case .templateString(let t): return secretsIn(template: t)
+        case .literal: return []
+        case .path(let p): return p.referencedSecrets
+        case .object(let kvs):
+            var out = Set<String>()
+            for kv in kvs { out.formUnion(secretsIn(bodyValue: kv.value)) }
+            return out
+        case .array(let xs):
+            var out = Set<String>()
+            for v in xs { out.formUnion(secretsIn(bodyValue: v)) }
+            return out
+        case .caseOf(let scrutinee, let branches):
+            var out = scrutinee.referencedSecrets
+            for (_, v) in branches { out.formUnion(secretsIn(bodyValue: v)) }
+            return out
+        }
+    }
+
+    private static func secretsIn(expr: ExtractionExpr) -> Set<String> {
+        switch expr {
+        case .path(let p): return p.referencedSecrets
+        case .pipe(let inner, let calls):
+            var out = secretsIn(expr: inner)
+            for c in calls { for a in c.args { out.formUnion(secretsIn(expr: a)) } }
+            return out
+        case .caseOf(let scrutinee, let branches):
+            var out = scrutinee.referencedSecrets
+            for (_, e) in branches { out.formUnion(secretsIn(expr: e)) }
+            return out
+        case .mapTo(let p, _): return p.referencedSecrets
+        case .literal: return []
+        case .template(let t): return secretsIn(template: t)
+        case .call(_, let args):
+            var out = Set<String>()
+            for a in args { out.formUnion(secretsIn(expr: a)) }
+            return out
         }
     }
 
