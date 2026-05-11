@@ -1,0 +1,80 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Forage",
+    "scopeName": "source.forage",
+    "fileTypes": ["forage"],
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#keyword" },
+        { "include": "#type" },
+        { "include": "#variable" },
+        { "include": "#operator" }
+    ],
+    "repository": {
+        "comment": {
+            "patterns": [
+                { "name": "comment.line.double-slash.forage", "match": "//.*$" },
+                { "name": "comment.block.forage", "begin": "/\\*", "end": "\\*/" }
+            ]
+        },
+        "string": {
+            "name": "string.quoted.double.forage",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                { "name": "constant.character.escape.forage", "match": "\\\\." },
+                {
+                    "name": "meta.template.expression.forage",
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        { "include": "#variable" },
+                        { "name": "punctuation.accessor.forage", "match": "\\." }
+                    ]
+                }
+            ]
+        },
+        "number": {
+            "name": "constant.numeric.forage",
+            "match": "\\b\\d+(\\.\\d+)?\\b"
+        },
+        "keyword": {
+            "patterns": [
+                {
+                    "name": "keyword.control.forage",
+                    "match": "\\b(recipe|engine|type|enum|input|auth|step|method|url|headers|paginate|for|in|emit|case|of|expect|where)\\b"
+                },
+                {
+                    "name": "keyword.other.forage",
+                    "match": "\\b(http|browser|staticHeader|htmlPrime|pageWithTotal|untilEmpty|browserPaginate|body|json|form)\\b"
+                }
+            ]
+        },
+        "type": {
+            "patterns": [
+                {
+                    "name": "support.type.primitive.forage",
+                    "match": "\\b(String|Int|Double|Bool)\\b"
+                },
+                {
+                    "name": "entity.name.type.forage",
+                    "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+                }
+            ]
+        },
+        "variable": {
+            "name": "variable.other.forage",
+            "match": "\\$[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        "operator": {
+            "patterns": [
+                { "name": "keyword.operator.assignment.forage", "match": "←|<-" },
+                { "name": "keyword.operator.arrow.forage", "match": "→|->" },
+                { "name": "keyword.operator.pipe.forage", "match": "\\|" },
+                { "name": "keyword.operator.optional.forage", "match": "\\?\\.|\\?" }
+            ]
+        }
+    }
+}
