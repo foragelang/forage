@@ -22,6 +22,11 @@ public actor HTTPEngine {
     /// Cache directory for persisted sessions. Defaults to
     /// `~/Library/Forage/Cache`. Tests override this to a tempdir.
     public let sessionCacheRoot: URL?
+    /// Supplies the AES key for encrypted session caches. Defaults to a
+    /// `KeychainSessionCacheKeyProvider`; tests pass an in-memory
+    /// provider. Returning nil means `auth.session.cacheEncrypted: true`
+    /// degrades gracefully to `chmod 600` plaintext.
+    public let sessionCacheKeyProvider: SessionCacheKeyProvider
 
     /// In-flight session state (cookies / bearer token). Set by the login
     /// flow; cleared on re-auth.
@@ -39,7 +44,8 @@ public actor HTTPEngine {
         progress: HTTPProgress? = nil,
         secretResolver: SecretResolver? = nil,
         mfaProvider: MFAProvider? = nil,
-        sessionCacheRoot: URL? = nil
+        sessionCacheRoot: URL? = nil,
+        sessionCacheKeyProvider: SessionCacheKeyProvider = KeychainSessionCacheKeyProvider()
     ) {
         self.client = client
         self.evaluator = evaluator
@@ -47,6 +53,7 @@ public actor HTTPEngine {
         self.secretResolver = secretResolver
         self.mfaProvider = mfaProvider
         self.sessionCacheRoot = sessionCacheRoot
+        self.sessionCacheKeyProvider = sessionCacheKeyProvider
     }
 
     /// Run a recipe with the given inputs. Returns a `RunResult` carrying
@@ -512,16 +519,15 @@ public actor HTTPEngine {
         SessionCache.evict(at: url)
     }
 
-    /// Per-machine AES key for `auth.session.cacheEncrypted: true`. The
-    /// engine doesn't hold the key directly — the host injects a
-    /// `SessionCache` encryption-key supplier via subclass / future hook.
-    /// For v1: derive a stable key from a process-instance source so
-    /// encrypted cache survives across processes only when the host
-    /// explicitly wires up a keychain-backed key. Returning nil means
-    /// `cacheEncrypted: true` falls back to plain-but-chmod-600.
+    /// Per-machine AES key for `auth.session.cacheEncrypted: true`.
+    /// Delegates to the configured `SessionCacheKeyProvider`. The
+    /// default `KeychainSessionCacheKeyProvider` generates and stores a
+    /// 256-bit key in the macOS Keychain on first use; tests pass an
+    /// `InMemorySessionCacheKeyProvider`. A nil return (no Keychain
+    /// access, key generation failed) falls back to plain-but-chmod-600,
+    /// matching the pre-M7 behavior.
     private func symmetricKeyForCache() -> CryptoKit.SymmetricKey? {
-        // Future: host-supplied key from Keychain. For now: nil (no-encrypt).
-        return nil
+        sessionCacheKeyProvider.key()
     }
 
     // MARK: - Secret resolution
