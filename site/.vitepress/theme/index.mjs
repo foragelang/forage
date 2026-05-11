@@ -8,6 +8,7 @@ export default {
     Layout: () =>
         h(DefaultTheme.Layout, null, {
             'home-features-before': () =>
-                h('div', { class: 'vp-doc home-intro container' }, h(HomeIntro)),
+                h('div', { class: 'home-intro' },
+                    h('div', { class: 'home-intro-inner vp-doc' }, h(HomeIntro))),
         }),
 }

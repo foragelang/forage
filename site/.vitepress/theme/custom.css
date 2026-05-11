@@ -43,23 +43,29 @@
     border-radius: 8px;
 }
 
-/* Home intro: example + run flow + sample output, sits between hero and features. */
+/* Home intro: example + run flow + sample output, sits between hero and features.
+ * Mirrors VPHero's pattern: outer element holds the padding, inner .container
+ * holds the max-width. Keeps content-edge aligned with the hero text above.
+ */
 .home-intro {
-    max-width: 1152px;
-    margin: 0 auto;
-    padding: 32px 24px 0;
+    padding: 0 24px;
 }
 
 @media (min-width: 640px) {
     .home-intro {
-        padding: 48px 48px 0;
+        padding: 0 48px;
     }
 }
 
 @media (min-width: 960px) {
     .home-intro {
-        padding: 64px 64px 0;
+        padding: 0 64px;
     }
+}
+
+.home-intro-inner {
+    max-width: 1152px;
+    margin: 0 auto;
 }
 
 .home-intro h2 {
