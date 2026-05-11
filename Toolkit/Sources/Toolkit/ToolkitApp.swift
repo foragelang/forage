@@ -49,6 +49,25 @@ struct ToolkitApp: App {
                     NotificationCenter.default.post(name: .toolkitSave, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command])
+
+                Divider()
+
+                Button("Validate") {
+                    NotificationCenter.default.post(name: .toolkitValidate, object: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+
+                Button("Publish to Hub…") {
+                    NotificationCenter.default.post(name: .toolkitPublish, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Import from Hub…") {
+                    NotificationCenter.default.post(name: .toolkitImportFromHub, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
         }
         Settings {
@@ -64,4 +83,7 @@ extension Notification.Name {
     static let toolkitRunReplay = Notification.Name("ToolkitRunReplay")
     static let toolkitCapture = Notification.Name("ToolkitCapture")
     static let toolkitSave = Notification.Name("ToolkitSave")
+    static let toolkitValidate = Notification.Name("ToolkitValidate")
+    static let toolkitPublish = Notification.Name("ToolkitPublish")
+    static let toolkitImportFromHub = Notification.Name("ToolkitImportFromHub")
 }

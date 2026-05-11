@@ -83,6 +83,34 @@ final class LibraryStore {
         try source.write(to: entry.recipeFile, atomically: true, encoding: .utf8)
     }
 
+    /// Persist a recipe fetched from the hub. Overwrites any existing
+    /// local recipe with the same slug — the user already confirmed via
+    /// the import sheet's overwrite prompt before this is called.
+    @discardableResult
+    func importHubRecipe(slug: String, body: String) throws -> RecipeEntry {
+        let fm = FileManager.default
+        let dir = rootDirectory.appending(path: slug, directoryHint: .isDirectory)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir.appending(path: "fixtures"), withIntermediateDirectories: true)
+        try body.write(
+            to: dir.appending(path: "recipe.forage"),
+            atomically: true,
+            encoding: .utf8
+        )
+        refresh()
+        lastCreatedSlug = slug
+        return RecipeEntry(slug: slug, directory: dir)
+    }
+
+    /// True if `~/Library/Forage/Recipes/<slug>/recipe.forage` already
+    /// exists. Lets the import sheet ask before overwriting.
+    func hasLocalRecipe(slug: String) -> Bool {
+        let path = rootDirectory
+            .appending(path: slug, directoryHint: .isDirectory)
+            .appending(path: "recipe.forage")
+        return FileManager.default.fileExists(atPath: path.path)
+    }
+
     /// Compute next unused `untitled-N` slug.
     private func nextUntitledSlug() -> String {
         let existing = Set(entries.map(\.slug))

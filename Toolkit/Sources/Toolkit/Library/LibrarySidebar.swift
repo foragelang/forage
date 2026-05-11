@@ -88,8 +88,7 @@ struct LibrarySidebar: View {
             } label: {
                 Label("Import", systemImage: "square.and.arrow.down")
             }
-            .help("Import a recipe from the hub (coming in M4)")
-            .disabled(true)
+            .help("Import a recipe from hub.foragelang.com")
 
             Spacer()
         }
@@ -99,6 +98,5 @@ struct LibrarySidebar: View {
     }
 }
 
-extension Notification.Name {
-    static let toolkitImportFromHub = Notification.Name("ToolkitImportFromHub")
-}
+// `Notification.Name.toolkitImportFromHub` is declared in ToolkitApp.swift
+// alongside the menu-command counterpart that posts the same notification.

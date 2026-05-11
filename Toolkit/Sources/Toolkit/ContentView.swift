@@ -7,6 +7,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(LibraryStore.self) private var library
     @State private var selectedSlug: String?
+    @State private var hubImportPresented: Bool = false
 
     var body: some View {
         NavigationSplitView {
@@ -27,6 +28,12 @@ struct ContentView: View {
         .navigationTitle("Forage Toolkit")
         .onChange(of: library.lastCreatedSlug) { _, new in
             if let new { selectedSlug = new }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toolkitImportFromHub)) { _ in
+            hubImportPresented = true
+        }
+        .sheet(isPresented: $hubImportPresented) {
+            HubImportSheet(isPresented: $hubImportPresented)
         }
     }
 }
