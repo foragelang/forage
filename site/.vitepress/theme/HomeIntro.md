@@ -1,7 +1,5 @@
 ## Examples
 
-Five real recipes — pick one to see its shape, the run command, and the snapshot it produces.
-
 <RecipeCarousel />
 
 ## What happens during a run

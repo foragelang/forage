@@ -121,6 +121,13 @@
     border-bottom-color: var(--vp-c-brand-1);
 }
 
+.recipe-summary {
+    margin: 12px 0 16px;
+    color: var(--vp-c-text-2);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
 .recipe-pane > div > :first-child {
     margin-top: 0;
 }
