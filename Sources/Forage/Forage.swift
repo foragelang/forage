@@ -60,6 +60,13 @@
 //   - ArchiveMeta               : recipe name, inputs, runtime, observedAt
 //   - ArchiveRunHandle          : reference to one persisted run
 //
+// Recipe registry (loads recipes/<platform>/recipe.forage):
+//   - RecipeRegistry            : @Observable; loads + optionally watches a
+//                                 directory tree of recipes. Consumers point
+//                                 it at a bundled or dev-checkout `recipes/`
+//                                 dir and look recipes up by name.
+//   - RecipeRegistryError       : surfaced when the root isn't a directory
+//
 // Coming next:
 //   - Parser (Phase C): .forage text → Recipe
 //   - Validator + DiagnosticReport + fixture harness (Phase D)
