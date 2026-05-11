@@ -19,7 +19,7 @@ import Foundation
 ///   for now.
 /// - `unhandledAffordances`: left empty; future expansion may populate based
 ///   on engine-observed UI affordances.
-public struct DiagnosticReport: Sendable, Hashable {
+public struct DiagnosticReport: Sendable, Hashable, Codable {
     public let stallReason: String
     public let unmatchedCaptures: [UnmatchedCapture]
     public let unfiredRules: [String]
@@ -46,7 +46,7 @@ public struct DiagnosticReport: Sendable, Hashable {
 /// consumer to recognize the endpoint and decide whether the recipe should
 /// grow a rule for it. Body itself is dropped to keep diagnostic reports
 /// small and Sendable; only the byte count survives.
-public struct UnmatchedCapture: Sendable, Hashable {
+public struct UnmatchedCapture: Sendable, Hashable, Codable {
     public let url: String
     public let method: String
     public let status: Int

@@ -55,6 +55,11 @@
 //                                 against a Snapshot; engines feed the result
 //                                 into DiagnosticReport.unmetExpectations
 //
+// Archive (durable on-disk format for one scrape run):
+//   - Archive                   : write / list / read entry points
+//   - ArchiveMeta               : recipe name, inputs, runtime, observedAt
+//   - ArchiveRunHandle          : reference to one persisted run
+//
 // Coming next:
 //   - Parser (Phase C): .forage text → Recipe
 //   - Validator + DiagnosticReport + fixture harness (Phase D)

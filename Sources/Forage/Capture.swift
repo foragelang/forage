@@ -7,8 +7,8 @@ import Foundation
 /// response to the Swift host via a `WKScriptMessageHandler`. Engines (and
 /// pagination strategies) consume the stream to detect progress, identify
 /// seeds for replay-mode pagination, and emit the diagnostic JSONL artifact.
-public struct Capture: Hashable, Sendable {
-    public enum Kind: String, Hashable, Sendable {
+public struct Capture: Hashable, Sendable, Codable {
+    public enum Kind: String, Hashable, Sendable, Codable {
         case fetch
         case xhr
         case diagnostic   // synthetic — emitted by injected JS for debugging

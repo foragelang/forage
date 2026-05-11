@@ -37,7 +37,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     private var settleTimer: Timer?
     private var hardTimer: Timer?
     private var paginate: BrowserPaginate?
-    private var captures: [Capture] = []
+    public private(set) var captures: [Capture] = []
     private var collector = EmissionCollector()
     private var unmatchedCaptures: [Capture] = []
     /// Per-rule match counter, keyed by `CaptureRule.urlPattern`. Rules that
