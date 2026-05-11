@@ -180,7 +180,7 @@ async function runStatement(
             return scope
         }
         case 'forLoop': {
-            const listValue = resolvePath(statement.collection, scope)
+            const listValue = evaluator.evaluateToJSON(statement.collection, scope)
             let items: JSONValue[]
             if (listValue.tag === 'array') items = listValue.items
             else if (listValue.tag === 'null') items = []

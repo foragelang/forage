@@ -443,7 +443,7 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
                 let record = try evaluator.emit(em, in: scope)
                 collector.append(record)
             case .forLoop(let varName, let coll, let body):
-                let listValue = try PathResolver.resolve(coll, in: scope)
+                let listValue = try evaluator.evaluateToJSON(coll, in: scope)
                 let items: [JSONValue]
                 switch listValue {
                 case .array(let xs): items = xs

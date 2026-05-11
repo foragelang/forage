@@ -1,0 +1,35 @@
+// HTML extraction primitive (M8) — exercises the parseHtml /
+// select / text / attr / first transforms and the for-loop grammar's
+// ability to iterate over a pipeline (`for $x in <ExtractionExpr>`).
+//
+// Both runtimes must parse this and validate with zero errors; the
+// runner contract is checked separately (Swift in HTMLExtractionTests,
+// TS in html-extraction.test.ts) since shared vectors are parse+
+// validate-only by convention.
+
+recipe "html-extraction" {
+    engine http
+
+    type Listing {
+        title: String
+        url:   String?
+        host:  String?
+    }
+
+    input page: String
+
+    step fetch {
+        method "GET"
+        url    "{$input.page}"
+    }
+
+    for $item in $fetch | parseHtml | select("li.story") {
+        emit Listing {
+            title ← $item | select("a.title") | text
+            url   ← $item | select("a.title") | attr("href")
+            host  ← $item | select(".host") | text
+        }
+    }
+
+    expect { records.where(typeName == "Listing").count >= 1 }
+}

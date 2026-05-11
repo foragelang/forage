@@ -39,6 +39,8 @@ public enum TemplateRenderer {
                 return s
             }
             return ""
+        case .node(let n):
+            return (try? n.element.outerHtml()) ?? ""
         }
     }
 }

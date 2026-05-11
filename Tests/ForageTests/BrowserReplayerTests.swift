@@ -162,13 +162,13 @@ private func minimalReplayRecipe() -> Recipe {
     let body: [Statement] = [
         .forLoop(
             variable: "p",
-            collection: .field(.current, "products"),
+            collection: .path(.field(.current, "products")),
             body: [.emit(emit)]
         )
     ]
     let captureRule = CaptureRule(
         urlPattern: "api/products",
-        iterPath: .field(.current, "products"),
+        iterPath: .path(.field(.current, "products")),
         body: body
     )
     let bcfg = BrowserConfig(

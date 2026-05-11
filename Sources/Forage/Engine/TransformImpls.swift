@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 
 /// Built-in transform vocabulary. Recipes call these by name in pipelines
 /// (`$.x | parseSize | normalizeOzToGrams`) or function-call form
@@ -219,6 +220,106 @@ public struct TransformImpls: Sendable {
             return .null
         }
 
+        // MARK: - HTML / DOM extraction
+        //
+        // Forage treats HTML as queryable structured data: parse it once with
+        // `parseHtml`, then walk the result with the same path-and-pipe
+        // language used for JSON. Node values are runtime-only (they don't
+        // survive snapshot serialization) — recipes pipe them through `text`,
+        // `attr`, `html`, or further `select` calls to materialize concrete
+        // scalars for emission.
+
+        // parseHtml: String → Node. The string is parsed in HTML mode;
+        // SwiftSoup is forgiving so real-world malformed markup still
+        // produces a usable tree. Non-string input is passed through
+        // unchanged so chains stay null-safe.
+        register("parseHtml") { v, _ in
+            guard case .string(let s) = v else { return v }
+            do {
+                let doc = try SwiftSoup.parse(s)
+                return .node(HTMLNode(doc))
+            } catch {
+                return .null
+            }
+        }
+
+        // parseJson: String → JSONValue. The companion to parseHtml for the
+        // common "data lives in a <script> tag as JSON" pattern. Non-string
+        // input passes through. Malformed JSON returns null.
+        register("parseJson") { v, _ in
+            guard case .string(let s) = v,
+                  let data = s.data(using: .utf8) else { return v }
+            return (try? JSONValue.decode(data)) ?? .null
+        }
+
+        // select(selector): Node → [Node]. CSS selector match. The selector
+        // is the first positional arg; the receiver is the piped node. An
+        // array result lets recipes write `for $card in $page | select(".x")`
+        // with no extra `[*]` widening.
+        register("select") { v, args in
+            guard args.count >= 1,
+                  case .string(let selector) = args[0] else { return .array([]) }
+            guard case .node(let n) = v else { return .array([]) }
+            do {
+                let elements = try n.element.select(selector)
+                return .array(elements.array().map { JSONValue.node(HTMLNode($0)) })
+            } catch {
+                return .array([])
+            }
+        }
+
+        // text: Node → String. Concatenated text content of the node and
+        // its descendants, whitespace-collapsed (SwiftSoup's `.text()`).
+        // jQuery convention: if given an array of nodes (the typical
+        // shape coming out of `select`), operate on the first one rather
+        // than failing. Empty array → null. Non-node input passes through.
+        register("text") { v, _ in
+            if let n = Self.firstNode(v) {
+                return .string((try? n.element.text()) ?? "")
+            }
+            if case .array(let xs) = v, xs.isEmpty { return .null }
+            return v
+        }
+
+        // attr(name): Node → String?. Attribute lookup; returns null if
+        // the attribute is missing. Same array-auto-flatten as `text`.
+        register("attr") { v, args in
+            guard args.count >= 1,
+                  case .string(let name) = args[0] else { return .null }
+            guard let n = Self.firstNode(v) else { return .null }
+            let value = (try? n.element.attr(name)) ?? ""
+            return value.isEmpty ? .null : .string(value)
+        }
+
+        // html: Node → String. The node's outerHTML — useful for
+        // debugging or for emitting raw markup as a field value. Array
+        // auto-flatten as with `text`.
+        register("html") { v, _ in
+            if let n = Self.firstNode(v) {
+                return .string((try? n.element.outerHtml()) ?? "")
+            }
+            if case .array(let xs) = v, xs.isEmpty { return .null }
+            return v
+        }
+
+        // innerHtml: Node → String. Children's HTML, not the wrapping tag.
+        // Array auto-flatten as with `text`.
+        register("innerHtml") { v, _ in
+            if let n = Self.firstNode(v) {
+                return .string((try? n.element.html()) ?? "")
+            }
+            if case .array(let xs) = v, xs.isEmpty { return .null }
+            return v
+        }
+
+        // first: Array → first element (or null if empty). Useful when
+        // recipes want explicit "give me the head of this list" semantics
+        // — e.g. `select(".x") | first | someTransform`.
+        register("first") { v, _ in
+            if case .array(let xs) = v { return xs.first ?? .null }
+            return v
+        }
+
         // MARK: - Coalesce / default
 
         register("coalesce") { v, args in
@@ -230,6 +331,17 @@ public struct TransformImpls: Sendable {
             if !v.isNull { return v }
             return args.first ?? .null
         }
+    }
+
+    /// Auto-flatten helper for the HTML-extraction transforms: if `v` is a
+    /// `.node`, return its element; if `v` is a `.array` of nodes, return
+    /// the first one's element (jQuery convention); else nil. Lets recipes
+    /// pipe `select(...)` results directly into `text` / `attr` / `html`
+    /// without an intermediate `first` for the common single-match case.
+    fileprivate static func firstNode(_ v: JSONValue) -> HTMLNode? {
+        if case .node(let n) = v { return n }
+        if case .array(let xs) = v, case .node(let n)? = xs.first { return n }
+        return nil
     }
 
     /// Shared `parseSize` implementation. Matches a numeric prefix with an

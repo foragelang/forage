@@ -124,6 +124,12 @@ public struct ExtractionEvaluator: Sendable {
             }
             // Plain object: lift to anonymous record.
             return .record(ScrapedRecord(typeName: "_anonymous", fields: o.mapValues { lift($0) }))
+        case .node(let n):
+            // Nodes don't belong in a snapshot — emit blocks should pipe
+            // them through text/attr/html to materialize a scalar first.
+            // If a recipe accidentally emits a bare node, lift to its
+            // outerHTML rather than crashing or dropping it.
+            return .string((try? n.element.outerHtml()) ?? "")
         }
     }
 

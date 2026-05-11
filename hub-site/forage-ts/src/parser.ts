@@ -443,9 +443,13 @@ export class Parser {
     }
 
     private parseForLoop(): Statement {
+        // `for $var in <extractionExpr> { body }` — the collection is an
+        // ExtractionExpr (not just a PathExpr) so pipelines like
+        // `for $x in $page | parseHtml | select(".x")` work. Bare paths
+        // still parse cleanly: an atom-only ExtractionExpr wraps a path.
         const variable = this.consumeDollarVariable()
         this.expectKeyword('in')
-        const collection = this.parsePathExpr()
+        const collection = this.parseExtractionExpr()
         this.expect('lbrace', '{')
         const body: Statement[] = []
         while (!this.check('rbrace')) body.push(this.parseStatement())

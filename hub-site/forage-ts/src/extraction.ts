@@ -199,6 +199,11 @@ export function stringifyJSON(v: JSONValue): string {
         case 'string': return v.value
         case 'array': case 'object':
             try { return JSON.stringify(toRaw(v)) } catch { return '' }
+        case 'node': {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const $ = v.cheerio as any
+            return $.html(v.element) ?? ''
+        }
     }
 }
 

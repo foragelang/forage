@@ -68,10 +68,15 @@ public enum EngineKind: String, Hashable, Sendable {
 
 /// One body statement. Recipes mix steps, emissions, and for-loops at any
 /// level of nesting.
+///
+/// `forLoop.collection` is an `ExtractionExpr` (not just a `PathExpr`) so
+/// loops can iterate over the result of a transform pipeline — typical
+/// shapes are `for $card in $page | parseHtml | select(".x")` for HTML
+/// extraction and `for $x in $arr[*]` for plain JSON iteration.
 public indirect enum Statement: Hashable, Sendable {
     case step(HTTPStep)
     case emit(Emission)
-    case forLoop(variable: String, collection: PathExpr, body: [Statement])
+    case forLoop(variable: String, collection: ExtractionExpr, body: [Statement])
 }
 
 /// Recipe author-declared expectation, e.g.

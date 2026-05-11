@@ -297,3 +297,64 @@ Milestone 6 (web IDE) is gated on M5 only by docs convenience — it could land 
 M7 (authenticated sessions) is independent — it can land any time after M1, since it's purely runtime + DSL. Queued until the M1–M6 path is live and we know what real-world recipe authors hit walls on.
 
 Once M1-M7 are all landed, forage covers static-key, CSRF-priming, AND session-based auth — i.e. essentially any non-CAPTCHA public-web flow.
+
+M8 (HTML / DOM extraction) is also independent and is **landed** — added below for the historical record. M9 (browser-engine document capture) is the natural follow-on that lights up eBay-class sites; queued similarly to M7.
+
+---
+
+## M8 — HTML / DOM extraction
+
+**Result:** Recipes can extract typed records from server-rendered HTML the same way they extract from JSON. No second mini-language; the same path-and-pipe grammar works against parsed DOM trees.
+
+The model: any parseable content type becomes a queryable `JSONValue` tree. The `.node` variant wraps a parsed HTML/XML element (SwiftSoup on the Swift runtime, cheerio on the TS port). A handful of transforms — `parseHtml`, `parseJson`, `select`, `text`, `attr`, `html`, `innerHtml`, `first` — let recipes walk DOM trees, materialize text/attributes, and emit typed records, with no grammar change beyond extending for-loop collections from `PathExpr` to `ExtractionExpr` so iteration can drive off a pipeline result.
+
+**Status: landed.** Documented here as the canonical reference for what M8 covers; the runtime, parser, validator, and TS port all carry the primitive today.
+
+**What the primitive looks like (recipe-side):**
+
+```forage
+for $row in $page | parseHtml | select("table.opinions tr:has(a)") {
+    emit Opinion {
+        date     ← $row | select("td:nth-child(2)") | text
+        caseName ← $row | select("td:nth-child(4) a") | text
+        pdfUrl   ← $row | select("td:nth-child(4) a") | attr("href")
+    }
+}
+```
+
+**Deliverables (all landed):**
+
+- **D8.1 — `JSONValue.node(HTMLNode)` variant.** A queryable element. Hashable by outerHTML; `@unchecked Sendable` (the underlying parser element is a reference type, but recipe evaluation treats nodes as immutable). Non-Codable in the round-trip sense — nodes encode as outerHTML strings and never decode back, so they're runtime-only.
+- **D8.2 — HTML/DOM transforms.** `parseHtml` (string → node), `parseJson` (string → JSON), `select(selector)` (node → [node]), `text` / `attr` / `html` / `innerHtml` (node → string), `first` (array → first element). `text`/`attr`/`html`/`innerHtml` auto-flatten a single-element node array (jQuery convention) so `select(".x") | text` works without an explicit `| first`.
+- **D8.3 — `for $x in <ExtractionExpr>`.** For-loop collections were `PathExpr` only; now accept the full extraction grammar so pipelines like `for $card in $page | parseHtml | select(".card")` drive iteration directly. Bare-path collections still parse cleanly. `CaptureRule.iterPath` extends the same way.
+- **D8.4 — Content-type-aware response body decode.** `JSONValue.decodeBody(_:contentType:)` returns `.string(body)` for `text/html`, `text/xml`, etc. — non-JSON bodies don't throw the engine; recipes pipe through `parseHtml` to materialize the node.
+- **D8.5 — Mirrored in `forage-ts`.** Cheerio dep, mirrored `.node` variant, mirrored transforms, mirrored for-loop grammar. Shared test vector `Tests/shared-recipes/07-html-extraction.forage` checks both implementations agree on parse + validate.
+- **D8.6 — Tests.** `Tests/ForageTests/HTMLExtractionTests.swift` (14 unit + end-to-end tests on the Swift side); `hub-site/forage-ts/test/html-extraction.test.ts` (13 mirroring tests on the TS side); 7th shared recipe vector.
+- **D8.7 — Reference recipes.** `recipes/hacker-news-html/` (HTML scrape of news.ycombinator.com — the "no API needed" companion to the JSON-API `recipes/hacker-news/`). `recipes/scotus-opinions/` (US Supreme Court slip opinions for a term — typed `Opinion` records extracted from supremecourt.gov's HTML table; a civic-data example with no API and no anti-bot).
+- **D8.8 — Docs.** New `site/docs/html-extraction.md` page; transform reference in `site/docs/syntax.md` extended; engine-selection notes in `site/docs/engines.md` updated to describe content-type dispatch.
+
+**Out of scope (intentional follow-ups):**
+
+- Browser-engine recipes that need to extract from the *initial document body* (eBay search results, Cloudflare-gated sites). The browser engine today captures fetch/XHR responses; capturing the rendered document body after navigation is M9.
+- HTML form submissions / multipart bodies (would compose with M7 sessions for login flows).
+- XML-namespaced parsing (RSS / Atom with prefixed elements). `parseHtml` handles most loose XML already; tightening up Atom-specific access patterns is a follow-up.
+
+---
+
+## M9 — Browser-engine document capture
+
+**Result:** Browser-engine recipes can extract from the rendered document body itself, not just from XHR/fetch responses. This closes the loop on sites like eBay where the listings are server-rendered HTML behind bot management — a real WebKit instance walks through the gate (existing browser engine), and the post-navigation document body becomes a synthetic capture the recipe extracts from via M8's HTML primitives.
+
+**Deliverables**
+
+- **D9.1 — `captures.document { … }` block.** Sibling to today's `captures.match`. Fires once after the browser has finished navigating (and any age-gate / dismissal / scroll-settle has completed). The capture's body is the post-settle `document.documentElement.outerHTML`. Content-type is `text/html` so the recipe can pipe through `parseHtml`.
+- **D9.2 — Synthetic capture plumbing.** `BrowserEngine` evaluates JS to fetch `document.documentElement.outerHTML`, wraps the result in a `Capture` with the appropriate URL / status, and routes it through the same rule-matching pipeline as XHR captures. Reuses existing capture-archive code so document captures appear in `captures.jsonl` just like fetch ones.
+- **D9.3 — Iteration semantics.** `captures.document` rules take the same shape as `captures.match` rules: `for $x in <ExtractionExpr> { emit … }` over the parsed document.
+- **D9.4 — Reference recipe.** `recipes/ebay-sold/` — eBay completed-listings scrape. Per-input `query`, paginated via "page" param re-navigations rather than XHR replay. Emits `SoldListing { title, soldPrice, soldDate, condition, bidCount, url, image }`. The flagship "this is why you'd use Forage" demo.
+- **D9.5 — Tests.** A fixture-driven test exercising `captures.document` with a saved HTML body (BrowserReplayer extended to synthesize document captures alongside fetch captures).
+- **D9.6 — Docs.** Update `site/docs/engines.md` and `site/docs/html-extraction.md` with the browser-engine path; cross-reference from the eBay recipe.
+
+**Acceptance**
+
+- `forage run recipes/ebay-sold --input query="polaroid sx-70"` returns N typed `SoldListing` records.
+- The eBay recipe round-trips against an archived run via `BrowserReplayer`.

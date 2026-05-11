@@ -98,7 +98,7 @@ func httpEngineSuccessReportsCompleted() async throws {
             )),
             .forLoop(
                 variable: "item",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -179,7 +179,7 @@ func httpEngineFailureMidWalkKeepsRecordsEmittedSoFar() async throws {
             )),
             .forLoop(
                 variable: "x",
-                collection: .field(.variable("first"), "data"),
+                collection: .path(.field(.variable("first"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",

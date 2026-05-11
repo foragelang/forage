@@ -108,7 +108,7 @@ public enum Validator {
                         validateExtraction(fb.expr, transforms: transforms, knownVars: varInScope, knownInputs: inputNames, knownTypes: typeNames, knownStepNames: stepNames, location: "emit \(em.typeName).\(fb.fieldName)", issues: &issues)
                     }
                 case .forLoop(let v, let coll, let body):
-                    validatePath(coll, knownVars: { varInScope($0) || stepNames.contains($0) }, knownInputs: inputNames, location: "for \(v) in <coll>", issues: &issues)
+                    validateExtraction(coll, transforms: transforms, knownVars: { varInScope($0) || stepNames.contains($0) }, knownInputs: inputNames, knownTypes: typeNames, knownStepNames: stepNames, location: "for \(v) in <coll>", issues: &issues)
                     var frame = Set<String>()
                     frame.insert(v)
                     varStack.append(frame)
@@ -198,7 +198,7 @@ public enum Validator {
         case .emit(let em):
             for b in em.bindings { out.formUnion(secretsIn(expr: b.expr)) }
         case .forLoop(_, let coll, let body):
-            out.formUnion(coll.referencedSecrets)
+            out.formUnion(secretsIn(expr: coll))
             for s in body { collectInStatement(s, into: &out) }
         }
     }

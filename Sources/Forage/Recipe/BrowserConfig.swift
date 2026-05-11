@@ -98,12 +98,13 @@ public enum BrowserPaginateUntil: Hashable, Sendable {
 
 public struct CaptureRule: Hashable, Sendable {
     public let urlPattern: String
-    /// Iterate this path within the matched response; the inner body runs
-    /// per item, with `$.` bound to the item.
-    public let iterPath: PathExpr
+    /// Iterate this expression within the matched response; the inner body
+    /// runs per item, with `$.` bound to the item. An `ExtractionExpr` so
+    /// HTML-bearing captures can pipe through `parseHtml | select(...)`.
+    public let iterPath: ExtractionExpr
     public let body: [Statement]
 
-    public init(urlPattern: String, iterPath: PathExpr, body: [Statement]) {
+    public init(urlPattern: String, iterPath: ExtractionExpr, body: [Statement]) {
         self.urlPattern = urlPattern
         self.iterPath = iterPath
         self.body = body

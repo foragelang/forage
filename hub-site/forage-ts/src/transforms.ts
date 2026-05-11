@@ -1,6 +1,7 @@
 // Transform vocabulary — port of Sources/Forage/Engine/TransformImpls.swift.
 
 import type { JSONValue } from './ast.js'
+import * as cheerio from 'cheerio'
 
 export type TransformImpl = (value: JSONValue, args: JSONValue[]) => JSONValue
 
@@ -177,6 +178,98 @@ export class TransformImpls {
             return { tag: 'null' }
         })
 
+        // ---- HTML / DOM extraction ----
+        //
+        // Treats HTML as queryable structured data: parse once with
+        // `parseHtml`, walk via `select` + accessors. Same path-and-pipe
+        // grammar as JSON. Node values are runtime-only (they don't
+        // survive JSON serialization).
+
+        // parseHtml: String → Node. Lenient cheerio parsing — the root
+        // element is wrapped so subsequent `select` calls walk from it.
+        this.register('parseHtml', (v) => {
+            if (v.tag !== 'string') return v
+            const $ = cheerio.load(v.value)
+            return { tag: 'node', cheerio: $, element: $.root()[0] }
+        })
+
+        // parseJson: String → JSONValue. Companion for the embedded-
+        // JSON-in-<script> pattern.
+        this.register('parseJson', (v) => {
+            if (v.tag !== 'string') return v
+            try {
+                return fromRawJSON(JSON.parse(v.value))
+            } catch {
+                return { tag: 'null' }
+            }
+        })
+
+        // select(selector): Node → [Node]. Matched elements as a node
+        // array. The piped node is the root for the query; the selector
+        // is the first positional arg.
+        this.register('select', (v, args) => {
+            if (args.length < 1 || args[0].tag !== 'string') return { tag: 'array', items: [] }
+            if (v.tag !== 'node') return { tag: 'array', items: [] }
+            const $ = v.cheerio as cheerio.CheerioAPI
+            const matches = $(v.element).find(args[0].value)
+            const items: JSONValue[] = []
+            matches.each((_, el) => {
+                items.push({ tag: 'node', cheerio: $, element: el })
+            })
+            return { tag: 'array', items }
+        })
+
+        // text: Node → String. Concatenated text content. jQuery
+        // convention: an array-of-nodes auto-flattens to its first node.
+        this.register('text', (v) => {
+            const node = firstNode(v)
+            if (node) {
+                const $ = node.cheerio as cheerio.CheerioAPI
+                return { tag: 'string', value: $(node.element).text().trim().replace(/\s+/g, ' ') }
+            }
+            if (v.tag === 'array' && v.items.length === 0) return { tag: 'null' }
+            return v
+        })
+
+        // attr(name): Node → String?. Returns null if missing/empty.
+        this.register('attr', (v, args) => {
+            if (args.length < 1 || args[0].tag !== 'string') return { tag: 'null' }
+            const node = firstNode(v)
+            if (!node) return { tag: 'null' }
+            const $ = node.cheerio as cheerio.CheerioAPI
+            const val = $(node.element).attr(args[0].value) ?? ''
+            return val === '' ? { tag: 'null' } : { tag: 'string', value: val }
+        })
+
+        // html: Node → String (outerHTML). Array auto-flattens to first.
+        this.register('html', (v) => {
+            const node = firstNode(v)
+            if (node) {
+                const $ = node.cheerio as cheerio.CheerioAPI
+                return { tag: 'string', value: $.html(node.element) }
+            }
+            if (v.tag === 'array' && v.items.length === 0) return { tag: 'null' }
+            return v
+        })
+
+        // innerHtml: Node → String (children's HTML, no wrapping tag).
+        this.register('innerHtml', (v) => {
+            const node = firstNode(v)
+            if (node) {
+                const $ = node.cheerio as cheerio.CheerioAPI
+                return { tag: 'string', value: $(node.element).html() ?? '' }
+            }
+            if (v.tag === 'array' && v.items.length === 0) return { tag: 'null' }
+            return v
+        })
+
+        // first: Array → first element (or null). Explicit head-of-list
+        // for recipes that want it spelled out.
+        this.register('first', (v) => {
+            if (v.tag === 'array') return v.items[0] ?? { tag: 'null' }
+            return v
+        })
+
         // ---- Coalesce / default ----
         this.register('coalesce', (v, args) => {
             if (v.tag !== 'null') return v
@@ -188,6 +281,19 @@ export class TransformImpls {
             return args[0] ?? { tag: 'null' }
         })
     }
+}
+
+/// Auto-flatten helper for the HTML-extraction transforms: a `.node`
+/// returns its own carrier; an `.array` returns the first node's
+/// carrier (jQuery convention); else null. Lets recipes pipe
+/// `select(...)` directly into `text` / `attr` / `html`.
+function firstNode(v: JSONValue): { cheerio: any; element: any } | null {
+    if (v.tag === 'node') return { cheerio: v.cheerio, element: v.element }
+    if (v.tag === 'array' && v.items.length > 0) {
+        const head = v.items[0]
+        if (head.tag === 'node') return { cheerio: head.cheerio, element: head.element }
+    }
+    return null
 }
 
 function parseSizeString(s: string): JSONValue {
@@ -237,6 +343,15 @@ export function jsonEquals(a: JSONValue, b: JSONValue): boolean {
             for (const k of aKeys) if (!(k in be) || !jsonEquals(a.entries[k], be[k])) return false
             return true
         }
+        case 'node': {
+            // Compare by serialized outerHTML — node identity isn't a
+            // meaningful equality for runtime values.
+            const an = a as typeof a
+            const bn = b as typeof a
+            const $a = an.cheerio as cheerio.CheerioAPI
+            const $b = bn.cheerio as cheerio.CheerioAPI
+            return ($a.html(an.element) ?? '') === ($b.html(bn.element) ?? '')
+        }
     }
 }
 
@@ -249,6 +364,10 @@ function jsonToString(v: JSONValue): string {
         case 'string': return v.value
         case 'array': return JSON.stringify(toRawJSON(v))
         case 'object': return JSON.stringify(toRawJSON(v))
+        case 'node': {
+            const $ = v.cheerio as cheerio.CheerioAPI
+            return $.html(v.element) ?? ''
+        }
     }
 }
 
@@ -264,6 +383,10 @@ export function toRawJSON(v: JSONValue): unknown {
             const obj: Record<string, unknown> = {}
             for (const [k, e] of Object.entries(v.entries)) obj[k] = toRawJSON(e)
             return obj
+        }
+        case 'node': {
+            const $ = v.cheerio as cheerio.CheerioAPI
+            return $.html(v.element) ?? ''
         }
     }
 }

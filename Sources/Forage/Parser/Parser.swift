@@ -435,10 +435,16 @@ public struct Parser {
     }
 
     private mutating func parseForLoop() throws -> Statement {
-        // `for $var in <pathExpr | literalList> { body }`
+        // `for $var in <extractionExpr> { body }`
+        //
+        // The collection is an ExtractionExpr (not just a PathExpr) so
+        // pipelines work as iteration sources — e.g.
+        // `for $card in $page | parseHtml | select(".card") { … }`
+        // for HTML-extraction recipes. Bare paths `$arr[*]` still parse
+        // cleanly: an atom-only ExtractionExpr wraps a PathExpr.
         let varTok = try consumeDollarVariable()
         try expectKeyword("in")
-        let collection = try parsePathExpr()
+        let collection = try parseExtractionExpr()
         try expect(.lbrace, "{")
         var body: [Statement] = []
         while !check(.rbrace) {
@@ -1091,7 +1097,7 @@ public struct Parser {
     private mutating func parseCaptureRule() throws -> CaptureRule {
         try expect(.lbrace, "{")
         var urlPattern = ""
-        var iterPath: PathExpr = .current
+        var iterPath: ExtractionExpr = .path(.current)
         var body: [Statement] = []
         while !check(.rbrace) {
             if matchKeyword("urlPattern") {

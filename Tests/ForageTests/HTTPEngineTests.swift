@@ -139,7 +139,7 @@ func minimalRecipeRunsAndEmitsRecord() async throws {
             )),
             .forLoop(
                 variable: "item",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -214,7 +214,7 @@ func sweedShapedRecipeWithPaginationAndTransforms() async throws {
             )),
             .forLoop(
                 variable: "product",
-                collection: .variable("products"),
+                collection: .path(.variable("products")),
                 body: [
                     .emit(Emission(
                         typeName: "Product",
@@ -306,7 +306,7 @@ func caseOfBranchesByEnumLabel() async throws {
             )),
             .forLoop(
                 variable: "menu",
-                collection: .field(.input, "menuTypes"),
+                collection: .path(.field(.input, "menuTypes")),
                 body: [
                     .emit(Emission(
                         typeName: "Obs",
@@ -500,7 +500,7 @@ func httpEngineDrivesProgressThroughPrimingSteppingPaginatingDone() async throws
             )),
             .forLoop(
                 variable: "product",
-                collection: .variable("products"),
+                collection: .path(.variable("products")),
                 body: [
                     .emit(Emission(
                         typeName: "Product",
@@ -586,7 +586,7 @@ func httpEngineMarksDoneWithoutHtmlPrime() async throws {
             )),
             .forLoop(
                 variable: "item",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -684,7 +684,7 @@ func recipeRunnerExposesAndResetsProgressAcrossRuns() async throws {
             )),
             .forLoop(
                 variable: "item",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -743,7 +743,7 @@ private func productCountRecipe() -> Recipe {
             )),
             .forLoop(
                 variable: "p",
-                collection: .field(.variable("products"), "data"),
+                collection: .path(.field(.variable("products"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Product",
@@ -879,7 +879,7 @@ func httpEngineMapsURLErrorCancelledToCancelledStallReason() async throws {
             )),
             .forLoop(
                 variable: "product",
-                collection: .variable("products"),
+                collection: .path(.variable("products")),
                 body: [
                     .emit(Emission(
                         typeName: "Product",

@@ -98,6 +98,10 @@ export type JSONValue =
     | { tag: 'string'; value: string }
     | { tag: 'array'; items: JSONValue[] }
     | { tag: 'object'; entries: Record<string, JSONValue> }
+    // Runtime-only node value produced by `parseHtml`. Wraps a cheerio
+    // root reference plus a specific element. Nodes don't survive JSON
+    // serialization — round-tripping flattens them to outerHTML strings.
+    | { tag: 'node'; cheerio: any /* CheerioAPI */; element: any /* cheerio Element */ }
 
 export type TemplatePart =
     | { tag: 'literal'; value: string }
@@ -187,7 +191,11 @@ export interface HTTPStep {
 export type Statement =
     | { tag: 'step'; step: HTTPStep }
     | { tag: 'emit'; emission: Emission }
-    | { tag: 'forLoop'; variable: string; collection: PathExpr; body: Statement[] }
+    // collection is an `ExtractionExpr` so iteration can drive off a
+    // pipeline result — e.g. `for $card in $page | parseHtml | select(".x")`.
+    // Bare path-only iteration `for $x in $arr[*]` still works: the
+    // path wraps in `{ tag: 'path', path: ... }`.
+    | { tag: 'forLoop'; variable: string; collection: ExtractionExpr; body: Statement[] }
 
 export type ComparisonOp = '>=' | '>' | '<=' | '<' | '==' | '!='
 

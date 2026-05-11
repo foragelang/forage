@@ -1,0 +1,41 @@
+// US Supreme Court slip opinions — current-term opinion list scraped from
+// supremecourt.gov's HTML.
+//
+// The Court publishes opinions as PDFs linked from `/opinions/slipopinion/<term>`.
+// There's no API and the page is server-rendered HTML. Each row in the
+// opinions table carries the date, docket number, case name, link to the
+// PDF, and the holding (in the link's `title` attribute). This recipe
+// extracts all of that as typed `Opinion` records.
+
+recipe "scotus-opinions" {
+    engine http
+
+    type Opinion {
+        date:         String
+        docketNumber: String
+        caseName:     String
+        pdfUrl:       String
+        holding:      String?
+    }
+
+    input term: String
+
+    step page {
+        method "GET"
+        url    "https://www.supremecourt.gov/opinions/slipopinion/{$input.term}"
+    }
+
+    // `tr:has(a)` filters out the header row, which is the only
+    // <tr> in the table without an <a> anywhere in its cells.
+    for $row in $page | parseHtml | select("table.table-bordered tr:has(a)") {
+        emit Opinion {
+            date         ← $row | select("td:nth-child(2)") | text
+            docketNumber ← $row | select("td:nth-child(3)") | text
+            caseName     ← $row | select("td:nth-child(4) a") | text
+            pdfUrl       ← $row | select("td:nth-child(4) a") | attr("href")
+            holding      ← $row | select("td:nth-child(4) a") | attr("title")
+        }
+    }
+
+    expect { records.where(typeName == "Opinion").count >= 1 }
+}

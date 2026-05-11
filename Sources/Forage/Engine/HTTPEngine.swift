@@ -589,7 +589,7 @@ public actor HTTPEngine {
             await noteEmission(count: collector.records.count)
 
         case .forLoop(let varName, let collection, let body):
-            let listValue = try PathResolver.resolve(collection, in: scope)
+            let listValue = try evaluator.evaluateToJSON(collection, in: scope)
             let items: [JSONValue]
             switch listValue {
             case .array(let xs): items = xs
@@ -614,8 +614,9 @@ public actor HTTPEngine {
             return try await runPaginated(step: step, recipe: recipe, scope: scope, pagination: pagination)
         }
         let request = try buildRequest(step.request, recipe: recipe, scope: scope, paginationOverride: nil)
-        let (data, _) = try await sendRequest(request, recipe: recipe)
-        return try JSONValue.decode(data)
+        let (data, response) = try await sendRequest(request, recipe: recipe)
+        let ct = response.value(forHTTPHeaderField: "Content-Type")
+        return JSONValue.decodeBody(data, contentType: ct)
     }
 
     private func runPaginated(
@@ -976,7 +977,10 @@ fileprivate func collectSecretsInStatement(_ stmt: Statement, into out: inout Se
     case .emit(let em):
         for b in em.bindings { out.formUnion(secretsInExpr(b.expr)) }
     case .forLoop(_, let coll, let body):
-        out.formUnion(coll.referencedSecrets)
+        // Post-M8: forLoop.collection is an ExtractionExpr (pipelines can
+        // drive iteration). Walk it via secretsInExpr instead of the
+        // PathExpr-only `.referencedSecrets` extension.
+        out.formUnion(secretsInExpr(coll))
         for s in body { collectSecretsInStatement(s, into: &out) }
     }
 }

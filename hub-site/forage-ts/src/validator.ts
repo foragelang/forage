@@ -136,10 +136,15 @@ export function validate(recipe: Recipe): ValidationIssue[] {
                     break
                 }
                 case 'forLoop': {
-                    validatePath(
+                    validateExtraction(
                         stmt.collection,
+                        transforms,
                         n => varInScope(n) || stepNames.has(n),
-                        topLevelNames, `for ${stmt.variable} in <coll>`, issues,
+                        topLevelNames,
+                        typeNames,
+                        stepNames,
+                        `for ${stmt.variable} in <coll>`,
+                        issues,
                     )
                     const frame = new Set<string>()
                     frame.add(stmt.variable)
