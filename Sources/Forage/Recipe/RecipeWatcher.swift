@@ -46,11 +46,6 @@ internal final class RecipeWatcher: @unchecked Sendable {
         }
     }
 
-    func stop() {
-        timer?.cancel()
-        timer = nil
-    }
-
     private func tick() {
         let current = scan()
         var changed: [URL] = []

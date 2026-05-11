@@ -21,6 +21,7 @@ public final class RecipeRegistry {
     private let watch: Bool
     private let logger: ((String) -> Void)?
     private var watcher: RecipeWatcher?
+    private var recipePaths: [String: URL] = [:]
 
     public init(
         root: URL,
@@ -45,16 +46,22 @@ public final class RecipeRegistry {
         )
 
         var loaded: [String: Recipe] = [:]
+        var loadedPaths: [String: URL] = [:]
         for entry in entries {
             let entryIsDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             guard entryIsDir else { continue }
             let file = entry.appendingPathComponent("recipe.forage")
             guard fm.fileExists(atPath: file.path) else { continue }
             if let recipe = loadFile(file) {
+                if let previousPath = loadedPaths[recipe.name] {
+                    logger?("Recipe '\(recipe.name)' loaded from \(file.path) overrides earlier recipe at \(previousPath.path)")
+                }
                 loaded[recipe.name] = recipe
+                loadedPaths[recipe.name] = file
             }
         }
         recipes = loaded
+        recipePaths = loadedPaths
 
         if watch && watcher == nil {
             let w = RecipeWatcher(root: root) { [weak self] url in
@@ -98,8 +105,6 @@ public final class RecipeRegistry {
     private func reload(_ file: URL) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: file.path) else {
-            // File deleted: drop any recipe that came from this directory.
-            // We don't keep file→name mapping, so just rescan.
             rescan()
             return
         }
@@ -107,7 +112,11 @@ public final class RecipeRegistry {
             logger?("Hot-reload of \(file.lastPathComponent) failed; keeping previous version")
             return
         }
+        if let previousPath = recipePaths[recipe.name], previousPath != file {
+            logger?("Recipe '\(recipe.name)' loaded from \(file.path) overrides earlier recipe at \(previousPath.path)")
+        }
         recipes[recipe.name] = recipe
+        recipePaths[recipe.name] = file
         logger?("Hot-reloaded recipe '\(recipe.name)'")
     }
 
@@ -119,20 +128,27 @@ public final class RecipeRegistry {
         ) else {
             return
         }
-        var seen = Set<String>()
+        var seen: [String: URL] = [:]
         for entry in entries {
             let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             guard isDir else { continue }
             let file = entry.appendingPathComponent("recipe.forage")
             guard fm.fileExists(atPath: file.path) else { continue }
             if let recipe = loadFile(file) {
+                if let previousPath = seen[recipe.name] {
+                    logger?("Recipe '\(recipe.name)' loaded from \(file.path) overrides earlier recipe at \(previousPath.path)")
+                }
                 recipes[recipe.name] = recipe
-                seen.insert(recipe.name)
+                seen[recipe.name] = file
             }
         }
-        for name in recipes.keys where !seen.contains(name) {
+        for name in recipes.keys where seen[name] == nil {
             recipes.removeValue(forKey: name)
+            recipePaths.removeValue(forKey: name)
             logger?("Recipe '\(name)' removed (file no longer present)")
+        }
+        for (name, file) in seen {
+            recipePaths[name] = file
         }
     }
 }

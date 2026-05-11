@@ -198,6 +198,63 @@ func listReturnsRunsNewestFirst() throws {
     #expect(handles.map(\.observedAt) == dates.reversed())
 }
 
+// MARK: - Atomic write
+
+@Test
+func listSkipsInProgressWritingDirectories() throws {
+    let root = try makeTempDir()
+    let slug = "atomic"
+    let observedAt = Date(timeIntervalSince1970: 1_715_000_000)
+
+    let handle = try Archive.write(
+        root: root, slug: slug,
+        snapshot: sampleSnapshot(observedAt: observedAt),
+        report: sampleReport(),
+        captures: nil,
+        meta: sampleMeta(observedAt: observedAt)
+    )
+
+    let crashedDir = root
+        .appendingPathComponent(slug, isDirectory: true)
+        .appendingPathComponent("2025-01-01T00-00-00Z.writing", isDirectory: true)
+    try FileManager.default.createDirectory(at: crashedDir, withIntermediateDirectories: true)
+    try Data("partial".utf8).write(to: crashedDir.appendingPathComponent("snapshot.json"))
+
+    let handles = Archive.list(root: root, slug: slug)
+    #expect(handles.count == 1)
+    #expect(handles.first?.directory.lastPathComponent == handle.directory.lastPathComponent)
+}
+
+@Test
+func writeLeavesNoTracesWhenDestinationExists() throws {
+    let root = try makeTempDir()
+    let slug = "collide"
+    let observedAt = Date(timeIntervalSince1970: 1_715_000_000)
+
+    _ = try Archive.write(
+        root: root, slug: slug,
+        snapshot: sampleSnapshot(observedAt: observedAt),
+        report: sampleReport(),
+        captures: nil,
+        meta: sampleMeta(observedAt: observedAt)
+    )
+
+    #expect(throws: ArchiveError.self) {
+        _ = try Archive.write(
+            root: root, slug: slug,
+            snapshot: sampleSnapshot(observedAt: observedAt),
+            report: sampleReport(),
+            captures: nil,
+            meta: sampleMeta(observedAt: observedAt)
+        )
+    }
+
+    let slugDir = root.appendingPathComponent(slug, isDirectory: true)
+    let entries = try FileManager.default.contentsOfDirectory(at: slugDir, includingPropertiesForKeys: nil)
+    let stagingLeftovers = entries.filter { $0.lastPathComponent.hasSuffix(".writing") }
+    #expect(stagingLeftovers.isEmpty)
+}
+
 // MARK: - List robustness
 
 @Test

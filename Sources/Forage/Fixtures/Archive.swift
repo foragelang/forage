@@ -69,31 +69,45 @@ public enum Archive {
         captures: [Capture]?,
         meta: ArchiveMeta
     ) throws -> ArchiveRunHandle {
+        let fm = FileManager.default
         let observedAt = meta.observedAt
         let dirName = filesystemISO8601(observedAt)
-        let runDir = root
-            .appendingPathComponent(slug, isDirectory: true)
-            .appendingPathComponent(dirName, isDirectory: true)
+        let slugDir = root.appendingPathComponent(slug, isDirectory: true)
+        let finalDir = slugDir.appendingPathComponent(dirName, isDirectory: true)
+        let stagingDir = slugDir.appendingPathComponent(dirName + writingSuffix, isDirectory: true)
 
-        try FileManager.default.createDirectory(
-            at: runDir, withIntermediateDirectories: true
-        )
-
-        let snapshotData = try SnapshotIO.encode(snapshot, pretty: true)
-        try snapshotData.write(to: runDir.appendingPathComponent("snapshot.json"))
-
-        let diagnosticData = try jsonEncoder().encode(report)
-        try diagnosticData.write(to: runDir.appendingPathComponent("diagnostic.json"))
-
-        let metaData = try jsonEncoder().encode(meta)
-        try metaData.write(to: runDir.appendingPathComponent("meta.json"))
-
-        if let caps = captures, !caps.isEmpty {
-            let jsonl = try encodeCapturesJSONL(caps)
-            try jsonl.write(to: runDir.appendingPathComponent("captures.jsonl"))
+        if fm.fileExists(atPath: finalDir.path) {
+            throw ArchiveError.destinationExists(finalDir)
         }
 
-        return ArchiveRunHandle(slug: slug, observedAt: observedAt, directory: runDir)
+        try fm.createDirectory(at: slugDir, withIntermediateDirectories: true)
+        if fm.fileExists(atPath: stagingDir.path) {
+            try fm.removeItem(at: stagingDir)
+        }
+        try fm.createDirectory(at: stagingDir, withIntermediateDirectories: false)
+
+        do {
+            let snapshotData = try SnapshotIO.encode(snapshot, pretty: true)
+            try snapshotData.write(to: stagingDir.appendingPathComponent("snapshot.json"))
+
+            let diagnosticData = try jsonEncoder().encode(report)
+            try diagnosticData.write(to: stagingDir.appendingPathComponent("diagnostic.json"))
+
+            let metaData = try jsonEncoder().encode(meta)
+            try metaData.write(to: stagingDir.appendingPathComponent("meta.json"))
+
+            if let caps = captures, !caps.isEmpty {
+                let jsonl = try encodeCapturesJSONL(caps)
+                try jsonl.write(to: stagingDir.appendingPathComponent("captures.jsonl"))
+            }
+
+            try fm.moveItem(at: stagingDir, to: finalDir)
+        } catch {
+            try? fm.removeItem(at: stagingDir)
+            throw error
+        }
+
+        return ArchiveRunHandle(slug: slug, observedAt: observedAt, directory: finalDir)
     }
 
     public static func list(root: URL, slug: String) -> [ArchiveRunHandle] {
@@ -115,7 +129,9 @@ public enum Archive {
         }
         return entries
             .compactMap { url -> ArchiveRunHandle? in
-                guard let observedAt = parseFilesystemISO8601(url.lastPathComponent) else {
+                let name = url.lastPathComponent
+                guard !name.hasSuffix(writingSuffix) else { return nil }
+                guard let observedAt = parseFilesystemISO8601(name) else {
                     return nil
                 }
                 return ArchiveRunHandle(
@@ -149,6 +165,8 @@ public enum Archive {
     }
 
     // MARK: - Internals
+
+    private static let writingSuffix = ".writing"
 
     private static func jsonEncoder() -> JSONEncoder {
         let e = JSONEncoder()
@@ -227,5 +245,16 @@ public enum Archive {
         let datePart = s[..<splitIndex]
         let timePart = s[splitIndex...].replacingOccurrences(of: "-", with: ":")
         return filesystemFormatter().date(from: String(datePart) + timePart)
+    }
+}
+
+public enum ArchiveError: Error, CustomStringConvertible {
+    case destinationExists(URL)
+
+    public var description: String {
+        switch self {
+        case .destinationExists(let url):
+            return "Archive: destination already exists: \(url.path)"
+        }
     }
 }
