@@ -1,4 +1,4 @@
-## A recipe, end to end
+## Examples
 
 Five real recipes — pick one to see its shape, the run command, and the snapshot it produces.
 
