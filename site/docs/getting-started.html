@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Getting started — Forage</title>
+    <meta name="description" content="Install Forage, write your first recipe, and run it against a live site or saved fixtures.">
+    <link rel="canonical" href="https://www.foragelang.com/docs/getting-started.html">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.foragelang.com/docs/getting-started.html">
+    <meta property="og:title" content="Getting started — Forage">
+    <meta property="og:description" content="Install Forage, write your first recipe, and run it against a live site or saved fixtures.">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#2c5530">
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="topnav">
+    <div class="topnav-inner">
+        <a class="brand" href="../">
+            <svg class="brand-mark" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M32 10 C 18 14, 12 26, 14 38 C 16 50, 26 54, 32 54 C 38 54, 48 50, 50 38 C 52 26, 46 14, 32 10 Z M 32 18 C 22 22, 20 32, 22 40"
+                      fill="#2c5530" stroke="#2c5530" stroke-width="1" stroke-linejoin="round"/>
+                <path d="M32 14 L32 54" stroke="#3a6e40" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Forage
+        </a>
+        <nav class="topnav-links">
+            <a href="./" class="active">Docs</a>
+            <a href="https://github.com/foragelang/forage">GitHub</a>
+        </nav>
+    </div>
+</header>
+
+<div class="docs">
+
+    <aside class="sidebar">
+        <h4>Docs</h4>
+        <ul>
+            <li><a href="./">Overview</a></li>
+            <li><a href="./getting-started.html" class="active">Getting started</a></li>
+        </ul>
+        <h4>The DSL</h4>
+        <ul>
+            <li><a href="./syntax.html">Syntax reference</a></li>
+            <li><a href="./engines.html">Engines &amp; pagination</a></li>
+        </ul>
+    </aside>
+
+    <main class="docs-main">
+        <h1>Getting started</h1>
+        <p>Write your first recipe and run it end-to-end in a few minutes.</p>
+
+        <h2>Requirements</h2>
+        <ul>
+            <li>macOS 14 (Sonoma) or newer</li>
+            <li>Swift 6.0 or newer (Xcode 16+)</li>
+        </ul>
+        <p>The browser engine uses <code>WKWebView</code> and is macOS-only. The HTTP engine is platform-portable in principle, but the current package targets macOS 14+.</p>
+
+        <h2>Install</h2>
+        <p>Forage isn't yet published to a registry. Clone the repo and build locally:</p>
+<pre><code>git clone https://github.com/foragelang/forage.git
+cd forage
+swift build
+swift test</code></pre>
+        <p>That produces <code>.build/debug/forage-probe</code>, the CLI you'll use to run recipes.</p>
+
+        <p>To use Forage as a library in your own Swift package, point at the local checkout while we work toward a tagged release:</p>
+<pre><code>.package(path: "../forage")</code></pre>
+<pre><code>.product(name: "Forage", package: "forage")</code></pre>
+
+        <h2>Write a recipe</h2>
+        <p>Make a new directory under <code>recipes/</code> and drop in a <code>recipe.forage</code> file:</p>
+<pre><code>mkdir -p recipes/hello
+$EDITOR recipes/hello/recipe.forage</code></pre>
+
+        <p>A minimal recipe against a documented JSON endpoint:</p>
+
+<pre><code><span class="tok-com">// recipes/hello/recipe.forage</span>
+
+<span class="tok-kw">recipe</span> <span class="tok-str">"hello"</span> <span class="tok-pn">{</span>
+    <span class="tok-kw">engine</span> <span class="tok-kw">http</span>
+
+    <span class="tok-kw">type</span> <span class="tok-type">Post</span> <span class="tok-pn">{</span>
+        <span class="tok-id">externalId</span><span class="tok-pn">:</span> <span class="tok-type">String</span>
+        <span class="tok-id">title</span><span class="tok-pn">:</span>      <span class="tok-type">String</span>
+        <span class="tok-id">body</span><span class="tok-pn">:</span>       <span class="tok-type">String</span><span class="tok-pn">?</span>
+    <span class="tok-pn">}</span>
+
+    <span class="tok-kw">input</span> <span class="tok-id">userId</span><span class="tok-pn">:</span> <span class="tok-type">Int</span>
+
+    <span class="tok-kw">step</span> <span class="tok-id">posts</span> <span class="tok-pn">{</span>
+        <span class="tok-kw">method</span> <span class="tok-str">"GET"</span>
+        <span class="tok-kw">url</span>    <span class="tok-str">"https://jsonplaceholder.typicode.com/posts?userId={$input.userId}"</span>
+    <span class="tok-pn">}</span>
+
+    <span class="tok-kw">for</span> <span class="tok-var">$p</span> <span class="tok-kw">in</span> <span class="tok-var">$posts</span><span class="tok-pn">[*]</span> <span class="tok-pn">{</span>
+        <span class="tok-kw">emit</span> <span class="tok-type">Post</span> <span class="tok-pn">{</span>
+            <span class="tok-id">externalId</span> <span class="tok-arr">←</span> <span class="tok-var">$p</span><span class="tok-pn">.</span><span class="tok-id">id</span> <span class="tok-arr">|</span> <span class="tok-id">toString</span>
+            <span class="tok-id">title</span>      <span class="tok-arr">←</span> <span class="tok-var">$p</span><span class="tok-pn">.</span><span class="tok-id">title</span>
+            <span class="tok-id">body</span>       <span class="tok-arr">←</span> <span class="tok-var">$p</span><span class="tok-pn">.</span><span class="tok-id">body</span>
+        <span class="tok-pn">}</span>
+    <span class="tok-pn">}</span>
+<span class="tok-pn">}</span></code></pre>
+
+        <p>Four things to notice:</p>
+        <ul>
+            <li><code>engine http</code> — this recipe will run on the HTTP engine, not the browser engine.</li>
+            <li><code>type Post { … }</code> — declares the shape of the records this recipe emits.</li>
+            <li><code>input userId: Int</code> — declares a per-run parameter. You'll supply it on the command line.</li>
+            <li><code>step posts { … }</code> — names an HTTP request whose response becomes addressable as <code>$posts</code>.</li>
+        </ul>
+
+        <h2>Run it</h2>
+        <p>Use <code>forage-probe</code> to parse, validate, and run the recipe:</p>
+<pre><code>.build/debug/forage-probe run recipes/hello/recipe.forage --input userId=1</code></pre>
+
+        <p>The CLI parses the recipe, validates it against the type catalog, runs the HTTP graph, and prints the resulting snapshot — a JSON list of every emitted record — to stdout.</p>
+
+        <div class="callout">
+            <p><strong>Validation runs first.</strong> Unknown types, unbound path variables, missing required fields, and unknown transforms are caught before any HTTP request fires. The error format speaks the DSL's own terms — no stack traces from extraction code.</p>
+        </div>
+
+        <h2>From here</h2>
+        <ul>
+            <li>Read the <a href="./syntax.html">syntax reference</a> for the full set of constructs: <code>enum</code>, <code>auth</code> strategies, <code>case</code> expressions, optional chaining, transforms.</li>
+            <li>Read <a href="./engines.html">engines &amp; pagination</a> when you need to scrape a paginated API or a JS-rendered SPA.</li>
+            <li>Look at the bundled <a href="https://github.com/foragelang/forage/tree/main/recipes">reference recipes</a> for end-to-end examples that exercise the full DSL.</li>
+        </ul>
+
+        <div class="docs-nav-bottom">
+            <a href="./"><span class="arrow">←</span> Overview</a>
+            <span class="spacer"></span>
+            <a href="./syntax.html">Syntax reference <span class="arrow">→</span></a>
+        </div>
+    </main>
+</div>
+
+<footer>
+    <p>
+        Forage · open source ·
+        <a href="https://github.com/foragelang/forage">GitHub</a>
+    </p>
+</footer>
+
+</body>
+</html>
