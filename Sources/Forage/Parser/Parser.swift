@@ -706,9 +706,11 @@ public struct Parser {
                     j = s.index(after: j)
                 }
                 if j < s.endIndex {
-                    // Lex-and-parse the interpolation as a path expression
-                    if let pe = try? Self.parsePathSnippet(content) {
-                        parts.append(.interp(pe))
+                    // Lex-and-parse the interpolation as a full extraction
+                    // expression — supports `$x`, `$x | transform`, and
+                    // `coalesce(a, b)`.
+                    if let ee = try? Self.parseExtractionSnippet(content) {
+                        parts.append(.interp(ee))
                     } else {
                         // Fallback: treat as literal text (with the braces intact)
                         literal.append("{\(content)}")
@@ -728,13 +730,13 @@ public struct Parser {
         return Template(parts: parts)
     }
 
-    /// Helper: lex+parse a small path-expression snippet (the content of a
-    /// `{...}` interpolation in a string literal).
-    private static func parsePathSnippet(_ snippet: String) throws -> PathExpr {
+    /// Helper: lex+parse a small extraction-expression snippet (the content of
+    /// a `{...}` interpolation in a string literal).
+    private static func parseExtractionSnippet(_ snippet: String) throws -> ExtractionExpr {
         var lex = Lexer(source: snippet)
         let toks = try lex.tokenize()
         var p = Parser(tokens: toks)
-        return try p.parsePathExpr()
+        return try p.parseExtractionExpr()
     }
 
     // MARK: - BrowserConfig (Jane recipes)

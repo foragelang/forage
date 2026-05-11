@@ -106,8 +106,8 @@ recipe "jane" {
                         productExternalId ← $product.search_attributes.objectID
                         variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
                         menuType          ← $input.menuType
-                        price             ← getField($product.search_attributes, "price_{$weight}")
-                        promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight}")
+                        price             ← getField($product.search_attributes, "price_{$weight | janeWeightKey}")
+                        promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight | janeWeightKey}")
                         availableQty      ← case $product.search_attributes.at_visible_store of {
                                                  true  → 1.0
                                                  false → 0.0

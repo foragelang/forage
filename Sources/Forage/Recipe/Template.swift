@@ -1,8 +1,11 @@
 import Foundation
 
-/// A string template — `"prefix-{$.x}-suffix"`. The runtime renders these
-/// against the current scope (substituting each interpolation with the
-/// JSON-stringified value the path resolves to).
+/// A string template — `"prefix-{$.x}-suffix"` or `"price_{$weight | snake}"`.
+/// The runtime renders these against the current scope, substituting each
+/// interpolation with the JSON-stringified value the expression resolves to.
+/// Interpolations are full extraction expressions, so they support pipelines
+/// (`{$x | transform}`), function-call transforms (`{coalesce(a, b)}`), and
+/// case-of branches in addition to bare paths.
 public struct Template: Hashable, Sendable {
     public let parts: [TemplatePart]
 
@@ -18,5 +21,5 @@ public struct Template: Hashable, Sendable {
 
 public enum TemplatePart: Hashable, Sendable {
     case literal(String)
-    case interp(PathExpr)
+    case interp(ExtractionExpr)
 }

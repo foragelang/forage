@@ -193,7 +193,7 @@ func sweedShapedRecipeWithPaginationAndTransforms() async throws {
         inputs: [
             InputDecl(name: "storeId", type: .string),
         ],
-        auth: .staticHeader(name: "storeId", value: Template(parts: [.interp(.field(.input, "storeId"))])),
+        auth: .staticHeader(name: "storeId", value: Template(parts: [.interp(.path(.field(.input, "storeId")))])),
         body: [
             .step(HTTPStep(
                 name: "products",

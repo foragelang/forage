@@ -1,16 +1,21 @@
 import Foundation
 
 /// Renders a `Template` against a `Scope`. Each interpolation evaluates its
-/// PathExpr and stringifies the result.
+/// extraction expression (path, pipeline, or function-call transform) and
+/// stringifies the result.
 public enum TemplateRenderer {
-    public static func render(_ template: Template, in scope: Scope) throws -> String {
+    public static func render(
+        _ template: Template,
+        in scope: Scope,
+        evaluator: ExtractionEvaluator = ExtractionEvaluator()
+    ) throws -> String {
         var out = ""
         for part in template.parts {
             switch part {
             case .literal(let s):
                 out.append(s)
-            case .interp(let path):
-                let v = try PathResolver.resolve(path, in: scope)
+            case .interp(let expr):
+                let v = try evaluator.evaluateToJSON(expr, in: scope)
                 out.append(stringify(v))
             }
         }

@@ -28,7 +28,7 @@ public struct ExtractionEvaluator: Sendable {
             return v
 
         case .template(let t):
-            return .string(try TemplateRenderer.render(t, in: scope))
+            return .string(try TemplateRenderer.render(t, in: scope, evaluator: self))
 
         case .pipe(let inner, let calls):
             var v = try evaluateToJSON(inner, in: scope)

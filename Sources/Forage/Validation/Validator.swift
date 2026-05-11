@@ -68,8 +68,8 @@ public enum Validator {
             for stmt in stmts {
                 switch stmt {
                 case .step(let s):
-                    validatePathExpr(s.request.url, knownVars: { varInScope($0) || stepNames.contains($0) }, knownInputs: inputNames, location: "step \(s.name).url", issues: &issues)
-                    if let body = s.request.body { validateBody(body, location: "step \(s.name).body", knownVars: varInScope, knownInputs: inputNames, issues: &issues) }
+                    validateTemplate(s.request.url, transforms: transforms, knownVars: { varInScope($0) || stepNames.contains($0) }, knownInputs: inputNames, knownTypes: typeNames, knownStepNames: stepNames, location: "step \(s.name).url", issues: &issues)
+                    if let body = s.request.body { validateBody(body, transforms: transforms, location: "step \(s.name).body", knownVars: varInScope, knownInputs: inputNames, knownTypes: typeNames, knownStepNames: stepNames, issues: &issues) }
                     if let p = s.pagination { validatePagination(p, location: "step \(s.name).paginate", issues: &issues) }
                 case .emit(let em):
                     guard typeNames.contains(em.typeName) else {
@@ -143,39 +143,39 @@ public enum Validator {
         }
     }
 
-    private static func validatePathExpr(_ template: Template, knownVars: (String) -> Bool, knownInputs: Set<String>, location: String, issues: inout [ValidationIssue]) {
+    private static func validateTemplate(_ template: Template, transforms: TransformImpls, knownVars: (String) -> Bool, knownInputs: Set<String>, knownTypes: Set<String>, knownStepNames: Set<String>, location: String, issues: inout [ValidationIssue]) {
         for part in template.parts {
-            if case .interp(let p) = part {
-                validatePath(p, knownVars: knownVars, knownInputs: knownInputs, location: location, issues: &issues)
+            if case .interp(let expr) = part {
+                validateExtraction(expr, transforms: transforms, knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, location: location, issues: &issues)
             }
         }
     }
 
-    private static func validateBody(_ body: HTTPBody, location: String, knownVars: (String) -> Bool, knownInputs: Set<String>, issues: inout [ValidationIssue]) {
+    private static func validateBody(_ body: HTTPBody, transforms: TransformImpls, location: String, knownVars: (String) -> Bool, knownInputs: Set<String>, knownTypes: Set<String>, knownStepNames: Set<String>, issues: inout [ValidationIssue]) {
         switch body {
         case .jsonObject(let kvs):
-            for kv in kvs { validateBodyValue(kv.value, location: "\(location).\(kv.key)", knownVars: knownVars, knownInputs: knownInputs, issues: &issues) }
+            for kv in kvs { validateBodyValue(kv.value, transforms: transforms, location: "\(location).\(kv.key)", knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, issues: &issues) }
         case .form(let kvs):
-            for (k, v) in kvs { validateBodyValue(v, location: "\(location).\(k)", knownVars: knownVars, knownInputs: knownInputs, issues: &issues) }
+            for (k, v) in kvs { validateBodyValue(v, transforms: transforms, location: "\(location).\(k)", knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, issues: &issues) }
         case .raw(let t):
-            validatePathExpr(t, knownVars: knownVars, knownInputs: knownInputs, location: location, issues: &issues)
+            validateTemplate(t, transforms: transforms, knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, location: location, issues: &issues)
         }
     }
 
-    private static func validateBodyValue(_ bv: BodyValue, location: String, knownVars: (String) -> Bool, knownInputs: Set<String>, issues: inout [ValidationIssue]) {
+    private static func validateBodyValue(_ bv: BodyValue, transforms: TransformImpls, location: String, knownVars: (String) -> Bool, knownInputs: Set<String>, knownTypes: Set<String>, knownStepNames: Set<String>, issues: inout [ValidationIssue]) {
         switch bv {
         case .templateString(let t):
-            validatePathExpr(t, knownVars: knownVars, knownInputs: knownInputs, location: location, issues: &issues)
+            validateTemplate(t, transforms: transforms, knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, location: location, issues: &issues)
         case .literal: break
         case .path(let p):
             validatePath(p, knownVars: knownVars, knownInputs: knownInputs, location: location, issues: &issues)
         case .object(let kvs):
-            for kv in kvs { validateBodyValue(kv.value, location: "\(location).\(kv.key)", knownVars: knownVars, knownInputs: knownInputs, issues: &issues) }
+            for kv in kvs { validateBodyValue(kv.value, transforms: transforms, location: "\(location).\(kv.key)", knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, issues: &issues) }
         case .array(let xs):
-            for v in xs { validateBodyValue(v, location: "\(location)[]", knownVars: knownVars, knownInputs: knownInputs, issues: &issues) }
+            for v in xs { validateBodyValue(v, transforms: transforms, location: "\(location)[]", knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, issues: &issues) }
         case .caseOf(let s, let branches):
             validatePath(s, knownVars: knownVars, knownInputs: knownInputs, location: "\(location).case", issues: &issues)
-            for (_, v) in branches { validateBodyValue(v, location: location, knownVars: knownVars, knownInputs: knownInputs, issues: &issues) }
+            for (_, v) in branches { validateBodyValue(v, transforms: transforms, location: location, knownVars: knownVars, knownInputs: knownInputs, knownTypes: knownTypes, knownStepNames: knownStepNames, issues: &issues) }
         }
     }
 

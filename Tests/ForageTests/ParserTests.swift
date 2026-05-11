@@ -257,6 +257,56 @@ func parsesJaneRecipe() throws {
 // MARK: - Error reporting
 
 @Test
+func templateInterpolationSupportsTransformPipe() throws {
+    // The parser should accept pipelines inside `{...}` template interpolations,
+    // and the renderer should pipe the path value through the named transforms
+    // before stringifying.
+    let src = """
+    recipe "tpl" {
+        engine http
+        type Item { key: String }
+        for $weight in $input.weights {
+            emit Item {
+                key ← "price_{$weight | janeWeightKey}"
+            }
+        }
+    }
+    """
+    let recipe = try Parser.parse(source: src)
+    guard case .forLoop(_, _, let body) = recipe.body.first!,
+          case .emit(let em) = body.first!,
+          case .template(let t) = em.bindings.first!.expr
+    else {
+        Issue.record("expected emit { key ← <template> }")
+        return
+    }
+    // Two parts: "price_" literal, then an interp with a pipe.
+    #expect(t.parts.count == 2)
+    if case .literal(let s) = t.parts[0] { #expect(s == "price_") } else { Issue.record("expected literal") }
+    guard case .interp(let expr) = t.parts[1] else {
+        Issue.record("expected interp"); return
+    }
+    if case .pipe(let inner, let calls) = expr {
+        if case .path(let p) = inner, case .variable("weight") = p { } else {
+            Issue.record("expected $weight path")
+        }
+        #expect(calls.count == 1)
+        #expect(calls.first?.name == "janeWeightKey")
+    } else {
+        Issue.record("expected pipe inside interp")
+    }
+
+    // Render against a synthetic scope where $weight = "eighth ounce".
+    let scope = Scope(
+        inputs: [:],
+        frames: [["weight": .string("eighth ounce")]],
+        current: nil
+    )
+    let rendered = try TemplateRenderer.render(t, in: scope)
+    #expect(rendered == "price_eighth_ounce")
+}
+
+@Test
 func parserReportsLineColumnOnError() throws {
     // Unknown type-name references are not parse errors — they're validator
     // (Phase D) concerns. The parser is permissive about forward references,

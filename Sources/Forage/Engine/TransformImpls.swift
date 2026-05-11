@@ -199,6 +199,15 @@ public struct TransformImpls: Sendable {
             }
         }
 
+        // janeWeightKey: Jane reports available_weights with spaces
+        // ("eighth ounce") but the per-weight price field names use
+        // underscores ("price_eighth_ounce"). Snake-case the weight so
+        // `getField($attrs, "price_{$weight | janeWeightKey}")` resolves.
+        register("janeWeightKey") { v, _ in
+            guard case .string(let s) = v else { return .null }
+            return .string(s.replacingOccurrences(of: " ", with: "_"))
+        }
+
         // MARK: - Object / dynamic-field access
 
         // getField(obj, "fieldName") — dynamic field lookup (where the field
