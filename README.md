@@ -46,8 +46,12 @@ Sources/Forage/        # Swift runtime: parser, HTTP/browser engines, validator,
 Sources/forage-cli/    # CLI: forage run | capture | scaffold | test | publish
 Tests/ForageTests/     # Engine unit tests (27 green)
 recipes/<platform>/    # Bundled platform recipes — recipe.forage, optional fixtures/
+hub-api/               # Cloudflare Worker for api.foragelang.com (recipe registry)
+hub-site/              # VitePress site for hub.foragelang.com (registry browser)
+site/                  # VitePress site for foragelang.com (marketing + docs)
 DESIGN.md              # Design plan
 PLANS.md               # Phase-by-phase execution plan (A-H)
+ROADMAP.md             # M1-M6 product milestones
 ```
 
 ## Building
