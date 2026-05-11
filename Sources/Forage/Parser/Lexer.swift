@@ -41,6 +41,8 @@ public struct Lexer {
         "requiresMFA", "mfaFieldName",
         "tokenPath", "headerName", "headerPrefix",
         "sourcePath", "format",
+        // Interactive bootstrap (M10)
+        "interactive", "bootstrapURL", "cookieDomains", "gatePattern",
     ]
 
     public static let typeKeywords: Set<String> = ["String", "Int", "Double", "Bool"]

@@ -434,6 +434,98 @@ public enum InjectedScripts {
         """#
     }
 
+    /// Floating "Scrape this page" overlay button for M10 interactive
+    /// bootstrap. Injected after navigation finishes when the recipe
+    /// declares `browser.interactive { … }`. Posts a message via the
+    /// `forageInteractiveDone` `WKScriptMessageHandler` when clicked,
+    /// signaling that the human has cleared whatever gate the page put
+    /// up and the engine should snapshot the document + persist cookies.
+    ///
+    /// The overlay is the *only* affordance the user needs to find on a
+    /// site they've never seen before — bright accent color, fixed
+    /// position, max z-index, idempotent injection (re-running the
+    /// script is a no-op).
+    public static let interactiveOverlay: String = #"""
+    (function() {
+        if (document.getElementById('__forage-scrape-btn__')) return;
+        const btn = document.createElement('button');
+        btn.id = '__forage-scrape-btn__';
+        btn.textContent = '✓ Scrape this page';
+        btn.style.cssText = [
+            'position:fixed',
+            'bottom:24px',
+            'right:24px',
+            'z-index:2147483647',
+            'padding:14px 22px',
+            'background:#5c8a4f',
+            'color:#fff',
+            'border:none',
+            'border-radius:10px',
+            'font-family:-apple-system,BlinkMacSystemFont,sans-serif',
+            'font-size:14px',
+            'font-weight:600',
+            'cursor:pointer',
+            'box-shadow:0 4px 16px rgba(0,0,0,0.35)',
+        ].join(';');
+        btn.addEventListener('mouseenter', () => { btn.style.background = '#6a9b5c'; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = '#5c8a4f'; });
+        btn.addEventListener('click', () => {
+            btn.disabled = true;
+            btn.textContent = 'Capturing…';
+            btn.style.background = '#4d7843';
+            try {
+                window.webkit.messageHandlers.forageInteractiveDone.postMessage({
+                    url: location.href,
+                    html: document.documentElement.outerHTML,
+                });
+            } catch (e) {
+                btn.textContent = 'Error: ' + (e && e.message ? e.message : 'no handler');
+                btn.disabled = false;
+            }
+        });
+        document.body.appendChild(btn);
+    })();
+    """#
+
+    /// Dump `window.localStorage` as a JSON object. Used at interactive
+    /// bootstrap completion to capture per-origin state. Returns an
+    /// empty object when access is denied (cross-origin frame, file://,
+    /// etc.).
+    public static let dumpLocalStorage: String = #"""
+    (function() {
+        try {
+            const out = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k != null) out[k] = localStorage.getItem(k) || '';
+            }
+            return JSON.stringify(out);
+        } catch (e) {
+            return '{}';
+        }
+    })();
+    """#
+
+    /// Restore a `localStorage` snapshot for the current origin.
+    /// Invoked after navigation on headless re-runs of an interactive
+    /// recipe. The snapshot is a `[String: String]` JSON object.
+    public static func restoreLocalStorage(_ json: String) -> String {
+        let escaped = jsString(json)
+        return #"""
+        (function(jsonText) {
+            try {
+                const data = JSON.parse(jsonText);
+                for (const k of Object.keys(data)) {
+                    localStorage.setItem(k, data[k]);
+                }
+                return 'ok';
+            } catch (e) {
+                return 'err:' + (e && e.message ? e.message : 'unknown');
+            }
+        })("\#(escaped)")
+        """#
+    }
+
     // MARK: - Helpers
 
     private static func resolveTemplate(_ value: Any, iter: Int) -> Any {

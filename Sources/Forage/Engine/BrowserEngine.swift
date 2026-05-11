@@ -29,6 +29,22 @@ import SwiftSoup
 /// pagination, and the settle / hard-timeout timers. It feeds each
 /// captured exchange through the same `captures.match` pipeline and
 /// returns the resulting `RunResult` without ever hitting the network.
+/// M10 interactive-bootstrap policy. Honored only when the recipe
+/// declares `browser.interactive`.
+public enum InteractiveBootstrapMode: Sendable {
+    /// Reuse a cached session if one exists and isn't expired; otherwise
+    /// open the visible window for human handshake.
+    case auto
+    /// Force a fresh bootstrap regardless of cache (the user passed
+    /// `--interactive` on the CLI, or "Re-bootstrap session" in the
+    /// Toolkit).
+    case forceBootstrap
+    /// Skip bootstrap entirely — headless only. Falls back to running
+    /// without seeded cookies when no cache exists; useful for CI hosts
+    /// that have a session file copied in from a workstation.
+    case skipBootstrap
+}
+
 @MainActor
 public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessageHandler, BrowserPaginateHost {
     public let recipe: Recipe
@@ -44,6 +60,20 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     /// the host runs an HTTPEngine login flow first, captures the resulting
     /// `SessionState.payload == .cookies(...)`, and hands them in here.
     public var seedCookies: [SessionCookie] = []
+
+    /// M10 interactive bootstrap mode (honored only when the recipe's
+    /// `browser.interactive` is set).
+    public let interactiveBootstrapMode: InteractiveBootstrapMode
+    /// Root for persisted interactive sessions. Defaults to
+    /// `InteractiveSessionStore.defaultRoot()`. Tests override.
+    public let interactiveSessionRoot: URL?
+
+    /// Computed once at init: did we resolve to do a fresh bootstrap on
+    /// this run, or are we reusing a cached session?
+    private let isInteractiveBootstrap: Bool
+    /// Cached session being reused (when `isInteractiveBootstrap == false`
+    /// and the recipe declares interactive). Nil otherwise.
+    private let cachedInteractiveSession: InteractiveSession?
 
     public let progress = BrowserProgress()
 
@@ -72,18 +102,51 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         visible: Bool = true,
         settleSeconds: TimeInterval = 8,
         hardTimeoutSeconds: TimeInterval = 240,
-        replayer: BrowserReplayer? = nil
+        replayer: BrowserReplayer? = nil,
+        interactiveBootstrapMode: InteractiveBootstrapMode = .auto,
+        interactiveSessionRoot: URL? = nil
     ) {
         precondition(recipe.engineKind == .browser, "BrowserEngine requires browser-engine Recipe")
         precondition(recipe.browser != nil, "browser-engine Recipe must have a `browser { … }` block")
         self.recipe = recipe
         self.inputs = inputs
         self.evaluator = evaluator
-        self.visible = visible
         self.settleSeconds = settleSeconds
         self.hardTimeoutSeconds = hardTimeoutSeconds
         self.replayer = replayer
+        self.interactiveBootstrapMode = interactiveBootstrapMode
+        self.interactiveSessionRoot = interactiveSessionRoot
         self.scope = Scope(inputs: inputs, frames: [[:]], current: nil)
+
+        // M10: decide bootstrap-vs-reuse before the WKWebView is built so
+        // we can scope the message-handler set + visible flag accordingly.
+        let interactiveCfg = recipe.browser?.interactive
+        let cachedSession: InteractiveSession? = {
+            guard interactiveCfg != nil else { return nil }
+            let url = InteractiveSessionStore.file(for: recipe.name, root: interactiveSessionRoot)
+            guard let s = InteractiveSessionStore.read(at: url), !s.isExpired() else { return nil }
+            return s
+        }()
+        let needsBootstrap: Bool = {
+            guard interactiveCfg != nil else { return false }
+            switch interactiveBootstrapMode {
+            case .forceBootstrap: return true
+            case .auto:           return cachedSession == nil
+            case .skipBootstrap:  return false
+            }
+        }()
+        self.isInteractiveBootstrap = needsBootstrap
+        self.cachedInteractiveSession = needsBootstrap ? nil : cachedSession
+
+        // Bootstrap mode forces a visible window so the human can interact;
+        // reuse mode forces headless. Recipes that don't declare interactive
+        // honor whatever `visible` value the caller passed.
+        if interactiveCfg != nil {
+            self.visible = needsBootstrap
+        } else {
+            self.visible = visible
+        }
+
         super.init()
 
         let config = WKWebViewConfiguration()
@@ -96,6 +159,12 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         )
         ucc.addUserScript(captureScript)
         ucc.add(self, name: "captureNetwork")
+        if interactiveCfg != nil && needsBootstrap {
+            // Only register the bootstrap message handler when we'll
+            // actually inject the overlay — saves the WKWebView from
+            // routing a name we'll never post to.
+            ucc.add(self, name: "forageInteractiveDone")
+        }
         config.userContentController = ucc
 
         self.webView = WKWebView(
@@ -163,9 +232,24 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         }
 
         let bcfg = recipe.browser!
-        let url = try TemplateRenderer.render(bcfg.initialURL, in: scope)
+        // M10: interactive bootstrap mode loads `bootstrapURL` (if the
+        // recipe declared one); reuse mode loads `initialURL` normally.
+        let urlTemplate: Template = {
+            if isInteractiveBootstrap, let bs = bcfg.interactive?.bootstrapURL {
+                return bs
+            }
+            return bcfg.initialURL
+        }()
+        let url = try TemplateRenderer.render(urlTemplate, in: scope)
         guard let urlValue = URL(string: url) else {
             throw BrowserEngineError.invalidInitialURL(url)
+        }
+
+        // M10: reuse mode seeds the cached cookies before the WKWebView's
+        // first request goes out. Bootstrap mode never has cached cookies
+        // by construction.
+        if let cached = cachedInteractiveSession {
+            seedCookies.append(contentsOf: cached.cookies)
         }
 
         if visible {
@@ -175,7 +259,10 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
                 backing: .buffered,
                 defer: false
             )
-            win.title = "Forage — \(recipe.name)"
+            let titlePrefix = isInteractiveBootstrap
+                ? "Forage — \(recipe.name) [sign in / handle gate, then click ✓ Scrape this page]"
+                : "Forage — \(recipe.name)"
+            win.title = titlePrefix
             win.contentView = webView
             win.makeKeyAndOrderFront(nil)
             self.window = win
@@ -264,6 +351,13 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
     private func resetSettleTimer() {
         settleTimer?.invalidate()
+        // M10: bootstrap-mode runs wait for the human to click the
+        // overlay, not for the page to stop fetching. The hard timer
+        // remains as a safety net.
+        if isInteractiveBootstrap {
+            settleTimer = nil
+            return
+        }
         settleTimer = Timer.scheduledTimer(withTimeInterval: settleSeconds, repeats: false) { [weak self] _ in
             self?.finish(reason: "settled")
         }
@@ -309,8 +403,12 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
 
         // In replay mode the document capture (if any) is already in the
         // replayer's captures list and was processed during startReplay.
-        // Don't re-evaluate JS against an unloaded WebView.
-        if let docRule = recipe.browser?.documentCapture, replayer == nil {
+        // Don't re-evaluate JS against an unloaded WebView. M10 interactive
+        // bootstrap also runs the document rule manually before reaching
+        // `finish`, so skip the second pass.
+        if let docRule = recipe.browser?.documentCapture,
+           replayer == nil,
+           !isInteractiveBootstrap {
             captureDocumentBody(rule: docRule, then: runDocumentCapture)
         } else {
             runDocumentCapture()
@@ -388,6 +486,8 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             return reason
         case "nav-fail":
             return "navigation-failed: \(navFailURL ?? "")"
+        case "session-expired":
+            return "session-expired: re-run with --interactive to refresh"
         default:
             return reason
         }
@@ -545,6 +645,58 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
         didFinishNav = true
         progress.setCurrentURL(webView.url?.absoluteString)
         guard let bcfg = recipe.browser else { return }
+
+        // M10 bootstrap mode: inject the overlay button and stop here.
+        // The settle timer is cancelled — the human's "Scrape this page"
+        // click is the trigger for completion, not idle settle.
+        if isInteractiveBootstrap {
+            settleTimer?.invalidate(); settleTimer = nil
+            webView.evaluateJavaScript(InjectedScripts.interactiveOverlay) { _, _ in }
+            return
+        }
+
+        // M10 reuse mode: restore cached localStorage for the current
+        // origin, then check whether the document body matches the
+        // recipe's gate pattern — if so, the session is expired and we
+        // need a human re-bootstrap.
+        if let cached = cachedInteractiveSession,
+           let origin = webView.url.flatMap(Self.origin(of:)),
+           let storage = cached.localStorage[origin],
+           !storage.isEmpty,
+           let json = try? String(data: JSONEncoder().encode(storage), encoding: .utf8) {
+            webView.evaluateJavaScript(InjectedScripts.restoreLocalStorage(json)) { _, _ in }
+        }
+        if let pattern = bcfg.interactive?.gatePattern {
+            webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let body = (result as? String) ?? ""
+                    if body.contains(pattern) {
+                        // Session is no longer valid — drop the cache so
+                        // the next run bootstraps fresh.
+                        InteractiveSessionStore.evict(
+                            at: InteractiveSessionStore.file(
+                                for: self.recipe.name,
+                                root: self.interactiveSessionRoot
+                            )
+                        )
+                        self.finish(reason: "session-expired")
+                        return
+                    }
+                    self.afterNavigationContinue(bcfg: bcfg)
+                }
+            }
+            return
+        }
+
+        afterNavigationContinue(bcfg: bcfg)
+    }
+
+    /// Shared post-navigation flow that branches into the dismissal/
+    /// warmup/pagination dance. Extracted so the M10 reuse-mode gate
+    /// check can call it as a continuation after the document HTML is
+    /// confirmed gate-free.
+    private func afterNavigationContinue(bcfg: BrowserConfig) {
         if isBeforeDismissals(progress.phase) {
             if bcfg.ageGate != nil {
                 progress.setPhase(.ageGate)
@@ -561,6 +713,13 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
                 self?.runWarmupAndPaginate()
             }
         }
+    }
+
+    /// `<scheme>://<host>` for the URL — the origin key under which we
+    /// stash and restore `localStorage` snapshots.
+    nonisolated static func origin(of url: URL) -> String? {
+        guard let scheme = url.scheme, let host = url.host else { return nil }
+        return "\(scheme)://\(host)"
     }
 
     private func isBeforeDismissals(_ phase: BrowserProgress.Phase) -> Bool {
@@ -657,8 +816,20 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
     // MARK: - WKScriptMessageHandler
 
     public nonisolated func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        let name = message.name
         let body = message.body
         MainActor.assumeIsolated {
+            // M10: the human clicked "Scrape this page" in the overlay.
+            // Snapshot cookies + localStorage, persist the session, run
+            // the documentCapture rule against the supplied HTML, finish.
+            if name == "forageInteractiveDone" {
+                guard let dict = body as? [String: Any] else { return }
+                let urlStr = (dict["url"] as? String) ?? ""
+                let html = (dict["html"] as? String) ?? ""
+                self.completeInteractiveBootstrap(currentURL: urlStr, documentHTML: html)
+                return
+            }
+            // Default path: capture-network bridge from injected JS.
             guard let dict = body as? [String: Any],
                   let cap = Capture(jsBridgePayload: dict) else { return }
             captures.append(cap)
@@ -666,6 +837,75 @@ public final class BrowserEngine: NSObject, WKNavigationDelegate, WKScriptMessag
             applyMatchingRules(to: cap)
             resetSettleTimer()
             paginate?.handleCapture(cap)
+        }
+    }
+
+    /// Snapshot cookies + localStorage, persist as `InteractiveSession`,
+    /// synthesize a `.document` Capture, route through `documentCapture`
+    /// if the recipe declared one, and finish the run.
+    private func completeInteractiveBootstrap(currentURL: String, documentHTML: String) {
+        let interactive = recipe.browser?.interactive
+        let cookieDomains = interactive?.cookieDomains ?? []
+        let slug = recipe.name
+
+        webView.evaluateJavaScript(InjectedScripts.dumpLocalStorage) { [weak self] localStorageJSON, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let origin = URL(string: currentURL).flatMap(Self.origin(of:)) ?? ""
+                let storageMap: [String: String] = {
+                    if let s = localStorageJSON as? String,
+                       let d = s.data(using: .utf8),
+                       let parsed = try? JSONSerialization.jsonObject(with: d) as? [String: String] {
+                        return parsed
+                    }
+                    return [:]
+                }()
+                self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { httpCookies in
+                    MainActor.assumeIsolated {
+                        let filtered = httpCookies.filter { c in
+                            cookieDomains.isEmpty || cookieDomains.contains { c.domain.contains($0) }
+                        }
+                        let sessionCookies = filtered.map { c in
+                            SessionCookie(name: c.name, value: c.value, domain: c.domain, path: c.path)
+                        }
+                        // Best-effort expiry hint: nearest cookie expiry
+                        // within the kept set.
+                        let earliest = filtered
+                            .compactMap { $0.expiresDate }
+                            .min()
+                        let session = InteractiveSession(
+                            recipeSlug: slug,
+                            bootstrappedAt: Date(),
+                            expiresAt: earliest,
+                            cookies: sessionCookies,
+                            localStorage: storageMap.isEmpty ? [:] : [origin: storageMap]
+                        )
+                        let dest = InteractiveSessionStore.file(for: slug, root: self.interactiveSessionRoot)
+                        try? InteractiveSessionStore.write(session, to: dest)
+
+                        // Synthesize a .document capture for the rule
+                        // pipeline so the recipe extracts records the
+                        // same way it would on a headless reuse run.
+                        let synth = Capture(
+                            timestamp: Date(),
+                            kind: .document,
+                            method: "GET",
+                            requestUrl: currentURL,
+                            responseUrl: currentURL,
+                            requestBody: "",
+                            status: 200,
+                            bodyLength: documentHTML.utf8.count,
+                            body: documentHTML
+                        )
+                        self.captures.append(synth)
+                        if let docRule = self.recipe.browser?.documentCapture {
+                            self.applyDocumentRule(docRule, capture: synth)
+                        }
+                        self.progress.setRecordsEmitted(self.collector.records.count)
+                        self.finish(reason: "settled")
+                    }
+                }
+            }
         }
     }
 

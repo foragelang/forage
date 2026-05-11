@@ -20,6 +20,10 @@ struct RunCommand: AsyncParsableCommand {
           help: "Prompt on stdin when the recipe declares auth.session.requiresMFA: true. Default: on.")
     var mfa: Bool = true
 
+    @Flag(name: .customLong("interactive"),
+          help: "Force a fresh interactive bootstrap for recipes that declare browser.interactive. Opens a visible WebView; the human passes the gate (CAPTCHA, sign-in, etc.) and clicks the on-page 'Scrape this page' overlay. Cookies + localStorage are persisted to ~/Library/Forage/Sessions/<slug>/ and subsequent runs (without this flag) reuse the session headlessly until it expires.")
+    var interactive: Bool = false
+
     func run() async throws {
         let path = try Self.resolveRecipePath(recipePath)
         let src: String
@@ -91,7 +95,12 @@ struct RunCommand: AsyncParsableCommand {
         app.setActivationPolicy(.regular)
         app.activate(ignoringOtherApps: true)
 
-        let engine = BrowserEngine(recipe: recipe, inputs: inputs)
+        let bootstrapMode: InteractiveBootstrapMode = interactive ? .forceBootstrap : .auto
+        let engine = BrowserEngine(
+            recipe: recipe,
+            inputs: inputs,
+            interactiveBootstrapMode: bootstrapMode
+        )
         do {
             let result = try await engine.run()
             try Self.emitResult(result)

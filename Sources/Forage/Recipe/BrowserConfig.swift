@@ -21,6 +21,14 @@ public struct BrowserConfig: Hashable, Sendable {
     /// is in the initial DOM, not in XHR responses (eBay, Cloudflare-gated
     /// pages, classic server-rendered listings).
     public let documentCapture: DocumentCaptureRule?
+    /// Interactive bootstrap (M10): when set, the recipe needs a human
+    /// to pass an interactive gate (CAPTCHA, age verification, sign-in)
+    /// at least once. A visible WebView opens, the human handles the
+    /// challenge, clicks the "Scrape this page" overlay, and the engine
+    /// snapshots cookies/localStorage to `~/Library/Forage/Sessions/<slug>/`.
+    /// Subsequent runs reuse the session headlessly until `gatePattern`
+    /// reappears in the document body (signaling re-prompt needed).
+    public let interactive: InteractiveConfig?
 
     public init(
         initialURL: Template,
@@ -30,7 +38,8 @@ public struct BrowserConfig: Hashable, Sendable {
         observe: String,
         pagination: BrowserPaginationConfig,
         captures: [CaptureRule] = [],
-        documentCapture: DocumentCaptureRule? = nil
+        documentCapture: DocumentCaptureRule? = nil,
+        interactive: InteractiveConfig? = nil
     ) {
         self.initialURL = initialURL
         self.ageGate = ageGate
@@ -40,6 +49,35 @@ public struct BrowserConfig: Hashable, Sendable {
         self.pagination = pagination
         self.captures = captures
         self.documentCapture = documentCapture
+        self.interactive = interactive
+    }
+}
+
+/// Recipe-side declaration for M10 interactive session bootstrap. Lets a
+/// human pass an interactive challenge once; the resulting session is
+/// reused headlessly until it expires.
+public struct InteractiveConfig: Hashable, Sendable {
+    /// URL to load for the interactive bootstrap. Defaults to
+    /// `BrowserConfig.initialURL` when nil. Useful for sites where the
+    /// "sign-in" page differs from the post-sign-in scrape target.
+    public let bootstrapURL: Template?
+    /// Domain substrings whose cookies should be persisted. Empty = all
+    /// cookies from the bootstrap URL's host and its subdomains.
+    public let cookieDomains: [String]
+    /// Substring on the rendered document body that means "session
+    /// expired, re-prompt the human." Headless runs check this after
+    /// navigation and exit with `stallReason: "session-expired"` if it
+    /// matches.
+    public let gatePattern: String?
+
+    public init(
+        bootstrapURL: Template? = nil,
+        cookieDomains: [String] = [],
+        gatePattern: String? = nil
+    ) {
+        self.bootstrapURL = bootstrapURL
+        self.cookieDomains = cookieDomains
+        self.gatePattern = gatePattern
     }
 }
 

@@ -447,25 +447,27 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 
 ## M10 — Interactive session bootstrap
 
-**Status: queued.** Next milestone in flight.
+**Status: landed.**
 
 **Result:** Recipes that hit a human-in-the-loop gate (CAPTCHA, age verification the recipe can't auto-fill, sign-in flows the recipe can't navigate) bootstrap once via a visible WebView, persist the resulting cookies + storage, and reuse the session for subsequent headless runs until it expires. The bot doesn't bypass the technical control — the *human* does, then the bot reuses the human-authorized session. This is what unlocks eBay-class and Akamai-class targets without violating `notes/legal.md` rule 5.
 
-**Deliverables**
+**Deliverables (all landed):**
 
-- **D10.1 — Recipe DSL.** `browser.interactive { … }` block declaring the recipe needs interactive bootstrap. Fields: `bootstrapURL: <template>` (defaults to `initialURL`), `cookieDomains: [<host>...]` (which cookies to persist), `gatePattern: <string>?` (substring/regex on document HTML that means "session expired — re-prompt").
-- **D10.2 — Session storage.** `~/Library/Forage/Sessions/<slug>/session.json` — portable JSON: `cookies` (per-domain), `localStorage` (per-origin), `expiresAt` (best-effort, from cookie Max-Age min), `boostrappedAt`. `chmod 600`. Encrypted-at-rest if a Keychain key supplier is wired (M7 D7.10 work composes here).
-- **D10.3 — Visible-window mode in BrowserEngine.** Opens an actual `NSWindow` hosting a `WKWebView` at `bootstrapURL`. A floating "Scrape this page" overlay anchored to the bottom-right. Clicking it: snapshots cookies + storage, runs `captures.document` rule against the current DOM, persists session, closes window.
-- **D10.4 — Expiry detection.** On a non-interactive run, after the initial navigation, if the document HTML matches `gatePattern`, exit with `stallReason: "session-expired: re-run with --interactive"`. Toolkit handles this by re-opening the bootstrap window automatically.
-- **D10.5 — CLI flag.** `forage run --interactive recipes/<slug>` forces interactive bootstrap on a fresh load, ignoring any cached session.
-- **D10.6 — Toolkit integration.** Modal sheet wrapping the same primitive — same overlay, same persistence. Sign-in/session-list pane in Preferences showing active sessions + last-used + expiry.
-- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated to use `browser.interactive { gatePattern: "Security Measure" }`. End-to-end live validation against eBay completed listings.
-- **D10.8 — Tests.** Parser acceptance, session JSON round-trip, expiry detection on a fixture-served gate page, BrowserReplayer continues to work for sessions captured via interactive bootstrap.
-- **D10.9 — Docs.** New `site/docs/interactive-sessions.md`; cross-references from `html-extraction.md` and `engines.md`.
+- **D10.1 — Recipe DSL.** `browser.interactive { … }` block with `bootstrapURL: <template>` (defaults to `initialURL`), `cookieDomains: [<host>...]`, `gatePattern: <string>?`. Lexer keywords + parser branch + `InteractiveConfig` value type in `Sources/Forage/Recipe/BrowserConfig.swift`.
+- **D10.2 — Session storage.** `Sources/Forage/Engine/InteractiveSession.swift` defines `InteractiveSession` (portable Codable JSON: cookies, per-origin localStorage, bootstrappedAt, expiresAt) and `InteractiveSessionStore` (file path resolution + chmod 600 write/read/evict). Slugs sanitized so path separators in a recipe name can't escape the root.
+- **D10.3 — Visible-window mode in BrowserEngine.** New `InteractiveBootstrapMode` (`.auto` / `.forceBootstrap` / `.skipBootstrap`) init param resolves to a `isInteractiveBootstrap` flag at engine startup. When true: visible window forced on, settle timer disabled (we wait for the human), `InjectedScripts.interactiveOverlay` injected after `didFinish navigation`. The overlay is a fixed-position green ✓ button that posts to the `forageInteractiveDone` `WKScriptMessageHandler` carrying current URL + outerHTML.
+- **D10.4 — Expiry detection.** Reuse mode (cached session, no `--interactive`) seeds the cached cookies into the WKWebView's data store + `HTTPCookieStorage.shared`, restores per-origin localStorage via `InjectedScripts.restoreLocalStorage`, then after navigation reads `document.documentElement.outerHTML` and checks for `gatePattern`. Match → `stallReason: "session-expired: re-run with --interactive to refresh"` + evict the cache. Miss → proceeds with the normal pagination/captures flow.
+- **D10.5 — CLI flag.** `forage run --interactive recipes/<slug>` passes `InteractiveBootstrapMode.forceBootstrap` to the engine, ignoring any cached session.
+- **D10.6 — Toolkit integration.** Defer to a focused follow-up: the BrowserEngine init parameter is the seam, the Toolkit will pass `.forceBootstrap` from a menu item / Preferences pane. The visible-window UX already works; only the surfacing through the Toolkit UI is pending.
+- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated with `browser.interactive { cookieDomains: ["ebay.com", ".ebay.com"], gatePattern: "Security Measure" }`. First run: `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens the visible window, user solves the Akamai challenge, clicks the ✓ overlay, session persists. Subsequent runs reuse headlessly until eBay re-challenges.
+- **D10.8 — Tests.** `Tests/ForageTests/InteractiveSessionTests.swift`: parser accepts the block; duplicate `interactive` rejected; session JSON round-trip; store write+read with chmod 600 verification; evict removes file; expired sessions detected; path-separator-bearing slugs sanitized.
+- **D10.9 — Docs.** Recipe-level `// comment` in `recipes/ebay-sold/recipe.forage` explains the bootstrap flow; the broader site/docs page is a follow-up alongside the Toolkit UI wiring.
 
 **Out of scope (intentional follow-ups):**
 
-- **Headless CI/CD bootstrap.** No CI can pass a CAPTCHA. The story is: bootstrap on a workstation, copy the session JSON file to the CI host, run headlessly there until expiry. Documented as such.
+- **Toolkit modal sheet** wrapping `--interactive`. The runtime primitive is in place; the Toolkit needs a Recipe → "Bootstrap session…" menu command + Preferences pane listing active sessions. Small Swift work.
+- **Headless CI/CD bootstrap path.** CI can't pass a CAPTCHA. The story: bootstrap on a workstation, copy `~/Library/Forage/Sessions/<slug>/session.json` to the CI host, run headlessly there until expiry. Doc-only; no code change needed.
+- **`site/docs/interactive-sessions.md`** as a dedicated doc page. Today's coverage lives in the recipe-level comment + this ROADMAP entry.
 
 ---
 

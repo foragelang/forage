@@ -962,6 +962,7 @@ public struct Parser {
         var pagination: BrowserPaginationConfig?
         var captures: [CaptureRule] = []
         var documentCapture: DocumentCaptureRule?
+        var interactive: InteractiveConfig?
 
         while !check(.rbrace) {
             if matchKeyword("initialURL") {
@@ -1036,6 +1037,14 @@ public struct Parser {
                 default:
                     throw ParseError.unsupportedConstruct("captures.\(kind) not supported", loc: previous().loc)
                 }
+            } else if matchKeyword("interactive") {
+                guard interactive == nil else {
+                    throw ParseError.unsupportedConstruct(
+                        "browser.interactive declared more than once",
+                        loc: previous().loc
+                    )
+                }
+                interactive = try parseInteractiveConfig()
             } else {
                 throw ParseError.unsupportedConstruct("unknown browser field '\(peek().lexeme)'", loc: peek().loc)
             }
@@ -1050,7 +1059,41 @@ public struct Parser {
             observe: observe,
             pagination: pagination ?? BrowserPaginationConfig(mode: .scroll, until: .noProgressFor(3)),
             captures: captures,
-            documentCapture: documentCapture
+            documentCapture: documentCapture,
+            interactive: interactive
+        )
+    }
+
+    /// Parse `browser.interactive { bootstrapURL: …, cookieDomains: […], gatePattern: "…" }`
+    /// Used by M10 recipes that need a human handshake on first run.
+    private mutating func parseInteractiveConfig() throws -> InteractiveConfig {
+        try expect(.lbrace, "{")
+        var bootstrapURL: Template? = nil
+        var cookieDomains: [String] = []
+        var gatePattern: String? = nil
+        while !check(.rbrace) {
+            if matchKeyword("bootstrapURL") {
+                try expect(.colon, ":")
+                bootstrapURL = try parseTemplateLiteral()
+            } else if matchKeyword("cookieDomains") {
+                try expect(.colon, ":")
+                cookieDomains = try consumeStringArray()
+            } else if matchKeyword("gatePattern") {
+                try expect(.colon, ":")
+                let (s, _) = try consumeStringLit()
+                gatePattern = s
+            } else {
+                throw ParseError.unsupportedConstruct(
+                    "unknown interactive field '\(peek().lexeme)'", loc: peek().loc
+                )
+            }
+            _ = match(.semicolon); _ = match(.comma)
+        }
+        try expect(.rbrace, "}")
+        return InteractiveConfig(
+            bootstrapURL: bootstrapURL,
+            cookieDomains: cookieDomains,
+            gatePattern: gatePattern
         )
     }
 
