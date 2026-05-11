@@ -77,6 +77,7 @@ export default defineConfig({
                     items: [
                         { text: 'CLI reference', link: '/docs/cli' },
                         { text: 'Toolkit (macOS app)', link: '/docs/toolkit' },
+                        { text: 'Hub (publish & import)', link: '/docs/hub' },
                     ],
                 },
             ],
