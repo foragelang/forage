@@ -10,6 +10,9 @@ hero:
         alt: Forage
     actions:
         - theme: brand
+          text: New recipe
+          link: /edit
+        - theme: alt
           text: Publish a recipe
           link: /publish
         - theme: alt

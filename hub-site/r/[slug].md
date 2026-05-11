@@ -27,6 +27,10 @@ title: "{{ $params.displayName }}"
 forage import hub://{{ $params.slug }}
 ```
 
+## Edit on web
+
+[/r/{{ $params.slug }}/edit](/r/{{ $params.slug }}/edit) — open in the browser-based IDE.
+
 ## Open in Toolkit
 
 [forage-toolkit://recipe/{{ $params.slug }}](forage-toolkit://recipe/{{ $params.slug }})
