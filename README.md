@@ -31,7 +31,7 @@ Canonical artifacts:
 
 - **Recipes are data, not code.** A site's scraping logic is a declarative file: HTTP graph + pagination strategy + type-directed extraction binding fields to a fixed output catalog. Engine evolves; recipes don't run code we don't trust.
 - **Two engines, one DSL.** HTTP recipes for sites that expose a documented API; browser recipes for sites where the data sits behind a JS SPA + cloudflare bot management. Both target the same output type catalog, so downstream code doesn't care which engine ran.
-- **LLM authoring path is first-class.** A future recipe author hands the DSL spec + a few reference recipes + a target site URL to an AI assistant; the AI probes the site, captures fixtures, writes a recipe, snapshots the expected output. Diagnostic reports the engine emits when a recipe stalls (unhandled UI affordances, observed-but-unmatched URLs, expectation gaps) are written in the same vocabulary the recipe uses, so the corrective edit is a direct reading of the report.
+- **Diagnostics speak recipe vocabulary.** When a run stalls — unmatched captures, unfired rules, expectation gaps, unhandled UI affordances — the engine surfaces them in the same language the recipe uses (URL patterns, type names, capture rule names). The corrective edit reads directly off the report instead of out of stack traces or wire-level logs.
 - **Hub-friendly review.** Recipe + fixtures + snapshot ship together as a self-contained directory. Reviewers can verify a recipe extracts what its snapshot claims without running anything.
 
 ## Out of scope

@@ -160,6 +160,6 @@ Don't bypass pagination by demanding an oversized batch in a single request (e.g
 
 ## Diagnostic affordances
 
-When a browser-engine run finishes — success or stall — it writes a sibling JSON file enumerating every visible button, link, `role=button`, and scrollable on the page, with text, selector, and viewport position. When a recipe doesn't reach expected coverage, the recipe author (human or LLM) reads this file to see what UI affordances the engine didn't interact with.
+When a browser-engine run finishes — success or stall — it writes a sibling JSON file enumerating every visible button, link, `role=button`, and scrollable on the page, with text, selector, and viewport position. When a recipe doesn't reach expected coverage, the recipe author reads this file to see what UI affordances the engine didn't interact with.
 
 The vocabulary in the dump matches the vocabulary the recipe uses (button text, selector, position) so the corrective edit is a direct reading of the dump.

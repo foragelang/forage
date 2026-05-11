@@ -1,18 +1,18 @@
 # Scraping DSL — design plan
 
-We're replacing the bespoke per-platform Swift scrapers (`SweedScraper`, `LeafbridgeScraper`) with a declarative DSL that describes "how to scrape a site into our typed output." Recipes load at runtime from a directory; primary authoring path is "show the DSL spec + reference recipes to Claude, give it the dispensary URL, get back a recipe." Hand-authoring is supported. Designed so recipes can be shared and reviewed on a public hub.
+We're replacing the bespoke per-platform Swift scrapers (`SweedScraper`, `LeafbridgeScraper`) with a declarative DSL that describes "how to scrape a site into our typed output." Recipes load at runtime from a directory. Hand-authoring is the canonical path; the validator + structured diagnostics keep the loop tight enough that authoring is cheap with or without tooling help. Designed so recipes can be shared and reviewed on a public hub.
 
 ## Why a DSL (vs. a Swift `Scraper` protocol or scripted plugins)
 
 - **Swift protocol**: every new platform needs a recompile. Doesn't fit "user adds a store the app doesn't yet support."
-- **Scripted plugins (JS via JavaScriptCore, etc.)**: full expressiveness, but runs untrusted model output verbatim with HTTP access; failure modes are silent ("ran but produced garbage"); LLM gets creative when it should stay inside well-trodden patterns; every scraper is a snowflake with its own bespoke pagination/extraction code.
-- **Declarative DSL + bounded engine**: the engine is the only thing that runs HTTP, parses responses, writes the DB. Recipes are pure data describing what to do. This bounds blast radius (auditable), keeps the LLM inside known patterns, makes failures schema-checkable, and gives us a single place to fix bugs that affect every recipe.
+- **Scripted plugins (JS via JavaScriptCore, etc.)**: full expressiveness, but runs untrusted code verbatim with HTTP access; failure modes are silent ("ran but produced garbage"); every scraper is a snowflake with its own bespoke pagination/extraction code.
+- **Declarative DSL + bounded engine**: the engine is the only thing that runs HTTP, parses responses, writes the DB. Recipes are pure data describing what to do. This bounds blast radius (auditable), keeps authoring inside known patterns, makes failures schema-checkable, and gives us a single place to fix bugs that affect every recipe.
 
 When a recipe needs something the DSL can't express, the answer is to extend the DSL — add a new pagination kind, auth strategy, or transform to the engine in Swift. Vocabulary grows by deliberate increments, not by per-recipe improvisation.
 
 ## Authoring model
 
-- **Custom syntax, not YAML/JSON.** Modern LLMs handle a published grammar + 2–3 worked examples + a validator-in-the-loop fine. Strictly-typed-for-our-domain wins on review experience: comments inline, multiline strings without escaping, parser errors that speak our domain, no general-format footguns to defend against.
+- **Custom syntax, not YAML/JSON.** Strictly-typed-for-our-domain wins on review experience: comments inline, multiline strings without escaping, parser errors that speak our domain, no general-format footguns to defend against. A published grammar + 2–3 worked examples + a validator-in-the-loop is enough for any author (or coauthoring tool) to stay productive.
 - Hand-rolled PEG parser in Swift. Domain-specific error messages. Tree-sitter grammar is a follow-on if/when we want GitHub syntax highlighting on the hub.
 - Reference recipes (Sweed, Leafbridge) ship in-tree as the canonical exemplars.
 
@@ -112,7 +112,7 @@ Three concrete lessons that feed back into DSL design:
 2. **The recipe needs to land on the right view.** Trilogy's `/shop/adult-use-menu/` is a curated homepage; `/menu/all` is the full paginatable list. Recipes need a `navigateTo` or `clickButton` step before paginate to put the SPA in the right state. Hardcoded direct URL works for Trilogy; other Jane sites likely have the same `/menu/all` convention.
 3. **Click disambiguation matters.** Multiple buttons can share the same label (banner "View more" vs pagination "View more"). The pagination one is below the content it paginates → bottom-most match is the right disambiguator. Bake into the engine; recipe authors don't need to think about it unless a site puts the load-more button somewhere weird.
 
-**Diagnostic affordances dump.** When `BrowserPaginate` finishes (success or stall), the probe writes `probe-affordances.json` next to the captures — every visible button / link / role=button / scrollable with text + selector + position. This is the platform's debug artifact: when a recipe doesn't reach expected coverage, the recipe author (human or LLM) reads this file to see what UI affordances the engine *didn't* interact with. The vocabulary in the dump matches the vocabulary recipes use (button text, selector, position) so the corrective recipe edit is a direct reading of the dump.
+**Diagnostic affordances dump.** When `BrowserPaginate` finishes (success or stall), the probe writes `probe-affordances.json` next to the captures — every visible button / link / role=button / scrollable with text + selector + position. This is the platform's debug artifact: when a recipe doesn't reach expected coverage, the recipe author reads this file to see what UI affordances the engine *didn't* interact with. The vocabulary in the dump matches the vocabulary recipes use (button text, selector, position) so the corrective recipe edit is a direct reading of the dump.
 
 ### 3. Type construction
 
