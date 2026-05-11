@@ -101,7 +101,7 @@ private func formLoginRecipe(maxReauthRetries: Int = 1, cache: TimeInterval? = n
             )),
             .forLoop(
                 variable: "it",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -146,7 +146,7 @@ private func bearerLoginRecipe(maxReauthRetries: Int = 1) -> Recipe {
             )),
             .forLoop(
                 variable: "it",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",
@@ -557,7 +557,7 @@ func cookiePersistLoadsCookiesFromJSONFile() async throws {
             )),
             .forLoop(
                 variable: "it",
-                collection: .field(.variable("items"), "data"),
+                collection: .path(.field(.variable("items"), "data")),
                 body: [
                     .emit(Emission(
                         typeName: "Item",

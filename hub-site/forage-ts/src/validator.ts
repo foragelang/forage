@@ -404,7 +404,10 @@ function collectInStatement(stmt: Statement, out: Set<string>): void {
             }
             return
         case 'forLoop':
-            for (const n of referencedSecretsInPath(stmt.collection)) out.add(n)
+            // Post-M8: forLoop.collection is an ExtractionExpr (pipelines
+            // can drive iteration). Walk it via secretsInExpr instead of
+            // the PathExpr-only `referencedSecretsInPath`.
+            for (const n of secretsInExpr(stmt.collection)) out.add(n)
             for (const s of stmt.body) collectInStatement(s, out)
             return
     }
