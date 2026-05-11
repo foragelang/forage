@@ -3,6 +3,12 @@
  * tune the brand colors so the green works on both schemes.
  */
 
+/* Cache-bust marker: a no-op rule whose content forces the bundled CSS
+ * hash to change. Cloudflare Pages cached a 500-serving asset under the
+ * prior hash and won't re-upload identical content; bumping this string
+ * forces a fresh upload. Bump the value if the issue recurs. */
+.forage-build-marker { --forage-build: "2026-05-11-a"; }
+
 :root {
     --vp-c-brand-1:     #4d7843;
     --vp-c-brand-2:     #5c8a4f;
