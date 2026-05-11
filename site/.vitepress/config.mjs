@@ -76,6 +76,7 @@ export default defineConfig({
                     text: 'Tooling',
                     items: [
                         { text: 'CLI reference', link: '/docs/cli' },
+                        { text: 'Toolkit (macOS app)', link: '/docs/toolkit' },
                     ],
                 },
             ],
