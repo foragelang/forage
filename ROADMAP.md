@@ -240,10 +240,60 @@ This is the most exotic engineering — it requires the parser+validator to run 
 
 ---
 
+## M7 — Authenticated sessions
+
+**Result:** recipes can declare a login flow and maintain authenticated state across requests. Today's `auth` block supports `staticHeader` (API key in a header) and `htmlPrime` (one-shot GET to extract a CSRF token + set cookies). Neither covers "log in as me, maintain a session across requests, refresh when it expires." M7 adds that as a first-class DSL feature.
+
+**Deliverables**
+
+- **D7.1 — `auth.session { … }` block in the DSL.** New top-level auth strategy. Three variants, each with its own block:
+  - `auth.session.formLogin { url, method, body, captureCookies }` — POST credentials to a login endpoint; capture `Set-Cookie`s; reuse in subsequent step requests automatically.
+  - `auth.session.bearerLogin { url, method, body, tokenPath, headerName: "Authorization", headerPrefix: "Bearer " }` — POST credentials to a token endpoint; extract token from the response via `tokenPath`; inject as `Authorization: Bearer <token>` on every subsequent step.
+  - `auth.session.cookiePersist { sourcePath }` — load cookies from a JSON or Netscape-format file. Escape hatch for sites that need MFA the recipe can't navigate.
+- **D7.2 — Credential references.** Credentials never live in the recipe text. The DSL gains a `$secret.<name>` path resolver. Runtime resolves at execution time:
+  - CLI: reads from `FORAGE_SECRET_<NAME>` environment variables.
+  - Toolkit: reads from macOS Keychain under a per-recipe service identifier.
+  - Web IDE: prompts for each `$secret.*` reference inline before run; never persisted to the hub.
+- **D7.3 — Session lifecycle.**
+  - Engine detects `401` / `403` mid-run, re-runs the login flow once, retries the failed request. Configurable: `auth.session.maxReauthRetries: 1` (default 1, 0 to disable).
+  - On total auth failure (re-auth itself fails), `DiagnosticReport.stallReason` becomes `auth-failed: <details>`.
+- **D7.4 — Session persistence (optional cache).** `auth.session.cache: <duration>` — caches the session token/cookies for `duration` seconds keyed by `(recipe-slug, credential-fingerprint)` at `~/Library/Forage/Cache/sessions/`. Subsequent runs reuse without re-logging-in. Eviction on expiry or 401.
+- **D7.5 — MFA hook.** `auth.session.requiresMFA: true` — engine pauses the run and emits a `mfaChallenge` event the host handles:
+  - CLI: blocks on `stdin`, prompts "Enter MFA code:".
+  - Toolkit: shows a modal sheet asking for the code; resumes on submit.
+  - Web IDE: same modal; submits via JS.
+- **D7.6 — Parser + Validator.** `auth.session.*` parses to a new `AuthStrategy` case. Validator checks that credential references match declared `$secret.*` references (warning if a referenced secret has no obvious source).
+- **D7.7 — Runtime support.**
+  - `HTTPEngine` runs the login flow before the first step; threads cookies/headers automatically.
+  - `BrowserEngine` writes the captured cookies into the `WKWebView`'s data store (`HTTPCookieStorage`) so SPA fetches inherit them.
+- **D7.8 — Tests.**
+  - Unit: a synthetic recipe with `auth.session.formLogin` + a mock URLSession that returns `Set-Cookie` on POST and 200 with the cookie on GET → snapshot shows the right records.
+  - Unit: 401 mid-run triggers a single re-auth + retry; on re-auth failure, `stallReason: "auth-failed: …"`.
+  - Unit: MFA hook called with a synthetic code provider.
+  - Integration: a real recipe against a documented test-login API (e.g. httpbin or a self-hosted mock).
+- **D7.9 — Docs.**
+  - New `site/docs/auth-sessions.md` — concrete examples per variant.
+  - Update `recipes/` with a `recipes/sample-login/` exemplar.
+- **D7.10 — Security review.**
+  - Credentials never logged. Diagnostic reports redact `$secret.*` resolved values.
+  - Cache files are `chmod 600`. Cookie cache encrypted with a per-machine key (use Keychain on macOS to derive).
+  - The web IDE's runtime never persists secrets to localStorage or the hub.
+
+**Acceptance**
+
+- A recipe with `auth.session.formLogin { … } / auth.session.bearerLogin { … }` runs end-to-end against a mock server in tests.
+- 401 mid-run triggers exactly one re-auth attempt; second 401 fails with the right diagnostic.
+- MFA hook fires; CLI prompts; Toolkit shows a sheet; web IDE shows a modal.
+- Recipe text contains zero credential material; all references are `$secret.*`.
+
+---
+
 ## Order of execution
 
 Serial, top-to-bottom. Each milestone gets a `product-engineer` agent dispatch with the full milestone brief, followed by a `code-review-auditor` pass on the resulting diff. Findings from the auditor get a focused fixup pass before moving on.
 
 Milestone 6 (web IDE) is gated on M5 only by docs convenience — it could land in parallel with M3/M4/M5 once M2 is up. But sequential is simpler to manage.
 
-Once M1-M6 are all landed, the website / hub / CLI / toolkit story is end-to-end.
+M7 (authenticated sessions) is independent — it can land any time after M1, since it's purely runtime + DSL. Queued until the M1–M6 path is live and we know what real-world recipe authors hit walls on.
+
+Once M1-M7 are all landed, forage covers static-key, CSRF-priming, AND session-based auth — i.e. essentially any non-CAPTCHA public-web flow.
