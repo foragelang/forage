@@ -206,6 +206,10 @@ impl<'r> Evaluator<'r> {
 fn field_of(v: &EvalValue, field: &str) -> EvalValue {
     match v {
         EvalValue::Object(o) => o.get(field).cloned().unwrap_or(EvalValue::Null),
+        // `[*].field` projects: distribute field access across array elements.
+        // Without this, `terpenes[*].name | dedup` blows up because `.name`
+        // returns null on an Array, then dedup chokes on null.
+        EvalValue::Array(xs) => EvalValue::Array(xs.iter().map(|x| field_of(x, field)).collect()),
         _ => EvalValue::Null,
     }
 }
@@ -319,6 +323,83 @@ mod tests {
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
         assert_eq!(v, EvalValue::String("hello".into()));
+    }
+
+    #[test]
+    fn wildcard_field_projects_over_array() {
+        // `$xs[*].name` on an array of objects should yield an array of names,
+        // not Null. Without field-on-array distribution, downstream collection
+        // transforms (dedup, join, count) blow up because they see Null.
+        let r = parse(
+            r#"
+            recipe "x" { engine http
+                type T { fs: [String] }
+                emit T { fs ← $xs[*].name | dedup }
+            }
+        "#,
+        )
+        .unwrap();
+        let registry = default_registry();
+        let ev = Evaluator::new(registry);
+        let mut scope = Scope::new();
+        let mk = |n: &str| -> EvalValue {
+            EvalValue::Object(
+                [("name".to_string(), EvalValue::String(n.into()))]
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        scope.bind(
+            "xs",
+            EvalValue::Array(vec![mk("alpha"), mk("beta"), mk("alpha")]),
+        );
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!()
+        };
+        let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
+        assert_eq!(
+            v,
+            EvalValue::Array(vec![
+                EvalValue::String("alpha".into()),
+                EvalValue::String("beta".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn opt_field_then_wildcard_collapses_to_empty_array() {
+        // Reproduces the Sweed runtime error:
+        //   "transform 'dedup': can only dedup arrays, got null"
+        // when a recipe writes `$product.strain?.terpenes[*].name | dedup`
+        // and the strain object is null. `?.terpenes` is null,
+        // `[*]` widens null → [], `.name` projects → [] (now, with the
+        // distribute-over-array fix), `dedup` succeeds with [].
+        let r = parse(
+            r#"
+            recipe "x" { engine http
+                type T { fs: [String] }
+                emit T { fs ← $product.strain?.terpenes[*].name | dedup }
+            }
+        "#,
+        )
+        .unwrap();
+        let registry = default_registry();
+        let ev = Evaluator::new(registry);
+        let mut scope = Scope::new();
+        // Strain present but null.
+        scope.bind(
+            "product",
+            EvalValue::Object(
+                [("strain".to_string(), EvalValue::Null)]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!()
+        };
+        let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
+        assert_eq!(v, EvalValue::Array(vec![]));
     }
 
     #[test]
