@@ -3,14 +3,18 @@ import { useMemo } from "react";
 import { api, type DebugAction, type DebugScope, type StepPause } from "../lib/api";
 import { useStudio } from "../lib/store";
 
-export function DebuggerTab() {
-    const { debugging, paused, running, runError, debugClearPause } = useStudio();
+/// Bottom panel attached to the Source tab. Renders the engine's paused
+/// scope and the resume controls. Mounted only when `paused !== null` —
+/// the SourceTab handles that gating.
+export function DebuggerPanel() {
+    const { paused, debugClearPause, breakpoints, clearBreakpoints } = useStudio();
+    if (!paused) return null;
 
     const resume = async (action: DebugAction) => {
-        // Optimistically clear the pause so the UI returns to "running"
-        // immediately — if the engine pauses again, the next event will
-        // overwrite this. Without this the buttons look "stuck" between
-        // click and the engine actually waking up.
+        // Optimistically clear the pause so the panel collapses and the
+        // line highlight goes away immediately. The next pause event (if
+        // any) reinstates it. Without this the buttons feel "stuck"
+        // between click and engine wakeup.
         debugClearPause();
         try {
             await api.debugResume(action);
@@ -19,70 +23,44 @@ export function DebuggerTab() {
         }
     };
 
-    if (!debugging && !runError) {
-        return (
-            <div className="p-6 text-zinc-500 text-sm space-y-2">
-                <div>
-                    Click <span className="font-medium">Debug</span> (or press{" "}
-                    <span className="font-mono">⌥⌘R</span>) to step through this recipe.
-                </div>
-                <div className="text-xs text-zinc-600">
-                    The engine pauses before each <span className="font-mono">step</span>{" "}
-                    block so you can inspect the current scope, then advance one step at a
-                    time or run to the end.
-                </div>
-            </div>
-        );
-    }
-
-    if (runError) {
-        return (
-            <div className="p-6 text-red-400 text-sm">
-                <div className="font-medium mb-2">Debug run errored:</div>
-                <pre className="text-xs whitespace-pre-wrap bg-zinc-900 p-3 rounded">
-                    {runError}
-                </pre>
-            </div>
-        );
-    }
-
-    if (!paused) {
-        return (
-            <div className="p-6 text-zinc-400 text-sm flex items-center gap-2">
-                <span className="inline-block w-3 h-3 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin" />
-                {running ? "Running…" : "Waiting for engine…"}
-            </div>
-        );
-    }
-
     return (
-        <div className="flex-1 flex min-h-0 flex-col">
-            <header className="px-6 py-3 border-b border-zinc-800 flex items-center gap-4">
-                <div className="text-sm">
-                    <span className="text-zinc-500">Paused before step </span>
-                    <span className="font-mono text-amber-400">{paused.step}</span>
-                    <span className="text-zinc-500 text-xs ml-2">
-                        (step #{paused.step_index})
+        <div className="border-t border-zinc-800 bg-zinc-950 flex flex-col min-h-0 max-h-[50vh]">
+            <header className="px-4 py-2 border-b border-zinc-800 flex items-center gap-3 text-xs flex-shrink-0">
+                <span className="text-amber-400 font-mono">⏸ paused</span>
+                <span className="text-zinc-500">before step</span>
+                <span className="font-mono text-zinc-200">{paused.step}</span>
+                <span className="text-zinc-600">#{paused.step_index}</span>
+                <div className="ml-auto flex items-center gap-2">
+                    <span className="text-zinc-600 mr-2">
+                        {breakpoints.size} breakpoint
+                        {breakpoints.size === 1 ? "" : "s"}
                     </span>
-                </div>
-                <div className="ml-auto flex gap-2">
+                    {breakpoints.size > 0 && (
+                        <button
+                            onClick={clearBreakpoints}
+                            className="px-2 py-1 text-zinc-400 hover:text-zinc-200"
+                            title="Remove all breakpoints"
+                        >
+                            clear
+                        </button>
+                    )}
                     <button
                         onClick={() => resume("step_over")}
-                        className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded font-medium"
-                        title="Run this step, pause at the next one"
+                        className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded font-medium"
+                        title="Run this step, pause at the next one (F10)"
                     >
                         Step over
                     </button>
                     <button
                         onClick={() => resume("continue")}
-                        className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded"
-                        title="Run to completion"
+                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded"
+                        title="Run to next breakpoint or end of recipe (F8)"
                     >
                         Continue
                     </button>
                     <button
                         onClick={() => resume("stop")}
-                        className="px-3 py-1.5 text-sm bg-red-700 hover:bg-red-600 rounded font-medium"
+                        className="px-3 py-1 bg-red-700 hover:bg-red-600 rounded font-medium"
                         title="Abort the run"
                     >
                         Stop
@@ -96,16 +74,19 @@ export function DebuggerTab() {
 
 function ScopeView({ pause }: { pause: StepPause }) {
     return (
-        <div className="flex-1 overflow-auto p-6 space-y-6 text-xs">
-            <CountsSection counts={pause.scope.emit_counts} />
+        <div className="flex-1 overflow-auto p-4 text-xs grid grid-cols-[1fr_1fr] gap-x-6 gap-y-4">
             <BindingsSection scope={pause.scope} />
-            <InputsSection inputs={pause.scope.inputs} />
-            <SecretsSection names={pause.scope.secrets} />
-            {pause.scope.current !== null && pause.scope.current !== undefined && (
-                <Section title="$ (current)">
-                    <JsonNode value={pause.scope.current} />
-                </Section>
-            )}
+            <div className="space-y-4">
+                <CountsSection counts={pause.scope.emit_counts} />
+                <InputsSection inputs={pause.scope.inputs} />
+                <SecretsSection names={pause.scope.secrets} />
+                {pause.scope.current !== null &&
+                    pause.scope.current !== undefined && (
+                        <Section title="$ (current)">
+                            <JsonNode value={pause.scope.current} />
+                        </Section>
+                    )}
+            </div>
         </div>
     );
 }
@@ -128,11 +109,6 @@ function CountsSection({ counts }: { counts: Record<string, number> }) {
 }
 
 function BindingsSection({ scope }: { scope: DebugScope }) {
-    // Flatten frames into a single view, marking which frame each binding
-    // came from. Outer-most first matches push order; inner shadows outer
-    // (which the engine honors via Scope::lookup). The UI groups by frame
-    // depth so the user can see how a `for`-loop binding sits relative to
-    // the top-level scope.
     const allEmpty = scope.bindings.every(
         (f) => Object.keys(f.bindings).length === 0,
     );
@@ -219,10 +195,6 @@ function KeyValueRow({ name, value }: { name: string; value: unknown }) {
     );
 }
 
-/// Compact JSON view: scalars inline, objects/arrays collapsed with a
-/// summary plus a `<details>` for the full value. Large strings clip with
-/// an ellipsis but the full text is in the DOM via title attr so the user
-/// can hover/inspect.
 function JsonNode({ value }: { value: unknown }) {
     const summary = useMemo(() => describe(value), [value]);
     if (

@@ -63,6 +63,7 @@ pub fn run() {
             commands::run_recipe,
             commands::cancel_run,
             commands::debug_resume,
+            commands::set_breakpoints,
             commands::publish_recipe,
             commands::auth_whoami,
             commands::auth_start_device_flow,

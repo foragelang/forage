@@ -14,3 +14,24 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 }
+
+/*
+ * Monaco gutter decorations for the step debugger. `.forage-bp-glyph` is the
+ * red dot on lines with a breakpoint set; `.forage-paused-glyph` is the
+ * yellow arrow on whichever step the engine is currently paused before;
+ * `.forage-paused-line` tints the whole line so it's visible without
+ * scrolling the gutter into view.
+ */
+.forage-bp-glyph {
+    background: radial-gradient(circle, #ef4444 4px, transparent 4px);
+    cursor: pointer;
+}
+.forage-bp-glyph:hover {
+    background: radial-gradient(circle, #f87171 4px, transparent 4px);
+}
+.forage-paused-glyph {
+    background: linear-gradient(45deg, transparent 40%, #f59e0b 40%, #f59e0b 60%, transparent 60%);
+}
+.forage-paused-line {
+    background-color: rgba(245, 158, 11, 0.12);
+}

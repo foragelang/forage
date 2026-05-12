@@ -1,5 +1,7 @@
 //! Mutable runtime state held by the Tauri app.
 
+use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use forage_http::ResumeAction;
@@ -23,16 +25,25 @@ pub struct StudioState {
     /// without this, popup_menu_at returns and the Menu Rust handle is
     /// dropped before the click event fires, losing the event.
     pub last_context_menu: Mutex<Option<tauri::menu::Menu<Wry>>>,
-    /// The in-flight debug session, if any. Set by `run_recipe` when
-    /// `debug: true`; the `debug_resume` command pulls the pending oneshot
-    /// out of here to wake the paused engine task.
+    /// Step names with breakpoints set. Persists across runs — the frontend
+    /// pushes the current set via `set_breakpoints` whenever the user
+    /// toggles a gutter marker.
+    pub breakpoints: Mutex<HashSet<String>>,
+    /// The in-flight debug session, if any. Every run installs one; the
+    /// `debug_resume` command pulls the pending oneshot out of here to
+    /// wake the paused engine task.
     pub debug_session: Mutex<Option<Arc<DebugSession>>>,
 }
 
 /// Per-run debug coordination. Holds the pending oneshot the engine task is
 /// awaiting on. `before_step` puts a fresh sender into `pending` and parks
 /// on the receiver; `debug_resume` takes the sender out and fires it.
+///
+/// `step_over_pending` is set when the user clicks Step Over from a paused
+/// state — the *next* step pause must wait regardless of whether it's on a
+/// breakpoint. We swap-clear it inside `before_step` so it's a one-shot.
 #[derive(Default)]
 pub struct DebugSession {
     pub pending: Mutex<Option<oneshot::Sender<ResumeAction>>>,
+    pub step_over_pending: AtomicBool,
 }

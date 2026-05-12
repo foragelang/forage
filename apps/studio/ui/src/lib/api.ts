@@ -103,11 +103,13 @@ export const api = {
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
     createRecipe: () => invoke<string>("create_recipe"),
     deleteRecipe: (slug: string) => invoke<void>("delete_recipe", { slug }),
-    runRecipe: (slug: string, replay: boolean, debug = false) =>
-        invoke<RunOutcome>("run_recipe", { slug, replay, debug }),
+    runRecipe: (slug: string, replay: boolean) =>
+        invoke<RunOutcome>("run_recipe", { slug, replay }),
     cancelRun: () => invoke<void>("cancel_run"),
     debugResume: (action: DebugAction) =>
         invoke<void>("debug_resume", { action }),
+    setBreakpoints: (steps: string[]) =>
+        invoke<void>("set_breakpoints", { steps }),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>

@@ -125,10 +125,14 @@ impl ProgressSink for EmitterSink {
     }
 }
 
-/// Bridges the engine's `Debugger` trait to a Tauri event + a oneshot. On
-/// each step pause: install a fresh sender on the shared `DebugSession`,
-/// emit `forage:debug-paused`, then await the receiver. The `debug_resume`
-/// command pulls the sender back out and wakes us with the chosen action.
+/// Bridges the engine's `Debugger` trait to a Tauri event + a oneshot.
+///
+/// The engine calls `before_step` for *every* step. We fast-path to
+/// `Continue` unless the step is on a user-set breakpoint or the user just
+/// clicked Step Over from a paused state. When we do pause: install a
+/// fresh sender on the shared `DebugSession`, emit `forage:debug-paused`,
+/// then await the receiver. The `debug_resume` command pulls the sender
+/// back out and wakes us with the chosen action.
 ///
 /// If the receiver drops (e.g. window closed, run cancelled), we default to
 /// `Stop` so a stranded engine task doesn't hang on an unresumable pause.
@@ -140,6 +144,20 @@ struct StudioDebugger {
 #[async_trait]
 impl Debugger for StudioDebugger {
     async fn before_step(&self, pause: StepPause) -> ResumeAction {
+        let state = self.app.state::<crate::state::StudioState>();
+        let on_breakpoint = state
+            .breakpoints
+            .lock()
+            .expect("breakpoints mutex")
+            .contains(&pause.step);
+        let step_over = self
+            .session
+            .step_over_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        if !on_breakpoint && !step_over {
+            return ResumeAction::Continue;
+        }
+
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.session.pending.lock().expect("pending mutex") = Some(tx);
         let _ = self.app.emit(DEBUG_PAUSED_EVENT, &pause);
@@ -153,7 +171,6 @@ pub async fn run_recipe(
     state: State<'_, crate::state::StudioState>,
     slug: String,
     replay: bool,
-    debug: bool,
 ) -> Result<RunOutcome, String> {
     let source = library::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
@@ -197,11 +214,11 @@ pub async fn run_recipe(
         *guard = Some(cancel.clone());
     }
 
-    // If the run was launched in debug mode, register a session and an
-    // engine debugger that bridges to it. Only HTTP engines participate —
-    // the browser path runs its own driver that the v1 debugger doesn't
-    // hook into.
-    let debugger: Option<Arc<dyn Debugger>> = if debug && recipe.engine_kind == EngineKind::Http {
+    // Install a debugger for every HTTP run — breakpoint hits drive pauses,
+    // so the debugger has to be present even if no breakpoints are set yet
+    // (the user might toggle one mid-run). Browser-engine runs go through
+    // a separate driver that the v1 debugger doesn't hook into.
+    let debugger: Option<Arc<dyn Debugger>> = if recipe.engine_kind == EngineKind::Http {
         let session = Arc::new(crate::state::DebugSession::default());
         *state.debug_session.lock().expect("debug_session mutex") = Some(session.clone());
         Some(Arc::new(StudioDebugger {
@@ -276,17 +293,16 @@ pub async fn run_recipe(
 /// Resume a paused debug step. `action` is "continue", "step_over", or
 /// "stop". No-op when no run is in flight or no pause is pending — the UI
 /// can fire and forget without coordinating against state itself.
+///
+/// "step_over" sets a one-shot flag on the session that forces the *next*
+/// step's `before_step` to pause regardless of whether it's on a
+/// breakpoint. From the engine's perspective both Continue and StepOver
+/// just mean "resume"; the difference lives entirely on the host.
 #[tauri::command]
 pub fn debug_resume(
     state: State<'_, crate::state::StudioState>,
     action: String,
 ) -> Result<(), String> {
-    let action = match action.as_str() {
-        "continue" => ResumeAction::Continue,
-        "step_over" => ResumeAction::StepOver,
-        "stop" => ResumeAction::Stop,
-        other => return Err(format!("unknown debug action: {other}")),
-    };
     let session = state
         .debug_session
         .lock()
@@ -295,12 +311,37 @@ pub fn debug_resume(
     let Some(session) = session else {
         return Ok(());
     };
+
+    let resume = match action.as_str() {
+        "continue" => ResumeAction::Continue,
+        "step_over" => {
+            session
+                .step_over_pending
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            ResumeAction::Continue
+        }
+        "stop" => ResumeAction::Stop,
+        other => return Err(format!("unknown debug action: {other}")),
+    };
+
     let pending = session.pending.lock().expect("pending mutex").take();
     if let Some(tx) = pending {
         // send() fails only when the receiver has been dropped (run was
         // cancelled). Either way, nothing else to do.
-        let _ = tx.send(action);
+        let _ = tx.send(resume);
     }
+    Ok(())
+}
+
+/// Replace the current breakpoint set. Step names not present in the
+/// recipe are harmless — the engine simply never reaches them.
+#[tauri::command]
+pub fn set_breakpoints(
+    state: State<'_, crate::state::StudioState>,
+    steps: Vec<String>,
+) -> Result<(), String> {
+    let mut g = state.breakpoints.lock().expect("breakpoints mutex");
+    *g = steps.into_iter().collect();
     Ok(())
 }
 
