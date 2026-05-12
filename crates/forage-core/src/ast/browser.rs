@@ -95,6 +95,8 @@ pub enum BrowserPaginateUntil {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureRule {
     pub url_pattern: String,
+    /// Iteration binding name — the `$x` in `for $x in …`.
+    pub iter_var: String,
     /// Iterate this expression within the matched response.
     pub iter_path: ExtractionExpr,
     pub body: Vec<Statement>,
@@ -103,6 +105,7 @@ pub struct CaptureRule {
 /// `captures.document { for $x in $ | select(...) }` — fires once after settle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentCaptureRule {
+    pub iter_var: String,
     pub iter_path: ExtractionExpr,
     pub body: Vec<Statement>,
 }

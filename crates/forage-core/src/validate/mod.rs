@@ -51,6 +51,8 @@ pub enum ValidationCode {
     UnknownInput,
     UnknownSecret,
     UnknownStep,
+    UnknownVariable,
+    UnknownTransform,
     DuplicateType,
     DuplicateEnum,
     DuplicateInput,
@@ -64,16 +66,77 @@ pub enum ValidationCode {
     MissingAuthStep,
 }
 
+/// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
+/// Keeping a separate list here so the validator doesn't need a registry
+/// at construction time. If a recipe references a transform not in here,
+/// it's flagged as Unknown.
+pub const BUILTIN_TRANSFORMS: &[&str] = &[
+    "toString",
+    "lower",
+    "upper",
+    "trim",
+    "capitalize",
+    "titleCase",
+    "parseInt",
+    "parseFloat",
+    "parseBool",
+    "length",
+    "dedup",
+    "first",
+    "coalesce",
+    "default",
+    "parseSize",
+    "normalizeOzToGrams",
+    "sizeValue",
+    "sizeUnit",
+    "normalizeUnitToGrams",
+    "prevalenceNormalize",
+    "parseJaneWeight",
+    "janeWeightUnit",
+    "janeWeightKey",
+    "getField",
+    "parseHtml",
+    "parseJson",
+    "select",
+    "text",
+    "attr",
+    "html",
+    "innerHtml",
+];
+
 struct Validator<'a> {
     recipe: &'a Recipe,
     issues: Vec<ValidationIssue>,
+    /// Variable bindings in scope at the current walking position. Includes
+    /// step names (recipe-body-wide), for-loop variables (nested),
+    /// htmlPrime-extracted vars (from auth or step.extract.regex.groups).
+    known_vars: std::collections::HashSet<String>,
 }
 
 impl<'a> Validator<'a> {
     fn new(recipe: &'a Recipe) -> Self {
+        let mut known_vars = std::collections::HashSet::new();
+        collect_bindings(&recipe.body, &mut known_vars);
+        if let Some(b) = &recipe.browser {
+            for cap in &b.captures {
+                known_vars.insert(cap.iter_var.clone());
+                collect_bindings(&cap.body, &mut known_vars);
+            }
+            if let Some(doc) = &b.document_capture {
+                known_vars.insert(doc.iter_var.clone());
+                collect_bindings(&doc.body, &mut known_vars);
+            }
+        }
+        // Auth.htmlPrime captured vars.
+        if let Some(AuthStrategy::HtmlPrime { captured_vars, .. }) = &recipe.auth {
+            for v in captured_vars {
+                known_vars.insert(v.var_name.clone());
+            }
+        }
         Self {
             recipe,
             issues: Vec::new(),
+            known_vars,
         }
     }
 
@@ -196,16 +259,24 @@ impl<'a> Validator<'a> {
                     self.check_template(u);
                 }
             }
-            for cap in &b.captures {
+            for cap in &b.captures.clone() {
                 self.check_extraction(&cap.iter_path);
-                for s in &cap.body.clone() {
+                let inserted = self.known_vars.insert(cap.iter_var.clone());
+                for s in &cap.body {
                     self.check_statement(s);
                 }
+                if inserted {
+                    self.known_vars.remove(&cap.iter_var);
+                }
             }
-            if let Some(doc) = &b.document_capture {
+            if let Some(doc) = &b.document_capture.clone() {
                 self.check_extraction(&doc.iter_path);
-                for s in &doc.body.clone() {
+                let inserted = self.known_vars.insert(doc.iter_var.clone());
+                for s in &doc.body {
                     self.check_statement(s);
+                }
+                if inserted {
+                    self.known_vars.remove(&doc.iter_var);
                 }
             }
         }
@@ -224,11 +295,17 @@ impl<'a> Validator<'a> {
             }
             Statement::Emit(em) => self.check_emit(em),
             Statement::ForLoop {
-                collection, body, ..
+                variable,
+                collection,
+                body,
             } => {
                 self.check_extraction(collection);
+                let inserted = self.known_vars.insert(variable.clone());
                 for s in body {
                     self.check_statement(s);
+                }
+                if inserted {
+                    self.known_vars.remove(variable);
                 }
             }
         }
@@ -270,6 +347,7 @@ impl<'a> Validator<'a> {
             ExtractionExpr::Pipe(inner, calls) => {
                 self.check_extraction(inner);
                 for c in calls {
+                    self.check_transform_name(&c.name);
                     for a in &c.args {
                         self.check_extraction(a);
                     }
@@ -290,12 +368,22 @@ impl<'a> Validator<'a> {
                 self.check_emit(emission);
             }
             ExtractionExpr::Template(t) => self.check_template(t),
-            ExtractionExpr::Call { args, .. } => {
+            ExtractionExpr::Call { name, args } => {
+                self.check_transform_name(name);
                 for a in args {
                     self.check_extraction(a);
                 }
             }
             ExtractionExpr::Literal(_) => {}
+        }
+    }
+
+    fn check_transform_name(&mut self, name: &str) {
+        if !BUILTIN_TRANSFORMS.contains(&name) {
+            self.err(
+                ValidationCode::UnknownTransform,
+                format!("transform '{name}' is not registered"),
+            );
         }
     }
 
@@ -360,6 +448,14 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            PathExpr::Variable(name) => {
+                if !self.known_vars.contains(name) {
+                    self.err(
+                        ValidationCode::UnknownVariable,
+                        format!("$ {name} is an unbound variable"),
+                    );
+                }
+            }
             PathExpr::Field(base, field) | PathExpr::OptField(base, field) => {
                 // `$input.X` — check X is declared.
                 if let PathExpr::Input = base.as_ref() {
@@ -373,7 +469,7 @@ impl<'a> Validator<'a> {
                 self.check_path(base);
             }
             PathExpr::Index(base, _) | PathExpr::Wildcard(base) => self.check_path(base),
-            PathExpr::Current | PathExpr::Input | PathExpr::Variable(_) => {}
+            PathExpr::Current | PathExpr::Input => {}
         }
     }
 
@@ -462,6 +558,28 @@ impl<'a> Validator<'a> {
                 }
             }
             FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
+        }
+    }
+}
+
+/// Walk a body recursively and collect every name introduced into scope:
+/// step names, `extract.regex` group bindings, nested for-loop variables.
+fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<String>) {
+    for s in body {
+        match s {
+            Statement::Step(step) => {
+                out.insert(step.name.clone());
+                if let Some(ex) = &step.extract {
+                    for g in &ex.groups {
+                        out.insert(g.clone());
+                    }
+                }
+            }
+            Statement::ForLoop { variable, body, .. } => {
+                out.insert(variable.clone());
+                collect_bindings(body, out);
+            }
+            Statement::Emit(_) => {}
         }
     }
 }

@@ -272,17 +272,28 @@ impl Parser {
             }
             _ => return Err(self.unexpected("recipe reference")),
         };
-        // Parse `author/slug` or `slug` or `author/slug@v3`. Simple v1 — we
-        // accept any non-whitespace and split.
-        let (refname, version) = if let Some((before, after)) = raw.split_once('@') {
+        // Parse `author/slug` or `slug` or `author/slug@v3` or
+        // `author/slug v3` (space-separated version syntax).
+        let (refname, mut version) = if let Some((before, after)) = raw.split_once('@') {
             let v: u32 = after.trim_start_matches('v').parse().unwrap_or(0);
             (before.to_string(), Some(v))
         } else {
             (raw, None)
         };
+        // Optional `v<N>` ident immediately following the ref.
+        if version.is_none() {
+            if let Some(Token::Ident(s)) = self.peek().cloned() {
+                if let Some(stripped) = s.strip_prefix('v') {
+                    if let Ok(n) = stripped.parse::<u32>() {
+                        self.bump();
+                        version = Some(n);
+                    }
+                }
+            }
+        }
         let (author, slug) = match refname.split_once('/') {
             Some((a, b)) => (a.to_string(), b.to_string()),
-            None => ("forage".to_string(), refname),
+            None => (String::new(), refname),
         };
         Ok(HubRecipeRef {
             author,
@@ -655,7 +666,7 @@ impl Parser {
 
     fn parse_step(&mut self) -> Result<HTTPStep, ParseError> {
         self.expect_keyword("step")?;
-        let name = self.expect_ident()?;
+        let name = self.expect_field_name()?;
         self.expect_punct(&Token::LBrace)?;
 
         let mut method: Option<String> = None;
@@ -1544,7 +1555,7 @@ impl Parser {
         let url_pattern = self.expect_string()?;
 
         self.expect_keyword("for")?;
-        let _var = match self.peek().cloned() {
+        let iter_var = match self.peek().cloned() {
             Some(Token::DollarVar(s)) => {
                 self.bump();
                 s
@@ -1561,6 +1572,7 @@ impl Parser {
         self.expect_punct(&Token::RBrace)?;
         Ok(CaptureRule {
             url_pattern,
+            iter_var,
             iter_path,
             body,
         })
@@ -1568,7 +1580,7 @@ impl Parser {
 
     fn parse_capture_document_body(&mut self) -> Result<DocumentCaptureRule, ParseError> {
         self.expect_keyword("for")?;
-        let _var = match self.peek().cloned() {
+        let iter_var = match self.peek().cloned() {
             Some(Token::DollarVar(s)) => {
                 self.bump();
                 s
@@ -1583,7 +1595,11 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
         self.expect_punct(&Token::RBrace)?;
-        Ok(DocumentCaptureRule { iter_path, body })
+        Ok(DocumentCaptureRule {
+            iter_var,
+            iter_path,
+            body,
+        })
     }
 
     fn parse_interactive(&mut self) -> Result<InteractiveConfig, ParseError> {
