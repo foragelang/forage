@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Notify;
+use ts_rs::TS;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
@@ -26,7 +27,8 @@ pub const DEBUG_PAUSED_EVENT: &str = "forage:debug-paused";
 /// What the engine paused on. Wraps the two `forage-http` pause payloads
 /// in a tagged union so the frontend can render either shape with one
 /// event listener.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PausePayload {
     Step(StepPause),
@@ -37,7 +39,8 @@ use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::library::{self, RecipeEntry};
 use crate::state::StudioState;
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct ValidationOutcome {
     pub ok: bool,
     pub diagnostics: Vec<Diagnostic>,
@@ -47,12 +50,14 @@ pub struct ValidationOutcome {
 /// enough for Studio to anchor breakpoint glyphs and the "reveal paused
 /// step" jump without re-implementing a parser in TypeScript. Extend
 /// (types, emits, for-loops) as the UI needs them.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, TS)]
+#[ts(export)]
 pub struct RecipeOutline {
     pub steps: Vec<StepLocation>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct StepLocation {
     pub name: String,
     /// 0-based line of the step declaration's start.
@@ -65,7 +70,8 @@ pub struct StepLocation {
 /// One validation issue with a precise source location. Maps onto
 /// Monaco's `IMarkerData` shape on the frontend so squigglies land
 /// under the offending token instead of at line 1.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct Diagnostic {
     pub severity: &'static str,
     pub code: String,
@@ -155,7 +161,8 @@ pub fn show_recipe_context_menu(
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct RunOutcome {
     pub ok: bool,
     pub snapshot: Option<Snapshot>,
@@ -552,7 +559,8 @@ pub fn auth_whoami(hub_url: String) -> Result<Option<String>, String> {
     Ok(tokens.map(|t| t.login))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct DeviceStartOut {
     pub device_code: String,
     pub user_code: String,
@@ -575,7 +583,8 @@ pub async fn auth_start_device_flow(hub_url: String) -> Result<DeviceStartOut, S
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct PollOutcome {
     pub status: String,
     pub login: Option<String>,
@@ -625,7 +634,8 @@ pub fn auth_logout(hub_url: String) -> Result<(), String> {
 /// completion, and any future linting all draw from the same canonical
 /// lists in `forage-core`. No more hand-maintained TS arrays that
 /// silently drift when the language gains a keyword.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct LanguageDictionary {
     pub keywords: Vec<&'static str>,
     pub type_keywords: Vec<&'static str>,

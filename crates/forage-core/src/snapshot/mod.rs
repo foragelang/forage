@@ -6,20 +6,30 @@
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::ast::{ComparisonOp, Expectation, ExpectationKind, JSONValue};
 
 /// One emitted record — a type name + the bound fields as plain JSON.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// On the TS side it's exported as `RecipeRecord` to avoid colliding
+/// with the built-in `Record<K, V>` utility type — without the rename,
+/// the generated file would self-reference and TypeScript would
+/// resolve `Record<string, unknown>` to the local declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, rename = "RecipeRecord")]
 pub struct Record {
     #[serde(rename = "typeName")]
+    #[ts(rename = "typeName")]
     pub type_name: String,
+    #[ts(type = "Record<string, unknown>")]
     pub fields: IndexMap<String, JSONValue>,
 }
 
 /// Snapshot of a run: every emitted record, in emission order, plus
 /// the diagnostic envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Snapshot {
     pub records: Vec<Record>,
     #[serde(default)]
@@ -90,7 +100,8 @@ impl Default for Snapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
+#[ts(export)]
 pub struct DiagnosticReport {
     /// How the run terminated. `"settled"` / `"completed"` is the happy
     /// path; anything else is a clue.

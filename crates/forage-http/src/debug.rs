@@ -12,12 +12,14 @@
 use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::Serialize;
+use ts_rs::TS;
 
 use forage_core::{EvalValue, Scope};
 
 /// What the engine does after a debug pause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum ResumeAction {
     /// Run uninterrupted to the next breakpoint or end-of-recipe. Equivalent
     /// to no debugger from the engine's perspective.
@@ -33,7 +35,8 @@ pub enum ResumeAction {
 /// Secrets never leave the host process: we send the names only so the UI
 /// can list them without leaking values into the renderer or any later
 /// devtools capture.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct DebugScope {
     /// Named bindings, outer-most frame first, inner frames last (same
     /// order they were pushed). Inner-frame bindings shadow outer ones at
@@ -41,17 +44,22 @@ pub struct DebugScope {
     /// it wants to.
     pub bindings: Vec<DebugFrame>,
     /// Recipe inputs.
+    #[ts(type = "Record<string, unknown>")]
     pub inputs: IndexMap<String, serde_json::Value>,
     /// Secret *names* declared by the recipe. Values are never serialized.
     pub secrets: Vec<String>,
     /// Bare `$` current value, if any.
+    #[ts(type = "unknown | null")]
     pub current: Option<serde_json::Value>,
     /// Per-type emit counts so far (cumulative).
+    #[ts(type = "Record<string, number>")]
     pub emit_counts: IndexMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct DebugFrame {
+    #[ts(type = "Record<string, unknown>")]
     pub bindings: IndexMap<String, serde_json::Value>,
 }
 
@@ -95,7 +103,8 @@ fn eval_to_json(v: &EvalValue) -> serde_json::Value {
 }
 
 /// Payload the engine sends to the debugger at a step pause.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct StepPause {
     /// Step name (`recipe.body[i].name`).
     pub step: String,
@@ -107,7 +116,8 @@ pub struct StepPause {
 /// Payload the engine sends to the debugger at a `for`-loop iteration
 /// boundary. Fired immediately after `$<variable>` is bound to the
 /// current item but before the loop body executes.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct IterationPause {
     /// Loop variable name from `for $<variable> in …`.
     pub variable: String,

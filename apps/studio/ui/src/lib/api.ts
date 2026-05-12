@@ -1,94 +1,58 @@
 //! Typed wrappers around Tauri commands.
+//!
+//! Cross-wire payload types are *generated* from Rust by ts-rs (see the
+//! sibling `bindings/` directory). Do not redefine them here — extend
+//! the Rust definition and run `cargo test` to refresh the .ts file.
+//! This file only owns the `invoke()` shims, command names, event
+//! constants, and TS-only conveniences.
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type RecipeEntry = {
-    slug: string;
-    path: string;
-    has_fixtures: boolean;
+import type { DebugFrame } from "../bindings/DebugFrame";
+import type { DebugScope } from "../bindings/DebugScope";
+import type { Diagnostic } from "../bindings/Diagnostic";
+import type { DiagnosticReport } from "../bindings/DiagnosticReport";
+import type { IterationPause } from "../bindings/IterationPause";
+import type { LanguageDictionary } from "../bindings/LanguageDictionary";
+import type { PausePayload } from "../bindings/PausePayload";
+import type { RecipeRecord } from "../bindings/RecipeRecord";
+import type { RecipeEntry } from "../bindings/RecipeEntry";
+import type { RecipeOutline } from "../bindings/RecipeOutline";
+import type { ResumeAction } from "../bindings/ResumeAction";
+import type { RunEvent } from "../bindings/RunEvent";
+import type { RunOutcome } from "../bindings/RunOutcome";
+import type { Snapshot } from "../bindings/Snapshot";
+import type { StepLocation } from "../bindings/StepLocation";
+import type { StepPause } from "../bindings/StepPause";
+import type { ValidationOutcome } from "../bindings/ValidationOutcome";
+
+// Re-export for the rest of the UI. Importing from "lib/api" rather than
+// directly from "bindings/…" keeps the call sites stable if bindings move.
+export type {
+    DebugFrame,
+    DebugScope,
+    Diagnostic,
+    DiagnosticReport,
+    IterationPause,
+    LanguageDictionary,
+    PausePayload,
+    RecipeEntry,
+    RecipeOutline,
+    RecipeRecord,
+    ResumeAction,
+    RunEvent,
+    RunOutcome,
+    Snapshot,
+    StepLocation,
+    StepPause,
+    ValidationOutcome,
 };
 
-export type ValidationOutcome = {
-    ok: boolean;
-    diagnostics: Diagnostic[];
-};
-
-export type Diagnostic = {
-    severity: "error" | "warning";
-    code: string;
-    message: string;
-    /** 0-based line of the span start. */
-    start_line: number;
-    /** 0-based column of the span start. */
-    start_col: number;
-    /** 0-based line of the span end (exclusive). */
-    end_line: number;
-    /** 0-based column of the span end (exclusive). */
-    end_col: number;
-};
-
-/// Parser-emitted structural outline of a recipe. Used by Studio for
-/// breakpoint glyph anchoring and reveal-on-pause without re-parsing
-/// in TS.
-export type RecipeOutline = {
-    steps: StepLocation[];
-};
-
-export type StepLocation = {
-    name: string;
-    start_line: number;
-    start_col: number;
-    end_line: number;
-    end_col: number;
-};
-
-/// Snapshot of the language's reserved word + transform inventory,
-/// pulled from forage-core at app startup so Monaco syntax + completion
-/// can't drift from the parser / validator.
-export type LanguageDictionary = {
-    keywords: string[];
-    type_keywords: string[];
-    transforms: string[];
-};
-
-export type Snapshot = {
-    records: RecipeRecord[];
-    diagnostic: DiagnosticReport;
-};
-
-export type RecipeRecord = {
-    typeName: string;
-    fields: Record<string, unknown>;
-};
-
-export type DiagnosticReport = {
-    stall_reason?: string | null;
-    unmet_expectations?: string[];
-    unfired_capture_rules?: string[];
-    unmatched_captures?: string[];
-    unhandled_affordances?: string[];
-};
-
-export type RunOutcome = {
-    ok: boolean;
-    snapshot?: Snapshot | null;
-    error?: string | null;
-};
-
-export type RunEvent =
-    | { kind: "run_started"; recipe: string; replay: boolean }
-    | { kind: "auth"; flavor: string; status: string }
-    | { kind: "request_sent"; step: string; method: string; url: string; page: number }
-    | {
-          kind: "response_received";
-          step: string;
-          status: number;
-          duration_ms: number;
-          bytes: number;
-      }
-    | { kind: "emitted"; type_name: string; total: number }
-    | { kind: "run_succeeded"; records: number; duration_ms: number }
-    | { kind: "run_failed"; error: string; duration_ms: number };
+// `DebugAction` is a Studio-only TS alias for the resume verbs sent
+// back to the engine. The Rust side is `ResumeAction` (a Rust enum); on
+// the wire we serialize one of three strings, so the frontend works
+// with the string union directly rather than mirroring the enum shape.
+export type DebugAction = "continue" | "step_over" | "stop";
 
 export type DeviceStart = {
     device_code: string;
@@ -108,43 +72,9 @@ const HUB = "https://api.foragelang.com";
 /// Tauri event name the engine emits run progress through. Matches the
 /// Rust-side `commands::RUN_EVENT` constant.
 export const RUN_EVENT = "forage:run-event";
-/// Tauri event name the engine emits when paused at a step in debug mode.
-/// Matches the Rust-side `commands::DEBUG_PAUSED_EVENT` constant.
+/// Tauri event name the engine emits when paused — at a step boundary
+/// or inside a for-loop iteration. Matches `commands::DEBUG_PAUSED_EVENT`.
 export const DEBUG_PAUSED_EVENT = "forage:debug-paused";
-
-export type DebugFrame = {
-    bindings: Record<string, unknown>;
-};
-
-export type DebugScope = {
-    bindings: DebugFrame[];
-    inputs: Record<string, unknown>;
-    secrets: string[];
-    current: unknown | null;
-    emit_counts: Record<string, number>;
-};
-
-export type StepPause = {
-    step: string;
-    step_index: number;
-    scope: DebugScope;
-};
-
-export type IterationPause = {
-    variable: string;
-    iteration: number;
-    total: number;
-    scope: DebugScope;
-};
-
-/// Tagged union emitted on `forage:debug-paused`. The engine pauses at
-/// step boundaries (`kind: "step"`) and optionally inside `for`-loop
-/// iterations (`kind: "iteration"`); the frontend renders both.
-export type PausePayload =
-    | ({ kind: "step" } & StepPause)
-    | ({ kind: "iteration" } & IterationPause);
-
-export type DebugAction = "continue" | "step_over" | "stop";
 
 export const api = {
     version: () => invoke<string>("studio_version"),

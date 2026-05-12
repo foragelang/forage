@@ -9,9 +9,11 @@
 
 use serde::Serialize;
 use std::sync::Arc;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
 pub enum RunEvent {
     /// Run kicked off. Sent once at the start.
     RunStarted { recipe: String, replay: bool },
@@ -29,6 +31,7 @@ pub enum RunEvent {
     ResponseReceived {
         step: String,
         status: u16,
+        #[ts(type = "number")]
         duration_ms: u64,
         bytes: usize,
     },
@@ -37,9 +40,17 @@ pub enum RunEvent {
     Emitted { type_name: String, total: usize },
     /// Run completed successfully. `records` is the total record count;
     /// `duration_ms` is the wall-clock duration of the run.
-    RunSucceeded { records: usize, duration_ms: u64 },
+    RunSucceeded {
+        records: usize,
+        #[ts(type = "number")]
+        duration_ms: u64,
+    },
     /// Run failed. The error message is the same one returned by `run()`.
-    RunFailed { error: String, duration_ms: u64 },
+    RunFailed {
+        error: String,
+        #[ts(type = "number")]
+        duration_ms: u64,
+    },
 }
 
 /// Anything the engine can hand events to. Studio wraps a Tauri Channel;

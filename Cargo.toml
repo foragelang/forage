@@ -49,6 +49,10 @@ ariadne      = "0.5"
 # Serialization.
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
+# Type bindings for the Tauri ↔ TS boundary. Derive `#[ts(export, …)]`
+# on every cross-wire type; `cargo test` regenerates the .ts files so
+# the manual-sync TS unions are gone for good.
+ts-rs        = { version = "10", features = ["serde-compat", "no-serde-warnings", "serde-json-impl", "indexmap-impl"] }
 
 # Parser + language tooling.
 chumsky      = "0.10"

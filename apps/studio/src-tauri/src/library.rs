@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use ts_rs::TS;
 
 /// On-disk location of the user's recipe library.
 ///
@@ -27,9 +28,11 @@ pub fn library_root() -> PathBuf {
     PathBuf::from(".forage-recipes")
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, TS)]
+#[ts(export)]
 pub struct RecipeEntry {
     pub slug: String,
+    #[ts(type = "string")]
     pub path: PathBuf,
     pub has_fixtures: bool,
 }
