@@ -32,6 +32,25 @@ pub struct ValidationOutcome {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Structural outline of a recipe — currently just step locations,
+/// enough for Studio to anchor breakpoint glyphs and the "reveal paused
+/// step" jump without re-implementing a parser in TypeScript. Extend
+/// (types, emits, for-loops) as the UI needs them.
+#[derive(Serialize, Default)]
+pub struct RecipeOutline {
+    pub steps: Vec<StepLocation>,
+}
+
+#[derive(Serialize)]
+pub struct StepLocation {
+    pub name: String,
+    /// 0-based line of the step declaration's start.
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
 /// One validation issue with a precise source location. Maps onto
 /// Monaco's `IMarkerData` shape on the frontend so squigglies land
 /// under the offending token instead of at line 1.
@@ -502,6 +521,49 @@ pub async fn auth_poll_device(hub_url: String, device_code: String) -> Result<Po
 pub fn auth_logout(hub_url: String) -> Result<(), String> {
     let host = host_of(&hub_url);
     AuthStore::new().delete(&host).map_err(|e| e.to_string())
+}
+
+/// Parser-driven outline of the *current source buffer* (not the
+/// last-saved file on disk). Used by Studio to anchor breakpoint glyphs
+/// and reveal the paused step without a hand-rolled TS regex. Returns
+/// an empty outline on parse failure — the editor falls back to "no
+/// breakpoints visible until the source parses" rather than guessing
+/// at half-baked syntax.
+#[tauri::command]
+pub fn recipe_outline(source: String) -> RecipeOutline {
+    let Ok(recipe) = parse(&source) else {
+        return RecipeOutline::default();
+    };
+    let line_map = LineMap::new(&source);
+    let mut steps = Vec::new();
+    collect_step_locations(&recipe.body, &line_map, &mut steps);
+    RecipeOutline { steps }
+}
+
+fn collect_step_locations(
+    body: &[forage_core::ast::Statement],
+    line_map: &LineMap,
+    out: &mut Vec<StepLocation>,
+) {
+    use forage_core::ast::Statement;
+    for s in body {
+        match s {
+            Statement::Step(step) => {
+                let r = line_map.range(step.span.clone());
+                out.push(StepLocation {
+                    name: step.name.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
+            }
+            Statement::ForLoop { body, .. } => {
+                collect_step_locations(body, line_map, out);
+            }
+            Statement::Emit(_) => {}
+        }
+    }
 }
 
 fn validate_source(source: &str) -> ValidationOutcome {

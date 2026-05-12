@@ -1,27 +1,35 @@
 import Editor, { type Monaco } from "@monaco-editor/react";
 import type * as MonacoNs from "monaco-editor";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { api, type StepLocation } from "../lib/api";
 import { FORAGE_LANG_ID, registerForageLanguage } from "../lib/monaco-forage";
 import { useStudio } from "../lib/store";
 import { DebuggerPanel } from "../components/DebuggerPanel";
 
 type Editor = MonacoNs.editor.IStandaloneCodeEditor;
 
-/// Parse the recipe source for `step <name> { … }` declarations and return
-/// `name → 1-based line number`. The full parser lives in Rust — for gutter
-/// markers we don't need full AST fidelity; we only need to map step names
-/// to lines, which the surface syntax pins down unambiguously: `step` is a
-/// keyword and the immediately following identifier is the step name.
-function stepLines(source: string): Map<string, number> {
-    const out = new Map<string, number>();
-    const lines = source.split("\n");
-    const re = /^\s*step\s+([A-Za-z_][A-Za-z_0-9]*)/;
-    for (let i = 0; i < lines.length; i++) {
-        const m = lines[i].match(re);
-        if (m) out.set(m[1], i + 1);
-    }
-    return out;
+/// Subscribe to the parser-driven outline of the current source. Debounced
+/// so we don't fire a Tauri command on every keystroke. The backend
+/// returns an empty outline when the source doesn't parse, which is
+/// fine — the gutter just shows nothing until the syntax is valid.
+function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
+    const [steps, setSteps] = useState<StepLocation[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        const id = window.setTimeout(() => {
+            api.recipeOutline(source)
+                .then((o) => {
+                    if (!cancelled) setSteps(o.steps);
+                })
+                .catch((e) => console.warn("recipe_outline failed", e));
+        }, delayMs);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(id);
+        };
+    }, [source, delayMs]);
+    return steps;
 }
 
 export function SourceTab() {
@@ -37,14 +45,22 @@ export function SourceTab() {
     const editorRef = useRef<Editor | null>(null);
     const decorationsRef = useRef<string[]>([]);
 
+    const stepLocations = useRecipeOutline(source);
+
+    // Map for the gutter click handler: clicked line → step name (if any).
+    // Monaco line numbers are 1-based; the outline lines are 0-based.
     const stepByLine = useMemo(() => {
-        // Reverse map for the gutter click handler — given a clicked line,
-        // tell me which step name it belongs to (if any).
-        const lines = stepLines(source);
-        const byLine = new Map<number, string>();
-        for (const [name, line] of lines) byLine.set(line, name);
-        return byLine;
-    }, [source]);
+        const m = new Map<number, string>();
+        for (const s of stepLocations) m.set(s.start_line + 1, s.name);
+        return m;
+    }, [stepLocations]);
+
+    // Step name → 1-based Monaco line (for decorations + reveal).
+    const stepNameToLine = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const s of stepLocations) m.set(s.name, s.start_line + 1);
+        return m;
+    }, [stepLocations]);
 
     // Push gutter decorations + paused-line highlight whenever any input
     // changes. deltaDecorations replaces the previous set in one shot so
@@ -53,9 +69,8 @@ export function SourceTab() {
         const ed = editorRef.current;
         const monaco = monacoRef.current;
         if (!ed || !monaco) return;
-        const lines = stepLines(source);
         const decos: MonacoNs.editor.IModelDeltaDecoration[] = [];
-        for (const [name, line] of lines) {
+        for (const [name, line] of stepNameToLine) {
             if (breakpoints.has(name)) {
                 decos.push({
                     range: new monaco.Range(line, 1, line, 1),
@@ -68,7 +83,7 @@ export function SourceTab() {
             }
         }
         if (paused) {
-            const line = lines.get(paused.step);
+            const line = stepNameToLine.get(paused.step);
             if (line) {
                 decos.push({
                     range: new monaco.Range(line, 1, line, 1),
@@ -84,7 +99,7 @@ export function SourceTab() {
             decorationsRef.current,
             decos,
         );
-    }, [source, breakpoints, paused]);
+    }, [stepNameToLine, breakpoints, paused]);
 
     // Reveal the paused line so the user doesn't have to scroll to find
     // where the engine stopped. Only fire on the rising edge of `paused`
@@ -93,8 +108,7 @@ export function SourceTab() {
     useEffect(() => {
         const ed = editorRef.current;
         if (!ed || !pausedStep) return;
-        const lines = stepLines(source);
-        const line = lines.get(pausedStep);
+        const line = stepNameToLine.get(pausedStep);
         if (line) {
             ed.revealLineInCenterIfOutsideViewport(line);
         }

@@ -27,6 +27,21 @@ export type Diagnostic = {
     end_col: number;
 };
 
+/// Parser-emitted structural outline of a recipe. Used by Studio for
+/// breakpoint glyph anchoring and reveal-on-pause without re-parsing
+/// in TS.
+export type RecipeOutline = {
+    steps: StepLocation[];
+};
+
+export type StepLocation = {
+    name: string;
+    start_line: number;
+    start_col: number;
+    end_line: number;
+    end_col: number;
+};
+
 export type Snapshot = {
     records: RecipeRecord[];
     diagnostic: DiagnosticReport;
@@ -123,6 +138,8 @@ export const api = {
         invoke<void>("debug_resume", { action }),
     setBreakpoints: (steps: string[]) =>
         invoke<void>("set_breakpoints", { steps }),
+    recipeOutline: (source: string) =>
+        invoke<RecipeOutline>("recipe_outline", { source }),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>
