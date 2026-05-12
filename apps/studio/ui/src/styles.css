@@ -1,4 +1,9 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
 
 @layer base {
     html,
@@ -6,32 +11,186 @@
     #root {
         height: 100%;
         margin: 0;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-            Roboto, sans-serif;
+    }
+    html {
+        @apply font-sans;
+    }
+    body {
+        @apply bg-background text-foreground antialiased;
+        user-select: none;
+        -webkit-user-select: none;
+        cursor: default;
+    }
+    * {
+        @apply border-border outline-ring/50;
+    }
+    input,
+    textarea,
+    [contenteditable="true"] {
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
     }
     code,
-    pre {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    pre,
+    kbd {
+        @apply font-mono;
     }
+}
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --success: oklch(0.508 0.118 165.612);
+    --success-foreground: oklch(0.985 0 0);
+    --warning: oklch(0.769 0.188 70.08);
+    --warning-foreground: oklch(0.205 0 0);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --success: oklch(0.696 0.17 162.48);
+    --success-foreground: oklch(0.145 0 0);
+    --warning: oklch(0.828 0.189 84.429);
+    --warning-foreground: oklch(0.145 0 0);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
 }
 
 /*
  * Monaco gutter decorations for the step debugger. `.forage-bp-glyph` is the
- * red dot on lines with a breakpoint set; `.forage-paused-glyph` is the
- * yellow arrow on whichever step the engine is currently paused before;
- * `.forage-paused-line` tints the whole line so it's visible without
- * scrolling the gutter into view.
+ * dot on lines with a breakpoint set (destructive token); `.forage-paused-glyph`
+ * is the arrow on whichever step the engine is currently paused before
+ * (warning token); `.forage-paused-line` tints the whole line so it's
+ * visible without scrolling the gutter into view.
  */
 .forage-bp-glyph {
-    background: radial-gradient(circle, #ef4444 4px, transparent 4px);
+    background: radial-gradient(circle, var(--destructive) 4px, transparent 4px);
     cursor: pointer;
 }
 .forage-bp-glyph:hover {
-    background: radial-gradient(circle, #f87171 4px, transparent 4px);
+    background: radial-gradient(
+        circle,
+        color-mix(in oklab, var(--destructive) 70%, white) 4px,
+        transparent 4px
+    );
 }
 .forage-paused-glyph {
-    background: linear-gradient(45deg, transparent 40%, #f59e0b 40%, #f59e0b 60%, transparent 60%);
+    background: linear-gradient(
+        45deg,
+        transparent 40%,
+        var(--warning) 40%,
+        var(--warning) 60%,
+        transparent 60%
+    );
 }
 .forage-paused-line {
-    background-color: rgba(245, 158, 11, 0.12);
+    background-color: color-mix(in oklab, var(--warning) 12%, transparent);
 }

@@ -3,16 +3,31 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { Database, FileText, Plus } from "lucide-react";
 
-import { api } from "../lib/api";
-import { useStudio } from "../lib/store";
+import { Button } from "@/components/ui/button";
+import {
+    Sidebar as SidebarRoot,
+    SidebarContent,
+    SidebarFooter,
+    SidebarGroup,
+    SidebarHeader,
+    SidebarMenu,
+    SidebarMenuBadge,
+    SidebarMenuButton,
+    SidebarMenuItem,
+    SidebarMenuSkeleton,
+} from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { api } from "@/lib/api";
+import { useStudio } from "@/lib/store";
 
 // Module-level listener registration. React StrictMode + Vite HMR
-// double-mount the Sidebar component, and `tauri::listen` registers its
-// callback synchronously via transformCallback (before the unlisten
-// promise resolves), so the cancelled-flag pattern can't deregister the
+// double-mount the Sidebar, and `tauri::listen` registers its callback
+// synchronously via transformCallback (before the unlisten promise
+// resolves), so the cancelled-flag pattern can't deregister the
 // orphaned one in time. Result: each engine emit fires the React
-// handler twice. We side-step that by registering the listen() exactly
+// handler twice. We side-step that by registering listen() exactly
 // once per module load, then delegating to the latest handler via a
 // module-scope slot the component updates on every render.
 let pendingHandler: ((slug: string) => void) | null = null;
@@ -92,50 +107,100 @@ export function Sidebar() {
         };
     }, [qc]);
 
+    const items = recipes.data ?? [];
+
     return (
-        <aside className="border-r border-zinc-800 flex flex-col bg-zinc-950">
-            <header className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
-                <span className="font-semibold tracking-tight">Forage Studio</span>
-                <button
-                    onClick={newRecipe}
-                    className="px-2 py-1 text-xs bg-emerald-700 hover:bg-emerald-600 rounded font-medium"
-                >
-                    + New
-                </button>
-            </header>
-            <ul className="flex-1 overflow-y-auto">
-                {(recipes.data ?? []).map((r) => (
-                    <li
-                        key={r.slug}
-                        onClick={() => setActive(r.slug)}
-                        onContextMenu={(e) => {
-                            e.preventDefault();
-                            invoke("show_recipe_context_menu", {
-                                slug: r.slug,
-                                x: e.clientX,
-                                y: e.clientY,
-                            }).catch((err) => console.warn("context menu failed", err));
-                        }}
-                        className={`px-4 py-2 cursor-pointer hover:bg-zinc-900 border-b border-zinc-900 ${
-                            activeSlug === r.slug ? "bg-zinc-800" : ""
-                        }`}
-                    >
-                        <div className="text-sm font-medium">{r.slug}</div>
-                        {r.has_fixtures && (
-                            <div className="text-xs text-zinc-500 mt-0.5">has fixtures</div>
+        <SidebarRoot collapsible="icon">
+            <SidebarHeader className="border-b">
+                <div className="flex items-center justify-between gap-2 px-1">
+                    <span className="font-semibold tracking-tight text-sidebar-foreground group-data-[collapsible=icon]:hidden">
+                        Forage Studio
+                    </span>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                onClick={newRecipe}
+                                size="icon-sm"
+                                variant="ghost"
+                                aria-label="New recipe"
+                            >
+                                <Plus />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">New recipe (⌘N)</TooltipContent>
+                    </Tooltip>
+                </div>
+            </SidebarHeader>
+            <SidebarContent>
+                <SidebarGroup className="p-0">
+                    <SidebarMenu className="gap-0">
+                        {recipes.isLoading && (
+                            <>
+                                <SidebarMenuItem>
+                                    <SidebarMenuSkeleton />
+                                </SidebarMenuItem>
+                                <SidebarMenuItem>
+                                    <SidebarMenuSkeleton />
+                                </SidebarMenuItem>
+                                <SidebarMenuItem>
+                                    <SidebarMenuSkeleton />
+                                </SidebarMenuItem>
+                            </>
                         )}
-                    </li>
-                ))}
-                {(recipes.data ?? []).length === 0 && (
-                    <li className="px-4 py-6 text-xs text-zinc-500">
-                        No recipes yet. Click <span className="font-medium">+ New</span> to
-                        scaffold one under <code>~/Library/Forage/Recipes/</code>.
-                    </li>
-                )}
-            </ul>
-            <footer className="border-t border-zinc-800 px-4 py-2 text-xs text-zinc-500">
-                {recipes.data?.length ?? 0} recipes
-            </footer>
-        </aside>
+                        {!recipes.isLoading &&
+                            items.map((r) => (
+                                <SidebarMenuItem
+                                    key={r.slug}
+                                    onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        invoke("show_recipe_context_menu", {
+                                            slug: r.slug,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                        }).catch((err) =>
+                                            console.warn("context menu failed", err),
+                                        );
+                                    }}
+                                >
+                                    <SidebarMenuButton
+                                        isActive={activeSlug === r.slug}
+                                        onClick={() => setActive(r.slug)}
+                                        tooltip={r.slug}
+                                        className="rounded-none border-b border-sidebar-border/40"
+                                    >
+                                        <FileText className="text-muted-foreground" />
+                                        <span className="font-mono text-xs truncate">
+                                            {r.slug}
+                                        </span>
+                                    </SidebarMenuButton>
+                                    {r.has_fixtures && (
+                                        <SidebarMenuBadge className="top-1/2 -translate-y-1/2 text-muted-foreground">
+                                            <Database className="size-3" />
+                                        </SidebarMenuBadge>
+                                    )}
+                                </SidebarMenuItem>
+                            ))}
+                        {!recipes.isLoading && items.length === 0 && (
+                            <div className="px-4 py-6 text-xs text-muted-foreground space-y-2 group-data-[collapsible=icon]:hidden">
+                                <p>No recipes yet.</p>
+                                <p>
+                                    Click <span className="font-medium">+</span> to scaffold
+                                    one under{" "}
+                                    <code className="text-foreground">
+                                        ~/Library/Forage/Recipes/
+                                    </code>
+                                    .
+                                </p>
+                            </div>
+                        )}
+                    </SidebarMenu>
+                </SidebarGroup>
+            </SidebarContent>
+            <SidebarFooter className="border-t">
+                <div className="px-2 py-1 text-xs text-muted-foreground tabular-nums group-data-[collapsible=icon]:hidden">
+                    {items.length} {items.length === 1 ? "recipe" : "recipes"}
+                </div>
+            </SidebarFooter>
+        </SidebarRoot>
     );
 }

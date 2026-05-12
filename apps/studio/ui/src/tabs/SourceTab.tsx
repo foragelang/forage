@@ -1,11 +1,16 @@
 import Editor, { type Monaco } from "@monaco-editor/react";
 import type * as MonacoNs from "monaco-editor";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, CircleAlert, CircleX } from "lucide-react";
 
-import { api, type StepLocation } from "../lib/api";
-import { FORAGE_LANG_ID, registerForageLanguage } from "../lib/monaco-forage";
-import { useStudio } from "../lib/store";
-import { DebuggerPanel } from "../components/DebuggerPanel";
+import { DebuggerPanel } from "@/components/DebuggerPanel";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { api, type Diagnostic, type StepLocation } from "@/lib/api";
+import { FORAGE_LANG_ID, registerForageLanguage } from "@/lib/monaco-forage";
+import { useStudio } from "@/lib/store";
+
+type Editor = MonacoNs.editor.IStandaloneCodeEditor;
 
 /// Validate the source on every change, debounced. Result lands in the
 /// Studio store via `setValidation` so SourceTab's marker effect picks
@@ -28,8 +33,6 @@ function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
         };
     }, [source, slug, delayMs, setValidation]);
 }
-
-type Editor = MonacoNs.editor.IStandaloneCodeEditor;
 
 /// Subscribe to the parser-driven outline of the current source. Debounced
 /// so we don't fire a Tauri command on every keystroke. The backend
@@ -194,10 +197,7 @@ export function SourceTab() {
                         // "breakpoint on emit" yet.
                         editor.onMouseDown((e) => {
                             const T = monaco.editor.MouseTargetType;
-                            if (
-                                e.target.type !==
-                                T.GUTTER_GLYPH_MARGIN
-                            ) {
+                            if (e.target.type !== T.GUTTER_GLYPH_MARGIN) {
                                 return;
                             }
                             const line = e.target.position?.lineNumber;
@@ -218,37 +218,50 @@ export function SourceTab() {
                     }}
                 />
             </div>
-            {paused && <DebuggerPanel />}
-            {validation && !paused && (
-                <ValidationStrip diagnostics={validation.diagnostics} />
+            {paused ? (
+                <DebuggerPanel />
+            ) : (
+                validation && <ValidationBar diagnostics={validation.diagnostics} />
             )}
         </div>
     );
 }
 
-function ValidationStrip({ diagnostics }: { diagnostics: import("../lib/api").Diagnostic[] }) {
+function ValidationBar({ diagnostics }: { diagnostics: Diagnostic[] }) {
     if (diagnostics.length === 0) {
         return (
-            <div className="border-t border-zinc-800 px-4 py-2 text-xs">
-                <span className="text-emerald-400">✓ validates</span>
-            </div>
+            <Alert
+                variant="success"
+                className="rounded-none border-x-0 border-b-0 px-4 py-2"
+            >
+                <CheckCircle2 />
+                <AlertDescription className="text-success">
+                    Validates cleanly.
+                </AlertDescription>
+            </Alert>
         );
     }
     return (
-        <div className="border-t border-zinc-800 px-4 py-2 max-h-32 overflow-y-auto text-xs space-y-0.5">
-            {diagnostics.map((d, i) => {
-                const tone = d.severity === "error" ? "text-red-400" : "text-amber-400";
-                const tag = d.severity === "error" ? "text-red-300" : "text-amber-300";
-                return (
-                    <div key={i} className={tone}>
-                        <span className="text-zinc-500 font-mono">
-                            {d.start_line + 1}:{d.start_col + 1}
-                        </span>{" "}
-                        <span className={`${tag} font-medium`}>{d.severity}:</span>{" "}
-                        {d.message}
-                    </div>
-                );
-            })}
-        </div>
+        <ScrollArea className="max-h-32 border-t shrink-0">
+            <div className="px-4 py-2 space-y-1 text-xs select-text">
+                {diagnostics.map((d, i) => {
+                    const isError = d.severity === "error";
+                    const tone = isError ? "text-destructive" : "text-warning";
+                    const Icon = isError ? CircleX : CircleAlert;
+                    return (
+                        <div key={i} className={`flex items-start gap-2 ${tone}`}>
+                            <Icon className="size-3.5 mt-0.5 shrink-0" />
+                            <span>
+                                <span className="text-muted-foreground font-mono mr-2 tabular-nums">
+                                    {d.start_line + 1}:{d.start_col + 1}
+                                </span>
+                                <span className="font-medium">{d.severity}:</span>{" "}
+                                {d.message}
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+        </ScrollArea>
     );
 }

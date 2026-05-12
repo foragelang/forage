@@ -1,21 +1,34 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
+import { Loader2, Pause, Play, RefreshCw, Save } from "lucide-react";
 
-import { Sidebar } from "./components/Sidebar";
-import { SourceTab } from "./tabs/SourceTab";
-import { FixturesTab } from "./tabs/FixturesTab";
-import { SnapshotTab } from "./tabs/SnapshotTab";
-import { DiagnosticTab } from "./tabs/DiagnosticTab";
-import { PublishTab } from "./tabs/PublishTab";
+import { Sidebar } from "@/components/Sidebar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
+import { Separator } from "@/components/ui/separator";
+import {
+    SidebarInset,
+    SidebarProvider,
+    SidebarTrigger,
+} from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+import { SourceTab } from "@/tabs/SourceTab";
+import { FixturesTab } from "@/tabs/FixturesTab";
+import { SnapshotTab } from "@/tabs/SnapshotTab";
+import { DiagnosticTab } from "@/tabs/DiagnosticTab";
+import { PublishTab } from "@/tabs/PublishTab";
 import {
     api,
     DEBUG_PAUSED_EVENT,
     RUN_EVENT,
     type PausePayload,
     type RunEvent,
-} from "./lib/api";
-import { useStudio, type Tab } from "./lib/store";
+} from "@/lib/api";
+import { useStudio, type Tab } from "@/lib/store";
 
 const TABS: { id: Tab; label: string }[] = [
     { id: "source", label: "Source" },
@@ -107,17 +120,9 @@ export function App() {
         api.cancelRun().catch((e) => console.warn("cancel failed", e));
     };
 
-    // Subscribe once to the engine progress event stream. The listener stays
-    // active for the life of the app; events outside a run are ignored by
-    // the store (runBegin clears the log before each run).
-    //
-    // The `cancelled` flag is load-bearing: React.StrictMode mounts the
-    // effect, immediately unmounts it, then remounts. With an async
-    // `.then(u => un = u)`, both cleanups run before either listen()
-    // promise resolves — `un` is undefined in cleanup #1, so the first
-    // listener never gets disposed. Result: two live listeners and every
-    // event fires twice. Tracking the cancellation lets us dispose the
-    // first handle the moment its promise resolves.
+    // Subscribe once to the engine progress event stream. The `cancelled`
+    // flag is load-bearing under React.StrictMode — see the original
+    // version's comment for the gory details.
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
@@ -135,9 +140,9 @@ export function App() {
     }, []);
 
     // Same StrictMode-safe pattern for the debug pause stream. Fires when
-    // the engine has parked at a breakpoint or after Step Over; we switch
-    // to the Source tab so the user sees the debugger pane + the editor
-    // line highlight. The pane in SourceTab calls api.debugResume.
+    // the engine has parked at a breakpoint or after Step Over; switch
+    // to the Source tab so the user sees the debugger pane + the line
+    // highlight. The pane inside SourceTab handles resume.
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
@@ -203,9 +208,9 @@ export function App() {
     }, [activeSlug, source]);
 
     return (
-        <div className="grid grid-cols-[280px_1fr] h-screen text-zinc-200">
+        <SidebarProvider defaultOpen>
             <Sidebar />
-            <main className="flex flex-col min-h-0">
+            <SidebarInset className="min-h-0">
                 <Toolbar
                     activeSlug={activeSlug}
                     dirty={dirty}
@@ -215,16 +220,36 @@ export function App() {
                     onRunLive={() => run(false)}
                     onCancel={cancel}
                 />
-                <Tabs current={tab} onSelect={setTab} />
-                <div className="flex-1 flex flex-col min-h-0 bg-zinc-950">
-                    {tab === "source" && <SourceTab />}
-                    {tab === "fixtures" && <FixturesTab />}
-                    {tab === "snapshot" && <SnapshotTab />}
-                    {tab === "diagnostic" && <DiagnosticTab />}
-                    {tab === "publish" && <PublishTab />}
-                </div>
-            </main>
-        </div>
+                <Tabs
+                    value={tab}
+                    onValueChange={(v) => setTab(v as Tab)}
+                    className="flex-1 min-h-0 gap-0"
+                >
+                    <div className="border-b px-3 shrink-0">
+                        <TabsList variant="line" className="h-10">
+                            {TABS.map((t) => (
+                                <TabsTrigger key={t.id} value={t.id}>
+                                    {t.label}
+                                </TabsTrigger>
+                            ))}
+                        </TabsList>
+                    </div>
+                    {TABS.map((t) => (
+                        <TabsContent
+                            key={t.id}
+                            value={t.id}
+                            className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
+                        >
+                            {t.id === "source" && <SourceTab />}
+                            {t.id === "fixtures" && <FixturesTab />}
+                            {t.id === "snapshot" && <SnapshotTab />}
+                            {t.id === "diagnostic" && <DiagnosticTab />}
+                            {t.id === "publish" && <PublishTab />}
+                        </TabsContent>
+                    ))}
+                </Tabs>
+            </SidebarInset>
+        </SidebarProvider>
     );
 }
 
@@ -238,60 +263,91 @@ function Toolbar(props: {
     onCancel: () => void;
 }) {
     return (
-        <div className="px-4 h-12 border-b border-zinc-800 flex items-center gap-3 bg-zinc-950 flex-shrink-0">
-            <span className="text-sm font-mono text-zinc-400">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+            <SidebarTrigger />
+            <Separator orientation="vertical" className="!h-4" />
+            <span className="font-mono text-sm text-muted-foreground select-text">
                 {props.activeSlug ?? "(no recipe)"}
             </span>
             {props.dirty && (
-                <span className="text-xs text-amber-500">● unsaved</span>
+                <Badge variant="warning">
+                    <span className="size-1.5 rounded-full bg-warning" />
+                    unsaved
+                </Badge>
             )}
-            {props.running && <RunningPill />}
-            <div className="ml-auto flex gap-2">
+            {props.running && <RunStatus />}
+            <div className="ml-auto flex items-center gap-1">
                 {props.running ? (
-                    <button
-                        onClick={props.onCancel}
-                        className="px-3 py-1.5 text-sm bg-red-700 hover:bg-red-600 rounded font-medium flex items-center gap-2"
-                        title="Stop run"
-                    >
-                        <span className="inline-block w-3 h-3 rounded-full border-2 border-zinc-200 border-t-transparent animate-spin" />
+                    <Button variant="destructive" size="sm" onClick={props.onCancel}>
+                        <Loader2 className="animate-spin" />
                         Cancel
-                    </button>
+                    </Button>
                 ) : (
                     <>
-                        <button
+                        <ToolbarButton
                             onClick={props.onSave}
                             disabled={!props.activeSlug}
-                            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
-                            title="⌘S"
-                        >
-                            Save
-                        </button>
-                        <button
+                            label="Save"
+                            shortcut={["⌘", "S"]}
+                            icon={<Save />}
+                            variant="ghost"
+                        />
+                        <ToolbarButton
                             onClick={props.onReplay}
                             disabled={!props.activeSlug}
-                            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
-                            title="⇧⌘R"
-                        >
-                            Replay
-                        </button>
-                        <button
+                            label="Replay"
+                            shortcut={["⇧", "⌘", "R"]}
+                            icon={<RefreshCw />}
+                            variant="ghost"
+                        />
+                        <ToolbarButton
                             onClick={props.onRunLive}
                             disabled={!props.activeSlug}
-                            className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50 font-medium"
-                            title="⌘R"
-                        >
-                            Run live
-                        </button>
+                            label="Run live"
+                            shortcut={["⌘", "R"]}
+                            icon={<Play />}
+                            variant="default"
+                        />
                     </>
                 )}
             </div>
-        </div>
+        </header>
     );
 }
 
-function RunningPill() {
-    // Tick the elapsed-time display every 250ms so the user can see we're
-    // still alive even when the engine is throttling between requests.
+function ToolbarButton(props: {
+    onClick: () => void;
+    disabled?: boolean;
+    label: string;
+    shortcut: string[];
+    icon: React.ReactNode;
+    variant: "default" | "ghost";
+}) {
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Button
+                    size="sm"
+                    variant={props.variant}
+                    onClick={props.onClick}
+                    disabled={props.disabled}
+                >
+                    {props.icon}
+                    {props.label}
+                </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+                <div className="flex items-center gap-1">
+                    {props.shortcut.map((k) => (
+                        <Kbd key={k}>{k}</Kbd>
+                    ))}
+                </div>
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
+function RunStatus() {
     const startedAt = useStudio((s) => s.runStartedAt);
     const paused = useStudio((s) => s.paused);
     const [now, setNow] = useState(Date.now());
@@ -307,34 +363,16 @@ function RunningPill() {
                 ? `step ${paused.step}`
                 : `iter ${paused.iteration + 1}/${paused.total} of $${paused.variable}`;
         return (
-            <span className="text-xs text-amber-400 font-mono tabular-nums">
-                ⏸ paused at {label}
-            </span>
+            <Badge variant="warning" className="font-mono tabular-nums">
+                <Pause />
+                paused at {label}
+            </Badge>
         );
     }
     return (
-        <span className="text-xs text-emerald-400 font-mono tabular-nums">
-            ● running {seconds}s
-        </span>
-    );
-}
-
-function Tabs(props: { current: Tab; onSelect: (t: Tab) => void }) {
-    return (
-        <div className="border-b border-zinc-800 flex bg-zinc-950 flex-shrink-0">
-            {TABS.map((t) => (
-                <button
-                    key={t.id}
-                    onClick={() => props.onSelect(t.id)}
-                    className={`px-4 py-2 text-sm border-b-2 transition-colors ${
-                        props.current === t.id
-                            ? "border-emerald-500 text-zinc-100"
-                            : "border-transparent text-zinc-500 hover:text-zinc-300"
-                    }`}
-                >
-                    {t.label}
-                </button>
-            ))}
-        </div>
+        <Badge variant="success" className="font-mono tabular-nums">
+            <span className="size-1.5 rounded-full bg-success" />
+            running {seconds}s
+        </Badge>
     );
 }
