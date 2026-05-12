@@ -1,6 +1,6 @@
 # Forage — Rust rewrite roadmap
 
-Soup-to-nuts plan to port Forage from Swift to a Rust workspace, with Tauri Studio replacing the SwiftUI app, a real LSP, cross-platform webviews via `wry`, and `forage-wasm` replacing `forage-ts` in the web IDE. Greenfield: Swift code is archived in git history and deleted as each Rust counterpart lands.
+Soup-to-nuts plan to port Forage from Swift to a Rust workspace. Forage Studio gets reimplemented in Tauri (Rust shell + React + Monaco) instead of SwiftUI; the rest of the stack — runtime, CLI, hub client, LSP, web-IDE wasm core — moves to Rust too. Cross-platform webviews via `wry`, `forage-wasm` replaces `forage-ts` in the web IDE. Greenfield: Swift code is archived in git history and deleted as each Rust counterpart lands.
 
 Milestones prefixed `R1`–`R13` to distinguish from the Swift `M1`–`M11` (now history).
 
@@ -43,9 +43,9 @@ forage/
 │
 ├── apps/
 │   ├── cli/                         # `forage` binary, clap-based
-│   └── studio/                      # Tauri app: Rust backend + Vue+Monaco frontend
+│   └── studio/                      # Forage Studio — Tauri app, React + Monaco
 │       ├── src/                     # Tauri commands, state, LSP child-process orchestration
-│       ├── ui/                      # Vue 3 + Vite + Monaco + monaco-languageclient
+│       ├── ui/                      # React 19 + Vite + Tailwind v4 + shadcn/ui + Monaco
 │       └── tauri.conf.json
 │
 ├── hub-api/                         # STAYS TypeScript (Cloudflare Worker)
@@ -414,7 +414,7 @@ Build tooling:
 
 ---
 
-## R9 — Tauri Studio
+## R9 — Forage Studio (Tauri rewrite)
 
 **Result:** `Forage Studio.app` on macOS, built from `apps/studio/`, with feature parity to the SwiftUI Studio (Recipe library, editor, capture, run, fixtures, snapshot, diagnostic, publish, MFA, OAuth, M10 interactive). Embeds Monaco + the Forage LSP.
 
@@ -443,22 +443,22 @@ Build tooling:
 
 - **R9.4 — Browser engine in Tauri.** The same `forage-browser` crate drives live runs + captures. A separate Tauri `WebviewWindow` is opened for each run (visible for interactive bootstrap + capture, headless for normal live runs). Tauri 2.x supports multiple windows natively.
 
-- **R9.5 — Frontend stack.** Vue 3 + Vite + TypeScript. Component tree:
-  - `App.vue` — root, two-pane NavigationSplitView-style layout.
-  - `Sidebar.vue` — recipe library list, new/import buttons.
-  - `Editor.vue` — Monaco-hosted recipe editor with LSP wired up; tabs across the top: Source, Fixtures, Snapshot, Diagnostic, Publish.
-  - `SourceTab.vue` — Monaco + validate panel below.
-  - `FixturesTab.vue` — list of fixture files with previews.
-  - `SnapshotTab.vue` — per-type record tables.
-  - `DiagnosticTab.vue` — stall reason + unmet expectations + unmatched captures + unhandled affordances.
-  - `PublishTab.vue` — publish form + Validate / Preview / Publish buttons.
-  - `CaptureSheet.vue` — modal sheet with a `<webview>`-equivalent (Tauri webview window) and a capture list panel.
-  - `MFAPrompt.vue` — modal sheet with a SecureField for one-time code.
-  - `Preferences.vue` — Cmd-, settings; hub URL, account, API-key fallback.
+- **R9.5 — Frontend stack.** React 19 + Vite + TypeScript + Tailwind v4 + shadcn/ui + `monaco-editor-react` + `monaco-languageclient`. TanStack Query for state derived from Tauri commands; Zustand for cross-component state (active recipe slug, dirty flag). Component tree:
+  - `App.tsx` — root, two-pane resizable split.
+  - `Sidebar.tsx` — recipe library list, new/import buttons.
+  - `Editor.tsx` — Monaco-hosted recipe editor with LSP wired up; tabs across the top: Source, Fixtures, Snapshot, Diagnostic, Publish.
+  - `SourceTab.tsx` — Monaco + validate panel below.
+  - `FixturesTab.tsx` — list of fixture files with previews.
+  - `SnapshotTab.tsx` — per-type record tables.
+  - `DiagnosticTab.tsx` — stall reason + unmet expectations + unmatched captures + unhandled affordances.
+  - `PublishTab.tsx` — publish form + Validate / Preview / Publish buttons.
+  - `CaptureSheet.tsx` — modal sheet with a `<webview>`-equivalent (Tauri webview window) and a capture list panel.
+  - `MFAPrompt.tsx` — modal sheet with a SecureField for one-time code.
+  - `Preferences.tsx` — Cmd-, settings; hub URL, account, API-key fallback.
 
 - **R9.6 — Native menus.** Tauri menu API: File (New `⌘N`, Save `⌘S`, Open Folder, Quit), Recipe (Run Live `⌘R`, Run Replay `⇧⌘R`, Capture `⌘K`, Validate `⇧⌘V`, Publish `⇧⌘P`, Import from Hub `⇧⌘I`), Edit (Cut/Copy/Paste/Undo/Redo from system), View (full-screen, dev tools).
 
-- **R9.7 — IPC for MFA.** When the runtime hits an `auth.session` step with `requiresMFA`, it calls the `ChannelMFAProvider`, which sends a Tauri event to the frontend; `MFAPrompt.vue` opens; user submits; `mfa_provide_code` Tauri command resumes the runtime.
+- **R9.7 — IPC for MFA.** When the runtime hits an `auth.session` step with `requiresMFA`, it calls the `ChannelMFAProvider`, which sends a Tauri event to the frontend; `MFAPrompt.tsx` opens; user submits; `mfa_provide_code` Tauri command resumes the runtime.
 
 - **R9.8 — Recipe library.** Reads `~/Library/Forage/Recipes/` (XDG / `%APPDATA%` on other platforms). New recipe creates an `untitled-N` dir with a minimal template + `fixtures/` dir.
 
