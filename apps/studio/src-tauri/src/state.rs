@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use forage_hub::AuthStore;
+use tauri::Wry;
 use tokio::sync::Notify;
 
 #[derive(Default)]
@@ -16,4 +17,9 @@ pub struct StudioState {
     /// `cancel_run` command notifies through this; `run_recipe` selects
     /// against it so the engine future drops mid-fetch.
     pub run_cancel: Mutex<Option<Arc<Notify>>>,
+    /// The most recently shown native context menu. Held here so the muda
+    /// NSMenu/HMENU stays alive while the user is interacting with it —
+    /// without this, popup_menu_at returns and the Menu Rust handle is
+    /// dropped before the click event fires, losing the event.
+    pub last_context_menu: Mutex<Option<tauri::menu::Menu<Wry>>>,
 }

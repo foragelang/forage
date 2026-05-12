@@ -3,7 +3,7 @@
 use indexmap::IndexMap;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Notify;
 
 use forage_browser::run_browser_replay;
@@ -70,6 +70,7 @@ pub fn show_recipe_context_menu(
     y: f64,
 ) -> Result<(), String> {
     let id = format!("recipe_delete:{slug}");
+    tracing::info!(slug = %slug, id = %id, x, y, "show_recipe_context_menu");
     let delete_item = tauri::menu::MenuItemBuilder::with_id(&id, "Delete Recipe…")
         .build(&app)
         .map_err(|e| e.to_string())?;
@@ -81,6 +82,15 @@ pub fn show_recipe_context_menu(
     window
         .popup_menu_at(&menu, position)
         .map_err(|e| e.to_string())?;
+    // The menu must outlive popup_menu_at on macOS — muda's NSMenu wrapper
+    // doesn't internally retain the Rust handle, so dropping it the
+    // instant this function returns means the click event fires into a
+    // freed receiver. Stash it on the StudioState until the next popup
+    // replaces it.
+    *app.state::<crate::state::StudioState>()
+        .last_context_menu
+        .lock()
+        .expect("context menu mutex") = Some(menu);
     Ok(())
 }
 

@@ -31,6 +31,7 @@ export function Sidebar() {
         let cancelled = false;
         let un: (() => void) | undefined;
         const handler = async (slug: string) => {
+            console.log("[sidebar] menu:recipe_delete received", slug);
             const confirmed = window.confirm(
                 `Delete "${slug}"? This removes the recipe and its fixtures permanently.`,
             );

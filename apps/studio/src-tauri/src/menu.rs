@@ -70,6 +70,7 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 /// Wire menu events into Tauri events the frontend listens for.
 pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
+    tracing::info!(id = %id, "on_menu_event");
     match id {
         "new_recipe" => {
             let _ = app.emit("menu:new_recipe", ());
@@ -93,7 +94,11 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         // can route many recipe slugs through one handler.
         other if other.starts_with("recipe_delete:") => {
             let slug = &other["recipe_delete:".len()..];
-            let _ = app.emit("menu:recipe_delete", slug);
+            tracing::info!(slug, "menu:recipe_delete dispatching");
+            match app.emit("menu:recipe_delete", slug) {
+                Ok(()) => tracing::info!(slug, "menu:recipe_delete emitted"),
+                Err(e) => tracing::warn!(slug, error = %e, "menu:recipe_delete emit failed"),
+            }
         }
         _ => {}
     }
