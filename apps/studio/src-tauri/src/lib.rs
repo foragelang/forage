@@ -8,9 +8,28 @@ mod state;
 
 use state::StudioState;
 use tauri::Manager;
+use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Route `tracing::` events from forage-{core,http,browser,…} to stderr
+    // so `cargo tauri dev` shows them. tauri-plugin-log handles `log::`
+    // records (reqwest, cookie_store, tao); without this subscriber our
+    // engine's `debug!`/`trace!` calls would never surface.
+    //
+    // RUST_LOG overrides; default shows DEBUG for our crates and the engine
+    // module path, INFO for everything else.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(
+            "info,forage_http=debug,forage_core=debug,forage_studio=debug,forage_browser=debug",
+        )
+    });
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .try_init();
+
     tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {

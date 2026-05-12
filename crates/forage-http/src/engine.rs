@@ -7,7 +7,7 @@
 use indexmap::IndexMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
@@ -77,6 +77,7 @@ impl<'t> Engine<'t> {
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
         let started = Instant::now();
+        debug!(recipe = %recipe.name, "▶ run started");
         self.emit(RunEvent::RunStarted {
             recipe: recipe.name.clone(),
             replay: false,
@@ -85,12 +86,24 @@ impl<'t> Engine<'t> {
         self.run_inner(recipe, inputs, secrets)
             .await
             .inspect(|snap| {
+                debug!(
+                    recipe = %recipe.name,
+                    records = snap.records.len(),
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "✓ run succeeded"
+                );
                 self.emit(RunEvent::RunSucceeded {
                     records: snap.records.len(),
                     duration_ms: started.elapsed().as_millis() as u64,
                 });
             })
             .inspect_err(|e| {
+                debug!(
+                    recipe = %recipe.name,
+                    error = %e,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "✗ run failed"
+                );
                 self.emit(RunEvent::RunFailed {
                     error: e.to_string(),
                     duration_ms: started.elapsed().as_millis() as u64,
@@ -259,7 +272,22 @@ impl<'t> Engine<'t> {
 
             let req =
                 self.build_request(step, recipe, auth_state, evaluator, scope, &extra_query)?;
-            debug!(method = %req.method, url = %req.url, "step request");
+            let body_size = req.body.as_ref().map(|b| b.len()).unwrap_or(0);
+            debug!(
+                step = %step.name,
+                page = page,
+                method = %req.method,
+                url = %req.url,
+                body_size = body_size,
+                "→ request"
+            );
+            if body_size > 0 {
+                trace!(
+                    step = %step.name,
+                    body = %preview_bytes(req.body.as_deref().unwrap_or(&[]), 500),
+                    "→ request body"
+                );
+            }
             self.emit(RunEvent::RequestSent {
                 step: step.name.clone(),
                 method: req.method.clone(),
@@ -270,6 +298,19 @@ impl<'t> Engine<'t> {
             let req_started = Instant::now();
             let resp = self.transport.fetch(req.clone()).await?;
             let duration_ms = req_started.elapsed().as_millis() as u64;
+            debug!(
+                step = %step.name,
+                page = page,
+                status = resp.status,
+                bytes = resp.body.len(),
+                duration_ms = duration_ms,
+                "← response"
+            );
+            trace!(
+                step = %step.name,
+                body = %preview_bytes(&resp.body, 500),
+                "← response body"
+            );
             self.emit(RunEvent::ResponseReceived {
                 step: step.name.clone(),
                 status: resp.status,
@@ -295,18 +336,39 @@ impl<'t> Engine<'t> {
             if let Some(ex) = &step.extract {
                 let body_str = resp.body_str();
                 apply_regex_extract(ex, body_str, scope)?;
+                for g in &ex.groups {
+                    debug!(
+                        step = %step.name,
+                        var = %g,
+                        value = %preview_value(scope.lookup(g), 80),
+                        "extract.regex bound"
+                    );
+                }
             }
 
             // If pagination is declared, append this page's items to the
             // accumulator before driving to the next page.
             if let Some(pag) = &step.pagination {
                 let items = items_for_page(pag, evaluator, scope)?;
+                debug!(
+                    step = %step.name,
+                    page = page,
+                    items_this_page = items.len(),
+                    items_total = accumulated_items.len() + items.len(),
+                    "paginate: page items"
+                );
                 accumulated_items.extend(items);
             }
 
             match driver.as_mut() {
                 Some(d) => match d.advance(evaluator, scope)? {
                     NextPage::Stop => {
+                        debug!(
+                            step = %step.name,
+                            pages = page,
+                            total_items = accumulated_items.len(),
+                            "paginate: stop"
+                        );
                         // Re-bind `$<stepName>` to the accumulated items so
                         // downstream `$<stepName>[*]` iterates across pages.
                         scope.bind(&step.name, EvalValue::Array(accumulated_items.clone()));
@@ -314,6 +376,12 @@ impl<'t> Engine<'t> {
                         return Ok(());
                     }
                     NextPage::Continue(params) => {
+                        debug!(
+                            step = %step.name,
+                            next_page = page + 1,
+                            params = ?params,
+                            "paginate: continue"
+                        );
                         extra_query = params;
                         page += 1;
                     }
@@ -342,6 +410,7 @@ impl<'t> Engine<'t> {
         });
         let count = emit_counts.entry(em.type_name.clone()).or_insert(0);
         *count += 1;
+        trace!(type_name = %em.type_name, total = *count, "emit");
         self.emit(RunEvent::Emitted {
             type_name: em.type_name.clone(),
             total: *count,
@@ -398,6 +467,39 @@ impl<'t> Engine<'t> {
             headers,
             body,
         })
+    }
+}
+
+/// First `max_len` UTF-8 chars of `bytes`, with newlines/tabs escaped and a
+/// "…+N more" suffix if truncated. For HTTP body previews in logs.
+fn preview_bytes(bytes: &[u8], max_len: usize) -> String {
+    let s = std::str::from_utf8(bytes).unwrap_or("<binary>");
+    preview_str(s, max_len)
+}
+
+fn preview_str(s: &str, max_len: usize) -> String {
+    let total = s.len();
+    let mut out = String::with_capacity(max_len.min(total) + 16);
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max_len {
+            out.push_str(&format!("…+{}B", total.saturating_sub(out.len())));
+            return out;
+        }
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn preview_value(v: Option<&EvalValue>, max_len: usize) -> String {
+    match v {
+        None => "<unbound>".into(),
+        Some(EvalValue::String(s)) => preview_str(s, max_len),
+        Some(other) => preview_str(&format!("{other:?}"), max_len),
     }
 }
 
