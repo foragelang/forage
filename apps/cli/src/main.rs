@@ -1,9 +1,16 @@
 //! `forage` — the command-line tool.
-//!
-//! Subcommand surface is filled in across R3 (run/test), R5 (capture/scaffold),
-//! R6 (publish/auth), R7 (lsp).
 
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use indexmap::IndexMap;
+use owo_colors::OwoColorize;
+
+use forage_core::ast::JSONValue;
+use forage_core::{EvalValue, Snapshot, parse, validate};
+use forage_http::{Engine, ReplayTransport};
+use forage_replay::Capture;
 
 #[derive(Parser)]
 #[command(
@@ -19,22 +26,41 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Parse and execute a .forage recipe; print the snapshot.
-    Run,
+    Run {
+        recipe_dir: PathBuf,
+        /// Replay against `fixtures/captures.jsonl` instead of hitting the network.
+        #[arg(long)]
+        replay: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+        output: OutputFormat,
+    },
     /// Run a recipe against fixtures and diff against an expected snapshot.
-    Test,
-    /// Launch a webview and record fetch/XHR exchanges to JSONL.
+    Test {
+        recipe_dir: PathBuf,
+        /// Write the produced snapshot to expected.snapshot.json.
+        #[arg(long)]
+        update: bool,
+    },
+    /// Launch a webview and record fetch/XHR exchanges to JSONL. (R5.)
     Capture,
-    /// Build a starter .forage recipe from a captures JSONL file.
+    /// Build a starter .forage recipe from a captures JSONL file. (R5.)
     Scaffold,
-    /// Push a recipe to the Forage hub.
+    /// Push a recipe to the Forage hub. (R6.)
     Publish,
-    /// Sign in to the Forage hub via GitHub.
+    /// Sign in to the Forage hub via GitHub. (R6.)
     Auth,
-    /// Start the Forage Language Server (stdio or WebSocket).
+    /// Start the Forage Language Server (stdio or WebSocket). (R7.)
     Lsp,
 }
 
-fn main() -> anyhow::Result<()> {
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OutputFormat {
+    Pretty,
+    Json,
+}
+
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -43,14 +69,229 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let rt = tokio::runtime::Runtime::new()?;
     match cli.command {
-        Command::Run => println!("`forage run` lands in R3."),
-        Command::Test => println!("`forage test` lands in R3."),
-        Command::Capture => println!("`forage capture` lands in R5."),
-        Command::Scaffold => println!("`forage scaffold` lands in R5."),
-        Command::Publish => println!("`forage publish` lands in R6."),
-        Command::Auth => println!("`forage auth` lands in R6."),
-        Command::Lsp => println!("`forage lsp` lands in R7."),
+        Command::Run {
+            recipe_dir,
+            replay,
+            output,
+        } => rt.block_on(run(&recipe_dir, replay, output)),
+        Command::Test { recipe_dir, update } => rt.block_on(test(&recipe_dir, update)),
+        Command::Capture => {
+            println!("`forage capture` lands in R5.");
+            Ok(())
+        }
+        Command::Scaffold => {
+            println!("`forage scaffold` lands in R5.");
+            Ok(())
+        }
+        Command::Publish => {
+            println!("`forage publish` lands in R6.");
+            Ok(())
+        }
+        Command::Auth => {
+            println!("`forage auth` lands in R6.");
+            Ok(())
+        }
+        Command::Lsp => {
+            println!("`forage lsp` lands in R7.");
+            Ok(())
+        }
+    }
+}
+
+async fn run(recipe_dir: &Path, replay: bool, output: OutputFormat) -> Result<()> {
+    let recipe = load_recipe(recipe_dir)?;
+    let inputs = load_inputs(recipe_dir)?;
+    let secrets = load_secrets_from_env(&recipe);
+
+    let snapshot = if replay {
+        let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
+        let transport = ReplayTransport::new(captures);
+        let engine = Engine::new(&transport);
+        engine
+            .run(&recipe, inputs, secrets)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        bail!("live HTTP transport ships in R2 follow-up — use --replay for now");
+    };
+
+    match output {
+        OutputFormat::Pretty => print_pretty(&snapshot),
+        OutputFormat::Json => {
+            let j = serde_json::to_string_pretty(&snapshot)?;
+            println!("{j}");
+        }
+    }
+    if snapshot.diagnostic.has_content() {
+        std::process::exit(if snapshot.diagnostic.unmet_expectations.is_empty() {
+            0
+        } else {
+            3
+        });
     }
     Ok(())
+}
+
+async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
+    let recipe = load_recipe(recipe_dir)?;
+    let inputs = load_inputs(recipe_dir)?;
+    let secrets = load_secrets_from_env(&recipe);
+    let captures = load_captures(recipe_dir)?;
+    let transport = ReplayTransport::new(captures);
+    let engine = Engine::new(&transport);
+    let produced = engine
+        .run(&recipe, inputs, secrets)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let expected_path = recipe_dir.join("expected.snapshot.json");
+    if update || !expected_path.exists() {
+        let j = serde_json::to_string_pretty(&produced)?;
+        std::fs::write(&expected_path, &j)?;
+        println!("{} {}", "wrote".green(), expected_path.display());
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&expected_path)?;
+    let expected: Snapshot = serde_json::from_str(&raw)?;
+    if expected == produced {
+        println!("{} matches expected snapshot", "ok:".green());
+        return Ok(());
+    }
+    let a = serde_json::to_string_pretty(&expected)?;
+    let b = serde_json::to_string_pretty(&produced)?;
+    let diff = similar::TextDiff::from_lines(&a, &b);
+    println!("{} snapshot diverged:", "diff:".red());
+    for change in diff.iter_all_changes() {
+        let sign = match change.tag() {
+            similar::ChangeTag::Delete => "-",
+            similar::ChangeTag::Insert => "+",
+            similar::ChangeTag::Equal => " ",
+        };
+        print!("{sign}{change}");
+    }
+    std::process::exit(1);
+}
+
+fn load_recipe(dir: &Path) -> Result<forage_core::Recipe> {
+    let path = dir.join("recipe.forage");
+    let source =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let recipe = parse(&source).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+    let report = validate(&recipe);
+    if report.has_errors() {
+        for e in report.errors() {
+            eprintln!("{} {}", "validate:".red(), e.message);
+        }
+        bail!("recipe failed validation");
+    }
+    Ok(recipe)
+}
+
+fn load_inputs(dir: &Path) -> Result<IndexMap<String, EvalValue>> {
+    let path = dir.join("fixtures").join("inputs.json");
+    if !path.exists() {
+        return Ok(IndexMap::new());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    let mut out = IndexMap::new();
+    if let serde_json::Value::Object(o) = value {
+        for (k, v) in o {
+            out.insert(k, EvalValue::from(&v));
+        }
+    }
+    Ok(out)
+}
+
+fn load_secrets_from_env(recipe: &forage_core::Recipe) -> IndexMap<String, String> {
+    let mut out = IndexMap::new();
+    for s in &recipe.secrets {
+        let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
+        if let Ok(v) = std::env::var(&key) {
+            out.insert(s.clone(), v);
+        }
+    }
+    out
+}
+
+fn load_captures(dir: &Path) -> Result<Vec<Capture>> {
+    let path = dir.join("fixtures").join("captures.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let c: Capture =
+            serde_json::from_str(line).with_context(|| format!("parsing capture: {line}"))?;
+        out.push(c);
+    }
+    Ok(out)
+}
+
+fn print_pretty(snapshot: &Snapshot) {
+    let by_type = group_by_type(&snapshot.records);
+    if by_type.is_empty() {
+        println!("{}", "(no records emitted)".dimmed());
+    } else {
+        for (type_name, records) in &by_type {
+            println!(
+                "{} {} {}",
+                "•".green(),
+                type_name.bold(),
+                format!("({} records)", records.len()).dimmed()
+            );
+            for (i, r) in records.iter().take(3).enumerate() {
+                println!("  [{i}] {}", short_json(&r.fields).dimmed());
+            }
+            if records.len() > 3 {
+                println!("  {} more …", (records.len() - 3).to_string().dimmed());
+            }
+        }
+    }
+    let d = &snapshot.diagnostic;
+    if d.has_content() {
+        println!();
+        if let Some(r) = &d.stall_reason {
+            println!("{} {r}", "stall:".yellow());
+        }
+        for e in &d.unmet_expectations {
+            println!("{} {e}", "expect:".red());
+        }
+    }
+}
+
+fn group_by_type(records: &[forage_core::Record]) -> IndexMap<String, Vec<&forage_core::Record>> {
+    let mut map: IndexMap<String, Vec<&forage_core::Record>> = IndexMap::new();
+    for r in records {
+        map.entry(r.type_name.clone()).or_default().push(r);
+    }
+    map
+}
+
+fn short_json(fields: &IndexMap<String, JSONValue>) -> String {
+    let mut parts = Vec::new();
+    for (k, v) in fields.iter().take(5) {
+        let v_str = match v {
+            JSONValue::Null => "null".into(),
+            JSONValue::Bool(b) => b.to_string(),
+            JSONValue::Int(n) => n.to_string(),
+            JSONValue::Double(n) => format!("{n}"),
+            JSONValue::String(s) if s.len() > 40 => format!("{:?}…", &s[..40]),
+            JSONValue::String(s) => format!("{s:?}"),
+            JSONValue::Array(xs) => format!("[{} items]", xs.len()),
+            JSONValue::Object(o) => format!("{{{} fields}}", o.len()),
+        };
+        parts.push(format!("{k}: {v_str}"));
+    }
+    if fields.len() > 5 {
+        parts.push(format!("…{} more", fields.len() - 5));
+    }
+    parts.join(", ")
 }

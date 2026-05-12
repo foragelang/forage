@@ -14,11 +14,14 @@ path = "src/main.rs"
 
 [dependencies]
 forage-core      = { workspace = true }
-# Engines + hub + LSP wired up in R3, R5, R6, R7.
+forage-http      = { workspace = true }
+forage-replay    = { workspace = true }
+# forage-browser + forage-hub + forage-lsp wired up in R5, R6, R7.
 
 tokio       = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
+indexmap    = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 ariadne     = { workspace = true }
