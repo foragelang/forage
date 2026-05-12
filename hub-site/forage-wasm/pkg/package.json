@@ -1,0 +1,24 @@
+{
+  "name": "forage-wasm",
+  "type": "module",
+  "collaborators": [
+    "Dmitry Minkovsky <dminkovsky@gmail.com>"
+  ],
+  "description": "wasm-bindgen exports of forage-core for the web IDE.",
+  "version": "0.1.0",
+  "license": "Apache-2.0 OR MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/foragelang/forage"
+  },
+  "files": [
+    "forage_wasm_bg.wasm",
+    "forage_wasm.js",
+    "forage_wasm.d.ts"
+  ],
+  "main": "forage_wasm.js",
+  "types": "forage_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

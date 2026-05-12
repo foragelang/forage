@@ -11,6 +11,11 @@ authors.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[package.metadata.wasm-pack.profile.release]
+# Skip wasm-opt: bulk-memory operations need an opt-in flag the bundled
+# wasm-opt doesn't support. Bundled binary already small enough.
+wasm-opt = false
+
 [dependencies]
 forage-core         = { workspace = true }
 
