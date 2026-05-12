@@ -1,7 +1,7 @@
 import Foundation
 
 /// Resolves an MFA code when an `auth.session.<...>` block declares
-/// `requiresMFA: true`. The host (CLI / Toolkit / web IDE) supplies an
+/// `requiresMFA: true`. The host (CLI / Studio / web IDE) supplies an
 /// implementation; the engine awaits `mfaCode()` and re-runs the login
 /// with the code attached.
 public protocol MFAProvider: Sendable {

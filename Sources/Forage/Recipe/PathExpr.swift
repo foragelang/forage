@@ -10,7 +10,7 @@ public indirect enum PathExpr: Hashable, Sendable {
     /// `$input` — the recipe's input scope.
     case input
     /// `$secret.<name>` — resolved at run time via the host's `SecretResolver`
-    /// (env var on the CLI, Keychain in the Toolkit). Recipe text never
+    /// (env var on the CLI, Keychain in Studio). Recipe text never
     /// contains the resolved value; the engine redacts it from diagnostics.
     case secret(String)
     /// `$<name>` — anything else introduced by a `for` binding or step result.

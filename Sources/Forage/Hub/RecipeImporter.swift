@@ -55,7 +55,7 @@ public actor RecipeImporter {
     }
 
     /// Default cache dir: `~/Library/Forage/Cache/hub/`. Convenience for
-    /// CLI/Toolkit callers — pass it as `cacheRoot` to `init`.
+    /// CLI/Studio callers — pass it as `cacheRoot` to `init`.
     public static func defaultCacheRoot() -> URL? {
         guard let home = FileManager.default.urls(
             for: .libraryDirectory, in: .userDomainMask

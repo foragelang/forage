@@ -222,7 +222,7 @@ export interface HubRecipeRef {
 export interface BrowserConfig {
     initialURL: Template
     // The full structure is preserved as JSON for round-tripping; we don't
-    // need it for HTTP runner. The IDE shows "Open in Toolkit" for these.
+    // need it for HTTP runner. The IDE shows "Open in Studio" for these.
 }
 
 export interface Recipe {

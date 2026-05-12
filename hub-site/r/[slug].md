@@ -31,9 +31,9 @@ import {{ $params.slug }}
 
 [/r/{{ $params.slug }}/edit](/r/{{ $params.slug }}/edit) — open in the browser-based IDE.
 
-## Open in Toolkit
+## Open in Studio
 
-[forage-toolkit://recipe/{{ $params.slug }}](forage-toolkit://recipe/{{ $params.slug }})
+[forage-studio://recipe/{{ $params.slug }}](forage-studio://recipe/{{ $params.slug }})
 
 ## Raw
 

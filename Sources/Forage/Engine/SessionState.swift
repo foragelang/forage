@@ -81,7 +81,7 @@ extension SessionCookie {
 /// Files are written with `chmod 600`. Optional AES-GCM encryption keyed by
 /// a per-machine secret held in the macOS Keychain.
 public enum SessionCache {
-    /// Path used by both Toolkit and CLI hosts. `recipeSlug` is sanitized
+    /// Path used by both Studio and CLI hosts. `recipeSlug` is sanitized
     /// (path-separator-stripped) before joining.
     public static func cacheDir(for recipeSlug: String, root: URL? = nil) -> URL {
         let base = root ?? defaultRoot()
@@ -150,7 +150,7 @@ public enum SessionCache {
 
     // MARK: - Encryption (optional)
 
-    /// AES-GCM with a 32-byte key. The Toolkit stores a per-machine key in
+    /// AES-GCM with a 32-byte key. Studio stores a per-machine key in
     /// the macOS Keychain and threads it in here when the recipe opts in via
     /// `auth.session.cacheEncrypted: true`.
     public static func encrypt(_ plaintext: Data, key: SymmetricKey) throws -> Data {

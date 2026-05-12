@@ -74,7 +74,7 @@ export async function run(
             return {
                 records: [],
                 diagnostic: {
-                    stallReason: 'failed: htmlPrime auth not supported in web runner — use Toolkit',
+                    stallReason: 'failed: htmlPrime auth not supported in web runner — use Studio',
                     unmetExpectations: [],
                 },
             }
@@ -82,12 +82,12 @@ export async function run(
         // Session auth is a stateful flow with credentials, cookie threading,
         // re-auth on 401, and an MFA hook — not viable inside a browser tab
         // without leaking creds into localStorage. Sessioned recipes belong
-        // in the CLI or Toolkit; the web IDE just parses + validates them.
+        // in the CLI or Studio; the web IDE just parses + validates them.
         if (recipe.auth?.tag === 'session') {
             return {
                 records: [],
                 diagnostic: {
-                    stallReason: 'failed: auth.session.* not supported in web runner — run via CLI or Toolkit',
+                    stallReason: 'failed: auth.session.* not supported in web runner — run via CLI or Studio',
                     unmetExpectations: [],
                 },
             }

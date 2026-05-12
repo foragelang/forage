@@ -4,7 +4,7 @@ layout: home
 hero:
     name: Forage Hub
     text: Recipes for declarative scraping
-    tagline: Browse community recipes for the Forage runtime. Pull them with the CLI, edit them in the Toolkit, or publish your own.
+    tagline: Browse community recipes for the Forage runtime. Pull them with the CLI, edit them in Forage Studio, or publish your own.
     image:
         src: /favicon.svg
         alt: Forage
@@ -24,6 +24,6 @@ features:
       details: Every entry is a Forage recipe — declarative, replayable, validated by the runtime.
     - title: Pull from the CLI
       details: 'Reference recipes Docker-style — <code>import alice/zen-leaf</code> in your <code>.forage</code> file and the runtime fetches, caches, and runs.'
-    - title: Open in the Toolkit
-      details: Each recipe page has an `open in Toolkit` deep link that loads it straight into the editor.
+    - title: Open in Studio
+      details: Each recipe page has an `open in Studio` deep link that loads it straight into the editor.
 ---

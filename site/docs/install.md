@@ -31,13 +31,13 @@ sudo cp .build/release/forage /usr/local/bin/
 
 Requires Xcode 16+ on macOS 14+.
 
-## Toolkit (macOS app)
+## Studio (macOS app)
 
-The Toolkit is an interactive recipe authoring app that wraps a WKWebView, captures fetch/XHR traffic, and publishes recipes to the hub.
+Forage Studio is an interactive recipe authoring app that wraps a WKWebView, captures fetch/XHR traffic, and publishes recipes to the hub.
 
-Download the latest signed DMG from [GitHub Releases](https://github.com/foragelang/forage/releases/latest). Mount, drag `Toolkit.app` to `/Applications`, launch.
+Download the latest signed DMG from [GitHub Releases](https://github.com/foragelang/forage/releases/latest). Mount, drag `Studio.app` to `/Applications`, launch.
 
-If the DMG for the current release is ad-hoc signed (no Developer ID signature), macOS will block the first launch. Right-click `Toolkit.app` in `/Applications` and choose **Open** to allow it.
+If the DMG for the current release is ad-hoc signed (no Developer ID signature), macOS will block the first launch. Right-click `Studio.app` in `/Applications` and choose **Open** to allow it.
 
 ## Verify the install
 

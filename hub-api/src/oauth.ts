@@ -4,7 +4,7 @@
 //     GitHub authorize URL + state; `/v1/oauth/callback` exchanges the
 //     code, mints an httpOnly cookie + JWT, redirects back to the
 //     supplied `returnTo` URL.
-//   - Device-code (CLI / Toolkit): `/v1/oauth/device` initiates the
+//   - Device-code (CLI / Studio): `/v1/oauth/device` initiates the
 //     flow; `/v1/oauth/device/poll` returns 200+tokens once the user
 //     completes the GitHub side, 202+pending otherwise.
 //
@@ -207,7 +207,7 @@ function cookie(name: string, value: string, maxAge: number): string {
     return `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`
 }
 
-// --------- Device-code flow (CLI / Toolkit) ---------
+// --------- Device-code flow (CLI / Studio) ---------
 
 /// `POST /v1/oauth/device` — initiates the GitHub device-code flow.
 /// Returns `{ deviceCode, userCode, verificationURL, interval, expiresIn }`.

@@ -305,7 +305,7 @@ async function runRecipeAgainstFixtures() {
     if (parsedRecipe.value.engineKind !== 'http') {
         runResult.value = {
             diagnostic: {
-                stallReason: 'Browser-engine recipes can only run in the Forage Toolkit. Open this recipe in the Toolkit to run it locally.',
+                stallReason: 'Browser-engine recipes can only run in Forage Studio. Open this recipe in Studio to run it locally.',
                 unmetExpectations: [],
             },
             records: [],
@@ -434,14 +434,14 @@ async function signInWithGitHub() {
 function signOut() {
     // The cookie is httpOnly so we can't expire it from JS; best-effort
     // visual logout. Server-side revoke would need a `/v1/oauth/revoke`
-    // call (already wired) — done via the Toolkit / CLI for now.
+    // call (already wired) — done via Studio / CLI for now.
     signedInUser.value = null
 }
 
 const errorIssues = computed(() => validationIssues.value.filter(i => i.severity === 'error'))
 const warningIssues = computed(() => validationIssues.value.filter(i => i.severity === 'warning'))
 const isBrowserRecipe = computed(() => parsedRecipe.value?.engineKind === 'browser')
-const toolkitUrl = computed(() => `forage-toolkit://recipe/${encodeURIComponent(props.slug || publish.value.slug || 'new')}`)
+const studioUrl = computed(() => `forage-studio://recipe/${encodeURIComponent(props.slug || publish.value.slug || 'new')}`)
 
 function inputTypeLabel(i) {
     const t = i.type
@@ -504,8 +504,8 @@ function inputTypeLabel(i) {
 
             <section v-show="activeTab === 'run'" class="ide-section">
                 <div v-if="isBrowserRecipe" class="ide-info">
-                    This recipe uses the browser engine. The web IDE can only run HTTP-engine recipes; open it in the Toolkit to run locally.
-                    <p><a :href="toolkitUrl">Open in Toolkit</a></p>
+                    This recipe uses the browser engine. The web IDE can only run HTTP-engine recipes; open it in Studio to run locally.
+                    <p><a :href="studioUrl">Open in Studio</a></p>
                 </div>
                 <div v-else>
                     <p v-if="parsedInputs.length === 0" class="ide-muted">No inputs declared.</p>

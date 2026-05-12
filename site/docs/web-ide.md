@@ -8,7 +8,7 @@ anything.
 The IDE is a Vue component on the hub site backed by a TypeScript
 reimplementation of the Forage parser, validator, and HTTP runner — kept in
 sync with the Swift runtime via a shared set of test vectors at
-`tests/shared-recipes/`. The IDE is a peer of the CLI and Toolkit, not a
+`tests/shared-recipes/`. The IDE is a peer of the CLI and Studio, not a
 replacement.
 
 ## What it can do
@@ -25,14 +25,14 @@ replacement.
 ## What it can't do
 
 - **Browser-engine recipes** (anything with `engine browser` + `captures.match`)
-  can't run in the web IDE — they need a real `WKWebView`, which only the
-  Toolkit has. The IDE shows an "Open in Toolkit" deep link for these.
+  can't run in the web IDE — they need a real `WKWebView`, which only
+  Studio has. The IDE shows an "Open in Studio" deep link for these.
 - **CORS-blocked APIs** can't be hit from the browser. If the recipe targets
   a private API that doesn't set CORS headers for `hub.foragelang.com`, use
-  the Toolkit or CLI instead. The IDE does not proxy requests.
+  Studio or the CLI instead. The IDE does not proxy requests.
 - **`auth.htmlPrime`** is not implemented in the web runner. Use
-  `auth.staticHeader` recipes in the IDE; HTML-priming flows belong in the
-  Toolkit.
+  `auth.staticHeader` recipes in the IDE; HTML-priming flows belong in
+  Studio.
 
 ## Sign-in flow
 

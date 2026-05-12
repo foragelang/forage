@@ -49,8 +49,8 @@ Body:
 Each publish bumps the version; old versions are kept and queryable via
 `GET /v1/recipes/<slug>?version=N`.
 
-## With the Toolkit
+## With Studio
 
-The Toolkit's **Publish** tab carries the same flow: form fields for
+Forage Studio's **Publish** tab carries the same flow: form fields for
 metadata, **Validate** runs the runtime parser+validator, **Preview payload**
 shows the JSON, **Publish** POSTs to the API.

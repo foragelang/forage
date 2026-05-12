@@ -5,7 +5,7 @@ The Forage hub is a registry at `hub.foragelang.com` (UI) and
 source plus optional fixtures and a snapshot — and serves them to:
 
 - the `forage` CLI's `forage publish` command;
-- the Toolkit app's Publish tab;
+- Studio's Publish tab;
 - recipes that declare `import <ref>` at the top of their source.
 
 ## Authoring a recipe

@@ -7,7 +7,7 @@ import Foundation
 /// Three default implementations:
 /// - `EnvironmentSecretResolver` — `FORAGE_SECRET_<NAME>` env vars (CLI).
 /// - `DictionarySecretResolver` — in-memory map (tests).
-/// - The Toolkit composes its own keychain-backed resolver.
+/// - Studio composes its own keychain-backed resolver.
 public protocol SecretResolver: Sendable {
     func resolve(_ name: String) async throws -> String
 }
@@ -27,7 +27,7 @@ public struct EnvironmentSecretResolver: SecretResolver {
 }
 
 /// In-memory map, useful for tests and host code that already has the
-/// secrets in hand (e.g. the Toolkit after a Keychain read).
+/// secrets in hand (e.g. Studio after a Keychain read).
 public struct DictionarySecretResolver: SecretResolver {
     public let secrets: [String: String]
 

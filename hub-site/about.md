@@ -13,7 +13,7 @@ The hub lets you:
 - **Pull** them from your own recipes — `import alice/zen-leaf` and the
   runtime fetches the body, caches it, and unions its declarations into
   yours.
-- **Publish** your own with the CLI or the Toolkit.
+- **Publish** your own with the CLI or Forage Studio.
 
 References are Docker-style: bare `name` resolves to the official `forage`
 namespace; `alice/name` is a personal namespace; `hub.example.com/team/name`

@@ -36,8 +36,8 @@ public enum InteractiveBootstrapMode: Sendable {
     /// open the visible window for human handshake.
     case auto
     /// Force a fresh bootstrap regardless of cache (the user passed
-    /// `--interactive` on the CLI, or "Re-bootstrap session" in the
-    /// Toolkit).
+    /// `--interactive` on the CLI, or "Re-bootstrap session" in
+    /// Studio).
     case forceBootstrap
     /// Skip bootstrap entirely — headless only. Falls back to running
     /// without seeded cookies when no cache exists; useful for CI hosts

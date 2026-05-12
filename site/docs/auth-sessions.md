@@ -15,7 +15,7 @@ Three variants, picked per recipe:
 | Host        | Source                                                                   |
 | ----------- | ------------------------------------------------------------------------ |
 | CLI         | `FORAGE_SECRET_<NAME>` environment variables                             |
-| Toolkit     | Same env vars by default; future versions can swap in a Keychain-backed resolver |
+| Studio      | Same env vars by default; future versions can swap in a Keychain-backed resolver |
 | Web IDE     | Not supported — sessioned recipes refuse to run in-browser               |
 
 Declare each secret the recipe needs at the top:
@@ -147,7 +147,7 @@ When the engine reaches the login step it pauses, asks the host for a code, and 
 | Host        | Prompt                                                    |
 | ----------- | --------------------------------------------------------- |
 | CLI         | Stderr prompt; one line from stdin. Pass `--no-mfa` to disable. |
-| Toolkit     | Modal sheet with a SecureField.                           |
+| Studio      | Modal sheet with a SecureField.                           |
 | Web IDE     | Not supported.                                            |
 
 If the user cancels, `stallReason` becomes `auth-mfa-cancelled` and the run stops.
@@ -169,7 +169,7 @@ Optional `cacheEncrypted: true` opts into AES-GCM encryption of the file at rest
 
 - **Credentials are never logged.** The engine maintains a `SecretRedactor` over the resolved values and scrubs every diagnostic string it emits. If an HTTP error message accidentally echoes a credential value back, the value is replaced with `<redacted>` before it lands in `stallReason`. (Values shorter than 4 characters are not redacted — single-character substitution would corrupt unrelated output.)
 - **Cache files are never world-readable.** The runtime enforces `chmod 600` at write time.
-- **The web IDE refuses to run sessioned recipes.** Even when an in-browser fetch could succeed, persisting credentials to localStorage isn't viable. Use the CLI or Toolkit.
+- **The web IDE refuses to run sessioned recipes.** Even when an in-browser fetch could succeed, persisting credentials to localStorage isn't viable. Use the CLI or Studio.
 
 ## Diagnostic envelopes
 
