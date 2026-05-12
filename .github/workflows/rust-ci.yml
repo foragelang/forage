@@ -23,15 +23,20 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy
-    runs-on: ubuntu-latest
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install Linux deps for wry/tao
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -40,7 +45,10 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libsoup-3.0-dev
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # `--all-features` would pull in `live` (wry+tao) on every platform,
+      # which is correct for the matrix but slow. Keep the default feature
+      # set for clippy; the test matrix exercises everything.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -53,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install Linux deps for wry/tao
+      - name: Install Linux deps
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -65,3 +73,49 @@ jobs:
             libsoup-3.0-dev
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
+
+  wasm:
+    name: forage-wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: curl -fsSL https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Build forage-wasm
+        working-directory: crates/forage-wasm
+        run: wasm-pack build --target web --out-dir ../../hub-site/forage-wasm/pkg
+      - name: Verify pkg checked in matches build
+        run: |
+          if ! git diff --exit-code hub-site/forage-wasm/pkg; then
+            echo "::warning::checked-in hub-site/forage-wasm/pkg is stale; run \`wasm-pack build --target web --out-dir hub-site/forage-wasm/pkg\` from crates/forage-wasm and commit."
+          fi
+
+  studio-tauri-build:
+    name: Forage Studio (Tauri) — backend cargo check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+      # Backend-only check — the frontend (apps/studio/ui) lives on its
+      # own npm-driven cadence and is built by `cargo tauri build` only
+      # when a release is cut. Keeping CI fast.
+      - run: cargo check -p forage-studio
