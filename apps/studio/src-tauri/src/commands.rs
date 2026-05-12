@@ -375,8 +375,14 @@ pub fn debug_resume(
     Ok(())
 }
 
-/// Replace the current breakpoint set. Step names not present in the
-/// recipe are harmless — the engine simply never reaches them.
+/// Replace the current in-memory breakpoint set. Step names not present
+/// in the recipe are harmless — the engine simply never reaches them.
+///
+/// Per-recipe persistence is handled by `set_recipe_breakpoints` /
+/// `load_recipe_breakpoints` below. The frontend pushes via *this*
+/// command on slug switch so the engine's hot-path read sees the new
+/// recipe's set, then persists the user's edits through the recipe-
+/// scoped commands.
 #[tauri::command]
 pub fn set_breakpoints(
     state: State<'_, crate::state::StudioState>,
@@ -386,6 +392,38 @@ pub fn set_breakpoints(
         .breakpoints
         .store(Arc::new(steps.into_iter().collect()));
     Ok(())
+}
+
+/// Persist a recipe's breakpoint set to the library sidecar and push it
+/// to the in-memory cache the engine reads on pause. Empty set deletes
+/// the slug's entry so the sidecar doesn't grow stale.
+#[tauri::command]
+pub fn set_recipe_breakpoints(
+    state: State<'_, crate::state::StudioState>,
+    slug: String,
+    steps: Vec<String>,
+) -> Result<(), String> {
+    let mut all = library::read_breakpoints();
+    if steps.is_empty() {
+        all.remove(&slug);
+    } else {
+        all.insert(slug, steps.clone());
+    }
+    library::write_breakpoints(&all).map_err(|e| e.to_string())?;
+    state
+        .breakpoints
+        .store(Arc::new(steps.into_iter().collect()));
+    Ok(())
+}
+
+/// Load the persisted breakpoint set for one recipe. Returns an empty
+/// vec when the slug has no entry — the absence of breakpoints is the
+/// default.
+#[tauri::command]
+pub fn load_recipe_breakpoints(slug: String) -> Vec<String> {
+    library::read_breakpoints()
+        .remove(&slug)
+        .unwrap_or_default()
 }
 
 /// Cancel the currently-running recipe (if any). Idempotent — calling when

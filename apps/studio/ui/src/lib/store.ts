@@ -61,7 +61,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     runStartedAt: null,
     breakpoints: new Set<string>(),
     paused: null,
-    setActive: (slug) =>
+    setActive: (slug) => {
         set({
             activeSlug: slug,
             source: "",
@@ -75,12 +75,30 @@ export const useStudio = create<StudioState>((set, get) => ({
             runStartedAt: null,
             paused: null,
             tab: "source",
-            // Breakpoints intentionally NOT cleared — they're a per-recipe
-            // setting from the user's perspective, but we don't yet store
-            // per-recipe; clearing on switch would be more surprising than
-            // leaving them as orphans (engine never reaches a step name it
-            // doesn't have, so dangling entries are harmless).
-        }),
+            // Replace the in-memory breakpoint set with the new slug's
+            // persisted set. Until the backend round-trip completes the
+            // set is empty — the previous recipe's breakpoints can't
+            // bleed into the new one.
+            breakpoints: new Set(),
+        });
+        // Pull this recipe's persisted breakpoints from the library
+        // sidecar and push them to the in-memory cache the engine
+        // reads on pause. Fire-and-forget — if it fails, the user just
+        // doesn't see saved breakpoints for that recipe until they
+        // re-toggle.
+        if (slug) {
+            api.loadRecipeBreakpoints(slug)
+                .then((steps) => {
+                    set({ breakpoints: new Set(steps) });
+                    return api.setBreakpoints(steps);
+                })
+                .catch((e) =>
+                    console.warn("load_recipe_breakpoints failed", e),
+                );
+        } else {
+            api.setBreakpoints([]).catch(() => {});
+        }
+    },
     setTab: (t) => set({ tab: t }),
     setSource: (s) =>
         set((state) => ({ source: s, dirty: state.source !== s })),
@@ -113,22 +131,38 @@ export const useStudio = create<StudioState>((set, get) => ({
     debugClearPause: () => set({ paused: null }),
     toggleBreakpoint: (step) => {
         const cur = get().breakpoints;
+        const slug = get().activeSlug;
         const next = new Set(cur);
         if (next.has(step)) next.delete(step);
         else next.add(step);
         set({ breakpoints: next });
-        // Push the new set to the backend asynchronously. The host needs
-        // the latest set on every step pause; fire-and-forget is fine
-        // because a missed update just means the next run pauses on a
-        // stale set — the user toggles again and it converges.
-        api.setBreakpoints([...next]).catch((e) =>
-            console.warn("set_breakpoints failed", e),
-        );
+        // Persist + push the new set. The recipe-scoped command writes
+        // through the library sidecar AND updates the engine's
+        // in-memory cache, so one command covers both. When there's no
+        // active recipe, fall back to the in-memory-only path — there's
+        // nowhere to persist to.
+        const steps = [...next];
+        if (slug) {
+            api.setRecipeBreakpoints(slug, steps).catch((e) =>
+                console.warn("set_recipe_breakpoints failed", e),
+            );
+        } else {
+            api.setBreakpoints(steps).catch((e) =>
+                console.warn("set_breakpoints failed", e),
+            );
+        }
     },
     clearBreakpoints: () => {
         set({ breakpoints: new Set() });
-        api.setBreakpoints([]).catch((e) =>
-            console.warn("set_breakpoints failed", e),
-        );
+        const slug = get().activeSlug;
+        if (slug) {
+            api.setRecipeBreakpoints(slug, []).catch((e) =>
+                console.warn("set_recipe_breakpoints failed", e),
+            );
+        } else {
+            api.setBreakpoints([]).catch((e) =>
+                console.warn("set_breakpoints failed", e),
+            );
+        }
     },
 }));

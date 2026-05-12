@@ -149,6 +149,10 @@ export const api = {
         invoke<void>("debug_resume", { action }),
     setBreakpoints: (steps: string[]) =>
         invoke<void>("set_breakpoints", { steps }),
+    setRecipeBreakpoints: (slug: string, steps: string[]) =>
+        invoke<void>("set_recipe_breakpoints", { slug, steps }),
+    loadRecipeBreakpoints: (slug: string) =>
+        invoke<string[]>("load_recipe_breakpoints", { slug }),
     recipeOutline: (source: string) =>
         invoke<RecipeOutline>("recipe_outline", { source }),
     languageDictionary: () =>

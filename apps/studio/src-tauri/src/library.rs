@@ -187,6 +187,34 @@ pub fn read_captures(slug: &str) -> Vec<forage_replay::Capture> {
     out
 }
 
+/// Per-recipe breakpoint persistence. One JSON sidecar at
+/// `<library_root>/breakpoints.json` keyed by recipe slug. The file is
+/// missing until the user sets a first breakpoint, so the empty-map
+/// case is the steady state for fresh libraries.
+pub fn breakpoints_path() -> PathBuf {
+    library_root().join("breakpoints.json")
+}
+
+pub fn read_breakpoints() -> std::collections::HashMap<String, Vec<String>> {
+    let path = breakpoints_path();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+pub fn write_breakpoints(
+    map: &std::collections::HashMap<String, Vec<String>>,
+) -> std::io::Result<()> {
+    let path = breakpoints_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string_pretty(map)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(path, body)
+}
+
 /// Convenience for `forage_keychain` env-style secret resolution.
 pub fn read_secrets_from_env(recipe: &forage_core::Recipe) -> indexmap::IndexMap<String, String> {
     let mut out = indexmap::IndexMap::new();

@@ -65,6 +65,8 @@ pub fn run() {
             commands::cancel_run,
             commands::debug_resume,
             commands::set_breakpoints,
+            commands::set_recipe_breakpoints,
+            commands::load_recipe_breakpoints,
             commands::recipe_outline,
             commands::language_dictionary,
             commands::publish_recipe,
