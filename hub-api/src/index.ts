@@ -1,5 +1,5 @@
 import type { Env } from './types'
-import { corsPreflight, json, jsonError } from './http'
+import { BUCKETS, callerKey, corsPreflight, json, jsonError, rateLimit } from './http'
 import {
     listRecipes,
     getRecipe,
@@ -23,7 +23,7 @@ import { identifyCaller } from './auth'
 
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
-        if (request.method === 'OPTIONS') return corsPreflight()
+        if (request.method === 'OPTIONS') return corsPreflight(request)
 
         const url = new URL(request.url)
         const path = url.pathname.replace(/\/+$/, '') || '/'
@@ -33,7 +33,7 @@ export default {
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             console.error('handler-error', message, err)
-            return jsonError(500, 'internal', message)
+            return jsonError(500, 'internal', message, {}, request)
         }
     },
 } satisfies ExportedHandler<Env>
@@ -44,14 +44,26 @@ async function route(
     path: string,
 ): Promise<Response> {
     if (path === '/v1/health' && request.method === 'GET') {
-        return json({ status: 'ok', time: new Date().toISOString() })
+        return json({ status: 'ok', time: new Date().toISOString() }, 200, request)
     }
 
-    // M11 OAuth endpoints.
-    if (path === '/v1/oauth/start' && request.method === 'POST') return oauthStart(request, env)
+    // M11 OAuth endpoints — most have their own rate limits.
+    if (path === '/v1/oauth/start' && request.method === 'POST') {
+        const limit = await rateLimit(env, 'oauthStart', callerKey(request, null), request)
+        if (limit) return limit
+        return oauthStart(request, env)
+    }
     if (path === '/v1/oauth/callback' && request.method === 'GET') return oauthCallback(request, env)
-    if (path === '/v1/oauth/device' && request.method === 'POST') return oauthDevice(request, env)
-    if (path === '/v1/oauth/device/poll' && request.method === 'POST') return oauthDevicePoll(request, env)
+    if (path === '/v1/oauth/device' && request.method === 'POST') {
+        const limit = await rateLimit(env, 'deviceStart', callerKey(request, null), request)
+        if (limit) return limit
+        return oauthDevice(request, env)
+    }
+    if (path === '/v1/oauth/device/poll' && request.method === 'POST') {
+        const limit = await rateLimit(env, 'devicePoll', callerKey(request, null), request)
+        if (limit) return limit
+        return oauthDevicePoll(request, env)
+    }
     if (path === '/v1/oauth/refresh' && request.method === 'POST') return oauthRefresh(request, env)
     if (path === '/v1/oauth/whoami' && request.method === 'GET') {
         const caller = await identifyCaller(request, env)
@@ -60,14 +72,20 @@ async function route(
     }
     if (path === '/v1/oauth/revoke' && request.method === 'POST') {
         const caller = await identifyCaller(request, env)
-        if (caller?.kind !== 'user') return jsonError(401, 'unauthorized', 'sign-in required')
+        if (caller?.kind !== 'user') return jsonError(401, 'unauthorized', 'sign-in required', {}, request)
         return oauthRevoke(request, env, caller.login)
     }
 
     if (path === '/v1/recipes' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit) return limit
         return listRecipes(request, env)
     }
     if (path === '/v1/recipes' && request.method === 'POST') {
+        const caller = await identifyCaller(request, env)
+        const key = caller?.kind === 'user' ? caller.login : callerKey(request, null)
+        const limit = await rateLimit(env, 'publish', key, request)
+        if (limit) return limit
         return publishRecipe(request, env)
     }
 
@@ -79,10 +97,12 @@ async function route(
         const ns = decodeURIComponent(subMatch[1])
         const name = decodeURIComponent(subMatch[2])
         const slug = validateSlugSegments(ns, name)
-        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`)
+        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`, {}, request)
         if (request.method !== 'GET') {
-            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`)
+            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
         }
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit) return limit
         if (subMatch[3] === 'versions') return getRecipeVersionsHandler(request, env, slug)
         if (subMatch[3] === 'fixtures') return getRecipeFixtures(request, env, slug)
         if (subMatch[3] === 'snapshot') return getRecipeSnapshot(request, env, slug)
@@ -94,15 +114,24 @@ async function route(
         const ns = decodeURIComponent(detailMatch[1])
         const name = decodeURIComponent(detailMatch[2])
         const slug = validateSlugSegments(ns, name)
-        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`)
+        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`, {}, request)
         if (request.method === 'GET') {
+            const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+            if (limit) return limit
             const url = new URL(request.url)
             return getRecipe(request, env, slug, url.searchParams.get('version'))
         }
         if (request.method === 'DELETE') {
+            const caller = await identifyCaller(request, env)
+            const key = caller?.kind === 'user' ? caller.login : callerKey(request, null)
+            const limit = await rateLimit(env, 'publish', key, request)
+            if (limit) return limit
             return deleteRecipe(request, env, slug)
         }
     }
 
-    return jsonError(404, 'no_route', `no route for ${request.method} ${path}`)
+    return jsonError(404, 'no_route', `no route for ${request.method} ${path}`, {}, request)
 }
+
+// Re-export bucket configuration for test fixtures.
+export { BUCKETS }
