@@ -164,6 +164,11 @@ impl<'t> Engine<'t> {
     ) -> HttpResult<()> {
         let mut driver = step.pagination.as_ref().map(PaginationDriver::new);
         let mut extra_query: Vec<(String, String)> = Vec::new();
+        // Accumulator for paginated items. The strategy's `items_path` is
+        // evaluated against each page's response body; the flattened list
+        // becomes the step's final bound value so `$step[*]` works the same
+        // as it does for non-paginated steps that return a top-level array.
+        let mut accumulated_items: Vec<EvalValue> = Vec::new();
 
         loop {
             if *requests_made >= self.config.max_requests {
@@ -188,7 +193,8 @@ impl<'t> Engine<'t> {
 
             let body_val = parse_response_body(&req.url, &resp)?;
 
-            // Bind `$<stepName>` to the response body for downstream eval.
+            // Bind `$<stepName>` to the response body for downstream eval —
+            // pagination accumulation overrides this at the end of the loop.
             scope.bind(&step.name, body_val.clone());
             scope.current = Some(body_val.clone());
 
@@ -199,9 +205,22 @@ impl<'t> Engine<'t> {
                 apply_regex_extract(ex, body_str, scope)?;
             }
 
+            // If pagination is declared, append this page's items to the
+            // accumulator before driving to the next page.
+            if let Some(pag) = &step.pagination {
+                let items = items_for_page(pag, evaluator, scope)?;
+                accumulated_items.extend(items);
+            }
+
             match driver.as_mut() {
                 Some(d) => match d.advance(evaluator, scope)? {
-                    NextPage::Stop => return Ok(()),
+                    NextPage::Stop => {
+                        // Re-bind `$<stepName>` to the accumulated items so
+                        // downstream `$<stepName>[*]` iterates across pages.
+                        scope.bind(&step.name, EvalValue::Array(accumulated_items.clone()));
+                        scope.current = Some(EvalValue::Array(accumulated_items));
+                        return Ok(());
+                    }
                     NextPage::Continue(params) => {
                         extra_query = params;
                     }
@@ -282,6 +301,24 @@ impl<'t> Engine<'t> {
     }
 }
 
+fn items_for_page(
+    pag: &Pagination,
+    ev: &Evaluator<'_>,
+    scope: &Scope,
+) -> HttpResult<Vec<EvalValue>> {
+    let path = match pag {
+        Pagination::PageWithTotal { items_path, .. } => items_path,
+        Pagination::UntilEmpty { items_path, .. } => items_path,
+        Pagination::Cursor { items_path, .. } => items_path,
+    };
+    match ev.eval_path(path, scope)? {
+        EvalValue::Array(xs) => Ok(xs),
+        EvalValue::NodeList(xs) => Ok(xs.into_iter().map(EvalValue::Node).collect()),
+        EvalValue::Null => Ok(Vec::new()),
+        other => Ok(vec![other]),
+    }
+}
+
 fn apply_regex_extract(ex: &RegexExtract, body: &str, scope: &mut Scope) -> HttpResult<()> {
     let re = regex::Regex::new(&ex.pattern)
         .map_err(|e| HttpError::Generic(format!("regex compile: {e}")))?;
@@ -355,6 +392,65 @@ mod tests {
             snap.records[0].fields.get("id"),
             Some(&JSONValue::String("a".into()))
         );
+    }
+
+    #[tokio::test]
+    async fn paginated_step_binds_accumulated_items() {
+        // Reproduces the Sweed bug: a paginated step whose response is an
+        // object `{list: [...], total: N}` must bind `$<step>` to the
+        // flattened items list across pages, not the last page's body.
+        let src = r#"
+            recipe "paged" {
+                engine http
+                type Item { id: String }
+                step products {
+                    method "GET"
+                    url "https://api.example.com/items"
+                    paginate pageWithTotal {
+                        items: $.list, total: $.total,
+                        pageParam: "page", pageSize: 2
+                    }
+                }
+                for $p in $products[*] {
+                    emit Item { id ← $p.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let page1 = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"list":[{"id":"a"},{"id":"b"}],"total":4}"#.into(),
+        });
+        let page2 = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items?page=2&pageSize=2".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"list":[{"id":"c"},{"id":"d"}],"total":4}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![page1, page2]);
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 4);
+        let ids: Vec<_> = snap
+            .records
+            .iter()
+            .map(|r| match r.fields.get("id") {
+                Some(JSONValue::String(s)) => s.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "c", "d"]);
     }
 
     #[tokio::test]
