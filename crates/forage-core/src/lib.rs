@@ -15,4 +15,5 @@ pub use ast::Recipe;
 pub use error::{ForageError, ForageResult};
 pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
 pub use parse::parse;
+pub use snapshot::{DiagnosticReport, Record, Snapshot};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
