@@ -51,6 +51,7 @@ pub fn run() {
             commands::save_recipe,
             commands::create_recipe,
             commands::delete_recipe,
+            commands::show_recipe_context_menu,
             commands::run_recipe,
             commands::cancel_run,
             commands::publish_recipe,

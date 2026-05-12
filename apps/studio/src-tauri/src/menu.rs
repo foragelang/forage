@@ -89,6 +89,12 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "publish" => {
             let _ = app.emit("menu:publish", ());
         }
+        // Context-menu items use ID prefix `recipe_delete:<slug>` so we
+        // can route many recipe slugs through one handler.
+        other if other.starts_with("recipe_delete:") => {
+            let slug = &other["recipe_delete:".len()..];
+            let _ = app.emit("menu:recipe_delete", slug);
+        }
         _ => {}
     }
 }

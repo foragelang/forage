@@ -57,6 +57,33 @@ pub fn delete_recipe(slug: String) -> Result<(), String> {
     library::delete_recipe(&slug).map_err(|e| e.to_string())
 }
 
+/// Pop up a native context menu (NSMenu on macOS, etc.) at the given
+/// window-relative position with a "Delete recipe…" item. Selection
+/// flows back through the global on_menu_event handler, which emits
+/// `menu:recipe_delete` with the slug as payload.
+#[tauri::command]
+pub fn show_recipe_context_menu(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    slug: String,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let id = format!("recipe_delete:{slug}");
+    let delete_item = tauri::menu::MenuItemBuilder::with_id(&id, "Delete Recipe…")
+        .build(&app)
+        .map_err(|e| e.to_string())?;
+    let menu = tauri::menu::MenuBuilder::new(&app)
+        .item(&delete_item)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let position = tauri::Position::Logical(tauri::LogicalPosition { x, y });
+    window
+        .popup_menu_at(&menu, position)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct RunOutcome {
     pub ok: bool,
