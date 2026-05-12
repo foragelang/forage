@@ -4,32 +4,35 @@ Write your first recipe and run it end-to-end in a few minutes.
 
 ## Requirements
 
-- macOS 14 (Sonoma) or newer
-- Swift 6.0 or newer (Xcode 16+)
+- macOS 14, Linux, or Windows 10+
+- Rust 1.85 or newer
 
-The browser engine uses `WKWebView` and is macOS-only. The HTTP engine is platform-portable in principle, but the current package targets macOS 14+.
+The browser engine runs through `wry`: WKWebView on macOS, WebView2 on
+Windows, WebKitGTK on Linux.
 
 ## Install
 
-Forage isn't yet published to a registry. Clone the repo and build locally:
+Once releases ship, `brew install foragelang/forage/forage` or
+`curl -fsSL https://foragelang.com/install.sh | sh`. Until then, build
+from source:
 
 ```sh
 git clone https://github.com/foragelang/forage.git
 cd forage
-swift build
-swift test
+cargo build --release --bin forage
+./target/release/forage --version
 ```
 
-That produces `.build/debug/forage`, the CLI you'll use to run recipes. See the [CLI reference](/docs/cli) for the full subcommand surface.
+See the [CLI reference](/docs/cli) for the full subcommand surface.
 
-To use Forage as a library in your own Swift package, point at the local checkout while we work toward a tagged release:
+To use Forage as a library in your own Rust crate, point your
+`Cargo.toml` at the local checkout while we work toward a tagged
+release:
 
-```swift
-.package(path: "../forage")
-```
-
-```swift
-.product(name: "Forage", package: "forage")
+```toml
+[dependencies]
+forage-core = { path = "../forage/crates/forage-core" }
+forage-http = { path = "../forage/crates/forage-http" }
 ```
 
 ## Write a recipe

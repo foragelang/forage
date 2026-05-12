@@ -1,62 +1,115 @@
 # Forage
 
-A declarative scraping platform: a small DSL for describing how to fetch structured data from a website, plus a Swift runtime that executes recipes against either a plain HTTP engine or a real browser engine (`WKWebView` on macOS).
+A declarative scraping platform: a small DSL for describing how to fetch
+structured data from a website, plus a Rust runtime that executes
+recipes against an HTTP engine or a real browser engine
+(`wry`-backed `WKWebView` on macOS, `WebView2` on Windows, `WebKitGTK`
+on Linux).
 
-Will live at **foragelang.com** when the platform stabilizes.
+Lives at **foragelang.com**.
 
-## Status
+## What you can do today
 
-**Runtime operational and consumer-integrated.** Phases A-G of the [`PLANS.md`](./PLANS.md) execution plan are complete: parser, HTTP engine, browser engine, validator, fixture replay, snapshot codable, platform recipes for Sweed / Leafbridge / Jane, and weed-prices now drives Forage as its sole scraping path (the bespoke per-platform Swift scrapers it shipped with are deleted). 27 tests green.
+- Write a `.forage` recipe (see [`recipes/`](./recipes/)) and run it
+  end-to-end via the CLI:
 
-What you can do today:
+  ```sh
+  forage run recipes/hacker-news
+  forage run recipes/letterboxd-popular --replay
+  ```
 
-- Write a `.forage` recipe (see [`recipes/`](./recipes/)) and parse it via `Parser.parse(source:)`.
-- Run an HTTP-engine recipe end-to-end via `RecipeRunner.run(recipe:inputs:)` against `URLSessionTransport` for live or `HTTPReplayer` for fixture replay.
-- Run a browser-engine recipe via `BrowserEngine.run()` on the main actor (consumer drives `NSApplication`).
-- Statically validate any recipe via `Validator.validate(_:)` — catches unknown types/fields/transforms, unbound path variables, missing required fields.
-- Reverse-engineer a new platform with `forage capture <url>` and inspect the captured JSONL.
-- Encode/decode `Snapshot` values via `SnapshotIO.encode(_:)` / `.decode(_:)` for offline snapshot round-tripping.
+- Validate / test recipes with rich diagnostics:
 
-What lands next: capture per-platform fixtures alongside each recipe so reviewers can verify a recipe extracts what its snapshot claims without running anything; surface the WKWebView the browser engine drives inside the consumer app so Jane (Trilogy) can ship; explore Dutchie as a fourth platform recipe.
+  ```sh
+  forage test recipes/hacker-news      # diff vs expected.snapshot.json
+  forage test recipes/hacker-news --update   # snapshot, golden-file workflow
+  ```
 
-Canonical artifacts:
+- Sign in to the hub and publish a recipe:
 
-- [`DESIGN.md`](./DESIGN.md) — design plan: principles, output type model, recipe shape, pagination strategies, dev/test workflow.
-- [`PLANS.md`](./PLANS.md) — execution plan for phases A-H with files, types, validator checks, anti-patterns.
-- [`recipes/sweed/`](./recipes/sweed/), [`recipes/leafbridge/`](./recipes/leafbridge/), [`recipes/jane/`](./recipes/jane/) — bundled platform recipes (parameterized by per-store inputs supplied by the consumer).
-- [`Sources/Forage/`](./Sources/Forage/) — runtime library (parser, engines, validator, fixture replay).
-- [`Sources/forage-cli/`](./Sources/forage-cli/) — `forage run | capture | scaffold | test | publish` CLI.
+  ```sh
+  forage auth login                    # GitHub OAuth device-code flow
+  forage publish recipes/hacker-news --publish
+  ```
 
-## What problems it solves
+- Get LSP-grade editing in any editor that speaks the protocol:
 
-- **Recipes are data, not code.** A site's scraping logic is a declarative file: HTTP graph + pagination strategy + type-directed extraction binding fields to a fixed output catalog. Engine evolves; recipes don't run code we don't trust.
-- **Two engines, one DSL.** HTTP recipes for sites that expose a documented API; browser recipes for sites where the data sits behind a JS SPA + cloudflare bot management. Both target the same output type catalog, so downstream code doesn't care which engine ran.
-- **Diagnostics speak recipe vocabulary.** When a run stalls — unmatched captures, unfired rules, expectation gaps, unhandled UI affordances — the engine surfaces them in the same language the recipe uses (URL patterns, type names, capture rule names). The corrective edit reads directly off the report instead of out of stack traces or wire-level logs.
-- **Hub-friendly review.** Recipe + fixtures + snapshot ship together as a self-contained directory. Reviewers can verify a recipe extracts what its snapshot claims without running anything.
+  ```sh
+  forage lsp                           # JSON-RPC over stdio
+  ```
 
-## Out of scope
-
-- Substantive access controls (login, paywall, real CAPTCHA, account-required pages) — recipes don't bypass them. Generic bot-management gates on otherwise-public pages are not in this category.
-- Generic-purpose scraping framework — output types are currently fixed to the consumer's schema. Designed to be liftable later, not yet lifted.
+- Author interactively in [Forage Studio](./apps/studio/) — Tauri +
+  React + Monaco, embeds the LSP and drives the browser engine for
+  live captures.
 
 ## Layout
 
 ```
-Sources/Forage/        # Swift runtime: parser, HTTP/browser engines, validator, fixture replay
-Sources/forage-cli/    # CLI: forage run | capture | scaffold | test | publish
-Tests/ForageTests/     # Engine unit tests (27 green)
-recipes/<platform>/    # Bundled platform recipes — recipe.forage, optional fixtures/
-hub-api/               # Cloudflare Worker for api.foragelang.com (recipe registry)
-hub-site/              # VitePress site for hub.foragelang.com (registry browser)
-site/                  # VitePress site for foragelang.com (marketing + docs)
-DESIGN.md              # Design plan
-PLANS.md               # Phase-by-phase execution plan (A-H)
-ROADMAP.md             # M1-M6 product milestones
+crates/
+├── forage-core/        # AST, parser, validator, evaluator, snapshot, transforms
+├── forage-http/        # HTTP engine: auth, pagination, session cache, replay
+├── forage-browser/     # wry-based browser engine + JS shim + replay
+├── forage-hub/         # api.foragelang.com client + OAuth device-code flow
+├── forage-keychain/    # cross-platform secret storage
+├── forage-replay/      # capture types (HTTP + browser) + JSONL format
+├── forage-lsp/         # tower-lsp server reused by Studio + VS Code
+├── forage-wasm/        # wasm-bindgen exports for the web IDE
+└── forage-test/        # shared-recipes test harness
+apps/
+├── cli/                # `forage` binary
+└── studio/             # Forage Studio (Tauri 2 + React 19 + Monaco)
+recipes/                # bundled platform recipes
+hub-api/                # Cloudflare Worker (api.foragelang.com)
+hub-site/               # VitePress (hub.foragelang.com)
+site/                   # VitePress (foragelang.com)
+docs/                   # mdbook (foragelang.com/docs)
+DESIGN.md               # design plan
+ROADMAP.md              # milestones R1–R13
 ```
+
+## What problems it solves
+
+- **Recipes are data, not code.** A site's scraping logic is a
+  declarative file: HTTP graph + pagination strategy + type-directed
+  extraction binding fields to a fixed output catalog. Engine evolves;
+  recipes don't run code we don't trust.
+- **Two engines, one DSL.** HTTP recipes for sites that expose a
+  documented API; browser recipes for sites where the data sits behind
+  a JS SPA + Cloudflare/Akamai bot management. Both target the same
+  output type catalog, so downstream code doesn't care which engine ran.
+- **Diagnostics speak recipe vocabulary.** When a run stalls — unmatched
+  captures, unfired rules, expectation gaps, unhandled UI affordances —
+  the engine surfaces them in the same language the recipe uses (URL
+  patterns, type names, capture rule names). The corrective edit reads
+  directly off the report.
+- **Hub-friendly review.** Recipe + fixtures + snapshot ship together
+  as a self-contained directory. Reviewers can verify a recipe extracts
+  what its snapshot claims without running anything.
+
+## Out of scope
+
+- **Substantive access controls** (login, paywall, real CAPTCHA,
+  account-required pages) — the headless engine doesn't bypass them.
+  M10's interactive bootstrap hands off to a human for one-time
+  challenges; the resulting session is reused headlessly until expiry.
+- **Generic-purpose scraping framework** — output types are
+  recipe-declared. Designed to be liftable later, not yet lifted.
 
 ## Building
 
 ```sh
-swift build
-swift test
+cargo build --workspace
+cargo test --workspace
+forage --version
 ```
+
+For Forage Studio:
+
+```sh
+cd apps/studio/ui && npm install
+cd .. && cargo tauri dev
+```
+
+See [`RELEASING.md`](./RELEASING.md) for the release workflow,
+[`ROADMAP.md`](./ROADMAP.md) for milestones, and
+[`DESIGN.md`](./DESIGN.md) for the language design.

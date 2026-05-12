@@ -1,521 +1,650 @@
-# Forage — full-product roadmap
+# Forage — Rust rewrite roadmap
 
-The product is four artifacts on top of one runtime:
+Soup-to-nuts plan to port Forage from Swift to a Rust workspace. Forage Studio gets reimplemented in Tauri (Rust shell + React + Monaco) instead of SwiftUI; the rest of the stack — runtime, CLI, hub client, LSP, web-IDE wasm core — moves to Rust too. Cross-platform webviews via `wry`, `forage-wasm` replaces `forage-ts` in the web IDE. Greenfield: Swift code is archived in git history and deleted as each Rust counterpart lands.
 
-1. **Runtime library** (`Sources/Forage/`) — parses, validates, runs recipes; ships as a Swift package.
-2. **CLI tool** (`Sources/forage-cli/`) — thin wrapper around the runtime; ships as `forage` binary.
-3. **Studio app** (`Studio/`) — macOS SwiftUI app for interactive recipe authoring; embedded WKWebView; publishes to the hub.
-4. **Hub** (`hub-api/` + `hub-site/`) — registry at `hub.foragelang.com` with API at `api.foragelang.com`; includes an in-browser editor for recipes that don't need a real browser engine.
-
-This doc lays out six milestones (M1–M6) that take us from "runtime + half a CLI" today to "all four artifacts shipping and integrated."
-
-Each milestone has a result-statement, concrete deliverables (acceptance-testable), and dependencies. Build top-to-bottom; later milestones expect earlier ones to be landed.
+Milestones prefixed `R1`–`R13` to distinguish from the Swift `M1`–`M11` (now history).
 
 ---
 
-## M1 — Finish the CLI
+## The endgame
 
-**Status: landed.** All five subcommands (`run`, `capture`, `scaffold`, `test`, `publish`) live in `Sources/forage-cli/`; `Tests/ForageTests/ScaffoldTests.swift` + `TestCommandTests.swift` cover the heuristics + harness; `site/docs/cli.md` is the subcommand reference. `publish` shipped beyond the M1 stub — it actually POSTs via `HubClient` when `FORAGE_HUB_TOKEN` is set (M4 wiring landed alongside).
+When the roadmap is fully landed:
 
-**Result:** `forage` is a polished single-binary CLI with subcommands `run`, `capture`, `scaffold`, `test`, `publish` (publish prints what it would do until M4 wires it live).
-
-Builds on A1's in-progress work in `Sources/forage-cli/`. Phase 8 (`unhandledAffordances`) is already committed (`68da6bf`); the rename + ArgumentParser skeleton is uncommitted.
-
-**Deliverables**
-
-- **D1.1 — Land the rename.** Commit the uncommitted `Sources/forage-cli/` files + `Package.swift` change + `Sources/forage-probe/` deletion. `swift build` must produce a `forage` binary.
-- **D1.2 — `forage run <recipe>`** — full functional parity with old `forage-probe run`. Auto-detects engine kind. `--input k=v` repeatable. Prints `RunResult.snapshot` as JSON, `RunResult.report.stallReason` + sections to stderr.
-- **D1.3 — `forage capture <url>`** — full parity with old `forage-probe capture`. Embedded WKWebView, JS-injected fetch/XHR wrapper, JSONL output. `--out`, `--settle`, `--timeout`.
-- **D1.4 — `forage scaffold <captures.jsonl>`** — Phase 9. Real heuristics:
-  - Parse JSONL captures. Group by URL pattern (strip numeric IDs + query strings; bucket structurally).
-  - For the dominant pattern, decode response bodies; find the longest nested array (probable items list).
-  - Walk item fields → infer Swift-ish types (`id`/`*Id` → String, `price`/`*Price` → Double, `name`/`title` → String, `available`/`*` boolean → Bool, image-url keys → String).
-  - Pick engine: `application/json` content-type → http; `text/html` → browser.
-  - Emit a recipe skeleton with type decl + `captures.match` (browser) or `step + paginate.untilEmpty` (http) + emit blocks for inferred fields + a basic `expect { records.where(typeName == "X").count >= 1 }`.
-  - `--out path` writes to file; default stdout.
-- **D1.5 — `forage test <recipe-dir>`** — Phase 10:
-  - Recipe dir layout: `recipe.forage`, `fixtures/captures.jsonl` (and/or HTTP fixtures), `fixtures/inputs.json` (optional), `expected.snapshot.json` (optional golden file).
-  - Run via `BrowserReplayer` (browser engines) or `HTTPReplayer` (http engines).
-  - If `expected.snapshot.json` exists: structural diff against produced snapshot, exit 0 on identity, 1 on mismatch.
-  - If absent: print produced snapshot, exit 0 (suggest `--update` to write).
-  - `--update` writes the produced snapshot to `expected.snapshot.json`.
-  - Surface `RunResult.report.unmetExpectations` — non-zero exit if any.
-- **D1.6 — `forage publish <recipe-dir>` stub** — validates the recipe, prints the JSON payload it would POST to `$FORAGE_HUB_URL/v1/recipes` (default `https://api.foragelang.com`). If `$FORAGE_HUB_TOKEN` is set AND `--no-dry-run` is passed, actually POST (but with friendly "not yet wired" message until M4).
-- **D1.7 — Tests.** New `Tests/ForageTests/ScaffoldTests.swift` and `Tests/ForageTests/TestCommandTests.swift`. Synthetic JSONL → assert recipe shape; synthetic recipe + expected → assert diff behavior.
-- **D1.8 — Docs.** `site/docs/cli.md` (new) — full subcommand reference. Update site sidebar.
-
-**Acceptance**
-
-- `swift build` clean; `swift test` all pass.
-- `swift run forage --help` lists subcommands.
-- `swift run forage scaffold tests/fixtures/sample-captures.jsonl` produces a recipe that passes `Parser.parse` + `Validator.validate`.
-- `swift run forage test recipes/sweed --update` writes an `expected.snapshot.json`; subsequent `swift run forage test recipes/sweed` exits 0.
+- **One cargo workspace** rooted at the repo, with `~12` library crates and 2 binary apps.
+- **`forage` CLI** installable via Homebrew, `curl | sh`, and `cargo install`. Runs every recipe in `recipes/` identically to the Swift CLI.
+- **Forage Studio (Tauri)** signed + notarized for macOS, published to `foragelang.com/download`. Embeds Monaco with a real Forage LSP (autocomplete, hover, diagnostics, go-to-definition, format).
+- **Web IDE at hub.foragelang.com** running `forage-wasm` — full parser/validator/HTTP-runner parity with the native runtime, same source-of-truth Rust code compiled to WebAssembly. `forage-ts` is deleted.
+- **api.foragelang.com / hub.foragelang.com** unchanged in shape (Cloudflare Worker stays TypeScript) but polished — structured error envelopes, OAuth fully wired, ownership-checked publish/delete, rate limiting, smoke tests covering every error path.
+- **Cross-platform reach**: Windows (.exe / .msi via WebView2) + Linux (AppImage / .deb via WebKitGTK) landed after macOS-first ships.
+- **Honest scraping posture preserved**: real WebKit on Mac (via `wry`), real WebView2 on Windows, real WebKitGTK on Linux — JS challenges still passable because the runtime is a real browser. CAPTCHAs still hand off to a human via M10 interactive bootstrap.
 
 ---
 
-## M2 — Hub: backend + frontend
-
-**Status: landed.** `hub-api/` is the Cloudflare Worker (KV `METADATA`, R2 `BLOBS`, Bearer auth in `src/auth.ts`, all `/v1/*` endpoints in `src/index.ts`, smoke-test scripts in `hub-api/test/`). `hub-site/` is the VitePress browse + detail UI (`index.md`, `r/[slug].md` + `[slug].paths.mjs` dynamic loader, `publish.md`, `about.md`). Both deploy via wrangler; production is at api.foragelang.com / hub.foragelang.com.
-
-**Result:** `api.foragelang.com` serves a working recipe registry; `hub.foragelang.com` renders a browse + detail UI on top of it.
-
-Two new directories in this repo: `hub-api/` (Cloudflare Worker), `hub-site/` (VitePress site). Both deploy via wrangler — backend via `wrangler deploy`, frontend via `wrangler pages deploy` (or the dashboard-wired auto-build that already exists for the `forage` site).
-
-**Deliverables**
-
-- **D2.1 — `hub-api/` scaffold.** TypeScript Worker. `wrangler.toml`. Bindings: `METADATA` (KV), `BLOBS` (R2), env `HUB_PUBLISH_TOKEN` (secret). Local dev via `wrangler dev`.
-- **D2.2 — Storage schema.**
-  - KV: `recipe:<slug>` → JSON `{slug, author, displayName, summary, tags[], version, latestBlobKey, createdAt, updatedAt}`.
-  - KV: `recipe:<slug>:versions` → JSON array of `{version, blobKey, publishedAt, sha256}`.
-  - KV: `index:list` → JSON array of slugs (denormalized index; rebuilt on every publish).
-  - R2: `recipes/<slug>/<version>/recipe.forage` (the body).
-  - R2: `recipes/<slug>/<version>/fixtures.jsonl` (optional).
-  - R2: `recipes/<slug>/<version>/snapshot.json` (optional).
-  - R2: `recipes/<slug>/<version>/meta.json` (snapshot of metadata at publish time).
-- **D2.3 — Endpoints.**
-  - `GET /v1/health` — `{status: "ok"}`.
-  - `GET /v1/recipes` — paginated list. Query: `?author=&tag=&platform=&limit=&cursor=`. Returns `{items: [...meta...], nextCursor?}`.
-  - `GET /v1/recipes/:slug` — `{...metadata..., body: "<recipe.forage content>"}`. `?version=` to get historical.
-  - `GET /v1/recipes/:slug/versions` — `[{version, publishedAt, sha256}]`.
-  - `GET /v1/recipes/:slug/fixtures` — JSONL stream of captures from R2 (if present).
-  - `GET /v1/recipes/:slug/snapshot` — JSON snapshot from R2 (if present).
-  - `POST /v1/recipes` — publish. Auth: `Authorization: Bearer <HUB_PUBLISH_TOKEN>`. Body: `{slug, displayName, summary, tags, body, fixtures?, snapshot?}`. Validates that `body` parses + validates (server-side: ship the Forage parser+validator as a Wasm module bundled with the Worker, OR run a strict structural check + defer full validation to client). For v1: server-side does a lightweight regex sanity check; client (CLI) does full validation pre-publish.
-  - `DELETE /v1/recipes/:slug` — auth required; soft-delete (mark `deleted: true` in KV metadata).
-- **D2.4 — Auth.** API-key based for v1. `Authorization: Bearer <key>`. Single shared `HUB_PUBLISH_TOKEN` secret in the Worker; v2 will go to per-author OAuth keys.
-- **D2.5 — Deploy.**
-  - Create the Worker via `npx wrangler deploy`.
-  - Provision KV namespace + R2 bucket via wrangler.
-  - Bind `api.foragelang.com` as a custom domain on the Worker (`wrangler` supports this; DNS records auto-created since the zone is in CF).
-  - Set the secret: `npx wrangler secret put HUB_PUBLISH_TOKEN` (user picks the value; I'll prompt at the right moment).
-- **D2.6 — Integration tests.** `hub-api/test/` directory with curl-based smoke tests: publish a recipe, list it, get it, get a version, delete, list again. Documented in `hub-api/README.md`.
-- **D2.7 — `hub-site/` scaffold.** New VitePress site (consistent with foragelang.com). `package.json`, `.vitepress/config.mjs`, public/favicon. Linked Forage grammar for syntax highlighting on detail pages.
-- **D2.8 — Hub-site pages.**
-  - `index.md` — home: list recent recipes (fetched client-side from api.foragelang.com), search box, filter by tag/platform.
-  - `r/[slug].md` (dynamic via VitePress's data loader) — recipe detail: metadata, source with Forage syntax highlighting, fixtures + snapshot summaries, "use in CLI" / "open in Studio" code blocks.
-  - `publish.md` — instructions for publishing (CLI + Studio flows).
-  - `about.md` — what is forage, link to foragelang.com.
-- **D2.9 — Deploy hub-site.** Create CF Pages project `forage-hub` pointed at this repo, build command `cd hub-site && npm ci && npm run build`, output `hub-site/.vitepress/dist`, custom domain `hub.foragelang.com`.
-
-**Acceptance**
-
-- `curl https://api.foragelang.com/v1/health` returns `{"status":"ok"}`.
-- `curl -X POST -H "Authorization: Bearer $TOKEN" https://api.foragelang.com/v1/recipes -d @sample-payload.json` returns `{slug, version, ...}`.
-- `curl https://api.foragelang.com/v1/recipes/<slug>` returns the recipe.
-- Visiting `https://hub.foragelang.com/r/<slug>` renders the recipe with syntax-highlighted source.
-
----
-
-## M3 — Studio app
-
-**Status: landed.** `Studio.app` builds via `xcodegen` + `xcodebuild` and launches; all five editor tabs (Source/Fixtures/Snapshot/Diagnostic/Publish), the capture scene, run controller (live + replay), library sidebar, MFA prompt, Keychain, and Preferences are wired. PublishTab POSTs via `HubClient`.
-
-Gap-fill landed in `f96aad9`:
-
-- **D3.2 — Hub-import sidebar action.** `HubImportSheet.swift` lists recipes from `api.foragelang.com`, filters by slug or display name, prompts before overwriting, writes to `~/Library/Forage/Recipes/<slug>/recipe.forage`. Sidebar `Import` button enabled. Also available via the `Recipe → Import from Hub…` menu command (`⇧⌘I`).
-- **D3.7 — AppIcon PNG slices.** Ten slices rendered from `site/public/favicon.svg` via `rsvg-convert` (16/32/64/128/256/512/1024 across @1x/@2x); `Contents.json` references them by filename.
-- **D3.7 — Menu commands.** Recipe menu now carries `Validate` (`⇧⌘V`), `Publish to Hub…` (`⇧⌘P`), `Import from Hub…` (`⇧⌘I`) alongside the existing Run / Save / Capture commands.
-
-**Result:** A `Studio.app` (macOS SwiftUI) that authors recipes interactively and publishes to the hub.
-
-New directory `Studio/` in the forage repo. xcodegen-generated `Studio.xcodeproj`. Depends on the local Forage package (relative path).
-
-**Deliverables**
-
-- **D3.1 — `Studio/` scaffold.**
-  - `Studio/project.yml` (xcodegen).
-  - `Studio/Sources/Studio/` SwiftUI sources.
-  - `Studio/Sources/Studio/StudioApp.swift` — `@main App` with NavigationSplitView.
-  - Depends on `../` (the Forage package) via local SwiftPM ref.
-- **D3.2 — Recipe library scene.**
-  - Sidebar: list of local recipes (under `~/Library/Forage/Recipes/<slug>/`) + recently-pulled hub recipes.
-  - "New recipe" button → create a new local slug, scaffold blank recipe.
-  - "Import from hub" button → search hub via the API, pick one, copy to local.
-- **D3.3 — Recipe editor scene.**
-  - Tabbed view: Source / Fixtures / Snapshot / Diagnostic / Publish.
-  - **Source tab:** text editor for `recipe.forage`. NSTextView-based with a custom syntax-highlighting layer derived from the Forage grammar. Cmd-S saves; Cmd-R runs.
-  - **Fixtures tab:** list of captures in the recipe's `fixtures/captures.jsonl`. Each row: method, URL, status, body size. Click → inspector showing decoded body. "Capture fresh" button → opens Capture scene.
-  - **Snapshot tab:** record counts grouped by type. Click into a type → table view of records' fields.
-  - **Diagnostic tab:** sections from `DiagnosticReport` (stallReason / unmatchedCaptures / unfiredRules / unmetExpectations / unhandledAffordances). Each section has expandable rows.
-  - **Publish tab:** form (slug, display name, summary, tags, license). "Validate" runs `Validator.validate`. "Preview payload" shows the JSON that would POST. "Publish" actually POSTs (requires API key configured in app prefs).
-- **D3.4 — Capture scene.**
-  - Modal sheet (or separate window).
-  - Address bar: URL input.
-  - Embedded WKWebView (using `BrowserEngine`-style capture wrapper but live, not driven by a recipe).
-  - Live capture feed: list of observed fetch/XHR calls. Each row toggleable to mark "keep" vs "skip."
-  - Save button → writes selected captures to the open recipe's `fixtures/captures.jsonl`.
-- **D3.5 — Run scene.**
-  - Run modes: "Run live" (URLSessionTransport / live BrowserEngine) / "Run against fixtures" (replayer).
-  - Live progress (read from `BrowserProgress` / `HTTPProgress`).
-  - On finish: update Snapshot + Diagnostic tabs.
-- **D3.6 — Hub integration.**
-  - `HubClient.swift` in `Studio/Sources/Studio/Networking/`. List / get / publish via `api.foragelang.com`.
-  - API key stored in macOS Keychain (`SecItemAdd` / `SecItemCopyMatching`).
-  - Preferences pane (Cmd-,): set hub URL (default), set API key.
-- **D3.7 — App resources.**
-  - App icon (placeholder; SVG → PNG slices).
-  - Menu commands: New Recipe, Import from Hub, Publish, Run, Capture, Validate.
-- **D3.8 — Local recipe storage convention.**
-  - `~/Library/Forage/Recipes/<slug>/recipe.forage`
-  - `~/Library/Forage/Recipes/<slug>/fixtures/captures.jsonl`
-  - `~/Library/Forage/Recipes/<slug>/snapshots/<ts>.json`
-  - `~/Library/Forage/Cache/hub/<slug>/<version>/recipe.forage`
-- **D3.9 — Docs.** `site/docs/studio.md` — user guide with screenshots.
-
-**Acceptance**
-
-- `xcodegen` in `Studio/`; build via `xcodebuild`; `Studio.app` launches.
-- Create a new recipe, capture from a URL, run against fixtures, view snapshot.
-- Configure hub API key, publish to hub, see the recipe on `hub.foragelang.com`.
-
----
-
-## M4 — Integration: runtime Docker-style imports + `forage publish` live
-
-**Status: landed.** `Sources/Forage/Hub/HubClient.swift` (get / list / publish, reads `FORAGE_HUB_URL` + `FORAGE_HUB_TOKEN`). `Sources/Forage/Hub/RecipeImporter.swift` resolves `import hub://author/slug` directives recursively, unions types/enums/inputs, caches at `~/Library/Forage/Cache/hub/`. CLI publish goes live via `HubClient.publish` (with `--no-dry-run`). Studio publish goes live. `scripts/e2e-publish.sh` is the documented round-trip flow. `site/docs/hub.md` covers it.
-
-**Result:** The runtime can pull recipes from the hub; CLI `forage publish` and Studio's publish button both write to the live hub.
-
-**Deliverables**
-
-- **D4.1 — `HubClient` in the runtime.** `Sources/Forage/Hub/HubClient.swift`. Get / list / publish. Reads `FORAGE_HUB_URL` (default `https://api.foragelang.com`). Auth via `FORAGE_HUB_TOKEN` or app-supplied key.
-- **D4.2 — Recipe `import` directive.** Parser support for Docker-style refs as top-level statements: `import sweed`, `import alice/zen-leaf v3`, `import hub.example.com/team/scraper`. Validator resolves the import via `HubClient.get(ref:)`; recipe is fetched + cached at `~/Library/Forage/Cache/hub/<registry-or-_default>/<namespace>/<name>/<version>/recipe.forage`. The imported recipe's types + transforms + emit blocks become available in the importing recipe.
-- **D4.3 — CLI publish goes live.** `forage publish <recipe-dir>` actually POSTs. `--dry-run` keeps the M1 behavior.
-- **D4.4 — Studio publish goes live.** Same — Publish button writes to api.foragelang.com.
-- **D4.5 — End-to-end smoke test.** A `scripts/e2e-publish.sh` that:
-  1. Builds `forage`.
-  2. Runs `forage scaffold` on a checked-in synthetic captures file.
-  3. Runs `forage publish --dry-run` against the resulting recipe.
-  4. Then runs `forage publish` for real (requires `FORAGE_HUB_TOKEN`).
-  5. Curls the resulting `GET /v1/recipes/<namespace>/<name>` and asserts the body round-trips.
-- **D4.6 — Docs.** `site/docs/hub.md` — how publish + import work.
-
-**Acceptance**
-
-- `forage publish recipes/sample/` succeeds.
-- `import sample` resolves to `forage/sample`; importing recipe runs.
-
----
-
-## M5 — Distribution
-
-**Status: landed.** `.github/workflows/release.yml` builds + signs + notarizes + packages on `v*.*.*` tags. `site/public/install.sh` is the curl-pipe-sh installer; `site/docs/install.md` documents brew / curl / build-from-source; the homepage hero has an `Install` CTA + nav entry pointing at it (the audit miscategorized this — it was already in place).
-
-Gap-fill landed:
-
-- **D5.2 — `foragelang/homebrew-tap` repo.** Public GitHub repo created at `github.com/foragelang/homebrew-tap`; initial `Formula/forage.rb` pushed. The release workflow's `update-homebrew-tap` job is gated on `ENABLE_HOMEBREW_TAP_UPDATE` (now set to `1` in repo variables) + `HOMEBREW_TAP_TOKEN` secret. **One manual step remains:** create a fine-grained PAT scoped to `foragelang/homebrew-tap` with `contents: write` and add it as `HOMEBREW_TAP_TOKEN` secret in `foragelang/forage`. Until then the workflow job will skip silently — formula updates on tag pushes happen by hand.
-
-**Result:** `forage` and `Studio.app` are installable via `brew`, `curl | sh`, and `.dmg`.
-
-**Deliverables**
-
-- **D5.1 — Release workflow.** `.github/workflows/release.yml`. Triggers on tag `v*`. Steps:
-  - Build CLI: `swift build -c release --arch arm64` (+ x86_64 if cheap).
-  - Build Studio: `xcodebuild -project Studio/Studio.xcodeproj -scheme Studio -configuration Release archive`.
-  - Codesign + notarize Studio (requires `APPLE_DEVELOPER_ID`, `APPLE_API_KEY`, `APPLE_TEAM_ID` secrets).
-  - Package: tar.gz the CLI, DMG Studio (`create-dmg` script).
-  - Compute sha256 for each artifact.
-  - Create GitHub Release with artifacts + sha256s.
-- **D5.2 — Homebrew tap.** New repo `foragelang/homebrew-tap`. Formula `Formula/forage.rb` references the latest release's tarball + sha256. Release workflow updates the formula automatically via a PR or direct push.
-- **D5.3 — curl-pipe-sh installer.** `site/public/install.sh`. Detects macOS arm64; fetches latest release tarball via GitHub API; verifies sha256; installs to `~/.local/bin/forage`; prints PATH hint. Lives at `https://foragelang.com/install.sh`.
-- **D5.4 — Download page.** `site/docs/install.md` (or `/download`). Three install paths: brew, curl, build-from-source. Studio `.dmg` direct download link.
-- **D5.5 — Site updates.** Homepage CTA points at `/download`; nav adds a "Download" entry.
-
-**Acceptance**
-
-- `brew install foragelang/forage/forage` works.
-- `curl -fsSL https://foragelang.com/install.sh | sh` works.
-- Visiting foragelang.com/download shows three flows.
-- Downloading `Studio.dmg`, mounting, dragging to Applications, launching — works without Gatekeeper rejection.
-
----
-
-## M6 — In-browser tooling (web IDE on hub.foragelang.com)
-
-**Status: mostly landed (architecture diverged).** The user-facing goal is met — `hub.foragelang.com/edit` and `/r/<slug>/edit` host a Monaco-based editor with live parse + validate + run + publish via the `<RecipeIDE />` Vue component (`hub-site/.vitepress/theme/components/RecipeIDE.vue`). The parser/validator/runner run in-browser through the **TypeScript port** (`hub-site/forage-ts/src/`), not the SwiftWasm artifact originally specified in D6.1. Same goal, cheaper-to-maintain route. Remaining gaps relative to the original deliverable shape:
-
-- **D6.1 SwiftWasm artifact not built.** Replaced by `forage-ts`, which is kept in lockstep with the Swift implementation via `Tests/shared-recipes/` drift-detection vectors. The original ROADMAP wording is wrong on the route; the spirit is met.
-- **D6.3 auth flow is bearer-token in localStorage**, not GitHub OAuth. Acceptable for a v1.
-- **D6.4 "New recipe" entry point**: editable via direct nav to `/edit`, hero CTA in place; haven't verified a "New" link from the recipe-list view.
-
-**Result:** Recipes can be browsed, edited, validated, and published from `hub.foragelang.com` without installing anything.
-
-**Deliverables**
-
-- **D6.1 — Wasm build of parser+validator.**
-  - SwiftWasm toolchain installed in CI.
-  - New target in `Package.swift`: `ForageWasm` (or similar) — a stripped-down library that excludes `AppKit`/`WebKit` deps. Just parser + validator + JSONValue + Recipe types + transform impls.
-  - Build target: `swift build --triple wasm32-unknown-wasi -c release`, output a `.wasm` artifact.
-  - Export functions: `parse(source: string) -> Recipe | error`, `validate(recipe: Recipe) -> issues[]`.
-  - Bundle into `hub-site/public/forage-wasm/forage.wasm` + a JS shim.
-- **D6.2 — Web IDE page.** `hub-site/r/[slug]/edit.md` (or React/Svelte sub-app embedded into VitePress).
-  - Monaco editor with custom Forage tokens (mode definition derived from the Shiki grammar).
-  - Live validation: as you type, run the Wasm parser+validator, display errors inline.
-  - Fixture inspector pane.
-  - Snapshot diff pane (compares produced vs expected — when "Run" succeeds).
-  - "Run" button: for HTTP-engine recipes, executes against fixtures (in-browser using fetch + the JS shim around the Wasm runtime). Browser-engine recipes are unsupported in-browser; show "Open in Studio" deep link.
-  - "Publish" button: POST to api.foragelang.com with the edited body.
-- **D6.3 — Auth flow for web.** v1: paste API key into a localStorage-backed pref. v2: GitHub OAuth flow with the api Worker as the OAuth client.
-- **D6.4 — Update hub home + recipe detail pages.** "Edit on web" button on each recipe; "New recipe" entry on the home.
-- **D6.5 — Docs.** `site/docs/web-ide.md` (or `hub-site/about.md`) — what's possible in the IDE vs Studio.
-
-**Acceptance**
-
-- Visit `hub.foragelang.com/r/<slug>/edit`, see the recipe in Monaco, edit, see live validation errors, save, see the new version on `hub.foragelang.com/r/<slug>`.
-
----
-
-## M7 — Authenticated sessions
-
-**Status: landed.** `auth.session.{formLogin,bearerLogin,cookiePersist}` parses end-to-end. `SecretResolver` resolves `$secret.*` from `FORAGE_SECRET_<NAME>` env vars (CLI) or Keychain (Studio). `MFAProvider` protocol with stdin-prompt (CLI) and modal-sheet (Studio) implementations. Session caching at `~/Library/Forage/Cache/`; re-auth + retry on 401/403 with configurable `maxReauthRetries`. `Tests/ForageTests/SessionAuthTests.swift` covers the cases; `site/docs/auth-sessions.md` is the guide; `recipes/sample-login/` is the exemplar.
-
-D7.10 cache-encryption gap-fill landed in `f96aad9`: `SessionCacheKeyProvider` protocol with three implementations — `KeychainSessionCacheKeyProvider` (default, persists a 256-bit AES key as a `kSecClassGenericPassword` SecItem under service `com.foragelang.forage.session-cache`), `InMemorySessionCacheKeyProvider` (tests), `NullSessionCacheKeyProvider` (fallback). `HTTPEngine.symmetricKeyForCache()` delegates to the provider; `auth.session.cacheEncrypted: true` now actually encrypts (round-trip + chmod-600 + wrong-key-fails covered by `Tests/ForageTests/SessionCacheEncryptionTests.swift`).
-
-**Result:** recipes can declare a login flow and maintain authenticated state across requests. Today's `auth` block supports `staticHeader` (API key in a header) and `htmlPrime` (one-shot GET to extract a CSRF token + set cookies). Neither covers "log in as me, maintain a session across requests, refresh when it expires." M7 adds that as a first-class DSL feature.
-
-**Deliverables**
-
-- **D7.1 — `auth.session { … }` block in the DSL.** New top-level auth strategy. Three variants, each with its own block:
-  - `auth.session.formLogin { url, method, body, captureCookies }` — POST credentials to a login endpoint; capture `Set-Cookie`s; reuse in subsequent step requests automatically.
-  - `auth.session.bearerLogin { url, method, body, tokenPath, headerName: "Authorization", headerPrefix: "Bearer " }` — POST credentials to a token endpoint; extract token from the response via `tokenPath`; inject as `Authorization: Bearer <token>` on every subsequent step.
-  - `auth.session.cookiePersist { sourcePath }` — load cookies from a JSON or Netscape-format file. Escape hatch for sites that need MFA the recipe can't navigate.
-- **D7.2 — Credential references.** Credentials never live in the recipe text. The DSL gains a `$secret.<name>` path resolver. Runtime resolves at execution time:
-  - CLI: reads from `FORAGE_SECRET_<NAME>` environment variables.
-  - Studio: reads from macOS Keychain under a per-recipe service identifier.
-  - Web IDE: prompts for each `$secret.*` reference inline before run; never persisted to the hub.
-- **D7.3 — Session lifecycle.**
-  - Engine detects `401` / `403` mid-run, re-runs the login flow once, retries the failed request. Configurable: `auth.session.maxReauthRetries: 1` (default 1, 0 to disable).
-  - On total auth failure (re-auth itself fails), `DiagnosticReport.stallReason` becomes `auth-failed: <details>`.
-- **D7.4 — Session persistence (optional cache).** `auth.session.cache: <duration>` — caches the session token/cookies for `duration` seconds keyed by `(recipe-slug, credential-fingerprint)` at `~/Library/Forage/Cache/sessions/`. Subsequent runs reuse without re-logging-in. Eviction on expiry or 401.
-- **D7.5 — MFA hook.** `auth.session.requiresMFA: true` — engine pauses the run and emits a `mfaChallenge` event the host handles:
-  - CLI: blocks on `stdin`, prompts "Enter MFA code:".
-  - Studio: shows a modal sheet asking for the code; resumes on submit.
-  - Web IDE: same modal; submits via JS.
-- **D7.6 — Parser + Validator.** `auth.session.*` parses to a new `AuthStrategy` case. Validator checks that credential references match declared `$secret.*` references (warning if a referenced secret has no obvious source).
-- **D7.7 — Runtime support.**
-  - `HTTPEngine` runs the login flow before the first step; threads cookies/headers automatically.
-  - `BrowserEngine` writes the captured cookies into the `WKWebView`'s data store (`HTTPCookieStorage`) so SPA fetches inherit them.
-- **D7.8 — Tests.**
-  - Unit: a synthetic recipe with `auth.session.formLogin` + a mock URLSession that returns `Set-Cookie` on POST and 200 with the cookie on GET → snapshot shows the right records.
-  - Unit: 401 mid-run triggers a single re-auth + retry; on re-auth failure, `stallReason: "auth-failed: …"`.
-  - Unit: MFA hook called with a synthetic code provider.
-  - Integration: a real recipe against a documented test-login API (e.g. httpbin or a self-hosted mock).
-- **D7.9 — Docs.**
-  - New `site/docs/auth-sessions.md` — concrete examples per variant.
-  - Update `recipes/` with a `recipes/sample-login/` exemplar.
-- **D7.10 — Security review.**
-  - Credentials never logged. Diagnostic reports redact `$secret.*` resolved values.
-  - Cache files are `chmod 600`. Cookie cache encrypted with a per-machine key (use Keychain on macOS to derive).
-  - The web IDE's runtime never persists secrets to localStorage or the hub.
-
-**Acceptance**
-
-- A recipe with `auth.session.formLogin { … } / auth.session.bearerLogin { … }` runs end-to-end against a mock server in tests.
-- 401 mid-run triggers exactly one re-auth attempt; second 401 fails with the right diagnostic.
-- MFA hook fires; CLI prompts; Studio shows a sheet; web IDE shows a modal.
-- Recipe text contains zero credential material; all references are `$secret.*`.
-
----
-
-## Current state (2026-05-11)
-
-M1–M9 are all landed. The original M1→M7 path was followed serially; M6 took a TypeScript-port route instead of SwiftWasm; M8 and M9 followed up after M7 to handle HTML extraction and browser-engine document capture. The post-audit gap-fill pass closed the M3 (hub-import, icon, menu commands) and M5 (homebrew-tap repo) and M7 (cache encryption) followups. The audit notes per milestone above are the up-to-date truth.
-
-Remaining:
-
-- **M5 manual step:** `HOMEBREW_TAP_TOKEN` repo secret in `foragelang/forage`. Wired but won't activate the auto-update job until the PAT is added.
-- **M6 OAuth path:** promoted to its own milestone, **M11**.
-
-Next two milestones in flight:
-
-- **M10 — Interactive session bootstrap.** Human-in-the-loop CAPTCHA / age-gate / sign-in handshake; persisted session is reused headlessly until expiry. Covers eBay-class sites without violating the "no bypassing technical controls" policy (a human *did* pass the control; the bot reuses the human-authorized session). Detail at bottom of file.
-- **M11 — GitHub OAuth identity for the hub.** Replaces the shared `HUB_PUBLISH_TOKEN` model with per-user JWTs. Detail at bottom of file.
-
----
-
-## Order of execution (historical)
-
-Serial, top-to-bottom. Each milestone gets a `product-engineer` agent dispatch with the full milestone brief, followed by a `code-review-auditor` pass on the resulting diff. Findings from the auditor get a focused fixup pass before moving on.
-
-Milestone 6 (web IDE) is gated on M5 only by docs convenience — it could land in parallel with M3/M4/M5 once M2 is up. But sequential is simpler to manage.
-
-M7 (authenticated sessions) is independent — it can land any time after M1, since it's purely runtime + DSL. Queued until the M1–M6 path is live and we know what real-world recipe authors hit walls on.
-
-Once M1-M7 are all landed, forage covers static-key, CSRF-priming, AND session-based auth — i.e. essentially any non-CAPTCHA public-web flow.
-
-M8 (HTML / DOM extraction) is also independent and is **landed** — added below for the historical record. M9 (browser-engine document capture) is the natural follow-on that lights up eBay-class sites; queued similarly to M7.
-
----
-
-## M8 — HTML / DOM extraction
-
-**Result:** Recipes can extract typed records from server-rendered HTML the same way they extract from JSON. No second mini-language; the same path-and-pipe grammar works against parsed DOM trees.
-
-The model: any parseable content type becomes a queryable `JSONValue` tree. The `.node` variant wraps a parsed HTML/XML element (SwiftSoup on the Swift runtime, cheerio on the TS port). A handful of transforms — `parseHtml`, `parseJson`, `select`, `text`, `attr`, `html`, `innerHtml`, `first` — let recipes walk DOM trees, materialize text/attributes, and emit typed records, with no grammar change beyond extending for-loop collections from `PathExpr` to `ExtractionExpr` so iteration can drive off a pipeline result.
-
-**Status: landed.** Documented here as the canonical reference for what M8 covers; the runtime, parser, validator, and TS port all carry the primitive today.
-
-**What the primitive looks like (recipe-side):**
-
-```forage
-for $row in $page | parseHtml | select("table.opinions tr:has(a)") {
-    emit Opinion {
-        date     ← $row | select("td:nth-child(2)") | text
-        caseName ← $row | select("td:nth-child(4) a") | text
-        pdfUrl   ← $row | select("td:nth-child(4) a") | attr("href")
-    }
-}
+## Workspace shape
+
+```
+forage/
+├── Cargo.toml                       # [workspace] members = [...]
+├── rust-toolchain.toml              # stable, edition 2024
+├── rustfmt.toml
+├── clippy.toml
+│
+├── crates/
+│   ├── forage-core/                 # AST, parser (chumsky), validator, evaluator,
+│   │                                # snapshot, transforms, JSONValue
+│   ├── forage-http/                 # HTTP engine, auth flavors, pagination, session cache
+│   ├── forage-browser/              # wry-based browser engine, captures, M10 interactive
+│   ├── forage-hub/                  # hub client, import resolver, recipe cache
+│   ├── forage-keychain/             # keyring-based cross-platform secret storage
+│   ├── forage-replay/               # HTTPReplayer + BrowserReplayer (shared fixture types)
+│   ├── forage-lsp/                  # tower-lsp server, reuses forage-core
+│   ├── forage-wasm/                 # wasm-bindgen exports for the web IDE
+│   └── forage-test/                 # shared-recipes test harness, golden snapshots
+│
+├── apps/
+│   ├── cli/                         # `forage` binary, clap-based
+│   └── studio/                      # Forage Studio — Tauri app, React + Monaco
+│       ├── src/                     # Tauri commands, state, LSP child-process orchestration
+│       ├── ui/                      # React 19 + Vite + Tailwind v4 + shadcn/ui + Monaco
+│       └── tauri.conf.json
+│
+├── hub-api/                         # STAYS TypeScript (Cloudflare Worker)
+├── hub-site/                        # STAYS VitePress, depends on forage-wasm now
+├── recipes/                         # unchanged — pure .forage files
+├── Tests/shared-recipes/            # historical name kept; vectors load from here
+│
+└── docs/                            # mdbook — language reference, hosted at foragelang.com/docs
 ```
 
-**Deliverables (all landed):**
-
-- **D8.1 — `JSONValue.node(HTMLNode)` variant.** A queryable element. Hashable by outerHTML; `@unchecked Sendable` (the underlying parser element is a reference type, but recipe evaluation treats nodes as immutable). Non-Codable in the round-trip sense — nodes encode as outerHTML strings and never decode back, so they're runtime-only.
-- **D8.2 — HTML/DOM transforms.** `parseHtml` (string → node), `parseJson` (string → JSON), `select(selector)` (node → [node]), `text` / `attr` / `html` / `innerHtml` (node → string), `first` (array → first element). `text`/`attr`/`html`/`innerHtml` auto-flatten a single-element node array (jQuery convention) so `select(".x") | text` works without an explicit `| first`.
-- **D8.3 — `for $x in <ExtractionExpr>`.** For-loop collections were `PathExpr` only; now accept the full extraction grammar so pipelines like `for $card in $page | parseHtml | select(".card")` drive iteration directly. Bare-path collections still parse cleanly. `CaptureRule.iterPath` extends the same way.
-- **D8.4 — Content-type-aware response body decode.** `JSONValue.decodeBody(_:contentType:)` returns `.string(body)` for `text/html`, `text/xml`, etc. — non-JSON bodies don't throw the engine; recipes pipe through `parseHtml` to materialize the node.
-- **D8.5 — Mirrored in `forage-ts`.** Cheerio dep, mirrored `.node` variant, mirrored transforms, mirrored for-loop grammar. Shared test vector `Tests/shared-recipes/07-html-extraction.forage` checks both implementations agree on parse + validate.
-- **D8.6 — Tests.** `Tests/ForageTests/HTMLExtractionTests.swift` (14 unit + end-to-end tests on the Swift side); `hub-site/forage-ts/test/html-extraction.test.ts` (13 mirroring tests on the TS side); 7th shared recipe vector.
-- **D8.7 — Reference recipes.** `recipes/hacker-news-html/` (HTML scrape of news.ycombinator.com — the "no API needed" companion to the JSON-API `recipes/hacker-news/`). `recipes/scotus-opinions/` (US Supreme Court slip opinions for a term — typed `Opinion` records extracted from supremecourt.gov's HTML table; a civic-data example with no API and no anti-bot).
-- **D8.8 — Docs.** New `site/docs/html-extraction.md` page; transform reference in `site/docs/syntax.md` extended; engine-selection notes in `site/docs/engines.md` updated to describe content-type dispatch.
-
-**Out of scope (intentional follow-ups):**
-
-- Browser-engine recipes that need to extract from the *initial document body* (eBay search results, Cloudflare-gated sites). The browser engine today captures fetch/XHR responses; capturing the rendered document body after navigation is M9.
-- HTML form submissions / multipart bodies (would compose with M7 sessions for login flows).
-- XML-namespaced parsing (RSS / Atom with prefixed elements). `parseHtml` handles most loose XML already; tightening up Atom-specific access patterns is a follow-up.
+Build tooling:
+- **`chumsky` 1.x** — parser combinator with error recovery + spans.
+- **`ariadne`** — colorful, span-aware diagnostic rendering for the CLI; serialized to LSP `Diagnostic` for editors.
+- **`miette`** — alternative diagnostic crate; we'll pick one in R1, both are equivalent for our needs.
+- **`reqwest`** + `tower` middleware (rate limit, retry, redirect policy).
+- **`wry`** — cross-platform native webview, with `#[cfg(target_os)]` shims for cookie-store / message-handler / WKWebsiteDataStore-equivalent surfaces.
+- **`tokio`** — async runtime.
+- **`serde`** + `serde_json` — JSON I/O everywhere; AST has `#[derive(Serialize, Deserialize)]` for archives and IPC.
+- **`clap`** — CLI argument parsing with derive macros.
+- **`tower-lsp`** — LSP server framework.
+- **`wasm-bindgen`** + `wasm-pack` — JS bindings for `forage-wasm`.
+- **`keyring`** — cross-platform secret storage (macOS Keychain / Windows Credential Manager / Linux Secret Service).
+- **`tauri`** 2.x — desktop shell.
+- **`aes-gcm`** + `rand` + `argon2` (or `pbkdf2`) — session-cache encryption.
 
 ---
 
-## M9 — Browser-engine document capture
+## R1 — Workspace scaffold + forage-core
 
-**Result:** Browser-engine recipes can extract from the rendered document body itself, not just from XHR/fetch responses. A real WebKit instance walks through Cloudflare-style JS challenges, and the post-navigation document body becomes a synthetic capture the recipe extracts from via M8's HTML primitives.
+**Result:** All shared-recipes test vectors from the Swift suite parse + validate identically in Rust, with per-character span tracking and `ariadne`-rendered errors.
 
-**Status: landed.**
+**Deliverables:**
 
-**What the primitive looks like (recipe-side):**
+- **R1.1 — Workspace scaffold.** Root `Cargo.toml` with `[workspace]` member globs. `rust-toolchain.toml` pinned to stable. Workspace-level `Cargo.toml` declares shared deps (serde, tokio, anyhow, thiserror, tracing). `rustfmt.toml` + `clippy.toml` configured. `.github/workflows/ci.yml` runs `cargo test --workspace` on macOS-latest + ubuntu-latest + windows-latest.
 
-```forage
-recipe "letterboxd-popular" {
-    engine browser
+- **R1.2 — `forage-core::ast`.** Full AST module mirroring Swift:
+  - `Recipe { name, engine, types, enums, inputs, secrets, auth, browser?, http_steps, captures, expectations }`.
+  - `TypeDef`, `EnumDef`, `InputDecl`, `SecretDecl`.
+  - `AuthBlock` enum with `StaticHeader`, `HtmlPrime`, `SessionFormLogin`, `SessionOAuth`, `SessionCookieJar`, `SessionHtmlPrime` variants.
+  - `BrowserConfig { initial_url, age_gate, dismissals, warmup_clicks, observe, pagination, captures, document_capture, interactive }`.
+  - `Step { name, method, url, headers, body, extract, pagination }`.
+  - `CaptureRule`, `DocumentRule`, `InteractiveConfig`.
+  - `Expression` (typed enum: Literal, Path, Template, Pipe, Case, BinOp, Conditional).
+  - `PathExpr` (Input, Secret, Variable, Field, Index, Wildcard).
+  - `Transform` value type with name + args.
+  - `Template` with literal segments + `{$expr}` interpolations.
+  - All types `#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]`; spans carried as `Range<usize>` or `Span` struct.
 
-    type Film { title: String, url: String? }
+- **R1.3 — `forage-core::lexer`.** Unified with the parser via chumsky's lexer-as-parser pattern, or separate token-stream lexer if cleaner. Keywords: every Swift Forage keyword (`recipe`, `engine`, `type`, `enum`, `input`, `secret`, `step`, `auth`, `browser`, `captures`, `paginate`, `emit`, `for`, `in`, `of`, `case`, `expect`, `observe`, `ageGate`, `dismissals`, `warmupClicks`, `interactive`, `bootstrapURL`, `cookieDomains`, `sessionExpiredPattern`, …). Operators: `←` (binding), `→` (case arm), `|` (pipe), `?` (optional), `[*]` (wildcard).
 
-    browser {
-        initialURL: "https://letterboxd.com/films/popular/this/week/"
-        observe:    "letterboxd.com"
-        paginate browserPaginate.scroll {
-            until: noProgressFor(2)
-            maxIterations: 0
-        }
-        captures.document {
-            for $poster in $ | select("div.poster.film-poster") {
-                emit Film {
-                    title ← $poster | select("span.frame-title") | text
-                    url   ← $poster | select("a.frame") | attr("href")
-                }
-            }
-        }
-    }
-}
+- **R1.4 — `forage-core::parser`.** Chumsky-based, returns `(Option<Recipe>, Vec<ParseError>)` — best-effort AST even on parse failure for the LSP. Full grammar: types, enums, inputs, secrets, auth blocks (all six variants), HTTP steps, browser config (initial URL, age gate, dismissals, warmup, observe, pagination, captures.match, captures.document, interactive), emit blocks, for loops, case expressions, transform pipelines, templates with interpolation.
+
+- **R1.5 — `forage-core::validate`.** Semantic checker over the AST:
+  - Every emit's record type matches a declared type.
+  - Every input reference (`$input.X`) refers to a declared input.
+  - Every secret reference (`$secret.X`) refers to a declared secret.
+  - Every transform name resolves to a registered transform with matching arg-arity.
+  - `case` arm coverage for enum match.
+  - `paginate` strategy matches engine kind (HTTP vs browser).
+  - Browser-only fields (age gate, dismissals, observe) rejected on HTTP engine.
+  - Returns `Vec<ValidationIssue>` with severity + span + message.
+
+- **R1.6 — `forage-core::eval`.** Pure-data evaluator:
+  - `PathExpr::resolve(scope, path) -> Option<JSONValue>` with `$.x[*].y` wildcards.
+  - `Template::render(scope) -> String`.
+  - `Transform::apply(input, args, scope) -> Result<JSONValue>` over a registry of built-ins.
+  - Registry of `~30` built-in transforms ported from Swift: `lowercase`, `uppercase`, `titleCase`, `dedup`, `toString`, `coalesce`, `length`, `prevalenceNormalize`, `parseSize`, `normalizeOzToGrams`, `normalizeUnitToGrams`, `sizeValue`, `sizeUnit`, `parseJaneWeight`, `janeWeightUnit`, `janeWeightKey`, `getField`, `regex.extract`, …. Each transform: `fn(input: &JSONValue, args: &[JSONValue], scope: &Scope) -> Result<JSONValue, TransformError>`. Registered via a `inventory`-style collect or explicit module function.
+
+- **R1.7 — `forage-core::snapshot`.** Record collection (`HashMap<TypeName, Vec<Record>>` or `Vec<TypedRecord>`), expectation evaluator (`records.where(typeName == X).count >= N`), `DiagnosticReport { stall_reason, unmet_expectations, unfired_capture_rules, unmatched_captures, unhandled_affordances }`.
+
+- **R1.8 — `forage-core::error`.** Unified error types using `thiserror`; `ParseError`, `ValidationIssue`, `EvalError` carry source spans. `ariadne::Report` rendering. Error envelope serializes to LSP `Diagnostic`.
+
+- **R1.9 — Test vectors.** `Tests/shared-recipes/*.forage` loaded by `forage-test` crate. Each vector has `expected.json` with golden parse output. `cargo test -p forage-core` parses every vector + asserts AST shape + validates + checks expected diagnostics.
+
+- **R1.10 — CI green.** Workflow `rust-ci.yml` runs `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`. Cache `~/.cargo` + `target/`.
+
+**Acceptance:**
+- `cargo test -p forage-core` is green with the full shared-recipes suite parsed and validated.
+- Parse + validate on a malformed recipe surfaces the same error position the Swift compiler does, rendered by `ariadne`.
+- AST `JSONValue` serialization round-trips through serde.
+
+---
+
+## R2 — forage-http
+
+**Result:** Every HTTP-engine recipe in `recipes/` runs end-to-end against the live network with identical record output to the Swift `HTTPEngine`. Session caching, auth flavors, pagination, retry, rate limit all work.
+
+**Deliverables:**
+
+- **R2.1 — `forage-http::client`.** `HTTPClient` over `reqwest::Client` with a `tower` middleware stack:
+  - **Rate limit** — token bucket, default 1 req/sec per host, configurable per-recipe.
+  - **Retry** — exponential backoff with jitter on 429 / 5xx; honors `Retry-After`. Max retries from recipe config (default 3).
+  - **Redirect policy** — follow same-origin, configurable.
+  - **Cookie jar** — `reqwest_cookie_store` shared across steps within a recipe run.
+  - **Honest UA** — `Forage/x.y.z (+https://foragelang.com)` default; recipe can override.
+
+- **R2.2 — `forage-http::auth`.** All six auth flavors:
+  - `StaticHeader` — inject `{name}: {value}` on every request after auth.
+  - `HtmlPrime` — one-shot GET, regex-extract named groups into scope variables, optional cookie persistence; subsequent steps reference `{$varName}`.
+  - `SessionFormLogin` — POST form credentials, extract success token / cookie, attach to subsequent requests; MFA hook on `requiresMFA`.
+  - `SessionOAuth` — `client_credentials` and `authorization_code` flows; token refresh on 401; tokens cached.
+  - `SessionCookieJar` — login form fills + cookie persistence; expiry detection via response shape.
+  - `SessionHtmlPrime` — `HtmlPrime` + session caching of extracted variables.
+
+- **R2.3 — `forage-http::mfa`.** `trait MFAProvider: Send + Sync` with `async fn code(&self) -> Result<String, MFAError>`. `StdinMFAProvider` for CLI; `ChannelMFAProvider` for Studio (sends a request to the Tauri frontend, awaits user input via async channel).
+
+- **R2.4 — `forage-http::paginate`.** All strategies:
+  - `cursor { items, next_cursor, cursor_param }`
+  - `page { items, page_param, page_size }`
+  - `pageWithTotal { items, total, page_param, page_size }`
+  - `untilEmpty { items, page_param }`
+  - `noPagination` (single request — degenerate case).
+  Each strategy: `async fn next_page(&mut self, prev_response) -> Option<NextRequest>`.
+
+- **R2.5 — `forage-http::session_cache`.** Persisted to `~/Library/Forage/Cache/sessions/<recipe-slug>/<fingerprint>.json` on Mac, XDG cache dir on Linux, `%LOCALAPPDATA%` on Windows. Sanitized slug, `chmod 600` (or platform equivalent), optional AES-GCM encryption keyed via `forage-keychain` (Mac/Windows/Linux secret store). Fingerprint = SHA-256 over resolved secrets. Eviction on 401/403.
+
+- **R2.6 — `forage-http::engine`.** The HTTP engine itself: walk the recipe's step graph, resolve templates, drive pagination, accumulate captures, evaluate emit blocks, build the snapshot. Same diagnostic envelope as Swift.
+
+- **R2.7 — `forage-http::replay`.** `HTTPReplayer` transport — reads `fixtures/captures.jsonl`, matches URL + method, returns the stored body. Swappable for live `reqwest::Client` in tests.
+
+- **R2.8 — Tests.** Every HTTP recipe in `recipes/` (hacker-news, github-releases, nasa-apod, usgs-earthquakes, onthisday, scotus-opinions, hacker-news-html) has a replay test: load fixtures, run, diff snapshot against `expected.snapshot.json`. Tests run in `cargo test -p forage-http`.
+
+**Acceptance:**
+- `cargo test -p forage-http` runs every HTTP recipe via replay and matches expected snapshots byte-for-byte (after canonicalization).
+- Live: `cargo run -p forage-cli -- run recipes/hacker-news` returns the same record types + counts as the Swift CLI.
+
+---
+
+## R3 — `forage` CLI (HTTP-only first cut)
+
+**Result:** `forage` binary that runs HTTP recipes end-to-end with `ariadne`-rendered diagnostics. `forage test`, `forage scaffold`, `forage publish` (stubbed) wired up.
+
+**Deliverables:**
+
+- **R3.1 — `apps/cli` crate.** clap-derived subcommand structure: `run`, `test`, `capture` (stub), `scaffold` (stub), `publish` (stub), `auth` (stub), `lsp` (stub). Global flags: `--verbose`, `--output {pretty|json}`, `--color {auto|always|never}`.
+
+- **R3.2 — `forage run`.** Loads `<recipe-dir>/recipe.forage`, parses, validates, reads `fixtures/inputs.json`, executes via `forage-http::engine` (or `forage-browser` later), prints the snapshot. `--replay` flag uses `HTTPReplayer` against `fixtures/captures.jsonl`. `--output json` for machine-readable.
+
+- **R3.3 — `forage test`.** Runs recipe via replay, diffs snapshot against `expected.snapshot.json` (recipe directory), exits non-zero on diff. `--update` overwrites the expected file (golden-file workflow). Pretty diff via the `similar` crate.
+
+- **R3.4 — `forage scaffold` (deferred to R5).** Just print "not yet" — fleshed out with the browser engine.
+
+- **R3.5 — Diagnostics.** `ariadne::Report::eprint(sources)` for parse + validate errors; runtime errors include the recipe span where they originated. Exit codes: 0 ok, 1 runtime, 2 parse/validate, 3 expectation unmet.
+
+- **R3.6 — Output formatting.** Pretty mode: per-type record counts, sample of first 3 records, diagnostic summary. JSON mode: full snapshot as a single JSON document.
+
+- **R3.7 — Logs.** `tracing` + `tracing-subscriber` with `--verbose` enabling `forage=debug`. Default level `forage=info`.
+
+**Acceptance:**
+- `forage run recipes/hacker-news --replay` prints a clean snapshot matching the Swift CLI output.
+- `forage test recipes/hacker-news` passes against the recipe's expected snapshot.
+- A malformed recipe surfaces an `ariadne`-rendered error pointing at the broken span.
+
+---
+
+## R4 — forage-browser (wry, captures, M10 interactive)
+
+**Result:** Every browser-engine recipe in `recipes/` (`letterboxd-popular`, `ebay-sold`, `trilogy-rec`/`med`) runs identically to Swift. M10 interactive bootstrap works on macOS (visible WKWebView, overlay button, session persistence, headless reuse with `sessionExpiredPattern` detection).
+
+**Deliverables:**
+
+- **R4.1 — `forage-browser::webview`.** Thin wrapper over `wry::WebView`:
+  - Construct a webview (visible or headless) at a given URL.
+  - Script injection at document-start (the fetch/XHR interception shim) and document-end (custom recipe scripts).
+  - Two-way IPC: host → JS via `evaluate_script`; JS → host via `wry`'s `with_ipc_handler`.
+  - Per-platform shims (`#[cfg(target_os)]`):
+    - macOS: extract cookies via `WKWebsiteDataStore.httpCookieStore` (Cocoa FFI).
+    - Linux: extract cookies via `WebKitCookieManager` (gtk-rs).
+    - Windows: extract cookies via `CoreWebView2.CookieManager` (webview2-com).
+  - Settle: detect "no new fetch/XHR for N seconds" using the injected shim's bookkeeping.
+
+- **R4.2 — `forage-browser::inject`.** JS shim source files (`.js`) embedded via `include_str!`:
+  - **`fetch_intercept.js`** — patches `window.fetch` + `XMLHttpRequest.prototype.send`; on response, posts a message: `{ kind: "capture", url, status, headers, body }`. Shim runs at document-start so it patches before the page loads.
+  - **`interactive_overlay.js`** — injects a fixed-position green "✓ Scrape this page" button; on click, posts `{ kind: "interactiveDone", url, html }` to the host.
+  - **`dump_localstorage.js`** — returns `localStorage` as an object via `evaluate_script`.
+  - **`restore_localstorage.js`** — accepts an object, writes each key.
+
+- **R4.3 — `forage-browser::settle`.** Network-idle detector: track in-flight fetch/XHR counts via shim messages, mark "settled" after `idle_for` seconds with no activity. Recipe-configurable: `paginate { until: noProgressFor(2) }`. Hard cap via `maxIterations` and `iterationDelay`.
+
+- **R4.4 — `forage-browser::paginate`.** Browser pagination strategies:
+  - `browserPaginate.scroll { until, maxIterations, iterationDelay }` — `window.scrollTo(0, document.body.scrollHeight)` then wait for settle; repeat.
+  - `browserPaginate.button { selector, until, maxIterations }` — click selector until disabled or absent.
+  - `browserPaginate.numbered { container, until }` — click page-number links sequentially.
+  - `browserPaginate.url { from, to, param }` — modify URL param, navigate.
+
+- **R4.5 — `forage-browser::captures`.** Capture rule routing:
+  - `captures.match { urlPattern, body extract }` — fired per matching intercepted response; body parsed as JSON (configurable) and the recipe's extract block runs against it.
+  - `captures.document { extract }` — fired once after settle; webview's `document.documentElement.outerHTML` parsed via `scraper` (or `kuchiki`) and the extract runs against the DOM.
+
+- **R4.6 — `forage-browser::age_gate`.** Selector-based form fill: locate `input[name=...]` for year/month/day, dispatch input events, click submit. Recipe schema unchanged from Swift.
+
+- **R4.7 — `forage-browser::dismissals`.** List of selectors to click on page load (cookie banners, "I'm 21" buttons, etc.). Click; if element is missing, skip.
+
+- **R4.8 — `forage-browser::interactive` (M10).** Full interactive-bootstrap flow:
+  - **Bootstrap mode** (`--interactive`, or programmatic `InteractiveBootstrapMode::ForceBootstrap`):
+    1. Open visible webview at `bootstrapURL` (defaults to `initialURL`).
+    2. Disable settle timer — wait for human, not idle.
+    3. Inject `interactive_overlay.js` after `did_finish_navigation`.
+    4. On `interactiveDone` message, snapshot cookies (filter by `cookieDomains`) + `localStorage` (per-origin), serialize as `InteractiveSession`, write to `~/Library/Forage/Sessions/<slug>/session.json` (chmod 600).
+  - **Reuse mode** (`Auto` mode with cached session):
+    1. Seed the webview's cookie store + per-origin localStorage from the cached session.
+    2. Navigate to `initialURL` headlessly.
+    3. After navigation, read `document.documentElement.outerHTML`; if it contains `sessionExpiredPattern`, evict the cache and surface `stallReason: "session-expired: re-run with --interactive to refresh"`.
+    4. Otherwise proceed with normal pagination + captures.
+
+- **R4.9 — `forage-browser::session_store`.** `InteractiveSession { recipe_slug, bootstrapped_at, expires_at, cookies, local_storage }` Codable JSON; path resolution + chmod 600 write/read/evict; slug sanitization.
+
+- **R4.10 — `forage-browser::engine`.** Top-level driver: build webview, apply config, run captures + pagination, collect snapshot, return `DiagnosticReport`. Same shape as `forage-http::engine`.
+
+- **R4.11 — `forage-browser::replay`.** `BrowserReplayer` reads `fixtures/captures.jsonl` with kind discriminator (`.match` or `.document`), routes each capture through the recipe's rules without spawning a webview.
+
+- **R4.12 — Tests.** Browser-engine recipes replayed:
+  - `letterboxd-popular` → ~70 `Film` records.
+  - `ebay-sold` → typed `SoldListing` records (under stored interactive session).
+  - `trilogy-rec` / `trilogy-med` → `Product` + `Variant` + `PriceObservation` records.
+
+**Acceptance:**
+- `forage run recipes/letterboxd-popular` returns ~70 Films on Mac, end-to-end live.
+- `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens a visible window, accepts the human-solved Akamai challenge, persists the session, returns ~50 sold listings; second run (without `--interactive`) runs headless.
+- `forage run recipes/trilogy-rec --replay` matches snapshot.
+
+---
+
+## R5 — CLI complete (browser support + capture + scaffold)
+
+**Result:** CLI feature-parity with the Swift CLI. `forage capture` + `forage scaffold` operational.
+
+**Deliverables:**
+
+- **R5.1 — `forage run` browser support.** Engine selected from `recipe.engine`. `--interactive` flag works.
+
+- **R5.2 — `forage capture <url>`.** Opens a visible webview, intercepts fetch/XHR, writes each to `<output-dir>/captures.jsonl`. Flags: `--output`, `--wait <seconds>`, `--user-agent`. Useful for recipe authoring before any recipe exists.
+
+- **R5.3 — `forage scaffold <captures.jsonl>`.** Reads captures, generates a starter `.forage` recipe with one `captures.match` per unique URL pattern, placeholder `Item` type, placeholder extract block. Same shape as Swift `forage scaffold`.
+
+- **R5.4 — Swift CLI retired.** `Sources/forage-cli/` deleted. README + install instructions point at the Rust CLI. Git history is the archive.
+
+**Acceptance:**
+- `forage capture https://news.ycombinator.com/ --output /tmp/hn` records the page's fetches.
+- `forage scaffold /tmp/hn/captures.jsonl > recipe.forage` produces a valid starter recipe that parses + validates.
+- Swift CLI directory is gone.
+
+---
+
+## R6 — forage-hub + forage-keychain + auth
+
+**Result:** Hub publish / fetch / import + OAuth device-code login work end-to-end against `api.foragelang.com`. Secrets land in the OS-native secret store on all three platforms.
+
+**Deliverables:**
+
+- **R6.1 — `forage-keychain` crate.** Thin wrapper over `keyring` crate:
+  - `read_secret(service, account) -> Result<Option<String>>`
+  - `write_secret(service, account, value) -> Result<()>`
+  - `delete_secret(service, account) -> Result<()>`
+  - Service identifiers: `com.foragelang.cli`, `com.foragelang.studio`.
+
+- **R6.2 — `forage-hub::client`.** `HubClient` over `reqwest`:
+  - `list(query) -> Vec<RecipeMeta>`
+  - `get(slug, version?) -> RecipeBlob`
+  - `publish(slug, body, metadata) -> PublishedRecipe`
+  - `delete(slug)`
+  - Bearer-token auth via `FORAGE_HUB_TOKEN` env or auth-store JWT.
+
+- **R6.3 — `forage-hub::importer`.** Resolves `import hub://<author>/<slug>` directives recursively. Caches at `~/Library/Forage/Cache/hub/<author>/<slug>/<version>/recipe.forage`. Unions imported types/enums/inputs into the consuming recipe's catalog. Detects + reports cycles.
+
+- **R6.4 — `forage-hub::auth_store`.** Persistent auth store at `~/Library/Forage/Auth/<host>.json` (chmod 600). Schema: `{ access_token, refresh_token, login, hub_url, issued_at, expires_at }`. Refresh on access-token expiry.
+
+- **R6.5 — `forage auth login`.** Device-code flow:
+  1. POST `/v1/oauth/device` → `{ user_code, verification_url, device_code, interval, expires_in }`.
+  2. Print user code; open verification URL in default browser via `webbrowser` crate.
+  3. Poll `/v1/oauth/device/poll` every `interval` seconds until 200 + tokens.
+  4. Write tokens to auth store.
+
+- **R6.6 — `forage auth logout [--revoke]`.** Deletes auth-store file. `--revoke` POSTs to `/v1/oauth/revoke` first to invalidate server-side refresh.
+
+- **R6.7 — `forage auth whoami`.** Reads auth store, prints `<login>@<hub-host>` or "not signed in."
+
+- **R6.8 — `forage publish <recipe-dir>`.** Validates locally, builds payload (source + metadata + optional fixtures snapshot), POSTs to `/v1/recipes`. `FORAGE_HUB_TOKEN` env wins over auth-store JWT. `--dry-run` (default) prints would-send; `--publish` actually POSTs.
+
+- **R6.9 — Hub fetch in `forage run`.** When a recipe has `import hub://...` directives, `RecipeImporter` resolves them transparently before running.
+
+- **R6.10 — Tests.** Mock hub via `wiremock` crate for the publish + auth flows; live hub smoke tests gated on `FORAGE_HUB_LIVE_TEST=1`.
+
+**Acceptance:**
+- `forage auth login` against api.foragelang.com → tokens stored in OS keychain on each platform.
+- `forage publish recipes/hacker-news` → recipe appears on hub.foragelang.com.
+- A recipe with `import hub://foragelang/zen-leaf-elkridge` runs end-to-end with the imported types unioned.
+
+---
+
+## R7 — forage-lsp
+
+**Result:** Standalone LSP server binary that VS Code (and Monaco, in R8) talks to over stdio or WebSocket. Autocomplete, hover, diagnostics, go-to-definition, document outline, format all work.
+
+**Deliverables:**
+
+- **R7.1 — `forage-lsp` crate.** `tower-lsp` server. `forage::Lsp` struct implements `LanguageServer` trait.
+
+- **R7.2 — Document store.** Maps URI → source text + parsed AST + diagnostics. Re-parses on `didChange` (or `didSave` if perf demands). Holds the canonical state per open document.
+
+- **R7.3 — Diagnostics.** On every reparse, run `forage-core::parse` + `validate` → serialize to LSP `Diagnostic` (severity, range, message, code) → `publish_diagnostics`. Chumsky's error recovery means partial ASTs still publish whatever can be checked.
+
+- **R7.4 — Completion.** `completion`:
+  - Top-level: `recipe`, `import`, comments.
+  - Inside `recipe { … }`: `engine`, `type`, `enum`, `input`, `secret`, `auth`, `browser`, `step`, `captures`, `paginate`, `emit`, `expect`.
+  - Type position: previously declared type names + primitives (`String`, `Int`, `Double`, `Bool`, `[T]`, `T?`).
+  - Inside `step { … }`: `method`, `url`, `headers`, `body.json`, `body.form`, `extract`, `paginate`.
+  - Expression position: `$input.<X>` for each declared input (with type hint), `$secret.<X>`, `$<step-name>` for prior step outputs, transform names (`| <transform>`).
+  - Transform names: every registered transform from `forage-core::eval::transforms`.
+
+- **R7.5 — Hover.** `hover`:
+  - On a type name: show type definition.
+  - On an input: show input declaration + type.
+  - On a transform: show transform's docstring + signature.
+  - On a keyword: short doc explaining the construct.
+
+- **R7.6 — Go-to-definition.** `definition`:
+  - From a type reference → the `type X { … }` declaration.
+  - From `$input.X` → the `input X: T` declaration.
+  - From `$<step>` → the `step <step> { … }` block.
+  - From an imported recipe ref → the imported file (resolved through `forage-hub::importer`).
+
+- **R7.7 — Document symbol.** `documentSymbol` returns an outline: types, enums, inputs, secrets, steps, capture rules, expectations.
+
+- **R7.8 — Formatting.** `formatting` runs a canonical Forage formatter (separate function in `forage-core::format`, or in `forage-lsp::format`): consistent indentation (4 spaces), `←` spacing, pipe alignment.
+
+- **R7.9 — `forage lsp` CLI subcommand.** Spawns the server on stdio (default) or WebSocket (`--port 8080`). Studio uses stdio (child process); the web IDE uses WebSocket via a Cloudflare Worker bridge (or compiles the LSP itself to wasm — see R8).
+
+- **R7.10 — VS Code extension stub.** `editors/vscode-forage/` — minimal extension that registers the `.forage` language, launches `forage lsp` over stdio, supplies syntax highlighting via TextMate grammar. Published as `foragelang.forage` in the marketplace later (R12).
+
+**Acceptance:**
+- Open a `.forage` file in VS Code with the extension installed: errors squiggled, completion works, hover shows type info, ⌘-click jumps to declarations.
+- LSP server handles 1000+ document changes per minute without leaking memory.
+
+---
+
+## R8 — forage-wasm + hub-site swap
+
+**Result:** `forage-ts/` is deleted. The hub site's Monaco-backed web IDE runs Forage's actual Rust parser/validator/HTTP-runner via WebAssembly, with the LSP also running in a Web Worker.
+
+**Deliverables:**
+
+- **R8.1 — `forage-wasm` crate.** `wasm-bindgen` exports:
+  - `parseRecipe(source: &str) -> JsValue` — returns AST JSON or error.
+  - `validate(recipe_json: &str) -> JsValue` — returns diagnostics array.
+  - `runHTTP(recipe_json: &str, inputs: JsValue, fixtures_jsonl: &str) -> JsValue` — replay-only (no live fetch — browsers' CORS prevents that), returns snapshot.
+  - `formatRecipe(source: &str) -> String` — canonical format.
+  - `lspHandle()` — start an in-Worker LSP session, returns a message-port handle.
+
+- **R8.2 — Build pipeline.** `wasm-pack build crates/forage-wasm --target web --out-dir hub-site/forage-wasm/pkg`. Generated `.wasm` + TypeScript bindings consumed by hub-site.
+
+- **R8.3 — hub-site/.vitepress refactor.** `RecipeIDE.vue` imports `parseRecipe`, `validate`, `runHTTP` from `forage-wasm/pkg/`. `forage-ts/` directory deleted entirely. `package.json` removes `forage-ts` dep.
+
+- **R8.4 — LSP in Web Worker.** A dedicated `Worker` script loads `forage-wasm`, calls `lspHandle()`, and bridges Monaco's `monaco-languageclient` to the in-Worker LSP via the message port. Studio uses the standalone `forage lsp` binary over stdio; the web IDE uses the wasm + Worker variant. Same `forage-core` underneath both.
+
+- **R8.5 — Monaco wiring.** `monaco-editor` + `monaco-languageclient` configured for the `.forage` language. Workers configured via `MonacoEnvironment.getWorkerUrl` (TextMate / JSON / typescript-worker etc. need URL config under VitePress's base path).
+
+- **R8.6 — Syntax highlighting.** TextMate grammar in `editors/vscode-forage/syntaxes/forage.tmLanguage.json` (shared with the VS Code extension), loaded into Monaco via `monaco-textmate`.
+
+- **R8.7 — Tests.** Vitest tests for the web-IDE flows (parse a recipe, validate, run replay) — using `forage-wasm` directly from Node.
+
+**Acceptance:**
+- Visiting hub.foragelang.com/edit shows a Monaco editor with full Forage syntax highlighting + diagnostics + completion + hover.
+- The "Run replay" button runs HTTP recipes against fixtures entirely in the browser.
+- `forage-ts/` is gone.
+
+---
+
+## R9 — Forage Studio (Tauri rewrite)
+
+**Result:** `Forage Studio.app` on macOS, built from `apps/studio/`, with feature parity to the SwiftUI Studio (Recipe library, editor, capture, run, fixtures, snapshot, diagnostic, publish, MFA, OAuth, M10 interactive). Embeds Monaco + the Forage LSP.
+
+**Deliverables:**
+
+- **R9.1 — `apps/studio/` scaffold.** `cargo tauri init`; Tauri 2.x. `tauri.conf.json`: bundle id `com.foragelang.Studio`, display name "Forage Studio", URL scheme `forage-studio://`, min window size 1100×700.
+
+- **R9.2 — Tauri commands.** Rust `#[tauri::command]` fns invoked from the frontend:
+  - `list_recipes() -> Vec<RecipeEntry>`
+  - `load_recipe(slug) -> RecipeContent`
+  - `save_recipe(slug, source)`
+  - `create_recipe() -> String` (returns new slug)
+  - `delete_recipe(slug)`
+  - `run_recipe(slug, mode: "live" | "replay" | "interactive") -> RunResult`
+  - `capture_url(url, output_dir) -> CapturesPath`
+  - `publish_recipe(slug, metadata) -> PublishResult`
+  - `auth_start_device_flow() -> DeviceCodeResp`
+  - `auth_poll_device(device_code) -> AuthStatus`
+  - `auth_logout(revoke: bool)`
+  - `auth_whoami() -> Option<String>`
+  - `get_preferences() -> Preferences`
+  - `set_preferences(prefs)`
+  - `mfa_provide_code(request_id, code)` (used by the MFA channel provider)
+
+- **R9.3 — LSP child process.** Studio spawns `forage lsp` as a child process on startup. Tauri command `lsp_request(payload)` forwards JSON-RPC over the child's stdio. The frontend's `monaco-languageclient` talks to a custom WebSocket-shaped transport that proxies through Tauri commands.
+
+- **R9.4 — Browser engine in Tauri.** The same `forage-browser` crate drives live runs + captures. A separate Tauri `WebviewWindow` is opened for each run (visible for interactive bootstrap + capture, headless for normal live runs). Tauri 2.x supports multiple windows natively.
+
+- **R9.5 — Frontend stack.** React 19 + Vite + TypeScript + Tailwind v4 + shadcn/ui + `monaco-editor-react` + `monaco-languageclient`. TanStack Query for state derived from Tauri commands; Zustand for cross-component state (active recipe slug, dirty flag). Component tree:
+  - `App.tsx` — root, two-pane resizable split.
+  - `Sidebar.tsx` — recipe library list, new/import buttons.
+  - `Editor.tsx` — Monaco-hosted recipe editor with LSP wired up; tabs across the top: Source, Fixtures, Snapshot, Diagnostic, Publish.
+  - `SourceTab.tsx` — Monaco + validate panel below.
+  - `FixturesTab.tsx` — list of fixture files with previews.
+  - `SnapshotTab.tsx` — per-type record tables.
+  - `DiagnosticTab.tsx` — stall reason + unmet expectations + unmatched captures + unhandled affordances.
+  - `PublishTab.tsx` — publish form + Validate / Preview / Publish buttons.
+  - `CaptureSheet.tsx` — modal sheet with a `<webview>`-equivalent (Tauri webview window) and a capture list panel.
+  - `MFAPrompt.tsx` — modal sheet with a SecureField for one-time code.
+  - `Preferences.tsx` — Cmd-, settings; hub URL, account, API-key fallback.
+
+- **R9.6 — Native menus.** Tauri menu API: File (New `⌘N`, Save `⌘S`, Open Folder, Quit), Recipe (Run Live `⌘R`, Run Replay `⇧⌘R`, Capture `⌘K`, Validate `⇧⌘V`, Publish `⇧⌘P`, Import from Hub `⇧⌘I`), Edit (Cut/Copy/Paste/Undo/Redo from system), View (full-screen, dev tools).
+
+- **R9.7 — IPC for MFA.** When the runtime hits an `auth.session` step with `requiresMFA`, it calls the `ChannelMFAProvider`, which sends a Tauri event to the frontend; `MFAPrompt.tsx` opens; user submits; `mfa_provide_code` Tauri command resumes the runtime.
+
+- **R9.8 — Recipe library.** Reads `~/Library/Forage/Recipes/` (XDG / `%APPDATA%` on other platforms). New recipe creates an `untitled-N` dir with a minimal template + `fixtures/` dir.
+
+- **R9.9 — URL-scheme handler.** `forage-studio://recipe/<slug>` deep links route to the import flow (download from hub, save under `~/Library/Forage/Recipes/`).
+
+- **R9.10 — App icon + assets.** Icon slices from `site/public/favicon.svg` (ten sizes), shipped under `apps/studio/icons/`.
+
+- **R9.11 — Build & sign.** `cargo tauri build` produces `Forage Studio.app`. macOS signing + notarization via Apple Developer ID (release workflow). DMG via `create-dmg`.
+
+- **R9.12 — SwiftUI Studio retired.** `Studio/` directory deleted. `open-studio.sh` updated to `cargo tauri dev` (or similar). README updated.
+
+**Acceptance:**
+- Double-click `Forage Studio.app`; window opens; sidebar lists `untitled-1` (or pre-existing recipes); editor shows Monaco with full LSP behavior; `⌘R` runs the recipe; sheet flows work; Sign-in-with-GitHub completes the device-code flow.
+- SwiftUI directory is gone.
+
+---
+
+## R10 — hub-api polish (errors, edge cases, OAuth activation)
+
+**Result:** `api.foragelang.com` has clean structured error envelopes for every endpoint, rate limiting that actually throttles, OAuth fully activated (GitHub OAuth App credentials wired), and a smoke-test suite that hits every error path. The hub stays TypeScript.
+
+**Deliverables:**
+
+- **R10.1 — Error envelope.** Standardize on `{ error: { code, message, details?, retryAfter? } }` for all 4xx/5xx responses. Codes: `PARSE_ERROR`, `VALIDATION_ERROR`, `AUTH_REQUIRED`, `INVALID_TOKEN`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `INTERNAL`. Hub client (Rust + TS) reads `code` for branching.
+
+- **R10.2 — OAuth activation.** Register the GitHub OAuth App at `github.com/settings/developers` (manual user step). Set Worker secrets `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `JWT_SIGNING_KEY` via `wrangler secret put`. Verify the six flows (start, callback, device, device/poll, refresh, revoke) end-to-end with `hub-api/test/oauth-smoke.sh`.
+
+- **R10.3 — Rate limiting.** Per-user + per-IP token-bucket via Cloudflare's Durable Objects (or KV-backed counters). Configurable per-endpoint. 429 with `Retry-After`.
+
+- **R10.4 — Request size limits.** Cap recipe body at 1 MiB, fixtures at 16 MiB. Reject larger uploads with 413 + clear `code: PAYLOAD_TOO_LARGE`.
+
+- **R10.5 — CORS hardening.** Allowlist: `https://hub.foragelang.com`, `https://foragelang.com`, `http://localhost:5173` (dev). Reject others. Preflight handling baked in.
+
+- **R10.6 — Smoke tests.** `hub-api/test/smoke.sh` covers: list, get, publish (admin + user), delete (owner + non-owner = forbidden), OAuth device + web flows, refresh, revoke, rate-limit trigger, 404 paths, malformed JSON, unauthenticated calls. Tests run against a deployed staging Worker.
+
+- **R10.7 — Observability.** Wrangler tail wired up; structured logs (JSON) for every request with `{ timestamp, path, status, user?, took_ms, error_code? }`. Cloudflare Analytics enabled.
+
+- **R10.8 — Ownership migration.** Existing legacy recipes (published with `HUB_PUBLISH_TOKEN`) get `ownerLogin: "admin"`. New OAuth publishes stamp `ownerLogin: <gh-login>`. `callerCanWrite` enforces ownership on PUT/DELETE.
+
+- **R10.9 — Hub docs.** `site/docs/hub.md` updated with full endpoint reference + error catalog + OAuth flow diagrams.
+
+**Acceptance:**
+- Every error response matches the envelope.
+- Sign in with GitHub from Studio Preferences → publish a recipe → recipe appears under your login on hub.foragelang.com.
+- Hammering `/v1/recipes` from one IP triggers 429 with `Retry-After`.
+- All smoke tests green.
+
+---
+
+## R11 — Release pipeline (macOS-first)
+
+**Result:** Tagging `v0.1.0` triggers a CI workflow that builds `forage` CLI for macOS arm64+x86_64 and `Forage Studio.app` (signed + notarized), publishes a GitHub Release with both artifacts, updates the Homebrew tap, and refreshes `foragelang.com/download`.
+
+**Deliverables:**
+
+- **R11.1 — `.github/workflows/release.yml` rewrite.** Rust-based:
+  - Trigger on tag `v*`.
+  - Job `build-cli`: matrix over `(macos-15, aarch64-apple-darwin)` + `(macos-15, x86_64-apple-darwin)`. `cargo build -p forage-cli --release --target <triple>`. Strip + tar.gz. SHA-256.
+  - Job `build-studio`: `macos-15`. `cargo tauri build --target universal-apple-darwin`. Output: `.app` + `.dmg` (via `create-dmg`). Codesign with Developer ID, notarize via `xcrun notarytool`, staple.
+  - Job `release`: assemble GitHub Release, attach CLI tarballs + Studio DMG + SHA-256 files. Release notes from CHANGELOG.
+  - Job `update-homebrew-tap`: gated on `ENABLE_HOMEBREW_TAP_UPDATE=1`. Bumps `Formula/forage.rb` in `foragelang/homebrew-tap` via fine-grained PAT.
+
+- **R11.2 — `site/public/install.sh`.** Detects macOS arm64/x86_64, fetches latest release asset from GitHub API, verifies SHA-256, installs to `~/.local/bin/forage`, prints PATH hint. Hosted at `https://foragelang.com/install.sh`.
+
+- **R11.3 — Homebrew formula.** `foragelang/homebrew-tap`, `Formula/forage.rb`. References latest release tarball + sha. `brew install foragelang/forage/forage`.
+
+- **R11.4 — Download page.** `site/docs/install.md` (and the `/download` route) lists: Homebrew, curl|sh, Studio DMG direct link, build-from-source.
+
+- **R11.5 — Codesign secrets.** Workflow uses `APPLE_DEVELOPER_ID_CERT`, `APPLE_DEVELOPER_ID_PASSWORD`, `APPLE_API_KEY_ID`, `APPLE_API_KEY_ISSUER_ID`, `APPLE_API_KEY` repo secrets. If any are missing, build still succeeds but artifacts are ad-hoc signed and the workflow flags it in the release notes.
+
+- **R11.6 — Versioning.** Workspace-level `[workspace.package] version = "0.1.0"` propagates to all crates via `version.workspace = true`. Tag matches.
+
+**Acceptance:**
+- `git tag v0.1.0 && git push origin v0.1.0` → 10 minutes later, GitHub Release with signed Mac DMG + CLI tarballs + Homebrew formula bumped.
+- `brew install foragelang/forage/forage && forage --version` prints `0.1.0`.
+- `curl -fsSL https://foragelang.com/install.sh | sh` installs the CLI to `~/.local/bin/forage`.
+
+---
+
+## R12 — Cross-platform: Windows + Linux
+
+**Result:** Studio + CLI ship for Windows (WebView2) and Linux (WebKitGTK). Recipes that work on macOS work on at least one of the other two; gaps are documented.
+
+**Deliverables:**
+
+- **R12.1 — CLI cross-compile.** Release workflow matrix expanded:
+  - macOS: arm64 + x86_64 (already).
+  - Linux: x86_64-unknown-linux-gnu + aarch64-unknown-linux-gnu.
+  - Windows: x86_64-pc-windows-msvc.
+
+- **R12.2 — Studio Windows.** `cargo tauri build` on `windows-latest`. WebView2 runtime detection / installer prompt. MSI package via WiX bundler.
+
+- **R12.3 — Studio Linux.** `cargo tauri build` on `ubuntu-22.04`. AppImage + .deb. Flathub manifest stretch goal.
+
+- **R12.4 — Browser-engine portability.** Per-platform shims for cookie extraction etc. (R4.1) actually exercised. Test all recipes on each platform; document fingerprint variances.
+
+- **R12.5 — Distribution channels.** Chocolatey package for Windows, Snap or Flatpak for Linux. Stretch.
+
+- **R12.6 — VS Code extension publish.** `editors/vscode-forage/` published to the marketplace as `foragelang.forage`.
+
+**Acceptance:**
+- `forage` CLI on Win/Linux runs every HTTP recipe; runs browser recipes that don't depend on platform-specific webview quirks.
+- Studio launches on Win + Linux; can author + run recipes.
+- Cross-platform parity issues documented in `docs/cross-platform.md`.
+
+---
+
+## R13 — Docs site + language reference
+
+**Result:** `foragelang.com/docs` hosts an mdbook with the full Forage language reference, runtime guide, recipe cookbook, and contribution docs.
+
+**Deliverables:**
+
+- **R13.1 — `docs/` mdbook scaffold.** `book.toml` + chapter structure.
+- **R13.2 — Language reference.** Every keyword, every transform (auto-generated from `forage-core::eval::transforms` doc comments), every auth flavor, every pagination strategy, every capture rule.
+- **R13.3 — Runtime guide.** How the engine walks the recipe; auth/session lifecycle; rate-limit + retry behavior; sessions on disk; encryption.
+- **R13.4 — Recipe cookbook.** Worked walk-throughs of each in-tree recipe.
+- **R13.5 — Contribution guide.** How to clone, build, run tests; how to add a transform / auth flavor / pagination strategy; CI expectations.
+- **R13.6 — Embedded in site.** mdbook output published to a Cloudflare Pages site at `docs.foragelang.com` or `foragelang.com/docs`.
+
+**Acceptance:**
+- `foragelang.com/docs` is navigable, searchable, and links from the main site's nav.
+- Adding a new transform to `forage-core` auto-surfaces a doc entry on the next build.
+
+---
+
+## What gets deleted along the way
+
+Greenfield: the Swift code is in git history. Each Rust counterpart deletes its predecessor.
+
+| When | What dies |
+|---|---|
+| R3 ships | `Sources/forage-cli/**` (Swift CLI) |
+| R5 ships | Last vestiges of `Sources/forage-cli/**` if any survived R3 |
+| R6 ships | `Sources/Forage/Hub/**` (Swift HubClient + RecipeImporter) |
+| R7 ships | — (LSP is new — nothing to delete) |
+| R8 ships | `hub-site/forage-ts/**` (TS port) |
+| R9 ships | `Studio/**` (SwiftUI app) |
+| R9 ships | `Sources/Forage/**` (Swift core), `Tests/ForageTests/**` (Swift tests), `Package.swift` |
+| R9 ships | `ROADMAP.md` (Swift roadmap) becomes `ROADMAP-history.md`; `ROADMAP-RUST.md` → `ROADMAP.md` |
+
+`recipes/`, `Tests/shared-recipes/`, `notes/`, `hub-api/`, `hub-site/.vitepress/`, `site/.vitepress/` all survive. The repo's shape pivots from "Swift package + apps" to "cargo workspace + apps + TS workers."
+
+---
+
+## Dependency graph (which crate needs which)
+
+```
+forage-core ─────┬─→ forage-http ──┬─→ forage-hub
+                 ├─→ forage-browser┘
+                 ├─→ forage-lsp
+                 └─→ forage-wasm
+
+forage-keychain ──┬─→ forage-http (encryption key)
+                  └─→ forage-hub (auth store)
+
+apps/cli depends on: forage-core, forage-http, forage-browser, forage-hub, forage-keychain, forage-lsp
+apps/studio depends on: all of the above
+forage-wasm depends on: forage-core, forage-http (replay-only mode)
 ```
 
-The `$` inside `captures.document { … }` is the parsed root node of the post-settle document — recipes walk it with `select(...)` directly, no `parseHtml` call needed.
-
-**Deliverables (all landed):**
-
-- **D9.1 — `captures.document { … }` block.** Sibling to `captures.match`. Fires once after the browser has finished settling. The capture's body is `document.documentElement.outerHTML`; in the rule's scope `$` is pre-parsed as a node so recipes can `select` immediately.
-- **D9.2 — Synthetic capture plumbing.** `BrowserEngine.captureDocumentBody` evaluates JS to fetch the outerHTML, wraps it as `Capture(kind: .document, …)`, appends it to the run's captures list (so it survives into archived `captures.jsonl`), and routes it through the document rule.
-- **D9.3 — AST additions.** `Capture.Kind.document` variant. New `DocumentCaptureRule` value type. `BrowserConfig.documentCapture: DocumentCaptureRule?` field — one document rule per recipe (multiple XHR `captures.match` rules continue to coexist).
-- **D9.4 — Iteration semantics.** Document rules take the same body shape as XHR rules: `for $x in <ExtractionExpr> { emit … }`, where `<ExtractionExpr>` typically uses M8 transforms (`select`, `text`, `attr`).
-- **D9.5 — Replayer support.** `BrowserReplayer` routes `kind: .document` captures to the document rule (matching how live runs handle them). Archived runs round-trip cleanly.
-- **D9.6 — Reference recipes.**
-  - **`recipes/letterboxd-popular/`** — the flagship live demo. Letterboxd's "films popular this week" page is Cloudflare-gated (`curl` gets a 403); the browser engine drives a WKWebView through the gate, `captures.document` extracts ~70 typed `Film` records per run. End-to-end working.
-  - **`recipes/ebay-sold/`** — added as a shape reference at M9 (eBay's Akamai layer serves a human-verification challenge to WKWebView that the headless DSL can't programmatically solve). M10 makes it actually work via the interactive bootstrap flow — see M10 D10.7.
-- **D9.7 — Tests.** `Tests/ForageTests/DocumentCaptureTests.swift`: parser accepts `captures.document`, rejects duplicates, replayer routes a synthetic `.document` capture through the rule and emits expected records.
-- **D9.8 — Docs.** `site/docs/html-extraction.md` extended with a browser-engine section that pairs M8 (the extraction primitive) with M9 (the document-capture source).
-
-**Out of scope (intentional follow-ups):**
-
-- **CAPTCHA-walled sites in the headless DSL.** Programmatically defeating human-verification challenges is outside the headless engine's scope. The *user-driven* "show me the page so I can solve the challenge" mode is M10's interactive bootstrap, which now handles this class of target.
-- **Form submissions** in browser recipes (filling search boxes, posting filter forms). Today's recipes navigate via `initialURL`; multi-page flows through forms would need a new primitive.
-
-**Acceptance**
-
-- `forage run recipes/letterboxd-popular` returns ≈70 typed `Film` records with `title`, `url`, `posterUrl`.
-- `captures.document` survives the `BrowserReplayer` round-trip (covered by `DocumentCaptureTests.browserReplayerRoutesDocumentCaptureToDocumentRule`).
+This is the dependency order — R1 → R2 → R4 → R6 are the longest path. R3/R5/R7/R8/R9 fall out as soon as their dependencies are met. R10/R11/R12/R13 are independent polish/distribution work.
 
 ---
 
-## M10 — Interactive session bootstrap
+## Architectural decisions worth pinning now
 
-**Status: landed.**
+(Decisions where flexibility is cheap but having one default helps the rewrite proceed without bikeshedding.)
 
-**Result:** Recipes that hit a human-verification gate (CAPTCHA, "I'm not a robot", interactive puzzle) bootstrap once via a visible WebView, persist the resulting cookies + storage, and reuse the session for subsequent headless runs until it expires. Forage doesn't solve CAPTCHAs programmatically — the *human* does, then the engine reuses the human-authorized session. JS-execution-based bot checks (Cloudflare's basic challenge, Akamai's basic fingerprint check) continue to succeed against us *because we're a real WebKit*, not because we spoof anything — the existing posture discussed and accepted for Jane/Trilogy. M10 extends that posture to targets that escalate to human verification.
-
-**Deliverables (all landed):**
-
-- **D10.1 — Recipe DSL.** `browser.interactive { … }` block with `bootstrapURL: <template>` (defaults to `initialURL`), `cookieDomains: [<host>...]`, `sessionExpiredPattern: <string>?` (the literal text the target site shows when *our* session is no longer valid — a signal to re-prompt the human, not a hook to defeat anything). Lexer keywords + parser branch + `InteractiveConfig` value type in `Sources/Forage/Recipe/BrowserConfig.swift`.
-- **D10.2 — Session storage.** `Sources/Forage/Engine/InteractiveSession.swift` defines `InteractiveSession` (portable Codable JSON: cookies, per-origin localStorage, bootstrappedAt, expiresAt) and `InteractiveSessionStore` (file path resolution + chmod 600 write/read/evict). Slugs sanitized so path separators in a recipe name can't escape the root.
-- **D10.3 — Visible-window mode in BrowserEngine.** New `InteractiveBootstrapMode` (`.auto` / `.forceBootstrap` / `.skipBootstrap`) init param resolves to a `isInteractiveBootstrap` flag at engine startup. When true: visible window forced on, settle timer disabled (we wait for the human), `InjectedScripts.interactiveOverlay` injected after `didFinish navigation`. The overlay is a fixed-position green ✓ button that posts to the `forageInteractiveDone` `WKScriptMessageHandler` carrying current URL + outerHTML.
-- **D10.4 — Expiry detection.** Reuse mode (cached session, no `--interactive`) seeds the cached cookies into the WKWebView's data store + `HTTPCookieStorage.shared`, restores per-origin localStorage via `InjectedScripts.restoreLocalStorage`, then after navigation reads `document.documentElement.outerHTML` and checks for `sessionExpiredPattern`. Match → `stallReason: "session-expired: re-run with --interactive to refresh"` + evict the cache. Miss → proceeds with the normal pagination/captures flow.
-- **D10.5 — CLI flag.** `forage run --interactive recipes/<slug>` passes `InteractiveBootstrapMode.forceBootstrap` to the engine, ignoring any cached session.
-- **D10.6 — Studio integration.** Defer to a focused follow-up: the BrowserEngine init parameter is the seam, Studio will pass `.forceBootstrap` from a menu item / Preferences pane. The visible-window UX already works; only the surfacing through Studio UI is pending.
-- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated with `browser.interactive { cookieDomains: ["ebay.com", ".ebay.com"], sessionExpiredPattern: "Security Measure" }`. First run: `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens the visible window, user solves the Akamai human-verification challenge in the normal browser flow, clicks the ✓ overlay, session persists. Subsequent runs reuse headlessly; if eBay re-challenges, the recipe detects the literal "Security Measure" text on the rendered page and exits asking the user to re-run with `--interactive`. `sessionExpiredPattern` is a re-prompt signal, not a bypass hook — Forage doesn't try to solve the verification itself; the human re-bootstraps the session.
-- **D10.8 — Tests.** `Tests/ForageTests/InteractiveSessionTests.swift`: parser accepts the block; duplicate `interactive` rejected; session JSON round-trip; store write+read with chmod 600 verification; evict removes file; expired sessions detected; path-separator-bearing slugs sanitized.
-- **D10.9 — Docs.** Recipe-level `// comment` in `recipes/ebay-sold/recipe.forage` explains the bootstrap flow; the broader site/docs page is a follow-up alongside Studio UI wiring.
-
-**Out of scope (intentional follow-ups):**
-
-- **Studio modal sheet** wrapping `--interactive`. The runtime primitive is in place; Studio needs a Recipe → "Bootstrap session…" menu command + Preferences pane listing active sessions. Small Swift work.
-- **Headless CI/CD bootstrap path.** CI can't pass a CAPTCHA. The story: bootstrap on a workstation, copy `~/Library/Forage/Sessions/<slug>/session.json` to the CI host, run headlessly there until expiry. Doc-only; no code change needed.
-- **`site/docs/interactive-sessions.md`** as a dedicated doc page. Today's coverage lives in the recipe-level comment + this ROADMAP entry.
+- **Edition:** Rust 2024.
+- **Async runtime:** `tokio` everywhere; no `async-std` mixing.
+- **Error handling:** `thiserror` for library crates (typed errors), `anyhow::Result` for binary crates (CLI). LSP errors are typed.
+- **Logging:** `tracing` + `tracing-subscriber` everywhere; `--verbose` flag toggles per-target levels.
+- **Serialization:** `serde` + `serde_json`. AST is fully Serialize/Deserialize. `JSONValue` uses `serde_json::Value` underneath but typed-exposed.
+- **Span representation:** `Range<usize>` (chumsky-native). Conversion to LSP `Range` happens at the LSP layer (line/column resolved from the source text).
+- **Strings:** `String` everywhere except hot-path internals where `Cow<'a, str>` makes sense.
+- **HTTP body:** `Vec<u8>` (the body of a capture / response). JSON bodies parsed lazily into `serde_json::Value`.
+- **Recipe DSL on disk:** unchanged — same `.forage` syntax.
+- **Recipe storage:** `~/Library/Forage/Recipes/<slug>/` on Mac, `$XDG_DATA_HOME/forage/recipes/` on Linux, `%APPDATA%\Forage\Recipes\` on Windows. Helper `dirs` crate.
+- **Cache/Sessions root:** same pattern with `Cache` / `Sessions` / `Auth` subdirs.
+- **Codesign identity:** "Developer ID Application: Dmitry Minkovsky (TEAM_ID)" — same as planned for Swift Studio.
+- **License:** kept as-is (whatever the current Swift project uses).
+- **Communication style:** every diagnostic uses ariadne for human output + serializes to LSP `Diagnostic` for machine consumption. One source of truth, two renderers.
 
 ---
 
-## M11 — GitHub OAuth identity for the hub
+## Tracking
 
-**Status: code landed; one external GitHub action remaining.** The runtime + Worker + clients all ship. Activating OAuth in production requires the user to register a GitHub OAuth App and add its credentials to the Worker — `hub-api` runs in legacy-token-only mode until then.
-
-**Result:** `hub.foragelang.com` and `api.foragelang.com` use GitHub as identity provider. Per-user JWTs replace the single shared `HUB_PUBLISH_TOKEN`. Recipes carry an `ownerLogin`; publish/delete are ownership-checked. Web IDE auth lives in an httpOnly cookie; CLI + Studio auth lives in Keychain.
-
-**Migration model.** The existing `HUB_PUBLISH_TOKEN` is grandfathered as an **admin path**. Existing recipes (published under that token) get `ownerLogin: "admin"`. New OAuth users co-exist; their recipes carry their GitHub login. No manual migration script, no broken existing workflows — OAuth is purely additive on day one.
-
-**Deliverables (all code landed; activation requires the manual step at the bottom of this section):**
-
-- **D11.1 — Worker OAuth endpoints.** `hub-api/src/oauth.ts` ships: `POST /v1/oauth/start` (web), `GET /v1/oauth/callback`, `POST /v1/oauth/device` + `/v1/oauth/device/poll` (device-code), `POST /v1/oauth/refresh`, `POST /v1/oauth/revoke`, `GET /v1/oauth/whoami`. All endpoints fall through with `503 oauth_not_configured` until env secrets are set.
-- **D11.2 — JWT signing.** `hub-api/src/jwt.ts` — HS256 sign/verify with the `JWT_SIGNING_KEY` Worker secret. Access tokens TTL 1h, refresh tokens TTL 30 days, separate audiences so an access verifier rejects a refresh and vice versa.
-- **D11.3 — KV schema.** `user:<gh-login>` records (login, name, avatar, refresh-token fingerprint, timestamps). `RecipeMetadata.ownerLogin` field — `undefined` on legacy entries means "owned by admin." Lazy migration: existing recipes keep working; first OAuth publish stamps ownership.
-- **D11.4 — Auth middleware.** `hub-api/src/auth.ts` `identifyCaller` returns `{ kind: 'user', login }` for JWT (Authorization Bearer or `forage_at` cookie), `{ kind: 'admin' }` for legacy `HUB_PUBLISH_TOKEN`, or `null`. `callerCanWrite(caller, ownerLogin)` enforces ownership on publish/delete — admin can write to anything; the original owner can rewrite their recipes; legacy-owned (admin) recipes are admin-only.
-- **D11.5 — Web IDE.** `RecipeIDE.vue` calls `/v1/oauth/whoami` on mount (cookie auth), surfaces a "Sign in with GitHub" button when not signed in, badges the login when signed. The publish path uses `HubClient({ useCredentials: true })` for signed-in users (httpOnly cookie); the legacy API-key paste field remains as fallback. `HubClient` in `forage-ts` grew a `useCredentials` option + `whoami()` + `oauthStart()` methods.
-- **D11.6 — CLI.** `Sources/forage-cli/Auth.swift` adds `forage auth login` (device-code flow, prints userCode + verification URL, polls until success), `forage auth logout` (deletes the stored credentials, optionally `--revoke` to invalidate the refresh token server-side), `forage auth whoami` (prints the signed-in login). Tokens persist at `~/Library/Forage/Auth/<host>.json` chmod 600. `forage publish` now sources its bearer from `FORAGE_HUB_TOKEN` first, then the auth-store JWT.
-- **D11.7 — Studio.** Preferences pane adds an "Account" section: when signed in, shows the GitHub login + Sign out; when not signed in, shows a "Sign in with GitHub" button that runs the device-code flow (prints userCode, opens the verification URL in the default browser, polls). Tokens stored in macOS Keychain under service `com.foragelang.Studio`, account `hub-oauth-tokens`. The legacy API-key field remains as a fallback path.
-- **D11.8 — Tests.** TS port still passes (63 tests); Swift suite still green (225 tests). End-to-end OAuth flow tests live alongside the existing `hub-api/test/smoke.sh` and require a deployed Worker with the GitHub OAuth App configured — these are run by the operator after activation.
-- **D11.9 — Docs.** ROADMAP entry (this one). Standalone `site/docs/auth.md` page covering all three flows is a small follow-up.
-
-**Manual activation step (only the user can do this):**
-
-1. Register a new **GitHub OAuth App** at <https://github.com/settings/developers> → New OAuth App.
-   - Application name: `Forage Hub`.
-   - Homepage URL: `https://hub.foragelang.com`.
-   - Authorization callback URL: `https://api.foragelang.com/v1/oauth/callback`.
-   - Enable Device Flow.
-2. Add three Worker secrets to `foragelang/hub-api` via `wrangler secret put`:
-   - `GITHUB_CLIENT_ID` — from the OAuth App page.
-   - `GITHUB_CLIENT_SECRET` — generated on the OAuth App page.
-   - `JWT_SIGNING_KEY` — a random 32+ byte string (e.g. `openssl rand -hex 32`).
-3. `npm run deploy` from `hub-api/`. The `/v1/oauth/*` endpoints now respond with 200s instead of `503 oauth_not_configured`.
-
-Until those three secrets are set, the OAuth endpoints return a clear 503; the legacy `HUB_PUBLISH_TOKEN` path keeps working unchanged.
-
-**Acceptance**
-
-- After activation: `forage auth login` → browser opens GH OAuth → device code entered → CLI stores token → `forage publish <recipe>` succeeds without `FORAGE_HUB_TOKEN`.
-- Visiting `hub.foragelang.com/edit` with no cookie shows "Sign in with GitHub"; after the OAuth dance, the IDE publishes without touching localStorage.
-- User A's `forage publish foo` lands with `ownerLogin: "alice"`; User B's `forage publish foo` returns 403 with "owned by alice".
-
----
-
-## Followups in flight (not yet milestoned)
-
-All audit followups closed in this session except one manual step that requires user action outside the codebase:
-
-- **M5.followup — `HOMEBREW_TAP_TOKEN` secret.** The `update-homebrew-tap` workflow job is wired up (repo created, formula pushed, `ENABLE_HOMEBREW_TAP_UPDATE=1` set). The remaining step is creating a fine-grained PAT scoped to `foragelang/homebrew-tap` with `contents: write` and adding it as a repo secret. Can't be done programmatically — the user holds the GitHub account that mints the PAT.
+Each `Rn.m` deliverable gets a checkbox in this file as it lands. Each milestone closes with a `Status: landed.` line, the commit SHA of the closing commit, and a 1–2 sentence "Result" paragraph describing what actually shipped (matching the Swift roadmap's style).

@@ -25,11 +25,11 @@ If `~/.local/bin` is not on your `PATH`, the installer prints the line to add to
 ```sh
 git clone https://github.com/foragelang/forage
 cd forage
-swift build -c release
-sudo cp .build/release/forage /usr/local/bin/
+cargo build --release --bin forage
+sudo cp target/release/forage /usr/local/bin/
 ```
 
-Requires Xcode 16+ on macOS 14+.
+Requires Rust 1.85 or later.
 
 ## Studio (macOS app)
 
