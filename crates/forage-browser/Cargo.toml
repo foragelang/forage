@@ -13,18 +13,23 @@ forage-core    = { workspace = true }
 forage-replay  = { workspace = true }
 
 tokio          = { workspace = true }
-async-trait    = { workspace = true }
-futures        = { workspace = true }
 
-wry            = { workspace = true }
-tao            = { workspace = true }
+# wry + tao gate the live driver; replay mode is pure data.
+# Activated by the `live` feature (default), turned off for wasm/CI builds.
+wry            = { workspace = true, optional = true }
+tao            = { workspace = true, optional = true }
 scraper        = { workspace = true }
 
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }
 tracing        = { workspace = true }
+indexmap       = { workspace = true }
 
 regex          = { workspace = true }
 dirs           = { workspace = true }
 url            = { workspace = true }
+
+[features]
+default = ["live"]
+live    = ["dep:wry", "dep:tao"]

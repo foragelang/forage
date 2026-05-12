@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 use owo_colors::OwoColorize;
 
-use forage_core::ast::JSONValue;
+use forage_browser::run_browser_replay;
+use forage_core::ast::{EngineKind, JSONValue};
 use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta, device::run_device_flow};
@@ -140,21 +141,36 @@ async fn run(recipe_dir: &Path, replay: bool, output: OutputFormat) -> Result<()
     let inputs = load_inputs(recipe_dir)?;
     let secrets = load_secrets_from_env(&recipe);
 
-    let snapshot = if replay {
-        let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
-        let transport = ReplayTransport::new(captures);
-        let engine = Engine::new(&transport);
-        engine
-            .run(&recipe, inputs, secrets)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-    } else {
-        let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let engine = Engine::new(&transport);
-        engine
-            .run(&recipe, inputs, secrets)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
+    let snapshot = match (recipe.engine_kind, replay) {
+        (EngineKind::Http, true) => {
+            let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
+            let transport = ReplayTransport::new(captures);
+            let engine = Engine::new(&transport);
+            engine
+                .run(&recipe, inputs, secrets)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        (EngineKind::Http, false) => {
+            let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
+            let engine = Engine::new(&transport);
+            engine
+                .run(&recipe, inputs, secrets)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        (EngineKind::Browser, true) => {
+            let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
+            run_browser_replay(&recipe, &captures, inputs, secrets)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        (EngineKind::Browser, false) => {
+            bail!(
+                "browser-engine recipes need a real WebView; \
+                 use --replay against fixtures/captures.jsonl for now, \
+                 or open the recipe in Forage Studio (R9)"
+            );
+        }
     };
 
     match output {
