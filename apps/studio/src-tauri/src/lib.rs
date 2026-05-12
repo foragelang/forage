@@ -66,6 +66,7 @@ pub fn run() {
             commands::debug_resume,
             commands::set_breakpoints,
             commands::recipe_outline,
+            commands::language_dictionary,
             commands::publish_recipe,
             commands::auth_whoami,
             commands::auth_start_device_flow,

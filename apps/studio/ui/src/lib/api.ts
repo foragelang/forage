@@ -42,6 +42,15 @@ export type StepLocation = {
     end_col: number;
 };
 
+/// Snapshot of the language's reserved word + transform inventory,
+/// pulled from forage-core at app startup so Monaco syntax + completion
+/// can't drift from the parser / validator.
+export type LanguageDictionary = {
+    keywords: string[];
+    type_keywords: string[];
+    transforms: string[];
+};
+
 export type Snapshot = {
     records: RecipeRecord[];
     diagnostic: DiagnosticReport;
@@ -142,6 +151,8 @@ export const api = {
         invoke<void>("set_breakpoints", { steps }),
     recipeOutline: (source: string) =>
         invoke<RecipeOutline>("recipe_outline", { source }),
+    languageDictionary: () =>
+        invoke<LanguageDictionary>("language_dictionary"),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>

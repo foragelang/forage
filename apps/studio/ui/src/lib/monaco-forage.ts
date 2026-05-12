@@ -1,55 +1,95 @@
 //! Register the Forage language with Monaco — syntax highlighting +
-//! basic completion. The "real" LSP (forage-lsp) wires into Monaco
-//! via the languageclient bridge in `lsp.ts`; this file gives us
-//! useful editing immediately even if the LSP child process isn't
-//! running.
+//! basic completion. The keyword / type / transform lists used to be
+//! hand-maintained TS arrays in this file; they're now pulled from
+//! `forage-core` at runtime via the `language_dictionary` Tauri
+//! command so they can't drift from the parser / validator.
+//!
+//! The real LSP (forage-lsp) layers richer per-document intelligence
+//! on top — symbols, hover, goto-def — when wired in. This file is the
+//! always-on baseline: tokens + completion that works even before the
+//! LSP process has handshook.
 
 import type * as Monaco from "monaco-editor";
 
-const KEYWORDS = [
-    "recipe", "engine", "http", "browser", "type", "enum", "input",
-    "secret", "step", "method", "url", "headers", "body", "json", "form",
-    "raw", "auth", "staticHeader", "htmlPrime", "session", "formLogin",
-    "bearerLogin", "cookiePersist", "extract", "regex", "groups",
-    "paginate", "pageWithTotal", "untilEmpty", "cursor", "for", "in",
-    "emit", "case", "of", "expect", "observe", "browserPaginate",
-    "scroll", "ageGate", "autoFill", "captures", "match", "document",
-    "interactive", "bootstrapURL", "cookieDomains", "sessionExpiredPattern",
-    "items", "total", "pageParam", "pageSize", "cursorPath", "cursorParam",
-    "import", "as", "records", "count", "typeName", "noProgressFor",
-    "maxIterations", "iterationDelay", "dob", "reloadAfter",
-    "captureCookies", "maxReauthRetries", "cache", "cacheEncrypted",
-    "requiresMFA", "mfaFieldName", "tokenPath", "headerName",
-    "headerPrefix", "name", "value", "stepName", "nonceVar", "ajaxUrlVar",
-    "warmupClicks", "dismissals", "extraLabels", "initialURL",
-    "urlPattern", "iterPath", "seedFilter", "where",
-];
-
-const TYPES = ["String", "Int", "Double", "Bool"];
-
-const BUILTIN_TRANSFORMS = [
-    "toString", "lower", "upper", "trim", "capitalize", "titleCase",
-    "parseInt", "parseFloat", "parseBool", "length", "dedup", "first",
-    "coalesce", "default", "parseSize", "normalizeOzToGrams", "sizeValue",
-    "sizeUnit", "normalizeUnitToGrams", "prevalenceNormalize",
-    "parseJaneWeight", "janeWeightUnit", "janeWeightKey", "getField",
-    "parseHtml", "parseJson", "select", "text", "attr", "html", "innerHtml",
-];
+import { api } from "./api";
 
 export const FORAGE_LANG_ID = "forage";
 
-export function registerForageLanguage(monaco: typeof Monaco) {
+interface Dictionary {
+    keywords: string[];
+    typeKeywords: string[];
+    transforms: string[];
+}
+
+/// Bootstrap dictionary used the moment the editor mounts, before the
+/// Tauri `language_dictionary` round-trip resolves. Intentionally empty
+/// — Monaco renders plain text for a few hundred ms while we fetch the
+/// canonical lists, which is preferable to shipping a stale snapshot.
+const EMPTY_DICTIONARY: Dictionary = { keywords: [], typeKeywords: [], transforms: [] };
+
+let lastDictionary: Dictionary = EMPTY_DICTIONARY;
+/// Resolves when the first dictionary fetch lands; subsequent calls to
+/// `registerForageLanguage` await it so the language registers with the
+/// canonical lists rather than the empty bootstrap.
+let dictionaryReady: Promise<Dictionary> | null = null;
+
+function loadDictionary(): Promise<Dictionary> {
+    if (dictionaryReady) return dictionaryReady;
+    dictionaryReady = api
+        .languageDictionary()
+        .then((d) => {
+            const dict: Dictionary = {
+                keywords: d.keywords,
+                typeKeywords: d.type_keywords,
+                transforms: d.transforms,
+            };
+            lastDictionary = dict;
+            return dict;
+        })
+        .catch((e) => {
+            console.warn("language_dictionary fetch failed, using empty", e);
+            return EMPTY_DICTIONARY;
+        });
+    return dictionaryReady;
+}
+
+export async function registerForageLanguage(monaco: typeof Monaco) {
     if (monaco.languages.getLanguages().some((l) => l.id === FORAGE_LANG_ID)) {
         return;
     }
 
     monaco.languages.register({ id: FORAGE_LANG_ID, extensions: [".forage"] });
 
+    // Register language config + a placeholder tokenizer immediately so
+    // the editor renders bracket matching / auto-close from the moment
+    // it mounts. Then fetch the canonical dictionary and re-register the
+    // tokenizer + completion provider with the real lists.
+    monaco.languages.setLanguageConfiguration(FORAGE_LANG_ID, {
+        comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+        brackets: [
+            ["{", "}"],
+            ["[", "]"],
+            ["(", ")"],
+        ],
+        autoClosingPairs: [
+            { open: "{", close: "}" },
+            { open: "[", close: "]" },
+            { open: "(", close: ")" },
+            { open: '"', close: '"', notIn: ["string", "comment"] },
+        ],
+    });
+
+    applyDictionary(monaco, lastDictionary);
+    const dict = await loadDictionary();
+    applyDictionary(monaco, dict);
+}
+
+function applyDictionary(monaco: typeof Monaco, dict: Dictionary) {
     monaco.languages.setMonarchTokensProvider(FORAGE_LANG_ID, {
         defaultToken: "",
         tokenPostfix: ".forage",
-        keywords: KEYWORDS,
-        typeKeywords: TYPES,
+        keywords: dict.keywords,
+        typeKeywords: dict.typeKeywords,
         operators: ["←", "→", "|", "?.", "[*]", "=", ">", "<", "!"],
         symbols: /[=><!~?:&|+\-*\/\^%←→]+/,
         tokenizer: {
@@ -93,59 +133,51 @@ export function registerForageLanguage(monaco: typeof Monaco) {
         },
     });
 
-    monaco.languages.setLanguageConfiguration(FORAGE_LANG_ID, {
-        comments: { lineComment: "//", blockComment: ["/*", "*/"] },
-        brackets: [
-            ["{", "}"],
-            ["[", "]"],
-            ["(", ")"],
-        ],
-        autoClosingPairs: [
-            { open: "{", close: "}" },
-            { open: "[", close: "]" },
-            { open: "(", close: ")" },
-            { open: '"', close: '"', notIn: ["string", "comment"] },
-        ],
-    });
-
-    // Static completion provider — keywords + transforms + primitives.
-    // The LSP layer adds per-document symbols (inputs, types, etc.) on top.
-    monaco.languages.registerCompletionItemProvider(FORAGE_LANG_ID, {
-        provideCompletionItems(model, position) {
-            const word = model.getWordUntilPosition(position);
-            const range = {
-                startLineNumber: position.lineNumber,
-                endLineNumber: position.lineNumber,
-                startColumn: word.startColumn,
-                endColumn: word.endColumn,
-            };
-            const items: Monaco.languages.CompletionItem[] = [];
-            for (const k of KEYWORDS) {
-                items.push({
-                    label: k,
-                    kind: monaco.languages.CompletionItemKind.Keyword,
-                    insertText: k,
-                    range,
-                });
-            }
-            for (const t of TYPES) {
-                items.push({
-                    label: t,
-                    kind: monaco.languages.CompletionItemKind.Class,
-                    insertText: t,
-                    range,
-                });
-            }
-            for (const t of BUILTIN_TRANSFORMS) {
-                items.push({
-                    label: t,
-                    kind: monaco.languages.CompletionItemKind.Function,
-                    detail: "transform",
-                    insertText: t,
-                    range,
-                });
-            }
-            return { suggestions: items };
+    // Stash the completion provider's disposer so re-applying replaces
+    // rather than stacking duplicate keyword suggestions on top of the
+    // previous registration.
+    if (completionDisposer) completionDisposer.dispose();
+    completionDisposer = monaco.languages.registerCompletionItemProvider(
+        FORAGE_LANG_ID,
+        {
+            provideCompletionItems(model, position) {
+                const word = model.getWordUntilPosition(position);
+                const range = {
+                    startLineNumber: position.lineNumber,
+                    endLineNumber: position.lineNumber,
+                    startColumn: word.startColumn,
+                    endColumn: word.endColumn,
+                };
+                const items: Monaco.languages.CompletionItem[] = [];
+                for (const k of dict.keywords) {
+                    items.push({
+                        label: k,
+                        kind: monaco.languages.CompletionItemKind.Keyword,
+                        insertText: k,
+                        range,
+                    });
+                }
+                for (const t of dict.typeKeywords) {
+                    items.push({
+                        label: t,
+                        kind: monaco.languages.CompletionItemKind.Class,
+                        insertText: t,
+                        range,
+                    });
+                }
+                for (const t of dict.transforms) {
+                    items.push({
+                        label: t,
+                        kind: monaco.languages.CompletionItemKind.Function,
+                        detail: "transform",
+                        insertText: t,
+                        range,
+                    });
+                }
+                return { suggestions: items };
+            },
         },
-    });
+    );
 }
+
+let completionDisposer: { dispose(): void } | null = null;

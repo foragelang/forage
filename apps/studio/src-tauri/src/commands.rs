@@ -532,6 +532,27 @@ pub fn auth_logout(hub_url: String) -> Result<(), String> {
     AuthStore::new().delete(&host).map_err(|e| e.to_string())
 }
 
+/// Snapshot of the language's reserved word + transform inventory.
+/// Studio fetches this once at startup so Monaco syntax highlighting,
+/// completion, and any future linting all draw from the same canonical
+/// lists in `forage-core`. No more hand-maintained TS arrays that
+/// silently drift when the language gains a keyword.
+#[derive(Serialize)]
+pub struct LanguageDictionary {
+    pub keywords: Vec<&'static str>,
+    pub type_keywords: Vec<&'static str>,
+    pub transforms: Vec<&'static str>,
+}
+
+#[tauri::command]
+pub fn language_dictionary() -> LanguageDictionary {
+    LanguageDictionary {
+        keywords: forage_core::parse::KEYWORDS.to_vec(),
+        type_keywords: forage_core::parse::TYPE_KEYWORDS.to_vec(),
+        transforms: forage_core::validate::BUILTIN_TRANSFORMS.to_vec(),
+    }
+}
+
 /// Parser-driven outline of the *current source buffer* (not the
 /// last-saved file on disk). Used by Studio to anchor breakpoint glyphs
 /// and reveal the paused step without a hand-rolled TS regex. Returns

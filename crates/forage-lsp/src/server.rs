@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use forage_core::ast::FieldType;
+use forage_core::parse::KEYWORDS;
 use forage_core::validate::BUILTIN_TRANSFORMS;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -23,57 +24,6 @@ impl ForageLsp {
         }
     }
 }
-
-const KEYWORDS: &[&str] = &[
-    "recipe",
-    "engine",
-    "http",
-    "browser",
-    "type",
-    "enum",
-    "input",
-    "secret",
-    "step",
-    "method",
-    "url",
-    "headers",
-    "body",
-    "json",
-    "form",
-    "raw",
-    "auth",
-    "staticHeader",
-    "htmlPrime",
-    "session",
-    "formLogin",
-    "bearerLogin",
-    "cookiePersist",
-    "extract",
-    "regex",
-    "groups",
-    "paginate",
-    "pageWithTotal",
-    "untilEmpty",
-    "cursor",
-    "for",
-    "in",
-    "emit",
-    "case",
-    "of",
-    "expect",
-    "observe",
-    "browserPaginate",
-    "scroll",
-    "ageGate",
-    "autoFill",
-    "captures",
-    "match",
-    "document",
-    "interactive",
-    "bootstrapURL",
-    "cookieDomains",
-    "sessionExpiredPattern",
-];
 
 #[tower_lsp::async_trait]
 impl LanguageServer for ForageLsp {

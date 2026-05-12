@@ -11,4 +11,4 @@ pub mod token;
 
 pub use lexer::{LexError, lex};
 pub use parser::{ParseError, parse};
-pub use token::Token;
+pub use token::{KEYWORDS, TYPE_KEYWORDS, Token, is_keyword};
