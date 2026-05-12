@@ -12,8 +12,8 @@ import {
     api,
     DEBUG_PAUSED_EVENT,
     RUN_EVENT,
+    type PausePayload,
     type RunEvent,
-    type StepPause,
 } from "./lib/api";
 import { useStudio, type Tab } from "./lib/store";
 
@@ -141,7 +141,7 @@ export function App() {
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
-        listen<StepPause>(DEBUG_PAUSED_EVENT, (e) => {
+        listen<PausePayload>(DEBUG_PAUSED_EVENT, (e) => {
             debugPause(e.payload);
             useStudio.getState().setTab("source");
         }).then((u) => {
@@ -302,9 +302,13 @@ function RunningPill() {
     if (!startedAt) return null;
     const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
     if (paused) {
+        const label =
+            paused.kind === "step"
+                ? `step ${paused.step}`
+                : `iter ${paused.iteration + 1}/${paused.total} of $${paused.variable}`;
         return (
             <span className="text-xs text-amber-400 font-mono tabular-nums">
-                ⏸ paused at {paused.step}
+                ⏸ paused at {label}
             </span>
         );
     }

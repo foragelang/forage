@@ -56,14 +56,19 @@ pub struct StudioState {
 }
 
 /// Per-run debug coordination. Holds the pending oneshot the engine task
-/// is awaiting on. `before_step` puts a fresh sender into `pending` and
-/// parks on the receiver; `debug_resume` takes the sender out and fires
-/// it.
+/// is awaiting on. `before_step` (or `before_iteration`) puts a fresh
+/// sender into `pending` and parks on the receiver; `debug_resume`
+/// takes the sender out and fires it.
 ///
 /// `step_over_pending` is set when the user clicks Step Over from a
-/// paused state — the *next* step pause must wait regardless of whether
-/// it's on a breakpoint. We swap-clear it inside `before_step` so it's a
+/// paused state — the *next* pause must wait regardless of whether it's
+/// on a breakpoint. We swap-clear it inside the pause hook so it's a
 /// one-shot.
+///
+/// `pause_iterations` is the user's "pause inside for-loops" toggle.
+/// When true, `before_iteration` waits for the user; when false, it
+/// short-circuits to Continue. Carried inside the session (not on
+/// StudioState) so it resets to the default when a fresh run starts.
 ///
 /// The oneshot sender lives in `Mutex<Option<…>>` rather than another
 /// `ArcSwapOption` because we need atomic take-and-fire: removing the
@@ -74,4 +79,5 @@ pub struct StudioState {
 pub struct DebugSession {
     pub pending: Mutex<Option<oneshot::Sender<ResumeAction>>>,
     pub step_over_pending: AtomicBool,
+    pub pause_iterations: AtomicBool,
 }

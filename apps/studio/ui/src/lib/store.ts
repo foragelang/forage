@@ -4,7 +4,13 @@
 
 import { create } from "zustand";
 
-import { api, type RunEvent, type Snapshot, type StepPause, type ValidationOutcome } from "./api";
+import {
+    api,
+    type PausePayload,
+    type RunEvent,
+    type Snapshot,
+    type ValidationOutcome,
+} from "./api";
 
 export type Tab = "source" | "fixtures" | "snapshot" | "diagnostic" | "publish";
 
@@ -28,9 +34,15 @@ type StudioState = {
     // clicks in the Source tab; the backend reads the latest set on every
     // step pause to decide whether to actually wait.
     breakpoints: Set<string>;
-    // Current pause payload when the engine is parked at a step, null
-    // otherwise. A pause is in-flight iff `paused !== null`.
-    paused: StepPause | null;
+    // Current pause payload when the engine is parked at a step or
+    // inside a `for`-loop iteration, null otherwise. A pause is
+    // in-flight iff `paused !== null`.
+    paused: PausePayload | null;
+    // Whether the user has asked the engine to pause inside every
+    // `for`-loop iteration. Reflected to the backend via
+    // setPauseIterations; reset to false at runBegin so previous
+    // settings don't carry across runs.
+    pauseIterations: boolean;
     setActive: (slug: string | null) => void;
     setTab: (t: Tab) => void;
     setSource: (s: string) => void;
@@ -41,10 +53,11 @@ type StudioState = {
     runBegin: () => void;
     runAppend: (e: RunEvent) => void;
     runFinish: () => void;
-    debugPause: (p: StepPause) => void;
+    debugPause: (p: PausePayload) => void;
     debugClearPause: () => void;
     toggleBreakpoint: (step: string) => void;
     clearBreakpoints: () => void;
+    setPauseIterations: (enabled: boolean) => void;
 };
 
 export const useStudio = create<StudioState>((set, get) => ({
@@ -61,6 +74,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     runStartedAt: null,
     breakpoints: new Set<string>(),
     paused: null,
+    pauseIterations: false,
     setActive: (slug) => {
         set({
             activeSlug: slug,
@@ -115,6 +129,9 @@ export const useStudio = create<StudioState>((set, get) => ({
             snapshot: null,
             runError: null,
             paused: null,
+            // Iteration pausing is per-run — reset so a previous run's
+            // setting doesn't silently carry over.
+            pauseIterations: false,
         }),
     runAppend: (e) =>
         set((state) => {
@@ -164,5 +181,11 @@ export const useStudio = create<StudioState>((set, get) => ({
                 console.warn("set_breakpoints failed", e),
             );
         }
+    },
+    setPauseIterations: (enabled) => {
+        set({ pauseIterations: enabled });
+        api.setPauseIterations(enabled).catch((e) =>
+            console.warn("set_pause_iterations failed", e),
+        );
     },
 }));

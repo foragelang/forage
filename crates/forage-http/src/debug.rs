@@ -104,12 +104,35 @@ pub struct StepPause {
     pub scope: DebugScope,
 }
 
-/// Hook the engine calls at each step boundary. A trivial impl that
-/// returns `Continue` immediately is equivalent to running without a
-/// debugger.
+/// Payload the engine sends to the debugger at a `for`-loop iteration
+/// boundary. Fired immediately after `$<variable>` is bound to the
+/// current item but before the loop body executes.
+#[derive(Debug, Clone, Serialize)]
+pub struct IterationPause {
+    /// Loop variable name from `for $<variable> in …`.
+    pub variable: String,
+    /// 0-based index within the current `for` collection.
+    pub iteration: usize,
+    /// Total items in the current iteration's collection.
+    pub total: usize,
+    pub scope: DebugScope,
+}
+
+/// Hook the engine calls at each pause site. A trivial impl that returns
+/// `Continue` immediately is equivalent to running without a debugger.
+///
+/// `before_step` is called before each `step <name>` block.
+/// `before_iteration` is called at the top of each `for` loop iteration
+/// after the loop variable is bound. Hosts that don't care about
+/// iteration-level pausing can rely on the default impl, which
+/// short-circuits to Continue.
 #[async_trait]
 pub trait Debugger: Send + Sync {
     async fn before_step(&self, pause: StepPause) -> ResumeAction;
+
+    async fn before_iteration(&self, _pause: IterationPause) -> ResumeAction {
+        ResumeAction::Continue
+    }
 }
 
 /// No-op debugger — always `Continue`. Equivalent to no debugger at all
@@ -124,13 +147,15 @@ impl Debugger for NoopDebugger {
 }
 
 /// Records each pause and replays a scripted `ResumeAction` sequence. Used
-/// by engine tests to assert the debugger fires for every step with the
-/// expected scope shape, and that `Stop` cleanly aborts. Cross-module so
-/// the engine tests can drive it directly.
+/// by engine tests to assert the debugger fires for every step + iteration
+/// with the expected scope shape, and that `Stop` cleanly aborts. Cross-
+/// module so the engine tests can drive it directly.
 #[cfg(test)]
 pub struct RecordingDebugger {
     pub script: std::sync::Mutex<Vec<ResumeAction>>,
-    pub seen: std::sync::Mutex<Vec<StepPause>>,
+    pub seen_steps: std::sync::Mutex<Vec<StepPause>>,
+    pub seen_iterations: std::sync::Mutex<Vec<IterationPause>>,
+    pub pause_iterations: bool,
 }
 
 #[cfg(test)]
@@ -138,7 +163,23 @@ impl RecordingDebugger {
     pub fn new(script: Vec<ResumeAction>) -> Self {
         Self {
             script: std::sync::Mutex::new(script),
-            seen: std::sync::Mutex::new(Vec::new()),
+            seen_steps: std::sync::Mutex::new(Vec::new()),
+            seen_iterations: std::sync::Mutex::new(Vec::new()),
+            pause_iterations: false,
+        }
+    }
+
+    pub fn with_iterations(mut self) -> Self {
+        self.pause_iterations = true;
+        self
+    }
+
+    fn next(&self) -> ResumeAction {
+        let mut s = self.script.lock().unwrap();
+        if s.is_empty() {
+            ResumeAction::Continue
+        } else {
+            s.remove(0)
         }
     }
 }
@@ -147,13 +188,16 @@ impl RecordingDebugger {
 #[async_trait]
 impl Debugger for RecordingDebugger {
     async fn before_step(&self, pause: StepPause) -> ResumeAction {
-        self.seen.lock().unwrap().push(pause);
-        let mut s = self.script.lock().unwrap();
-        if s.is_empty() {
-            ResumeAction::Continue
-        } else {
-            s.remove(0)
+        self.seen_steps.lock().unwrap().push(pause);
+        self.next()
+    }
+
+    async fn before_iteration(&self, pause: IterationPause) -> ResumeAction {
+        self.seen_iterations.lock().unwrap().push(pause);
+        if !self.pause_iterations {
+            return ResumeAction::Continue;
         }
+        self.next()
     }
 }
 

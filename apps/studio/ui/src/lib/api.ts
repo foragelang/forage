@@ -130,6 +130,20 @@ export type StepPause = {
     scope: DebugScope;
 };
 
+export type IterationPause = {
+    variable: string;
+    iteration: number;
+    total: number;
+    scope: DebugScope;
+};
+
+/// Tagged union emitted on `forage:debug-paused`. The engine pauses at
+/// step boundaries (`kind: "step"`) and optionally inside `for`-loop
+/// iterations (`kind: "iteration"`); the frontend renders both.
+export type PausePayload =
+    | ({ kind: "step" } & StepPause)
+    | ({ kind: "iteration" } & IterationPause);
+
 export type DebugAction = "continue" | "step_over" | "stop";
 
 export const api = {
@@ -147,6 +161,8 @@ export const api = {
     cancelRun: () => invoke<void>("cancel_run"),
     debugResume: (action: DebugAction) =>
         invoke<void>("debug_resume", { action }),
+    setPauseIterations: (enabled: boolean) =>
+        invoke<void>("set_pause_iterations", { enabled }),
     setBreakpoints: (steps: string[]) =>
         invoke<void>("set_breakpoints", { steps }),
     setRecipeBreakpoints: (slug: string, steps: string[]) =>

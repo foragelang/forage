@@ -1,13 +1,25 @@
 import { useMemo } from "react";
 
-import { api, type DebugAction, type DebugScope, type StepPause } from "../lib/api";
+import {
+    api,
+    type DebugAction,
+    type DebugScope,
+    type PausePayload,
+} from "../lib/api";
 import { useStudio } from "../lib/store";
 
 /// Bottom panel attached to the Source tab. Renders the engine's paused
 /// scope and the resume controls. Mounted only when `paused !== null` —
 /// the SourceTab handles that gating.
 export function DebuggerPanel() {
-    const { paused, debugClearPause, breakpoints, clearBreakpoints } = useStudio();
+    const {
+        paused,
+        debugClearPause,
+        breakpoints,
+        clearBreakpoints,
+        pauseIterations,
+        setPauseIterations,
+    } = useStudio();
     if (!paused) return null;
 
     const resume = async (action: DebugAction) => {
@@ -27,10 +39,19 @@ export function DebuggerPanel() {
         <div className="border-t border-zinc-800 bg-zinc-950 flex flex-col min-h-0 max-h-[50vh]">
             <header className="px-4 py-2 border-b border-zinc-800 flex items-center gap-3 text-xs flex-shrink-0">
                 <span className="text-amber-400 font-mono">⏸ paused</span>
-                <span className="text-zinc-500">before step</span>
-                <span className="font-mono text-zinc-200">{paused.step}</span>
-                <span className="text-zinc-600">#{paused.step_index}</span>
+                <PauseLabel paused={paused} />
                 <div className="ml-auto flex items-center gap-2">
+                    <label
+                        className="flex items-center gap-1 text-zinc-500 mr-3 cursor-pointer select-none"
+                        title="Pause inside every for-loop iteration"
+                    >
+                        <input
+                            type="checkbox"
+                            checked={pauseIterations}
+                            onChange={(e) => setPauseIterations(e.target.checked)}
+                        />
+                        loop iters
+                    </label>
                     <span className="text-zinc-600 mr-2">
                         {breakpoints.size} breakpoint
                         {breakpoints.size === 1 ? "" : "s"}
@@ -47,14 +68,14 @@ export function DebuggerPanel() {
                     <button
                         onClick={() => resume("step_over")}
                         className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded font-medium"
-                        title="Run this step, pause at the next one (F10)"
+                        title="Run this step, pause at the next one"
                     >
                         Step over
                     </button>
                     <button
                         onClick={() => resume("continue")}
                         className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 rounded"
-                        title="Run to next breakpoint or end of recipe (F8)"
+                        title="Run to next breakpoint or end of recipe"
                     >
                         Continue
                     </button>
@@ -72,7 +93,29 @@ export function DebuggerPanel() {
     );
 }
 
-function ScopeView({ pause }: { pause: StepPause }) {
+function PauseLabel({ paused }: { paused: PausePayload }) {
+    if (paused.kind === "step") {
+        return (
+            <>
+                <span className="text-zinc-500">before step</span>
+                <span className="font-mono text-zinc-200">{paused.step}</span>
+                <span className="text-zinc-600">#{paused.step_index}</span>
+            </>
+        );
+    }
+    return (
+        <>
+            <span className="text-zinc-500">iteration</span>
+            <span className="font-mono text-zinc-200">
+                {paused.iteration + 1}/{paused.total}
+            </span>
+            <span className="text-zinc-500">of</span>
+            <span className="font-mono text-amber-400">${paused.variable}</span>
+        </>
+    );
+}
+
+function ScopeView({ pause }: { pause: PausePayload }) {
     return (
         <div className="flex-1 overflow-auto p-4 text-xs grid grid-cols-[1fr_1fr] gap-x-6 gap-y-4">
             <BindingsSection scope={pause.scope} />

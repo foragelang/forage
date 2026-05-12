@@ -11,7 +11,7 @@ use tracing::{debug, trace};
 
 use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
-use crate::debug::{DebugScope, Debugger, ResumeAction, StepPause};
+use crate::debug::{DebugScope, Debugger, IterationPause, ResumeAction, StepPause};
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
 use crate::progress::{NoopSink, ProgressSink, RunEvent};
@@ -224,11 +224,34 @@ impl<'t> Engine<'t> {
                             EvalValue::Null => Vec::new(),
                             other => vec![other],
                         };
-                        for item in items {
+                        let total = items.len();
+                        for (idx, item) in items.into_iter().enumerate() {
                             scope.push_frame();
                             scope.bind(variable, item.clone());
                             let saved_current = scope.current.clone();
                             scope.current = Some(item);
+                            if let Some(dbg) = self.debugger.clone() {
+                                let pause = IterationPause {
+                                    variable: variable.clone(),
+                                    iteration: idx,
+                                    total,
+                                    scope: DebugScope::from_scope(
+                                        scope,
+                                        &recipe.secrets,
+                                        emit_counts,
+                                    ),
+                                };
+                                match dbg.before_iteration(pause).await {
+                                    ResumeAction::Continue | ResumeAction::StepOver => {}
+                                    ResumeAction::Stop => {
+                                        scope.current = saved_current;
+                                        scope.pop_frame();
+                                        return Err(HttpError::Generic(
+                                            "stopped by debugger".into(),
+                                        ));
+                                    }
+                                }
+                            }
                             self.run_statements(
                                 body,
                                 recipe,
@@ -1168,7 +1191,7 @@ mod tests {
         let snap = engine.run(&recipe, IndexMap::new(), secrets).await.unwrap();
         assert_eq!(snap.records.len(), 1);
 
-        let seen = dbg.seen.lock().unwrap();
+        let seen = dbg.seen_steps.lock().unwrap();
         assert_eq!(seen.len(), 2, "expected one pause per step, got {seen:?}");
 
         // First pause: step "first" at index 0, scope has $page but no
@@ -1235,6 +1258,116 @@ mod tests {
             msg.contains("stopped by debugger"),
             "expected 'stopped by debugger', got {msg}"
         );
-        assert_eq!(dbg.seen.lock().unwrap().len(), 1);
+        assert_eq!(dbg.seen_steps.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn debugger_pauses_inside_for_loop_iterations() {
+        // The engine must call before_iteration once per item in a for-loop
+        // collection, with the loop variable bound and the iteration index
+        // tracked. Bugs in scope frame management here would either skip
+        // pauses or expose stale bindings — pin both with a 3-item run.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "iter" {
+                engine http
+                type Item { id: String }
+                step list {
+                    method "GET"
+                    url "https://api.example.com/items"
+                }
+                for $i in $list.items[*] {
+                    emit Item { id ← $i.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let dbg = Arc::new(RecordingDebugger::new(vec![]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let snap = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 3);
+
+        let iters = dbg.seen_iterations.lock().unwrap();
+        assert_eq!(iters.len(), 3, "one iteration pause per item");
+        for (idx, p) in iters.iter().enumerate() {
+            assert_eq!(p.variable, "i");
+            assert_eq!(p.iteration, idx);
+            assert_eq!(p.total, 3);
+            // The loop variable should be bound to the current item at
+            // pause time — assert the JSON contains the item's id.
+            let json = serde_json::to_string(&p.scope).unwrap();
+            let expected = match idx {
+                0 => "\"a\"",
+                1 => "\"b\"",
+                2 => "\"c\"",
+                _ => unreachable!(),
+            };
+            assert!(
+                json.contains(expected),
+                "iter {idx} should have $i bound to {expected}: {json}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn debugger_stop_in_iteration_aborts_run() {
+        // Returning Stop from an iteration pause must abort the run with
+        // the same "stopped by debugger" error as a step Stop, even
+        // partway through processing a collection.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "iter-stop" {
+                engine http
+                type Item { id: String }
+                step list {
+                    method "GET"
+                    url "https://api.example.com/items"
+                }
+                for $i in $list.items[*] {
+                    emit Item { id ← $i.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        // Script: step pause = Continue, then iter#0 = Stop.
+        let dbg = Arc::new(
+            RecordingDebugger::new(vec![ResumeAction::Continue, ResumeAction::Stop])
+                .with_iterations(),
+        );
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let err = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stopped by debugger"));
+        let iters = dbg.seen_iterations.lock().unwrap();
+        assert_eq!(iters.len(), 1, "stopped before iter #1 could fire");
     }
 }

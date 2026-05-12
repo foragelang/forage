@@ -106,7 +106,11 @@ export function SourceTab() {
                 });
             }
         }
-        if (paused) {
+        if (paused?.kind === "step") {
+            // Iteration pauses don't anchor on a step — they happen
+            // inside a for-loop body, so we leave the editor decoration
+            // alone. The DebuggerPanel header tells the user where we
+            // are; line-highlighting would need expression-level spans.
             const line = stepNameToLine.get(paused.step);
             if (line) {
                 decos.push({
@@ -128,7 +132,7 @@ export function SourceTab() {
     // Reveal the paused line so the user doesn't have to scroll to find
     // where the engine stopped. Only fire on the rising edge of `paused`
     // — otherwise we'd fight the user every time decorations re-render.
-    const pausedStep = paused?.step ?? null;
+    const pausedStep = paused?.kind === "step" ? paused.step : null;
     useEffect(() => {
         const ed = editorRef.current;
         if (!ed || !pausedStep) return;

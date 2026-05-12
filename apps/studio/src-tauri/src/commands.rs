@@ -11,16 +11,27 @@ use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
 use forage_core::{EvalValue, LineMap, Snapshot, parse, validate};
 use forage_http::{
-    Debugger, Engine, LiveTransport, ProgressSink, ReplayTransport, ResumeAction, RunEvent,
-    StepPause,
+    Debugger, Engine, IterationPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
+    RunEvent, StepPause,
 };
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
 
 /// Tauri event name for streaming engine progress to the frontend.
 pub const RUN_EVENT: &str = "forage:run-event";
-/// Tauri event name for the engine telling the frontend it has paused at a
-/// step. Payload is `StepPause` (JSON).
+/// Tauri event name for the engine telling the frontend it has paused
+/// somewhere — at a `step` boundary or inside a `for`-loop iteration.
+/// Payload is `PausePayload` (JSON) with a `kind` discriminator.
 pub const DEBUG_PAUSED_EVENT: &str = "forage:debug-paused";
+
+/// What the engine paused on. Wraps the two `forage-http` pause payloads
+/// in a tagged union so the frontend can render either shape with one
+/// event listener.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PausePayload {
+    Step(StepPause),
+    Iteration(IterationPause),
+}
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::library::{self, RecipeEntry};
@@ -199,7 +210,30 @@ impl Debugger for StudioDebugger {
         if !on_breakpoint && !step_over {
             return ResumeAction::Continue;
         }
+        self.wait(PausePayload::Step(pause)).await
+    }
 
+    async fn before_iteration(&self, pause: IterationPause) -> ResumeAction {
+        let pause_iterations = self
+            .session
+            .pause_iterations
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let step_over = self
+            .session
+            .step_over_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        if !pause_iterations && !step_over {
+            return ResumeAction::Continue;
+        }
+        self.wait(PausePayload::Iteration(pause)).await
+    }
+}
+
+impl StudioDebugger {
+    /// Park the engine task on a fresh oneshot, emit the pause payload to
+    /// the frontend, and await the user's resume action. Shared by both
+    /// the step and iteration pause sites.
+    async fn wait(&self, payload: PausePayload) -> ResumeAction {
         let (tx, rx) = tokio::sync::oneshot::channel();
         // The Mutex is the right primitive here — see DebugSession docs:
         // we need atomic take-and-fire on the resume path so two
@@ -209,7 +243,7 @@ impl Debugger for StudioDebugger {
             .pending
             .lock()
             .expect("debug session pending sender") = Some(tx);
-        let _ = self.app.emit(DEBUG_PAUSED_EVENT, &pause);
+        let _ = self.app.emit(DEBUG_PAUSED_EVENT, &payload);
         rx.await.unwrap_or(ResumeAction::Stop)
     }
 }
@@ -424,6 +458,22 @@ pub fn load_recipe_breakpoints(slug: String) -> Vec<String> {
     library::read_breakpoints()
         .remove(&slug)
         .unwrap_or_default()
+}
+
+/// Toggle "pause inside every `for`-loop iteration" for the in-flight
+/// run. No-op when no run is active. Per-run state — resets to false
+/// every time a fresh run starts.
+#[tauri::command]
+pub fn set_pause_iterations(
+    state: State<'_, crate::state::StudioState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if let Some(session) = state.debug_session.load_full() {
+        session
+            .pause_iterations
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 /// Cancel the currently-running recipe (if any). Idempotent — calling when

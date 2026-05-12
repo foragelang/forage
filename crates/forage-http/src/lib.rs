@@ -16,7 +16,9 @@ pub mod progress;
 pub mod transport;
 
 pub use client::{LiveTransport, LiveTransportConfig};
-pub use debug::{DebugFrame, DebugScope, Debugger, NoopDebugger, ResumeAction, StepPause};
+pub use debug::{
+    DebugFrame, DebugScope, Debugger, IterationPause, NoopDebugger, ResumeAction, StepPause,
+};
 pub use engine::{Engine, EngineConfig};
 pub use error::{HttpError, HttpResult};
 pub use progress::{CaptureSink, FnSink, NoopSink, ProgressHandle, ProgressSink, RunEvent};
