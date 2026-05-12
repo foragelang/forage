@@ -31,5 +31,7 @@ dirs           = { workspace = true }
 url            = { workspace = true }
 
 [features]
-default = ["live"]
+# `live` ships in R4 followup — turns on wry+tao for the in-process
+# browser driver. Until then, only the replay engine is built.
+default = []
 live    = ["dep:wry", "dep:tao"]

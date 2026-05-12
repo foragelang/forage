@@ -1,0 +1,45 @@
+[package]
+name = "forage-studio"
+description = "Forage Studio — macOS authoring app for Forage recipes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "forage_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "forage-studio"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.4", features = [] }
+
+[dependencies]
+# Forage crates
+forage-core      = { workspace = true }
+forage-http      = { workspace = true }
+forage-replay    = { workspace = true }
+forage-browser   = { workspace = true }
+forage-hub       = { workspace = true }
+forage-keychain  = { workspace = true }
+forage-lsp       = { workspace = true }
+
+# Tauri
+tauri        = { version = "2.8", features = [] }
+tauri-plugin-log = "2"
+
+# Standard
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+indexmap     = { workspace = true }
+dirs         = { workspace = true }

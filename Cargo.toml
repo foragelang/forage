@@ -11,8 +11,8 @@ members = [
     "crates/forage-wasm",
     "crates/forage-test",
     "apps/cli",
+    "apps/studio/src-tauri",
 ]
-# apps/studio added in R9 once cargo tauri init scaffolds it.
 
 [workspace.package]
 version = "0.1.0"
@@ -59,9 +59,10 @@ url          = "2"
 tower        = { version = "0.5", features = ["util", "limit", "retry"] }
 tower-http   = { version = "0.6", features = ["follow-redirect"] }
 
-# Browser engine.
-wry          = "0.50"
-tao          = "0.34"
+# Browser engine. wry+tao are lazily activated by forage-browser's
+# `live` feature; this pin just centralizes the version.
+wry          = "0.55"
+tao          = "0.35"
 scraper      = "0.22"
 
 # Crypto + secret storage.
