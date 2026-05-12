@@ -5,7 +5,7 @@ import AppKit
 /// + OAuth tokens live in Keychain via `Keychain` helpers.
 @MainActor
 @Observable
-final class ToolkitPreferences {
+final class StudioPreferences {
     var hubURL: String {
         didSet { UserDefaults.standard.set(hubURL, forKey: Self.hubURLKey) }
     }
@@ -14,11 +14,11 @@ final class ToolkitPreferences {
         self.hubURL = UserDefaults.standard.string(forKey: Self.hubURLKey) ?? "https://api.foragelang.com"
     }
 
-    private static let hubURLKey = "toolkit.hub.url"
+    private static let hubURLKey = "studio.hub.url"
 }
 
 struct PreferencesView: View {
-    @Environment(ToolkitPreferences.self) private var prefs
+    @Environment(StudioPreferences.self) private var prefs
 
     @State private var apiKeyEntry: String = ""
     @State private var apiKeyStored: Bool = false

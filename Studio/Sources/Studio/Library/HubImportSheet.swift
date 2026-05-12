@@ -2,7 +2,7 @@ import SwiftUI
 import Forage
 
 /// Modal sheet that browses recipes on `api.foragelang.com` (or wherever
-/// `ToolkitPreferences.hubURL` points), lets the user pick one, fetches the
+/// `StudioPreferences.hubURL` points), lets the user pick one, fetches the
 /// body, and writes it under `~/Library/Forage/Recipes/<slug>/`. Triggered
 /// from the `Import` button in `LibrarySidebar` or the `Recipe → Import
 /// from Hub…` menu command.
@@ -10,7 +10,7 @@ struct HubImportSheet: View {
     @Binding var isPresented: Bool
 
     @Environment(LibraryStore.self) private var library
-    @Environment(ToolkitPreferences.self) private var preferences
+    @Environment(StudioPreferences.self) private var preferences
 
     @State private var loadState: LoadState = .idle
     @State private var recipes: [HubRecipeMeta] = []

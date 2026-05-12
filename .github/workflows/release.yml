@@ -88,8 +88,8 @@ jobs:
             ${{ steps.pack.outputs.artifact-name }}.sha256
           if-no-files-found: error
 
-  build-toolkit:
-    name: Build Toolkit
+  build-studio:
+    name: Build Studio
     runs-on: macos-15
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
@@ -107,8 +107,8 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Generate Toolkit.xcodeproj
-        working-directory: Toolkit
+      - name: Generate Studio.xcodeproj
+        working-directory: Studio
         run: xcodegen
 
       - name: Detect signing secrets
@@ -166,16 +166,16 @@ jobs:
           echo "BUILD_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           echo "BUILD_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
-      - name: Archive Toolkit
+      - name: Archive Studio
         run: |
           set -euo pipefail
           mkdir -p build
           if [ "${{ steps.signing.outputs.signed }}" = "1" ]; then
             xcodebuild \
-              -project Toolkit/Toolkit.xcodeproj \
-              -scheme Toolkit \
+              -project Studio/Studio.xcodeproj \
+              -scheme Studio \
               -configuration Release \
-              -archivePath build/Toolkit.xcarchive \
+              -archivePath build/Studio.xcarchive \
               -destination 'generic/platform=macOS' \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
@@ -184,10 +184,10 @@ jobs:
               archive
           else
             xcodebuild \
-              -project Toolkit/Toolkit.xcodeproj \
-              -scheme Toolkit \
+              -project Studio/Studio.xcodeproj \
+              -scheme Studio \
               -configuration Release \
-              -archivePath build/Toolkit.xcarchive \
+              -archivePath build/Studio.xcarchive \
               -destination 'generic/platform=macOS' \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="-" \
@@ -224,20 +224,20 @@ jobs:
           set -euo pipefail
           if [ "${{ steps.signing.outputs.signed }}" = "1" ]; then
             xcodebuild -exportArchive \
-              -archivePath build/Toolkit.xcarchive \
+              -archivePath build/Studio.xcarchive \
               -exportOptionsPlist build/exportOptions.plist \
               -exportPath build/export \
               -allowProvisioningUpdates || EXPORT_FAILED=$?
           else
             xcodebuild -exportArchive \
-              -archivePath build/Toolkit.xcarchive \
+              -archivePath build/Studio.xcarchive \
               -exportOptionsPlist build/exportOptions.plist \
               -exportPath build/export || EXPORT_FAILED=$?
           fi
           if [ -n "${EXPORT_FAILED:-}" ]; then
             echo "::warning::xcodebuild -exportArchive failed; copying the app directly out of the xcarchive."
             mkdir -p build/export
-            cp -R build/Toolkit.xcarchive/Products/Applications/Toolkit.app build/export/
+            cp -R build/Studio.xcarchive/Products/Applications/Studio.app build/export/
           fi
           ls build/export
 
@@ -252,8 +252,8 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
           printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
 
-          APP_PATH="build/export/Toolkit.app"
-          ZIP_PATH="$RUNNER_TEMP/Toolkit-for-notarization.zip"
+          APP_PATH="build/export/Studio.app"
+          ZIP_PATH="$RUNNER_TEMP/Studio-for-notarization.zip"
           /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
           xcrun notarytool submit "$ZIP_PATH" \
@@ -270,10 +270,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME:-v0.0.0-dev}"
-          NAME="Forage-Toolkit-${TAG}-macos.dmg"
-          APP_PATH="build/export/Toolkit.app"
+          NAME="Forage-Studio-${TAG}-macos.dmg"
+          APP_PATH="build/export/Studio.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "::error::No Toolkit.app at $APP_PATH"
+            echo "::error::No Studio.app at $APP_PATH"
             exit 1
           fi
 
@@ -284,7 +284,7 @@ jobs:
           ln -s /Applications "$STAGE/Applications"
 
           hdiutil create \
-            -volname "Forage Toolkit" \
+            -volname "Forage Studio" \
             -srcfolder "$STAGE" \
             -ov \
             -format UDZO \
@@ -307,10 +307,10 @@ jobs:
           echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
           cat "$NAME.sha256"
 
-      - name: Upload Toolkit artifact
+      - name: Upload Studio artifact
         uses: actions/upload-artifact@v4
         with:
-          name: toolkit
+          name: studio
           path: |
             ${{ steps.pack.outputs.artifact-name }}
             ${{ steps.pack.outputs.artifact-name }}.sha256
@@ -318,13 +318,13 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [build-cli, build-toolkit]
+    needs: [build-cli, build-studio]
     runs-on: macos-15
     outputs:
       cli-sha256: ${{ needs.build-cli.outputs.sha256 }}
       cli-artifact: ${{ needs.build-cli.outputs.artifact-name }}
-      toolkit-sha256: ${{ needs.build-toolkit.outputs.sha256 }}
-      toolkit-artifact: ${{ needs.build-toolkit.outputs.artifact-name }}
+      studio-sha256: ${{ needs.build-studio.outputs.sha256 }}
+      studio-artifact: ${{ needs.build-studio.outputs.artifact-name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -335,10 +335,10 @@ jobs:
           name: cli
           path: artifacts
 
-      - name: Download Toolkit artifact
+      - name: Download Studio artifact
         uses: actions/download-artifact@v4
         with:
-          name: toolkit
+          name: studio
           path: artifacts
 
       - name: List artifacts
@@ -372,10 +372,10 @@ jobs:
             echo "## Artifacts"
             echo
             echo "- \`${{ needs.build-cli.outputs.artifact-name }}\` (\`sha256: ${{ needs.build-cli.outputs.sha256 }}\`)"
-            echo "- \`${{ needs.build-toolkit.outputs.artifact-name }}\` (\`sha256: ${{ needs.build-toolkit.outputs.sha256 }}\`)"
+            echo "- \`${{ needs.build-studio.outputs.artifact-name }}\` (\`sha256: ${{ needs.build-studio.outputs.sha256 }}\`)"
             echo
-            if [ "${{ needs.build-toolkit.outputs.signed }}" != "1" ]; then
-              echo "**Note:** The Toolkit DMG in this release is ad-hoc signed (no Developer ID signature, not notarized). macOS will show a Gatekeeper warning on first launch; right-click and choose \"Open\" to bypass it."
+            if [ "${{ needs.build-studio.outputs.signed }}" != "1" ]; then
+              echo "**Note:** The Studio DMG in this release is ad-hoc signed (no Developer ID signature, not notarized). macOS will show a Gatekeeper warning on first launch; right-click and choose \"Open\" to bypass it."
               echo
             fi
             echo "## Install"

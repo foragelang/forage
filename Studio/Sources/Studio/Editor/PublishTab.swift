@@ -11,7 +11,7 @@ struct PublishTab: View {
     let slug: String
     let source: String
 
-    @Environment(ToolkitPreferences.self) private var preferences
+    @Environment(StudioPreferences.self) private var preferences
 
     @State private var namespace: String = "forage"
     @State private var name: String = ""

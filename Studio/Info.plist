@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Forage Toolkit</string>
+	<string>Forage Studio</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.foragelang.Toolkit</string>
+	<string>com.foragelang.Studio</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Forage Toolkit</string>
+	<string>Forage Studio</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -22,10 +22,10 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.foragelang.Toolkit.recipe</string>
+			<string>com.foragelang.Studio.recipe</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>forage-toolkit</string>
+				<string>forage-studio</string>
 			</array>
 		</dict>
 	</array>

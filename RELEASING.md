@@ -3,7 +3,7 @@
 Forage ships three artifacts on every tagged release:
 
 1. `forage-vX.Y.Z-macos.tar.gz` — the `forage` CLI (universal binary when the runner can cross-compile, arm64-only otherwise).
-2. `Forage-Toolkit-vX.Y.Z-macos.dmg` — the macOS Toolkit app.
+2. `Forage-Studio-vX.Y.Z-macos.dmg` — the macOS Studio app.
 3. `*.sha256` files alongside each artifact.
 
 `/.github/workflows/release.yml` builds, signs, notarizes (when secrets are configured), packages, and publishes everything to a GitHub Release. The `install.sh` installer and the Homebrew tap point at the assets in that release.
@@ -26,9 +26,9 @@ Forage ships three artifacts on every tagged release:
    - `curl -fsSL https://foragelang.com/install.sh | sh` installs the new version.
    - If the Homebrew tap is wired up (see below), `brew upgrade foragelang/forage/forage` picks up the new version.
 
-## Required secrets for signed/notarized Toolkit
+## Required secrets for signed/notarized Studio
 
-If any of these are missing, the workflow still publishes — but the Toolkit DMG will be ad-hoc signed and Gatekeeper will warn on first launch.
+If any of these are missing, the workflow still publishes — but Studio DMG will be ad-hoc signed and Gatekeeper will warn on first launch.
 
 | Secret | What it is |
 | --- | --- |

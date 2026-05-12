@@ -7,7 +7,7 @@ import Forage
 /// For HTTP-engine recipes we use `RecipeRunner` (live) or build an
 /// `HTTPReplayer` from the recipe's `fixtures/` directory (replay). For
 /// browser-engine recipes we drive `BrowserEngine` directly, which requires
-/// being on the main actor and an active `NSApplication` (which the Toolkit
+/// being on the main actor and an active `NSApplication` (which Studio
 /// guarantees).
 @MainActor
 struct RunController {
@@ -76,7 +76,7 @@ struct RunController {
         let inputs = try Self.loadInputs(at: entry)
         switch mode {
         case .live:
-            // Toolkit's NSApp is already running; BrowserEngine spawns a
+            // Studio's NSApp is already running; BrowserEngine spawns a
             // window and drives the SPA. Settle / timeout defaults match
             // the CLI.
             let engine = BrowserEngine(recipe: recipe, inputs: inputs, visible: true)
@@ -116,7 +116,7 @@ struct RunController {
 
     // MARK: - Fixture loading
     //
-    // The Toolkit's on-disk layout matches `forage test`'s, so we mirror its
+    // Studio's on-disk layout matches `forage test`'s, so we mirror its
     // logic: any `.jsonl` under `fixtures/` is treated as either browser
     // captures or HTTP fixtures depending on the recipe's engine.
 

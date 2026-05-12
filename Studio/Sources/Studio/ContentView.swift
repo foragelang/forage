@@ -25,11 +25,11 @@ struct ContentView: View {
                 )
             }
         }
-        .navigationTitle("Forage Toolkit")
+        .navigationTitle("Forage Studio")
         .onChange(of: library.lastCreatedSlug) { _, new in
             if let new { selectedSlug = new }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitImportFromHub)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioImportFromHub)) { _ in
             hubImportPresented = true
         }
         .sheet(isPresented: $hubImportPresented) {

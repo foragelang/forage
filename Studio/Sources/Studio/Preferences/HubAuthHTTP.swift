@@ -1,6 +1,6 @@
 import Foundation
 
-/// Tiny POST-JSON helper for the Toolkit's OAuth device-code flow.
+/// Tiny POST-JSON helper for Studio's OAuth device-code flow.
 /// Lives here (rather than reusing `HubClient`) because the Forage
 /// package's HubClient is recipe-oriented and not parameterized over
 /// the OAuth endpoints. Future M11 refactor can fold these into

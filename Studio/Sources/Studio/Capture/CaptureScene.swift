@@ -160,7 +160,7 @@ struct CaptureScene: View {
     private func save() {
         do {
             try session.saveKeptCaptures(to: entry.capturesFile, append: saveMode == .append)
-            NotificationCenter.default.post(name: .toolkitFixturesChanged, object: nil)
+            NotificationCenter.default.post(name: .studioFixturesChanged, object: nil)
             isPresented = false
         } catch {
             saveError = String(describing: error)

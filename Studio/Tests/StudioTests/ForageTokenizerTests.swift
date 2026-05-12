@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Toolkit
+@testable import Studio
 
 @Test
 func tokenizerRecognizesKeywords() {

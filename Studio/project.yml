@@ -1,4 +1,4 @@
-name: Toolkit
+name: Studio
 options:
   bundleIdPrefix: com.foragelang
   deploymentTarget:
@@ -19,17 +19,17 @@ packages:
     path: ..
 
 targets:
-  Toolkit:
+  Studio:
     type: application
     platform: macOS
     sources:
-      - path: Sources/Toolkit
+      - path: Sources/Studio
     info:
       path: Info.plist
       properties:
-        CFBundleName: Forage Toolkit
-        CFBundleDisplayName: Forage Toolkit
-        CFBundleIdentifier: com.foragelang.Toolkit
+        CFBundleName: Forage Studio
+        CFBundleDisplayName: Forage Studio
+        CFBundleIdentifier: com.foragelang.Studio
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
@@ -37,12 +37,12 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         CFBundleURLTypes:
-          - CFBundleURLName: com.foragelang.Toolkit.recipe
+          - CFBundleURLName: com.foragelang.Studio.recipe
             CFBundleURLSchemes:
-              - forage-toolkit
+              - forage-studio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.Toolkit
+        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.Studio
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
@@ -52,34 +52,34 @@ targets:
       - package: Forage
         product: Forage
 
-  ToolkitTests:
+  StudioTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: Tests/ToolkitTests
+      - path: Tests/StudioTests
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.ToolkitTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.foragelang.StudioTests
         BUNDLE_LOADER: $(TEST_HOST)
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Toolkit.app/Contents/MacOS/Toolkit
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Studio.app/Contents/MacOS/Studio
     dependencies:
-      - target: Toolkit
+      - target: Studio
       - package: Forage
         product: Forage
 
 schemes:
-  Toolkit:
+  Studio:
     build:
       targets:
-        Toolkit: all
-        ToolkitTests: [test]
+        Studio: all
+        StudioTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - ToolkitTests
+        - StudioTests
     profile:
       config: Release
     analyze:

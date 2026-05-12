@@ -24,7 +24,7 @@ struct FixturesTab: View {
                 .frame(minWidth: 360)
         }
         .task(id: entry.slug) { reload() }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitFixturesChanged)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioFixturesChanged)) { _ in
             reload()
         }
         .alert("Couldn't read fixtures", isPresented: .constant(loadError != nil)) {
@@ -200,5 +200,5 @@ private struct CaptureInspector: View {
 extension Notification.Name {
     /// Posted by `CaptureScene` after it writes captures back to the
     /// recipe's `fixtures/captures.jsonl` so the FixturesTab reloads.
-    static let toolkitFixturesChanged = Notification.Name("ToolkitFixturesChanged")
+    static let studioFixturesChanged = Notification.Name("StudioFixturesChanged")
 }

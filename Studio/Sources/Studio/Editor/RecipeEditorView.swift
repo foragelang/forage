@@ -45,13 +45,13 @@ struct RecipeEditorView: View {
         }
         .onAppear { loadSource() }
         .onChange(of: source) { _, _ in isDirty = true }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitRunLive)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioRunLive)) { _ in
             Task { await run(mode: .live) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitRunReplay)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioRunReplay)) { _ in
             Task { await run(mode: .replay) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitCapture)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioCapture)) { _ in
             showCaptureSheet = true
         }
         .alert("Couldn't save", isPresented: .constant(saveError != nil)) {

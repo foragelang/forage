@@ -27,7 +27,7 @@ struct SourceTab: View {
             debouncedSource = source
             runValidation()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toolkitSave)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .studioSave)) { _ in
             onSave()
         }
     }

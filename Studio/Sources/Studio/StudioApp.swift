@@ -1,14 +1,14 @@
 import SwiftUI
 
 @main
-struct ToolkitApp: App {
+struct StudioApp: App {
     @State private var library = LibraryStore()
-    @State private var preferences = ToolkitPreferences()
+    @State private var preferences = StudioPreferences()
     @State private var runResults = RunResultStore()
     @StateObject private var mfa = MFAPromptCoordinator()
 
     var body: some Scene {
-        WindowGroup("Forage Toolkit") {
+        WindowGroup("Forage Studio") {
             ContentView()
                 .environment(library)
                 .environment(preferences)
@@ -31,41 +31,41 @@ struct ToolkitApp: App {
             }
             CommandMenu("Recipe") {
                 Button("Run Live") {
-                    NotificationCenter.default.post(name: .toolkitRunLive, object: nil)
+                    NotificationCenter.default.post(name: .studioRunLive, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
                 Button("Run Replay") {
-                    NotificationCenter.default.post(name: .toolkitRunReplay, object: nil)
+                    NotificationCenter.default.post(name: .studioRunReplay, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 Button("Capture from URL…") {
-                    NotificationCenter.default.post(name: .toolkitCapture, object: nil)
+                    NotificationCenter.default.post(name: .studioCapture, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: [.command])
 
                 Button("Save") {
-                    NotificationCenter.default.post(name: .toolkitSave, object: nil)
+                    NotificationCenter.default.post(name: .studioSave, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command])
 
                 Divider()
 
                 Button("Validate") {
-                    NotificationCenter.default.post(name: .toolkitValidate, object: nil)
+                    NotificationCenter.default.post(name: .studioValidate, object: nil)
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
 
                 Button("Publish to Hub…") {
-                    NotificationCenter.default.post(name: .toolkitPublish, object: nil)
+                    NotificationCenter.default.post(name: .studioPublish, object: nil)
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button("Import from Hub…") {
-                    NotificationCenter.default.post(name: .toolkitImportFromHub, object: nil)
+                    NotificationCenter.default.post(name: .studioImportFromHub, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             }
@@ -79,11 +79,11 @@ struct ToolkitApp: App {
 }
 
 extension Notification.Name {
-    static let toolkitRunLive = Notification.Name("ToolkitRunLive")
-    static let toolkitRunReplay = Notification.Name("ToolkitRunReplay")
-    static let toolkitCapture = Notification.Name("ToolkitCapture")
-    static let toolkitSave = Notification.Name("ToolkitSave")
-    static let toolkitValidate = Notification.Name("ToolkitValidate")
-    static let toolkitPublish = Notification.Name("ToolkitPublish")
-    static let toolkitImportFromHub = Notification.Name("ToolkitImportFromHub")
+    static let studioRunLive = Notification.Name("StudioRunLive")
+    static let studioRunReplay = Notification.Name("StudioRunReplay")
+    static let studioCapture = Notification.Name("StudioCapture")
+    static let studioSave = Notification.Name("StudioSave")
+    static let studioValidate = Notification.Name("StudioValidate")
+    static let studioPublish = Notification.Name("StudioPublish")
+    static let studioImportFromHub = Notification.Name("StudioImportFromHub")
 }

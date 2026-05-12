@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Toolkit
+@testable import Studio
 
 /// Round-trips a test key through the user's login Keychain. Skipped if
 /// the system Keychain isn't accessible (CI agents without a logged-in

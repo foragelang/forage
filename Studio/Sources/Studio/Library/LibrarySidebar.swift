@@ -84,7 +84,7 @@ struct LibrarySidebar: View {
             .help("Create a new local recipe")
 
             Button {
-                NotificationCenter.default.post(name: .toolkitImportFromHub, object: nil)
+                NotificationCenter.default.post(name: .studioImportFromHub, object: nil)
             } label: {
                 Label("Import", systemImage: "square.and.arrow.down")
             }
@@ -98,5 +98,5 @@ struct LibrarySidebar: View {
     }
 }
 
-// `Notification.Name.toolkitImportFromHub` is declared in ToolkitApp.swift
+// `Notification.Name.studioImportFromHub` is declared in StudioApp.swift
 // alongside the menu-command counterpart that posts the same notification.

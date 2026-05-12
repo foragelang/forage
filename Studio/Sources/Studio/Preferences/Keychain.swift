@@ -3,9 +3,9 @@ import Security
 
 /// Tiny wrapper around `SecItem*` for storing the Forage hub API key in
 /// the user's login keychain. Single keyed entry, service identifier baked
-/// in — no per-user namespacing because the Toolkit's a single-user app.
+/// in — no per-user namespacing because Studio's a single-user app.
 enum Keychain {
-    static let service = "com.foragelang.Toolkit"
+    static let service = "com.foragelang.Studio"
     static let account = "hub-api-key"
 
     static func readAPIKey() throws -> String {

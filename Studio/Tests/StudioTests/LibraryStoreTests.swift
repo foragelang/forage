@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Toolkit
+@testable import Studio
 
 /// `LibraryStore` enumerates recipes under a directory we don't control —
 /// `~/Library/Forage/Recipes/`. To keep these tests hermetic, we use the
