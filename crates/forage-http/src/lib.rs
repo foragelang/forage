@@ -1,5 +1,17 @@
-//! Forage HTTP engine: drives HTTP-engine recipes against the network,
-//! handles auth flavors (staticHeader, htmlPrime, session.*), pagination,
-//! retry, rate limit, and session caching.
+//! Forage HTTP engine.
 //!
-//! Filled in during R2.
+//! Drives HTTP-engine recipes against the network (live mode) or against
+//! captured fixtures (replay mode). Handles auth flavors (staticHeader,
+//! htmlPrime, session.*), pagination strategies (pageWithTotal, untilEmpty,
+//! cursor), retry, rate limiting, cookie threading, and the session cache.
+
+pub mod auth;
+pub mod body;
+pub mod engine;
+pub mod error;
+pub mod paginate;
+pub mod transport;
+
+pub use engine::{Engine, EngineConfig};
+pub use error::{HttpError, HttpResult};
+pub use transport::{HttpRequest, HttpResponse, ReplayTransport, Transport};
