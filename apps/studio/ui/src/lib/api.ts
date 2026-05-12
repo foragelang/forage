@@ -1,6 +1,6 @@
 //! Typed wrappers around Tauri commands.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 
 export type RecipeEntry = {
     slug: string;
@@ -38,6 +38,21 @@ export type RunOutcome = {
     error?: string | null;
 };
 
+export type RunEvent =
+    | { kind: "run_started"; recipe: string; replay: boolean }
+    | { kind: "auth"; flavor: string; status: string }
+    | { kind: "request_sent"; step: string; method: string; url: string; page: number }
+    | {
+          kind: "response_received";
+          step: string;
+          status: number;
+          duration_ms: number;
+          bytes: number;
+      }
+    | { kind: "emitted"; type_name: string; total: number }
+    | { kind: "run_succeeded"; records: number; duration_ms: number }
+    | { kind: "run_failed"; error: string; duration_ms: number };
+
 export type DeviceStart = {
     device_code: string;
     user_code: string;
@@ -60,8 +75,11 @@ export const api = {
     saveRecipe: (slug: string, source: string) =>
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
     createRecipe: () => invoke<string>("create_recipe"),
-    runRecipe: (slug: string, replay: boolean) =>
-        invoke<RunOutcome>("run_recipe", { slug, replay }),
+    runRecipe: (slug: string, replay: boolean, onEvent?: (e: RunEvent) => void) => {
+        const channel = new Channel<RunEvent>();
+        if (onEvent) channel.onmessage = onEvent;
+        return invoke<RunOutcome>("run_recipe", { slug, replay, onEvent: channel });
+    },
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>

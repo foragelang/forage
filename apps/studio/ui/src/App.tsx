@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 
@@ -26,12 +26,16 @@ export function App() {
         source,
         dirty,
         tab,
+        running,
         setSource,
         setTab,
         setValidation,
         setSnapshot,
         setRunError,
         markClean,
+        runBegin,
+        runAppend,
+        runFinish,
     } = useStudio();
 
     // Load source when active recipe changes.
@@ -63,12 +67,12 @@ export function App() {
 
     const run = async (replay: boolean) => {
         if (!activeSlug) return;
+        if (useStudio.getState().running) return;
         await save();
-        setSnapshot(null);
-        setRunError(null);
         setTab("snapshot");
+        runBegin();
         try {
-            const r = await api.runRecipe(activeSlug, replay);
+            const r = await api.runRecipe(activeSlug, replay, (e) => runAppend(e));
             if (r.ok && r.snapshot) {
                 setSnapshot(r.snapshot);
             } else {
@@ -76,6 +80,8 @@ export function App() {
             }
         } catch (e) {
             setRunError(String(e));
+        } finally {
+            runFinish();
         }
     };
 
@@ -131,6 +137,7 @@ export function App() {
                 <Toolbar
                     activeSlug={activeSlug}
                     dirty={dirty}
+                    running={running}
                     onSave={save}
                     onReplay={() => run(true)}
                     onRunLive={() => run(false)}
@@ -151,6 +158,7 @@ export function App() {
 function Toolbar(props: {
     activeSlug: string | null;
     dirty: boolean;
+    running: boolean;
     onSave: () => void;
     onReplay: () => void;
     onRunLive: () => void;
@@ -163,10 +171,11 @@ function Toolbar(props: {
             {props.dirty && (
                 <span className="text-xs text-amber-500">● unsaved</span>
             )}
+            {props.running && <RunningPill />}
             <div className="ml-auto flex gap-2">
                 <button
                     onClick={props.onSave}
-                    disabled={!props.activeSlug}
+                    disabled={!props.activeSlug || props.running}
                     className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
                     title="⌘S"
                 >
@@ -174,7 +183,7 @@ function Toolbar(props: {
                 </button>
                 <button
                     onClick={props.onReplay}
-                    disabled={!props.activeSlug}
+                    disabled={!props.activeSlug || props.running}
                     className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
                     title="⇧⌘R"
                 >
@@ -182,14 +191,35 @@ function Toolbar(props: {
                 </button>
                 <button
                     onClick={props.onRunLive}
-                    disabled={!props.activeSlug}
-                    className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50 font-medium"
+                    disabled={!props.activeSlug || props.running}
+                    className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50 font-medium flex items-center gap-2"
                     title="⌘R"
                 >
-                    Run live
+                    {props.running && (
+                        <span className="inline-block w-3 h-3 rounded-full border-2 border-zinc-300 border-t-transparent animate-spin" />
+                    )}
+                    {props.running ? "Running…" : "Run live"}
                 </button>
             </div>
         </div>
+    );
+}
+
+function RunningPill() {
+    // Tick the elapsed-time display every 250ms so the user can see we're
+    // still alive even when the engine is throttling between requests.
+    const startedAt = useStudio((s) => s.runStartedAt);
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+        const id = window.setInterval(() => setNow(Date.now()), 250);
+        return () => window.clearInterval(id);
+    }, []);
+    if (!startedAt) return null;
+    const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+    return (
+        <span className="text-xs text-emerald-400 font-mono tabular-nums">
+            ● running {seconds}s
+        </span>
     );
 }
 

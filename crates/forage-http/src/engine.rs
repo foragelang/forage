@@ -5,12 +5,15 @@
 //! differs.
 
 use indexmap::IndexMap;
+use std::sync::Arc;
+use std::time::Instant;
 use tracing::debug;
 
 use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
+use crate::progress::{NoopSink, ProgressSink, RunEvent};
 use crate::transport::{HttpRequest, HttpResponse, Transport};
 
 use forage_core::ast::*;
@@ -41,6 +44,7 @@ impl Default for EngineConfig {
 pub struct Engine<'t> {
     pub transport: &'t dyn Transport,
     pub config: EngineConfig,
+    pub progress: Arc<dyn ProgressSink>,
 }
 
 impl<'t> Engine<'t> {
@@ -48,6 +52,7 @@ impl<'t> Engine<'t> {
         Self {
             transport,
             config: EngineConfig::default(),
+            progress: Arc::new(NoopSink),
         }
     }
 
@@ -56,7 +61,44 @@ impl<'t> Engine<'t> {
         self
     }
 
+    pub fn with_progress(mut self, p: Arc<dyn ProgressSink>) -> Self {
+        self.progress = p;
+        self
+    }
+
+    fn emit(&self, event: RunEvent) {
+        self.progress.emit(event);
+    }
+
     pub async fn run(
+        &self,
+        recipe: &Recipe,
+        inputs: IndexMap<String, EvalValue>,
+        secrets: IndexMap<String, String>,
+    ) -> HttpResult<Snapshot> {
+        let started = Instant::now();
+        self.emit(RunEvent::RunStarted {
+            recipe: recipe.name.clone(),
+            replay: false,
+        });
+
+        self.run_inner(recipe, inputs, secrets)
+            .await
+            .inspect(|snap| {
+                self.emit(RunEvent::RunSucceeded {
+                    records: snap.records.len(),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
+            })
+            .inspect_err(|e| {
+                self.emit(RunEvent::RunFailed {
+                    error: e.to_string(),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
+            })
+    }
+
+    async fn run_inner(
         &self,
         recipe: &Recipe,
         inputs: IndexMap<String, EvalValue>,
@@ -77,8 +119,15 @@ impl<'t> Engine<'t> {
             &self.config.user_agent,
         )
         .await?;
+        if let Some(a) = recipe.auth.as_ref() {
+            self.emit(RunEvent::Auth {
+                flavor: auth_flavor(a).into(),
+                status: "ok".into(),
+            });
+        }
 
         let mut requests_made: u32 = 0;
+        let mut emit_counts: IndexMap<String, usize> = IndexMap::new();
         self.run_statements(
             &recipe.body,
             recipe,
@@ -87,6 +136,7 @@ impl<'t> Engine<'t> {
             &mut scope,
             &mut snapshot,
             &mut requests_made,
+            &mut emit_counts,
         )
         .await?;
         snapshot.evaluate_expectations(&recipe.expectations);
@@ -103,6 +153,7 @@ impl<'t> Engine<'t> {
         scope: &'a mut Scope,
         snapshot: &'a mut Snapshot,
         requests_made: &'a mut u32,
+        emit_counts: &'a mut IndexMap<String, usize>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResult<()>> + Send + 'a>> {
         Box::pin(async move {
             for s in body {
@@ -112,7 +163,7 @@ impl<'t> Engine<'t> {
                             .await?;
                     }
                     Statement::Emit(em) => {
-                        self.run_emit(em, evaluator, scope, snapshot)?;
+                        self.run_emit(em, evaluator, scope, snapshot, emit_counts)?;
                     }
                     Statement::ForLoop {
                         variable,
@@ -141,6 +192,7 @@ impl<'t> Engine<'t> {
                                 scope,
                                 snapshot,
                                 requests_made,
+                                emit_counts,
                             )
                             .await?;
                             scope.current = saved_current;
@@ -169,6 +221,7 @@ impl<'t> Engine<'t> {
         // becomes the step's final bound value so `$step[*]` works the same
         // as it does for non-paginated steps that return a top-level array.
         let mut accumulated_items: Vec<EvalValue> = Vec::new();
+        let mut page: u32 = 1;
 
         loop {
             if *requests_made >= self.config.max_requests {
@@ -182,8 +235,22 @@ impl<'t> Engine<'t> {
             let req =
                 self.build_request(step, recipe, auth_state, evaluator, scope, &extra_query)?;
             debug!(method = %req.method, url = %req.url, "step request");
+            self.emit(RunEvent::RequestSent {
+                step: step.name.clone(),
+                method: req.method.clone(),
+                url: req.url.clone(),
+                page,
+            });
 
+            let req_started = Instant::now();
             let resp = self.transport.fetch(req.clone()).await?;
+            let duration_ms = req_started.elapsed().as_millis() as u64;
+            self.emit(RunEvent::ResponseReceived {
+                step: step.name.clone(),
+                status: resp.status,
+                duration_ms,
+                bytes: resp.body.len(),
+            });
             if !(200..400).contains(&resp.status) {
                 return Err(HttpError::Status {
                     status: resp.status,
@@ -223,6 +290,7 @@ impl<'t> Engine<'t> {
                     }
                     NextPage::Continue(params) => {
                         extra_query = params;
+                        page += 1;
                     }
                 },
                 None => return Ok(()),
@@ -236,6 +304,7 @@ impl<'t> Engine<'t> {
         evaluator: &Evaluator<'_>,
         scope: &Scope,
         snapshot: &mut Snapshot,
+        emit_counts: &mut IndexMap<String, usize>,
     ) -> HttpResult<()> {
         let mut fields: IndexMap<String, JSONValue> = IndexMap::new();
         for b in &em.bindings {
@@ -245,6 +314,12 @@ impl<'t> Engine<'t> {
         snapshot.emit(Record {
             type_name: em.type_name.clone(),
             fields,
+        });
+        let count = emit_counts.entry(em.type_name.clone()).or_insert(0);
+        *count += 1;
+        self.emit(RunEvent::Emitted {
+            type_name: em.type_name.clone(),
+            total: *count,
         });
         Ok(())
     }
@@ -298,6 +373,14 @@ impl<'t> Engine<'t> {
             headers,
             body,
         })
+    }
+}
+
+fn auth_flavor(a: &AuthStrategy) -> &'static str {
+    match a {
+        AuthStrategy::StaticHeader { .. } => "staticHeader",
+        AuthStrategy::HtmlPrime { .. } => "htmlPrime",
+        AuthStrategy::Session(_) => "session",
     }
 }
 
@@ -451,6 +534,116 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec!["a", "b", "c", "d"]);
+    }
+
+    #[tokio::test]
+    async fn progress_events_fire_in_order() {
+        // The Studio "Run live" UX depends on these events firing in real
+        // time. Regression for the silent-run problem: a 30-second
+        // paginated run with no feedback is indistinguishable from a hang.
+        use crate::progress::{CaptureSink, RunEvent};
+        use std::sync::Arc;
+
+        let src = r#"
+            recipe "events" {
+                engine http
+                type Item { id: String }
+                step list {
+                    method "GET"
+                    url "https://api.example.com/items"
+                }
+                for $i in $list.items[*] {
+                    emit Item { id ← $i.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let exchange = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![exchange]);
+        let sink = Arc::new(CaptureSink::default());
+        let engine = Engine::new(&transport).with_progress(sink.clone());
+        let snap = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 2);
+        let events = sink.snapshot();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                RunEvent::RunStarted { .. } => "run_started",
+                RunEvent::Auth { .. } => "auth",
+                RunEvent::RequestSent { .. } => "request_sent",
+                RunEvent::ResponseReceived { .. } => "response_received",
+                RunEvent::Emitted { .. } => "emitted",
+                RunEvent::RunSucceeded { .. } => "run_succeeded",
+                RunEvent::RunFailed { .. } => "run_failed",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "run_started",
+                "request_sent",
+                "response_received",
+                "emitted",
+                "emitted",
+                "run_succeeded",
+            ]
+        );
+        // The Emitted events carry the running total per type.
+        let emits: Vec<usize> = events
+            .iter()
+            .filter_map(|e| match e {
+                RunEvent::Emitted { total, .. } => Some(*total),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(emits, vec![1, 2]);
+        // RunSucceeded carries the final record count.
+        match events.last().unwrap() {
+            RunEvent::RunSucceeded { records, .. } => assert_eq!(*records, 2),
+            other => panic!("expected RunSucceeded last, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_emits_run_failed_on_error() {
+        use crate::progress::{CaptureSink, RunEvent};
+        use std::sync::Arc;
+
+        let src = r#"
+            recipe "broken" {
+                engine http
+                type T { x: String }
+                step go {
+                    method "GET"
+                    url "https://api.example.com/missing"
+                }
+                emit T { x ← "hi" }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let transport = ReplayTransport::new(vec![]);
+        let sink = Arc::new(CaptureSink::default());
+        let engine = Engine::new(&transport).with_progress(sink.clone());
+        let err = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HttpError::NoFixture { .. }));
+        let events = sink.snapshot();
+        // Should start with run_started and end with run_failed.
+        assert!(matches!(events.first(), Some(RunEvent::RunStarted { .. })));
+        assert!(matches!(events.last(), Some(RunEvent::RunFailed { .. })));
     }
 
     #[tokio::test]

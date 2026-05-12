@@ -11,9 +11,11 @@ pub mod client;
 pub mod engine;
 pub mod error;
 pub mod paginate;
+pub mod progress;
 pub mod transport;
 
 pub use client::{LiveTransport, LiveTransportConfig};
 pub use engine::{Engine, EngineConfig};
 pub use error::{HttpError, HttpResult};
+pub use progress::{CaptureSink, FnSink, NoopSink, ProgressHandle, ProgressSink, RunEvent};
 pub use transport::{HttpRequest, HttpResponse, ReplayTransport, Transport};

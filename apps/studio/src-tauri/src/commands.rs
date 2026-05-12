@@ -2,12 +2,14 @@
 
 use indexmap::IndexMap;
 use serde::Serialize;
+use std::sync::Arc;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
 use forage_core::{EvalValue, Snapshot, parse, validate};
-use forage_http::{Engine, LiveTransport, ReplayTransport};
+use forage_http::{Engine, LiveTransport, ProgressSink, ReplayTransport, RunEvent};
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
@@ -54,8 +56,26 @@ pub struct RunOutcome {
     pub error: Option<String>,
 }
 
+/// Bridges the engine's `ProgressSink` to a Tauri command-scoped Channel
+/// so the frontend gets live updates without polling. The channel is
+/// `Clone + Send + Sync`, so wrapping it in an Arc is straight-forward.
+struct ChannelSink(Channel<RunEvent>);
+
+impl ProgressSink for ChannelSink {
+    fn emit(&self, event: RunEvent) {
+        // Send errors mean the receiver dropped — the run continues
+        // regardless; failure to deliver progress is non-fatal.
+        let _ = self.0.send(event);
+    }
+}
+
 #[tauri::command]
-pub async fn run_recipe(app: AppHandle, slug: String, replay: bool) -> Result<RunOutcome, String> {
+pub async fn run_recipe(
+    app: AppHandle,
+    slug: String,
+    replay: bool,
+    on_event: Channel<RunEvent>,
+) -> Result<RunOutcome, String> {
     let source = library::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
         Ok(r) => r,
@@ -88,10 +108,11 @@ pub async fn run_recipe(app: AppHandle, slug: String, replay: bool) -> Result<Ru
         Vec::new()
     };
 
+    let sink: Arc<dyn ProgressSink> = Arc::new(ChannelSink(on_event));
     let snapshot: Result<Snapshot, String> = match (recipe.engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
-            let engine = Engine::new(&transport);
+            let engine = Engine::new(&transport).with_progress(sink);
             engine
                 .run(&recipe, inputs, secrets)
                 .await
@@ -99,7 +120,7 @@ pub async fn run_recipe(app: AppHandle, slug: String, replay: bool) -> Result<Ru
         }
         (EngineKind::Http, false) => {
             let transport = LiveTransport::new().map_err(|e| format!("{e}"))?;
-            let engine = Engine::new(&transport);
+            let engine = Engine::new(&transport).with_progress(sink);
             engine
                 .run(&recipe, inputs, secrets)
                 .await

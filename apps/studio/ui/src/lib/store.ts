@@ -4,7 +4,7 @@
 
 import { create } from "zustand";
 
-import type { Snapshot, ValidationOutcome } from "./api";
+import type { RunEvent, Snapshot, ValidationOutcome } from "./api";
 
 export type Tab = "source" | "fixtures" | "snapshot" | "diagnostic" | "publish";
 
@@ -16,6 +16,14 @@ type StudioState = {
     validation: ValidationOutcome | null;
     snapshot: Snapshot | null;
     runError: string | null;
+    // Live-run progress. `running` is true between RunStarted and
+    // RunSucceeded/RunFailed; `runLog` accumulates events for display in
+    // the Snapshot tab; `runCounts` is the running per-type emit total;
+    // `runStartedAt` is wall-clock ms used to drive the elapsed timer.
+    running: boolean;
+    runLog: RunEvent[];
+    runCounts: Record<string, number>;
+    runStartedAt: number | null;
     setActive: (slug: string | null) => void;
     setTab: (t: Tab) => void;
     setSource: (s: string) => void;
@@ -23,6 +31,9 @@ type StudioState = {
     setValidation: (v: ValidationOutcome | null) => void;
     setSnapshot: (s: Snapshot | null) => void;
     setRunError: (e: string | null) => void;
+    runBegin: () => void;
+    runAppend: (e: RunEvent) => void;
+    runFinish: () => void;
 };
 
 export const useStudio = create<StudioState>((set) => ({
@@ -33,6 +44,10 @@ export const useStudio = create<StudioState>((set) => ({
     validation: null,
     snapshot: null,
     runError: null,
+    running: false,
+    runLog: [],
+    runCounts: {},
+    runStartedAt: null,
     setActive: (slug) =>
         set({
             activeSlug: slug,
@@ -41,6 +56,10 @@ export const useStudio = create<StudioState>((set) => ({
             validation: null,
             snapshot: null,
             runError: null,
+            running: false,
+            runLog: [],
+            runCounts: {},
+            runStartedAt: null,
             tab: "source",
         }),
     setTab: (t) => set({ tab: t }),
@@ -50,4 +69,24 @@ export const useStudio = create<StudioState>((set) => ({
     setValidation: (v) => set({ validation: v }),
     setSnapshot: (s) => set({ snapshot: s }),
     setRunError: (e) => set({ runError: e }),
+    runBegin: () =>
+        set({
+            running: true,
+            runLog: [],
+            runCounts: {},
+            runStartedAt: Date.now(),
+            snapshot: null,
+            runError: null,
+        }),
+    runAppend: (e) =>
+        set((state) => {
+            const next: Partial<StudioState> = {
+                runLog: [...state.runLog, e],
+            };
+            if (e.kind === "emitted") {
+                next.runCounts = { ...state.runCounts, [e.type_name]: e.total };
+            }
+            return next;
+        }),
+    runFinish: () => set({ running: false }),
 }));
