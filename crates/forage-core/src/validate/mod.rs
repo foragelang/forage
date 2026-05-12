@@ -133,6 +133,10 @@ impl<'a> Validator<'a> {
                 known_vars.insert(v.var_name.clone());
             }
         }
+        // Engine-injected variables: the HTTP engine binds `$page` inside
+        // every step so recipes can template page numbers into bodies or
+        // URLs (Leafbridge's `prods_pageNumber`, Sweed's `page`).
+        known_vars.insert("page".into());
         Self {
             recipe,
             issues: Vec::new(),

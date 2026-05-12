@@ -3,14 +3,17 @@
 use indexmap::IndexMap;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Notify;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
 use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ProgressSink, ReplayTransport, RunEvent};
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
+
+/// Tauri event name for streaming engine progress to the frontend.
+pub const RUN_EVENT: &str = "forage:run-event";
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::library::{self, RecipeEntry};
@@ -56,25 +59,29 @@ pub struct RunOutcome {
     pub error: Option<String>,
 }
 
-/// Bridges the engine's `ProgressSink` to a Tauri command-scoped Channel
-/// so the frontend gets live updates without polling. The channel is
-/// `Clone + Send + Sync`, so wrapping it in an Arc is straight-forward.
-struct ChannelSink(Channel<RunEvent>);
+/// Bridges the engine's `ProgressSink` to a Tauri global event so the
+/// frontend gets live updates. Standard `emit()` instead of a command-scoped
+/// `Channel<T>` because the latter had observed delivery problems in 2.8
+/// where events would not surface despite the run progressing; the global
+/// event bus is well-trodden and survives the round-trip cleanly.
+struct EmitterSink {
+    app: AppHandle,
+}
 
-impl ProgressSink for ChannelSink {
+impl ProgressSink for EmitterSink {
     fn emit(&self, event: RunEvent) {
-        // Send errors mean the receiver dropped — the run continues
-        // regardless; failure to deliver progress is non-fatal.
-        let _ = self.0.send(event);
+        // Emit failures are non-fatal (e.g. window closed mid-run): the run
+        // continues even if the UI can't hear it anymore.
+        let _ = self.app.emit(RUN_EVENT, &event);
     }
 }
 
 #[tauri::command]
 pub async fn run_recipe(
     app: AppHandle,
+    state: State<'_, crate::state::StudioState>,
     slug: String,
     replay: bool,
-    on_event: Channel<RunEvent>,
 ) -> Result<RunOutcome, String> {
     let source = library::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
@@ -108,23 +115,34 @@ pub async fn run_recipe(
         Vec::new()
     };
 
-    let sink: Arc<dyn ProgressSink> = Arc::new(ChannelSink(on_event));
+    let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink { app: app.clone() });
+
+    // Install a cancellation handle so `cancel_run` can interrupt this run.
+    // Replaces any previous handle — Studio only runs one recipe at a time.
+    let cancel = Arc::new(Notify::new());
+    {
+        let mut guard = state.run_cancel.lock().expect("run_cancel mutex");
+        *guard = Some(cancel.clone());
+    }
+
     let snapshot: Result<Snapshot, String> = match (recipe.engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport).with_progress(sink);
-            engine
-                .run(&recipe, inputs, secrets)
-                .await
-                .map_err(|e| format!("{e}"))
+            tokio::select! {
+                biased;
+                _ = cancel.notified() => Err("cancelled".into()),
+                r = engine.run(&recipe, inputs, secrets) => r.map_err(|e| format!("{e}")),
+            }
         }
         (EngineKind::Http, false) => {
             let transport = LiveTransport::new().map_err(|e| format!("{e}"))?;
             let engine = Engine::new(&transport).with_progress(sink);
-            engine
-                .run(&recipe, inputs, secrets)
-                .await
-                .map_err(|e| format!("{e}"))
+            tokio::select! {
+                biased;
+                _ = cancel.notified() => Err("cancelled".into()),
+                r = engine.run(&recipe, inputs, secrets) => r.map_err(|e| format!("{e}")),
+            }
         }
         (EngineKind::Browser, true) => {
             run_browser_replay(&recipe, &captures, inputs, secrets).map_err(|e| format!("{e}"))
@@ -135,6 +153,13 @@ pub async fn run_recipe(
             run_browser_live(&app, &recipe, inputs, secrets, LiveRunOptions::default()).await
         }
     };
+
+    // Clear the cancellation handle so a stale notify can't fire on the next run.
+    {
+        let mut guard = state.run_cancel.lock().expect("run_cancel mutex");
+        *guard = None;
+    }
+
     match snapshot {
         Ok(s) => Ok(RunOutcome {
             ok: true,
@@ -147,6 +172,18 @@ pub async fn run_recipe(
             error: Some(e),
         }),
     }
+}
+
+/// Cancel the currently-running recipe (if any). Idempotent — calling when
+/// nothing is running is a no-op. Wakes the `tokio::select!` in `run_recipe`,
+/// which drops the engine future and any in-flight reqwest call.
+#[tauri::command]
+pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), String> {
+    let guard = state.run_cancel.lock().expect("run_cancel mutex");
+    if let Some(n) = guard.as_ref() {
+        n.notify_one();
+    }
+    Ok(())
 }
 
 #[tauri::command]

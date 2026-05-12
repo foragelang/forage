@@ -108,6 +108,10 @@ impl<'t> Engine<'t> {
         let evaluator = Evaluator::new(registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
+        // Default `$page` so recipes that use `{$page}` outside a paginated
+        // step (or before the first request) still have it bound. The
+        // engine overwrites this inside each `run_step` iteration.
+        scope.bind("page", EvalValue::Int(1));
 
         // Run session-auth login flow if declared. Cookies thread via
         // the Transport's cookie jar; bearer tokens flow through AuthState.
@@ -222,6 +226,16 @@ impl<'t> Engine<'t> {
         // as it does for non-paginated steps that return a top-level array.
         let mut accumulated_items: Vec<EvalValue> = Vec::new();
         let mut page: u32 = 1;
+        let zero_indexed = matches!(
+            step.pagination,
+            Some(Pagination::PageWithTotal {
+                page_zero_indexed: true,
+                ..
+            }) | Some(Pagination::UntilEmpty {
+                page_zero_indexed: true,
+                ..
+            })
+        );
 
         loop {
             if *requests_made >= self.config.max_requests {
@@ -231,6 +245,17 @@ impl<'t> Engine<'t> {
                 )));
             }
             *requests_made += 1;
+
+            // Bind `$page` in scope so the recipe can template the page
+            // number into the request body or URL via `{$page}`. Necessary
+            // for recipes whose pagination param lives in a POST body
+            // (Leafbridge) — appending to the URL doesn't reach the server.
+            let bound_page = if zero_indexed && page > 0 {
+                page - 1
+            } else {
+                page
+            };
+            scope.bind("page", EvalValue::Int(bound_page as i64));
 
             let req =
                 self.build_request(step, recipe, auth_state, evaluator, scope, &extra_query)?;
@@ -534,6 +559,87 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec!["a", "b", "c", "d"]);
+    }
+
+    #[tokio::test]
+    async fn page_binding_templates_into_form_body() {
+        // Regression: Leafbridge sends the page number in a form body; the
+        // engine's URL-append doesn't reach the server, so the recipe must
+        // template `{$page}` into the body. The engine has to bind `$page`
+        // before each request build so the template re-renders per page.
+        use crate::transport::HttpRequest;
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct RecordingTransport {
+            pub seen: Mutex<Vec<HttpRequest>>,
+            pub pages: Vec<&'static str>,
+            pub idx: Mutex<usize>,
+        }
+
+        #[async_trait]
+        impl Transport for RecordingTransport {
+            async fn fetch(
+                &self,
+                req: HttpRequest,
+            ) -> crate::error::HttpResult<crate::transport::HttpResponse> {
+                let mut idx = self.idx.lock().unwrap();
+                let body = self.pages.get(*idx).copied().unwrap_or("[]");
+                *idx += 1;
+                self.seen.lock().unwrap().push(req);
+                Ok(crate::transport::HttpResponse {
+                    status: 200,
+                    headers: IndexMap::new(),
+                    body: body.as_bytes().to_vec(),
+                })
+            }
+        }
+
+        let src = r#"
+            recipe "leafy" {
+                engine http
+                type Item { id: String }
+                step products {
+                    method "POST"
+                    url "https://example.com/ajax"
+                    body.form {
+                        "page": "{$page}"
+                    }
+                    paginate untilEmpty {
+                        items: $.list, pageParam: "page"
+                    }
+                }
+                for $p in $products[*] {
+                    emit Item { id ← $p.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let transport = RecordingTransport {
+            seen: Mutex::new(Vec::new()),
+            pages: vec![
+                r#"{"list":[{"id":"a"}]}"#,
+                r#"{"list":[{"id":"b"}]}"#,
+                r#"{"list":[]}"#,
+            ],
+            idx: Mutex::new(0),
+        };
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 2);
+
+        // Each request's body should have the corresponding page number.
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        let body_str = |r: &HttpRequest| -> String {
+            String::from_utf8(r.body.clone().unwrap_or_default()).unwrap()
+        };
+        assert!(body_str(&seen[0]).contains("page=1"));
+        assert!(body_str(&seen[1]).contains("page=2"));
+        assert!(body_str(&seen[2]).contains("page=3"));
     }
 
     #[tokio::test]

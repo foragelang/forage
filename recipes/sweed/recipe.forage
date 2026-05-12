@@ -119,7 +119,7 @@ recipe "sweed" {
                 url    "https://web-ui-production.sweedpos.com/_api/proxy/Products/GetProductList"
                 body.json {
                     filters:         { category: [$catId] }
-                    page:            1
+                    page:            $page
                     pageSize:        200
                     platformOs:      "web"
                     saleType:        case $menu of {

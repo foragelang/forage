@@ -1,6 +1,6 @@
 //! Typed wrappers around Tauri commands.
 
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 
 export type RecipeEntry = {
     slug: string;
@@ -68,6 +68,10 @@ export type PollOutcome = {
 
 const HUB = "https://api.foragelang.com";
 
+/// Tauri event name the engine emits run progress through. Matches the
+/// Rust-side `commands::RUN_EVENT` constant.
+export const RUN_EVENT = "forage:run-event";
+
 export const api = {
     version: () => invoke<string>("studio_version"),
     listRecipes: () => invoke<RecipeEntry[]>("list_recipes"),
@@ -75,11 +79,9 @@ export const api = {
     saveRecipe: (slug: string, source: string) =>
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
     createRecipe: () => invoke<string>("create_recipe"),
-    runRecipe: (slug: string, replay: boolean, onEvent?: (e: RunEvent) => void) => {
-        const channel = new Channel<RunEvent>();
-        if (onEvent) channel.onmessage = onEvent;
-        return invoke<RunOutcome>("run_recipe", { slug, replay, onEvent: channel });
-    },
+    runRecipe: (slug: string, replay: boolean) =>
+        invoke<RunOutcome>("run_recipe", { slug, replay }),
+    cancelRun: () => invoke<void>("cancel_run"),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>

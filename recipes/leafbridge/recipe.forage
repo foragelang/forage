@@ -118,7 +118,7 @@ recipe "leafbridge" {
                                                           MEDICAL      → "MEDICAL"
                                                       }
                 "wizard_data[collection_method]":      "PICKUP"
-                "prods_pageNumber":                    "1"
+                "prods_pageNumber":                    "{$page}"
                 "filter_attributes[search_key_word]":  ""
                 "filter_attributes[sort_order]":       "NAME_ASC"
             }

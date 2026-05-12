@@ -8,7 +8,7 @@ import { FixturesTab } from "./tabs/FixturesTab";
 import { SnapshotTab } from "./tabs/SnapshotTab";
 import { DiagnosticTab } from "./tabs/DiagnosticTab";
 import { PublishTab } from "./tabs/PublishTab";
-import { api } from "./lib/api";
+import { api, RUN_EVENT, type RunEvent } from "./lib/api";
 import { useStudio, type Tab } from "./lib/store";
 
 const TABS: { id: Tab; label: string }[] = [
@@ -72,7 +72,7 @@ export function App() {
         setTab("snapshot");
         runBegin();
         try {
-            const r = await api.runRecipe(activeSlug, replay, (e) => runAppend(e));
+            const r = await api.runRecipe(activeSlug, replay);
             if (r.ok && r.snapshot) {
                 setSnapshot(r.snapshot);
             } else {
@@ -84,6 +84,24 @@ export function App() {
             runFinish();
         }
     };
+
+    const cancel = () => {
+        if (!useStudio.getState().running) return;
+        api.cancelRun().catch((e) => console.warn("cancel failed", e));
+    };
+
+    // Subscribe once to the engine progress event stream. The listener stays
+    // active for the life of the app; events outside a run are ignored by
+    // the store (runBegin clears the log before each run).
+    useEffect(() => {
+        let un: (() => void) | undefined;
+        listen<RunEvent>(RUN_EVENT, (e) => runAppend(e.payload)).then((u) => {
+            un = u;
+        });
+        return () => {
+            un?.();
+        };
+    }, []);
 
     // ⌘S → save, ⌘R → run live, ⇧⌘R → replay, ⌘N → new recipe.
     useEffect(() => {
@@ -141,6 +159,7 @@ export function App() {
                     onSave={save}
                     onReplay={() => run(true)}
                     onRunLive={() => run(false)}
+                    onCancel={cancel}
                 />
                 <Tabs current={tab} onSelect={setTab} />
                 <div className="flex-1 flex flex-col min-h-0 bg-zinc-950">
@@ -162,6 +181,7 @@ function Toolbar(props: {
     onSave: () => void;
     onReplay: () => void;
     onRunLive: () => void;
+    onCancel: () => void;
 }) {
     return (
         <div className="px-4 h-12 border-b border-zinc-800 flex items-center gap-3 bg-zinc-950 flex-shrink-0">
@@ -173,33 +193,43 @@ function Toolbar(props: {
             )}
             {props.running && <RunningPill />}
             <div className="ml-auto flex gap-2">
-                <button
-                    onClick={props.onSave}
-                    disabled={!props.activeSlug || props.running}
-                    className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
-                    title="⌘S"
-                >
-                    Save
-                </button>
-                <button
-                    onClick={props.onReplay}
-                    disabled={!props.activeSlug || props.running}
-                    className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
-                    title="⇧⌘R"
-                >
-                    Replay
-                </button>
-                <button
-                    onClick={props.onRunLive}
-                    disabled={!props.activeSlug || props.running}
-                    className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50 font-medium flex items-center gap-2"
-                    title="⌘R"
-                >
-                    {props.running && (
-                        <span className="inline-block w-3 h-3 rounded-full border-2 border-zinc-300 border-t-transparent animate-spin" />
-                    )}
-                    {props.running ? "Running…" : "Run live"}
-                </button>
+                {props.running ? (
+                    <button
+                        onClick={props.onCancel}
+                        className="px-3 py-1.5 text-sm bg-red-700 hover:bg-red-600 rounded font-medium flex items-center gap-2"
+                        title="Stop run"
+                    >
+                        <span className="inline-block w-3 h-3 rounded-full border-2 border-zinc-200 border-t-transparent animate-spin" />
+                        Cancel
+                    </button>
+                ) : (
+                    <>
+                        <button
+                            onClick={props.onSave}
+                            disabled={!props.activeSlug}
+                            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
+                            title="⌘S"
+                        >
+                            Save
+                        </button>
+                        <button
+                            onClick={props.onReplay}
+                            disabled={!props.activeSlug}
+                            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
+                            title="⇧⌘R"
+                        >
+                            Replay
+                        </button>
+                        <button
+                            onClick={props.onRunLive}
+                            disabled={!props.activeSlug}
+                            className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50 font-medium"
+                            title="⌘R"
+                        >
+                            Run live
+                        </button>
+                    </>
+                )}
             </div>
         </div>
     );
