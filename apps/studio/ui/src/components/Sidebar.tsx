@@ -1,10 +1,65 @@
 import { useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 import { api } from "../lib/api";
 import { useStudio } from "../lib/store";
+
+// Module-level listener registration. React StrictMode + Vite HMR
+// double-mount the Sidebar component, and `tauri::listen` registers its
+// callback synchronously via transformCallback (before the unlisten
+// promise resolves), so the cancelled-flag pattern can't deregister the
+// orphaned one in time. Result: each engine emit fires the React
+// handler twice. We side-step that by registering the listen() exactly
+// once per module load, then delegating to the latest handler via a
+// module-scope slot the component updates on every render.
+let pendingHandler: ((slug: string) => void) | null = null;
+let listenerHandle: Promise<UnlistenFn> | null = null;
+
+function ensureMenuListener() {
+    if (listenerHandle) return;
+    listenerHandle = listen<string>("menu:recipe_delete", (e) => {
+        pendingHandler?.(e.payload);
+    });
+    if (import.meta.hot) {
+        import.meta.hot.dispose(async () => {
+            const un = await listenerHandle;
+            un?.();
+            listenerHandle = null;
+            pendingHandler = null;
+        });
+    }
+}
+
+async function performDelete(slug: string, qc: QueryClient) {
+    // Tauri's WKWebView silently no-ops `window.confirm`, so we go
+    // through the dialog plugin which renders a real native NSAlert.
+    const confirmed = await ask(
+        `Delete "${slug}"? The recipe and its fixtures will be removed permanently.`,
+        {
+            title: "Delete recipe",
+            kind: "warning",
+            okLabel: "Delete",
+            cancelLabel: "Cancel",
+        },
+    );
+    if (!confirmed) {
+        console.log("[sidebar] delete cancelled", slug);
+        return;
+    }
+    try {
+        await api.deleteRecipe(slug);
+        await qc.invalidateQueries({ queryKey: ["recipes"] });
+        if (useStudio.getState().activeSlug === slug) {
+            useStudio.getState().setActive(null);
+        }
+        console.log("[sidebar] deleted", slug);
+    } catch (e) {
+        console.error("[sidebar] delete failed", slug, e);
+    }
+}
 
 export function Sidebar() {
     const qc = useQueryClient();
@@ -21,41 +76,19 @@ export function Sidebar() {
         setActive(slug);
     };
 
-    // Listen for the backend's "menu:recipe_delete" — fired when the user
-    // picks Delete from the native right-click menu. Mounted once: the
-    // handler reads current store state via `useStudio.getState()` rather
-    // than capturing closure deps, so we don't churn the listener on
-    // every render. The cancelled flag guards against StrictMode's
-    // double-mount → orphaned-listener race.
+    // Register the singleton listener (idempotent) and update the
+    // module-scope handler slot with one that closes over the current
+    // QueryClient. The mounted Sidebar always "wins" — if multiple
+    // Sidebars ever exist, only the most recently mounted handles the
+    // event, which is what you want anyway.
     useEffect(() => {
-        let cancelled = false;
-        let un: (() => void) | undefined;
-        const handler = async (slug: string) => {
+        ensureMenuListener();
+        pendingHandler = (slug) => {
             console.log("[sidebar] menu:recipe_delete received", slug);
-            const confirmed = window.confirm(
-                `Delete "${slug}"? This removes the recipe and its fixtures permanently.`,
-            );
-            if (!confirmed) return;
-            try {
-                await api.deleteRecipe(slug);
-                // Refetch the recipe list — TanStack will re-run listRecipes
-                // and the sidebar rerenders with the recipe gone.
-                await qc.invalidateQueries({ queryKey: ["recipes"] });
-                // If the deleted recipe was open, clear the editor.
-                if (useStudio.getState().activeSlug === slug) {
-                    useStudio.getState().setActive(null);
-                }
-            } catch (e) {
-                window.alert(`Delete failed: ${e}`);
-            }
+            void performDelete(slug, qc);
         };
-        listen<string>("menu:recipe_delete", (e) => handler(e.payload)).then((u) => {
-            if (cancelled) u();
-            else un = u;
-        });
         return () => {
-            cancelled = true;
-            un?.();
+            pendingHandler = null;
         };
     }, [qc]);
 

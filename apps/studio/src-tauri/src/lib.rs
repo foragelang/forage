@@ -39,6 +39,7 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Note: no tauri-plugin-log — tracing-subscriber above already
             // captures both `tracing::` events and (via its tracing-log
