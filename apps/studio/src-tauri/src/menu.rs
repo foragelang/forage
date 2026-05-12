@@ -16,6 +16,9 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let run_replay = MenuItemBuilder::with_id("run_replay", "Run Replay")
         .accelerator("CmdOrCtrl+Shift+R")
         .build(app)?;
+    let run_debug = MenuItemBuilder::with_id("run_debug", "Debug…")
+        .accelerator("CmdOrCtrl+Alt+R")
+        .build(app)?;
     let validate = MenuItemBuilder::with_id("validate", "Validate")
         .accelerator("CmdOrCtrl+Shift+V")
         .build(app)?;
@@ -38,6 +41,7 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let recipe = SubmenuBuilder::new(app, "Recipe")
         .item(&run_live)
         .item(&run_replay)
+        .item(&run_debug)
         .separator()
         .item(&validate)
         .item(&publish)
@@ -83,6 +87,9 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         "run_replay" => {
             let _ = app.emit("menu:run_replay", ());
+        }
+        "run_debug" => {
+            let _ = app.emit("menu:run_debug", ());
         }
         "validate" => {
             let _ = app.emit("menu:validate", ());

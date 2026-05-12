@@ -4,9 +4,15 @@
 
 import { create } from "zustand";
 
-import type { RunEvent, Snapshot, ValidationOutcome } from "./api";
+import type { RunEvent, Snapshot, StepPause, ValidationOutcome } from "./api";
 
-export type Tab = "source" | "fixtures" | "snapshot" | "diagnostic" | "publish";
+export type Tab =
+    | "source"
+    | "fixtures"
+    | "snapshot"
+    | "diagnostic"
+    | "debugger"
+    | "publish";
 
 type StudioState = {
     activeSlug: string | null;
@@ -24,6 +30,12 @@ type StudioState = {
     runLog: RunEvent[];
     runCounts: Record<string, number>;
     runStartedAt: number | null;
+    // Debugger state. `debugging` is true for the whole debug run;
+    // `paused` is the current pause payload when the engine is waiting,
+    // null otherwise. We don't drive a separate "is paused" boolean —
+    // `paused !== null` is the source of truth.
+    debugging: boolean;
+    paused: StepPause | null;
     setActive: (slug: string | null) => void;
     setTab: (t: Tab) => void;
     setSource: (s: string) => void;
@@ -31,9 +43,11 @@ type StudioState = {
     setValidation: (v: ValidationOutcome | null) => void;
     setSnapshot: (s: Snapshot | null) => void;
     setRunError: (e: string | null) => void;
-    runBegin: () => void;
+    runBegin: (opts?: { debug?: boolean }) => void;
     runAppend: (e: RunEvent) => void;
     runFinish: () => void;
+    debugPause: (p: StepPause) => void;
+    debugClearPause: () => void;
 };
 
 export const useStudio = create<StudioState>((set) => ({
@@ -48,6 +62,8 @@ export const useStudio = create<StudioState>((set) => ({
     runLog: [],
     runCounts: {},
     runStartedAt: null,
+    debugging: false,
+    paused: null,
     setActive: (slug) =>
         set({
             activeSlug: slug,
@@ -60,6 +76,8 @@ export const useStudio = create<StudioState>((set) => ({
             runLog: [],
             runCounts: {},
             runStartedAt: null,
+            debugging: false,
+            paused: null,
             tab: "source",
         }),
     setTab: (t) => set({ tab: t }),
@@ -69,7 +87,7 @@ export const useStudio = create<StudioState>((set) => ({
     setValidation: (v) => set({ validation: v }),
     setSnapshot: (s) => set({ snapshot: s }),
     setRunError: (e) => set({ runError: e }),
-    runBegin: () =>
+    runBegin: (opts) =>
         set({
             running: true,
             runLog: [],
@@ -77,6 +95,8 @@ export const useStudio = create<StudioState>((set) => ({
             runStartedAt: Date.now(),
             snapshot: null,
             runError: null,
+            debugging: !!opts?.debug,
+            paused: null,
         }),
     runAppend: (e) =>
         set((state) => {
@@ -88,5 +108,7 @@ export const useStudio = create<StudioState>((set) => ({
             }
             return next;
         }),
-    runFinish: () => set({ running: false }),
+    runFinish: () => set({ running: false, debugging: false, paused: null }),
+    debugPause: (p) => set({ paused: p }),
+    debugClearPause: () => set({ paused: null }),
 }));

@@ -79,4 +79,11 @@ impl Scope {
     pub fn secret(&self, name: &str) -> Option<&str> {
         self.secrets.get(name).map(String::as_str)
     }
+
+    /// All active frames, outer-most first. Used by the debugger to render
+    /// the binding stack at a pause point — same iteration order as `bind`
+    /// would have produced.
+    pub fn frames(&self) -> &[IndexMap<String, EvalValue>] {
+        &self.frames
+    }
 }

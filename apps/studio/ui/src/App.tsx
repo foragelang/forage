@@ -7,8 +7,15 @@ import { SourceTab } from "./tabs/SourceTab";
 import { FixturesTab } from "./tabs/FixturesTab";
 import { SnapshotTab } from "./tabs/SnapshotTab";
 import { DiagnosticTab } from "./tabs/DiagnosticTab";
+import { DebuggerTab } from "./tabs/DebuggerTab";
 import { PublishTab } from "./tabs/PublishTab";
-import { api, RUN_EVENT, type RunEvent } from "./lib/api";
+import {
+    api,
+    DEBUG_PAUSED_EVENT,
+    RUN_EVENT,
+    type RunEvent,
+    type StepPause,
+} from "./lib/api";
 import { useStudio, type Tab } from "./lib/store";
 
 const TABS: { id: Tab; label: string }[] = [
@@ -16,6 +23,7 @@ const TABS: { id: Tab; label: string }[] = [
     { id: "fixtures", label: "Fixtures" },
     { id: "snapshot", label: "Snapshot" },
     { id: "diagnostic", label: "Diagnostic" },
+    { id: "debugger", label: "Debugger" },
     { id: "publish", label: "Publish" },
 ];
 
@@ -27,6 +35,7 @@ export function App() {
         dirty,
         tab,
         running,
+        debugging,
         setSource,
         setTab,
         setValidation,
@@ -36,6 +45,7 @@ export function App() {
         runBegin,
         runAppend,
         runFinish,
+        debugPause,
     } = useStudio();
 
     // Load source when active recipe changes.
@@ -65,14 +75,14 @@ export function App() {
         markClean();
     };
 
-    const run = async (replay: boolean) => {
+    const run = async (replay: boolean, debug = false) => {
         if (!activeSlug) return;
         if (useStudio.getState().running) return;
         await save();
-        setTab("snapshot");
-        runBegin();
+        setTab(debug ? "debugger" : "snapshot");
+        runBegin({ debug });
         try {
-            const r = await api.runRecipe(activeSlug, replay);
+            const r = await api.runRecipe(activeSlug, replay, debug);
             if (r.ok && r.snapshot) {
                 setSnapshot(r.snapshot);
             } else {
@@ -87,6 +97,16 @@ export function App() {
 
     const cancel = () => {
         if (!useStudio.getState().running) return;
+        // If we're paused in the debugger, the cancellation has to go
+        // through the debugger too — the engine task is awaiting on the
+        // resume oneshot and won't see the cancel notify until it wakes
+        // up. Sending Stop drops it out of the pause; then cancel_run
+        // cleans up any post-pause work.
+        if (useStudio.getState().paused) {
+            api.debugResume("stop").catch((e) =>
+                console.warn("debug stop failed", e),
+            );
+        }
         api.cancelRun().catch((e) => console.warn("cancel failed", e));
     };
 
@@ -117,6 +137,27 @@ export function App() {
         };
     }, []);
 
+    // Same StrictMode-safe pattern for the debug pause stream. Fires when
+    // the engine has parked before a step; the DebuggerTab calls
+    // api.debugResume to wake it back up.
+    useEffect(() => {
+        let cancelled = false;
+        let un: (() => void) | undefined;
+        listen<StepPause>(DEBUG_PAUSED_EVENT, (e) => debugPause(e.payload)).then(
+            (u) => {
+                if (cancelled) {
+                    u();
+                } else {
+                    un = u;
+                }
+            },
+        );
+        return () => {
+            cancelled = true;
+            un?.();
+        };
+    }, []);
+
     // ⌘S → save, ⌘R → run live, ⇧⌘R → replay, ⌘N → new recipe.
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
@@ -124,6 +165,9 @@ export function App() {
             if (e.key === "s") {
                 e.preventDefault();
                 save();
+            } else if (e.key === "r" && e.altKey) {
+                e.preventDefault();
+                run(false, true);
             } else if (e.key === "r" && !e.shiftKey) {
                 e.preventDefault();
                 run(false);
@@ -153,6 +197,7 @@ export function App() {
         listen("menu:save", () => save()).then((un) => offs.push(un));
         listen("menu:run_live", () => run(false)).then((un) => offs.push(un));
         listen("menu:run_replay", () => run(true)).then((un) => offs.push(un));
+        listen("menu:run_debug", () => run(false, true)).then((un) => offs.push(un));
         listen("menu:validate", () => save()).then((un) => offs.push(un));
         listen("menu:publish", () => useStudio.getState().setTab("publish")).then((un) =>
             offs.push(un),
@@ -170,9 +215,11 @@ export function App() {
                     activeSlug={activeSlug}
                     dirty={dirty}
                     running={running}
+                    debugging={debugging}
                     onSave={save}
                     onReplay={() => run(true)}
                     onRunLive={() => run(false)}
+                    onDebug={() => run(false, true)}
                     onCancel={cancel}
                 />
                 <Tabs current={tab} onSelect={setTab} />
@@ -181,6 +228,7 @@ export function App() {
                     {tab === "fixtures" && <FixturesTab />}
                     {tab === "snapshot" && <SnapshotTab />}
                     {tab === "diagnostic" && <DiagnosticTab />}
+                    {tab === "debugger" && <DebuggerTab />}
                     {tab === "publish" && <PublishTab />}
                 </div>
             </main>
@@ -192,9 +240,11 @@ function Toolbar(props: {
     activeSlug: string | null;
     dirty: boolean;
     running: boolean;
+    debugging: boolean;
     onSave: () => void;
     onReplay: () => void;
     onRunLive: () => void;
+    onDebug: () => void;
     onCancel: () => void;
 }) {
     return (
@@ -205,7 +255,7 @@ function Toolbar(props: {
             {props.dirty && (
                 <span className="text-xs text-amber-500">● unsaved</span>
             )}
-            {props.running && <RunningPill />}
+            {props.running && <RunningPill debugging={props.debugging} />}
             <div className="ml-auto flex gap-2">
                 {props.running ? (
                     <button
@@ -225,6 +275,14 @@ function Toolbar(props: {
                             title="⌘S"
                         >
                             Save
+                        </button>
+                        <button
+                            onClick={props.onDebug}
+                            disabled={!props.activeSlug}
+                            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
+                            title="Step through each step (⌥⌘R)"
+                        >
+                            Debug
                         </button>
                         <button
                             onClick={props.onReplay}
@@ -249,10 +307,11 @@ function Toolbar(props: {
     );
 }
 
-function RunningPill() {
+function RunningPill({ debugging }: { debugging: boolean }) {
     // Tick the elapsed-time display every 250ms so the user can see we're
     // still alive even when the engine is throttling between requests.
     const startedAt = useStudio((s) => s.runStartedAt);
+    const paused = useStudio((s) => s.paused);
     const [now, setNow] = useState(Date.now());
     useEffect(() => {
         const id = window.setInterval(() => setNow(Date.now()), 250);
@@ -260,9 +319,16 @@ function RunningPill() {
     }, []);
     if (!startedAt) return null;
     const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+    if (debugging && paused) {
+        return (
+            <span className="text-xs text-amber-400 font-mono tabular-nums">
+                ⏸ paused at {paused.step}
+            </span>
+        );
+    }
     return (
         <span className="text-xs text-emerald-400 font-mono tabular-nums">
-            ● running {seconds}s
+            {debugging ? "● debugging" : "● running"} {seconds}s
         </span>
     );
 }

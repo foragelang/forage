@@ -2,9 +2,10 @@
 
 use std::sync::{Arc, Mutex};
 
+use forage_http::ResumeAction;
 use forage_hub::AuthStore;
 use tauri::Wry;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 
 #[derive(Default)]
 #[allow(dead_code)] // wired in when autosave + cached auth lookups land.
@@ -22,4 +23,16 @@ pub struct StudioState {
     /// without this, popup_menu_at returns and the Menu Rust handle is
     /// dropped before the click event fires, losing the event.
     pub last_context_menu: Mutex<Option<tauri::menu::Menu<Wry>>>,
+    /// The in-flight debug session, if any. Set by `run_recipe` when
+    /// `debug: true`; the `debug_resume` command pulls the pending oneshot
+    /// out of here to wake the paused engine task.
+    pub debug_session: Mutex<Option<Arc<DebugSession>>>,
+}
+
+/// Per-run debug coordination. Holds the pending oneshot the engine task is
+/// awaiting on. `before_step` puts a fresh sender into `pending` and parks
+/// on the receiver; `debug_resume` takes the sender out and fires it.
+#[derive(Default)]
+pub struct DebugSession {
+    pub pending: Mutex<Option<oneshot::Sender<ResumeAction>>>,
 }

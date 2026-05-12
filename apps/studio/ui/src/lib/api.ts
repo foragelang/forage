@@ -71,6 +71,29 @@ const HUB = "https://api.foragelang.com";
 /// Tauri event name the engine emits run progress through. Matches the
 /// Rust-side `commands::RUN_EVENT` constant.
 export const RUN_EVENT = "forage:run-event";
+/// Tauri event name the engine emits when paused at a step in debug mode.
+/// Matches the Rust-side `commands::DEBUG_PAUSED_EVENT` constant.
+export const DEBUG_PAUSED_EVENT = "forage:debug-paused";
+
+export type DebugFrame = {
+    bindings: Record<string, unknown>;
+};
+
+export type DebugScope = {
+    bindings: DebugFrame[];
+    inputs: Record<string, unknown>;
+    secrets: string[];
+    current: unknown | null;
+    emit_counts: Record<string, number>;
+};
+
+export type StepPause = {
+    step: string;
+    step_index: number;
+    scope: DebugScope;
+};
+
+export type DebugAction = "continue" | "step_over" | "stop";
 
 export const api = {
     version: () => invoke<string>("studio_version"),
@@ -80,9 +103,11 @@ export const api = {
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
     createRecipe: () => invoke<string>("create_recipe"),
     deleteRecipe: (slug: string) => invoke<void>("delete_recipe", { slug }),
-    runRecipe: (slug: string, replay: boolean) =>
-        invoke<RunOutcome>("run_recipe", { slug, replay }),
+    runRecipe: (slug: string, replay: boolean, debug = false) =>
+        invoke<RunOutcome>("run_recipe", { slug, replay, debug }),
     cancelRun: () => invoke<void>("cancel_run"),
+    debugResume: (action: DebugAction) =>
+        invoke<void>("debug_resume", { action }),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
         invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
     authWhoami: (hubUrl: string = HUB) =>

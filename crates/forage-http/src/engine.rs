@@ -11,6 +11,7 @@ use tracing::{debug, trace};
 
 use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
+use crate::debug::{DebugScope, Debugger, ResumeAction, StepPause};
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
 use crate::progress::{NoopSink, ProgressSink, RunEvent};
@@ -45,6 +46,9 @@ pub struct Engine<'t> {
     pub transport: &'t dyn Transport,
     pub config: EngineConfig,
     pub progress: Arc<dyn ProgressSink>,
+    /// Optional step debugger. When set, the engine awaits a `ResumeAction`
+    /// before each step. Absent → run uninterrupted (same as a no-op impl).
+    pub debugger: Option<Arc<dyn Debugger>>,
 }
 
 impl<'t> Engine<'t> {
@@ -53,6 +57,7 @@ impl<'t> Engine<'t> {
             transport,
             config: EngineConfig::default(),
             progress: Arc::new(NoopSink),
+            debugger: None,
         }
     }
 
@@ -63,6 +68,11 @@ impl<'t> Engine<'t> {
 
     pub fn with_progress(mut self, p: Arc<dyn ProgressSink>) -> Self {
         self.progress = p;
+        self
+    }
+
+    pub fn with_debugger(mut self, d: Arc<dyn Debugger>) -> Self {
+        self.debugger = Some(d);
         self
     }
 
@@ -145,6 +155,7 @@ impl<'t> Engine<'t> {
 
         let mut requests_made: u32 = 0;
         let mut emit_counts: IndexMap<String, usize> = IndexMap::new();
+        let mut step_index: usize = 0;
         self.run_statements(
             &recipe.body,
             recipe,
@@ -154,6 +165,7 @@ impl<'t> Engine<'t> {
             &mut snapshot,
             &mut requests_made,
             &mut emit_counts,
+            &mut step_index,
         )
         .await?;
         snapshot.evaluate_expectations(&recipe.expectations);
@@ -171,11 +183,26 @@ impl<'t> Engine<'t> {
         snapshot: &'a mut Snapshot,
         requests_made: &'a mut u32,
         emit_counts: &'a mut IndexMap<String, usize>,
+        step_index: &'a mut usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResult<()>> + Send + 'a>> {
         Box::pin(async move {
             for s in body {
                 match s {
                     Statement::Step(step) => {
+                        if let Some(dbg) = self.debugger.clone() {
+                            let pause = StepPause {
+                                step: step.name.clone(),
+                                step_index: *step_index,
+                                scope: DebugScope::from_scope(scope, &recipe.secrets, emit_counts),
+                            };
+                            match dbg.before_step(pause).await {
+                                ResumeAction::Continue | ResumeAction::StepOver => {}
+                                ResumeAction::Stop => {
+                                    return Err(HttpError::Generic("stopped by debugger".into()));
+                                }
+                            }
+                        }
+                        *step_index += 1;
                         self.run_step(step, recipe, auth_state, evaluator, scope, requests_made)
                             .await?;
                     }
@@ -210,6 +237,7 @@ impl<'t> Engine<'t> {
                                 snapshot,
                                 requests_made,
                                 emit_counts,
+                                step_index,
                             )
                             .await?;
                             scope.current = saved_current;
@@ -1080,5 +1108,132 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
+    }
+
+    #[tokio::test]
+    async fn debugger_fires_before_each_step_with_running_scope() {
+        // A debugger plugged into the engine must see one pause per step in
+        // execution order, with `step_index` monotonically increasing and
+        // the scope reflecting bindings produced by prior steps (so the
+        // user can inspect `$first` at the second pause).
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "twostep" {
+                engine http
+                secret token
+                type Item { id: String }
+                step first {
+                    method "GET"
+                    url "https://api.example.com/a"
+                }
+                step second {
+                    method "GET"
+                    url "https://api.example.com/b"
+                }
+                for $i in $second.items[*] {
+                    emit Item { id ← $i.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let first = Capture::Http(HttpExchange {
+            url: "https://api.example.com/a".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"marker":"FIRST"}"#.into(),
+        });
+        let second = Capture::Http(HttpExchange {
+            url: "https://api.example.com/b".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"x"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![first, second]);
+        let dbg = Arc::new(RecordingDebugger::new(vec![
+            ResumeAction::Continue,
+            ResumeAction::Continue,
+        ]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let mut secrets = IndexMap::new();
+        secrets.insert("token".to_string(), "shhh".to_string());
+        let snap = engine.run(&recipe, IndexMap::new(), secrets).await.unwrap();
+        assert_eq!(snap.records.len(), 1);
+
+        let seen = dbg.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "expected one pause per step, got {seen:?}");
+
+        // First pause: step "first" at index 0, scope has $page but no
+        // step bindings yet, secret name listed but value redacted.
+        assert_eq!(seen[0].step, "first");
+        assert_eq!(seen[0].step_index, 0);
+        assert_eq!(seen[0].scope.secrets, vec!["token".to_string()]);
+        let json0 = serde_json::to_string(&seen[0].scope).unwrap();
+        assert!(
+            !json0.contains("shhh"),
+            "secret value leaked into first pause: {json0}"
+        );
+        assert!(
+            !json0.contains("FIRST"),
+            "first step's response should not be in scope yet: {json0}"
+        );
+
+        // Second pause: step "second" at index 1; the first step ran, so
+        // `$first` is bound and carries the FIRST marker.
+        assert_eq!(seen[1].step, "second");
+        assert_eq!(seen[1].step_index, 1);
+        let json1 = serde_json::to_string(&seen[1].scope).unwrap();
+        assert!(
+            json1.contains("FIRST"),
+            "second pause should see $first bound: {json1}"
+        );
+        assert!(
+            !json1.contains("shhh"),
+            "secret value leaked into second pause: {json1}"
+        );
+    }
+
+    #[tokio::test]
+    async fn debugger_stop_aborts_before_first_request() {
+        // Returning `Stop` from the first pause must short-circuit the run
+        // before any HTTP fetch goes out — the transport sees zero requests.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "oneStep" {
+                engine http
+                type T { x: String }
+                step go {
+                    method "GET"
+                    url "https://api.example.com/x"
+                }
+                emit T { x ← "hi" }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        // An empty ReplayTransport would error on any fetch — if the engine
+        // honors Stop, we never call it, so the test passes; if it doesn't,
+        // we get NoFixture, not a debugger error, which would fail the assertion.
+        let transport = ReplayTransport::new(vec![]);
+        let dbg = Arc::new(RecordingDebugger::new(vec![ResumeAction::Stop]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let err = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("stopped by debugger"),
+            "expected 'stopped by debugger', got {msg}"
+        );
+        assert_eq!(dbg.seen.lock().unwrap().len(), 1);
     }
 }

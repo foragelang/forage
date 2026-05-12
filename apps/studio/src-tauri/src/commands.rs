@@ -1,5 +1,6 @@
 //! Tauri commands exposed to the frontend.
 
+use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::Serialize;
 use std::sync::Arc;
@@ -9,11 +10,17 @@ use tokio::sync::Notify;
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
 use forage_core::{EvalValue, Snapshot, parse, validate};
-use forage_http::{Engine, LiveTransport, ProgressSink, ReplayTransport, RunEvent};
+use forage_http::{
+    Debugger, Engine, LiveTransport, ProgressSink, ReplayTransport, ResumeAction, RunEvent,
+    StepPause,
+};
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
 
 /// Tauri event name for streaming engine progress to the frontend.
 pub const RUN_EVENT: &str = "forage:run-event";
+/// Tauri event name for the engine telling the frontend it has paused at a
+/// step. Payload is `StepPause` (JSON).
+pub const DEBUG_PAUSED_EVENT: &str = "forage:debug-paused";
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::library::{self, RecipeEntry};
@@ -118,12 +125,35 @@ impl ProgressSink for EmitterSink {
     }
 }
 
+/// Bridges the engine's `Debugger` trait to a Tauri event + a oneshot. On
+/// each step pause: install a fresh sender on the shared `DebugSession`,
+/// emit `forage:debug-paused`, then await the receiver. The `debug_resume`
+/// command pulls the sender back out and wakes us with the chosen action.
+///
+/// If the receiver drops (e.g. window closed, run cancelled), we default to
+/// `Stop` so a stranded engine task doesn't hang on an unresumable pause.
+struct StudioDebugger {
+    app: AppHandle,
+    session: Arc<crate::state::DebugSession>,
+}
+
+#[async_trait]
+impl Debugger for StudioDebugger {
+    async fn before_step(&self, pause: StepPause) -> ResumeAction {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.session.pending.lock().expect("pending mutex") = Some(tx);
+        let _ = self.app.emit(DEBUG_PAUSED_EVENT, &pause);
+        rx.await.unwrap_or(ResumeAction::Stop)
+    }
+}
+
 #[tauri::command]
 pub async fn run_recipe(
     app: AppHandle,
     state: State<'_, crate::state::StudioState>,
     slug: String,
     replay: bool,
+    debug: bool,
 ) -> Result<RunOutcome, String> {
     let source = library::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
@@ -167,10 +197,28 @@ pub async fn run_recipe(
         *guard = Some(cancel.clone());
     }
 
+    // If the run was launched in debug mode, register a session and an
+    // engine debugger that bridges to it. Only HTTP engines participate —
+    // the browser path runs its own driver that the v1 debugger doesn't
+    // hook into.
+    let debugger: Option<Arc<dyn Debugger>> = if debug && recipe.engine_kind == EngineKind::Http {
+        let session = Arc::new(crate::state::DebugSession::default());
+        *state.debug_session.lock().expect("debug_session mutex") = Some(session.clone());
+        Some(Arc::new(StudioDebugger {
+            app: app.clone(),
+            session,
+        }))
+    } else {
+        None
+    };
+
     let snapshot: Result<Snapshot, String> = match (recipe.engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
-            let engine = Engine::new(&transport).with_progress(sink);
+            let mut engine = Engine::new(&transport).with_progress(sink);
+            if let Some(d) = debugger.clone() {
+                engine = engine.with_debugger(d);
+            }
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
@@ -179,7 +227,10 @@ pub async fn run_recipe(
         }
         (EngineKind::Http, false) => {
             let transport = LiveTransport::new().map_err(|e| format!("{e}"))?;
-            let engine = Engine::new(&transport).with_progress(sink);
+            let mut engine = Engine::new(&transport).with_progress(sink);
+            if let Some(d) = debugger.clone() {
+                engine = engine.with_debugger(d);
+            }
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
@@ -201,6 +252,12 @@ pub async fn run_recipe(
         let mut guard = state.run_cancel.lock().expect("run_cancel mutex");
         *guard = None;
     }
+    // Clear the debug session so a stale oneshot can't be resumed against
+    // a finished run. Dropping the Arc drops any unfilled sender too.
+    {
+        let mut guard = state.debug_session.lock().expect("debug_session mutex");
+        *guard = None;
+    }
 
     match snapshot {
         Ok(s) => Ok(RunOutcome {
@@ -214,6 +271,37 @@ pub async fn run_recipe(
             error: Some(e),
         }),
     }
+}
+
+/// Resume a paused debug step. `action` is "continue", "step_over", or
+/// "stop". No-op when no run is in flight or no pause is pending — the UI
+/// can fire and forget without coordinating against state itself.
+#[tauri::command]
+pub fn debug_resume(
+    state: State<'_, crate::state::StudioState>,
+    action: String,
+) -> Result<(), String> {
+    let action = match action.as_str() {
+        "continue" => ResumeAction::Continue,
+        "step_over" => ResumeAction::StepOver,
+        "stop" => ResumeAction::Stop,
+        other => return Err(format!("unknown debug action: {other}")),
+    };
+    let session = state
+        .debug_session
+        .lock()
+        .expect("debug_session mutex")
+        .clone();
+    let Some(session) = session else {
+        return Ok(());
+    };
+    let pending = session.pending.lock().expect("pending mutex").take();
+    if let Some(tx) = pending {
+        // send() fails only when the receiver has been dropped (run was
+        // cancelled). Either way, nothing else to do.
+        let _ = tx.send(action);
+    }
+    Ok(())
 }
 
 /// Cancel the currently-running recipe (if any). Idempotent — calling when
