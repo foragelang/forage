@@ -119,35 +119,29 @@ impl<'r> Evaluator<'r> {
                 Ok(field_of(&v, field))
             }
             PathExpr::Index(base, idx) => {
+                // Out-of-bounds indexing returns Null rather than erroring.
+                // Scraping recipes routinely access fields like
+                // `$product.potency?.range[0]` where the array may be empty
+                // for some records — that's the same shape of "missing" the
+                // `?.` operator handles for objects. Authors who want a hard
+                // assertion can use an `expect { … }` block.
                 let v = self.eval_path(base, scope)?;
                 match v {
                     EvalValue::Array(mut xs) => {
-                        let i = if *idx < 0 {
-                            (xs.len() as i64 + *idx) as usize
-                        } else {
-                            *idx as usize
-                        };
-                        if i >= xs.len() {
-                            return Err(EvalError::IndexOutOfBounds {
-                                idx: *idx,
-                                len: xs.len(),
-                            });
+                        let len = xs.len();
+                        let i = resolve_index(*idx, len);
+                        match i {
+                            Some(i) => Ok(xs.swap_remove(i)),
+                            None => Ok(EvalValue::Null),
                         }
-                        Ok(xs.swap_remove(i))
                     }
                     EvalValue::NodeList(mut xs) => {
-                        let i = if *idx < 0 {
-                            (xs.len() as i64 + *idx) as usize
-                        } else {
-                            *idx as usize
-                        };
-                        if i >= xs.len() {
-                            return Err(EvalError::IndexOutOfBounds {
-                                idx: *idx,
-                                len: xs.len(),
-                            });
+                        let len = xs.len();
+                        let i = resolve_index(*idx, len);
+                        match i {
+                            Some(i) => Ok(EvalValue::Node(xs.swap_remove(i))),
+                            None => Ok(EvalValue::Null),
                         }
-                        Ok(EvalValue::Node(xs.swap_remove(i)))
                     }
                     EvalValue::Null => Ok(EvalValue::Null),
                     other => Err(EvalError::TypeMismatch {
@@ -201,6 +195,22 @@ impl<'r> Evaluator<'r> {
         }
         f(head, &resolved)
     }
+}
+
+/// Resolve a possibly-negative index against an array of `len` items. Returns
+/// `None` if the index falls outside the array (including indexing into an
+/// empty array, which is the common case for scrapers).
+fn resolve_index(idx: i64, len: usize) -> Option<usize> {
+    let i = if idx < 0 {
+        let from_end = idx.unsigned_abs() as usize;
+        if from_end > len {
+            return None;
+        }
+        len - from_end
+    } else {
+        idx as usize
+    };
+    if i >= len { None } else { Some(i) }
 }
 
 fn field_of(v: &EvalValue, field: &str) -> EvalValue {
@@ -323,6 +333,71 @@ mod tests {
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
         assert_eq!(v, EvalValue::String("hello".into()));
+    }
+
+    #[test]
+    fn index_out_of_bounds_returns_null() {
+        // Regression for the live `remedy-baltimore` run: a recipe wrote
+        // `$product.potencyThc?.range[0]` and the engine errored with
+        // "path index 0 out of bounds for array of length 0" on records
+        // where the potency range happened to be an empty array. Indexing
+        // is now null-tolerant, matching the spirit of the `?.` chain.
+        let r = parse(
+            r#"
+            recipe "x" { engine http
+                type T { x: Int? }
+                emit T { x ← $p.range[0] }
+            }
+        "#,
+        )
+        .unwrap();
+        let registry = default_registry();
+        let ev = Evaluator::new(registry);
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!()
+        };
+
+        // Case 1: empty array.
+        let mut scope = Scope::new();
+        scope.bind(
+            "p",
+            EvalValue::Object(
+                [("range".to_string(), EvalValue::Array(vec![]))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        assert_eq!(
+            ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap(),
+            EvalValue::Null,
+        );
+
+        // Case 2: missing field (so `.range` resolves to Null and `[0]` is
+        // already Null-safe via the existing branch).
+        let mut scope = Scope::new();
+        scope.bind("p", EvalValue::Object(indexmap::IndexMap::new()));
+        assert_eq!(
+            ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap(),
+            EvalValue::Null,
+        );
+
+        // Case 3: in-bounds still works.
+        let mut scope = Scope::new();
+        scope.bind(
+            "p",
+            EvalValue::Object(
+                [(
+                    "range".to_string(),
+                    EvalValue::Array(vec![EvalValue::Int(21), EvalValue::Int(28)]),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        assert_eq!(
+            ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap(),
+            EvalValue::Int(21),
+        );
     }
 
     #[test]

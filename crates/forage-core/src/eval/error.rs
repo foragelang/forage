@@ -12,8 +12,6 @@ pub enum EvalError {
     UndefinedSecret(String),
     #[error("path field '{field}' missing on value of kind {kind}")]
     MissingField { field: String, kind: &'static str },
-    #[error("path index {idx} out of bounds for array of length {len}")]
-    IndexOutOfBounds { idx: i64, len: usize },
     #[error("wildcard [*] applied to non-array value of kind {kind}")]
     WildcardOnNonArray { kind: &'static str },
     #[error("transform '{name}' not found")]
