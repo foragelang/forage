@@ -21,27 +21,34 @@ export function Sidebar() {
         setActive(slug);
     };
 
-    const deleteRecipe = async (slug: string) => {
-        const confirmed = window.confirm(
-            `Delete "${slug}"? This removes the recipe and its fixtures permanently.`,
-        );
-        if (!confirmed) return;
-        try {
-            await api.deleteRecipe(slug);
-            await qc.invalidateQueries({ queryKey: ["recipes"] });
-            if (activeSlug === slug) setActive(null);
-        } catch (e) {
-            window.alert(`Delete failed: ${e}`);
-        }
-    };
-
     // Listen for the backend's "menu:recipe_delete" — fired when the user
-    // picks Delete from the native right-click menu. The cancelled flag
-    // guards against StrictMode's double-mount → orphaned-listener race.
+    // picks Delete from the native right-click menu. Mounted once: the
+    // handler reads current store state via `useStudio.getState()` rather
+    // than capturing closure deps, so we don't churn the listener on
+    // every render. The cancelled flag guards against StrictMode's
+    // double-mount → orphaned-listener race.
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
-        listen<string>("menu:recipe_delete", (e) => deleteRecipe(e.payload)).then((u) => {
+        const handler = async (slug: string) => {
+            const confirmed = window.confirm(
+                `Delete "${slug}"? This removes the recipe and its fixtures permanently.`,
+            );
+            if (!confirmed) return;
+            try {
+                await api.deleteRecipe(slug);
+                // Refetch the recipe list — TanStack will re-run listRecipes
+                // and the sidebar rerenders with the recipe gone.
+                await qc.invalidateQueries({ queryKey: ["recipes"] });
+                // If the deleted recipe was open, clear the editor.
+                if (useStudio.getState().activeSlug === slug) {
+                    useStudio.getState().setActive(null);
+                }
+            } catch (e) {
+                window.alert(`Delete failed: ${e}`);
+            }
+        };
+        listen<string>("menu:recipe_delete", (e) => handler(e.payload)).then((u) => {
             if (cancelled) u();
             else un = u;
         });
@@ -49,9 +56,7 @@ export function Sidebar() {
             cancelled = true;
             un?.();
         };
-        // `activeSlug` is read inside deleteRecipe via the closure; we
-        // rebind whenever it changes so the listener sees the latest.
-    }, [activeSlug]);
+    }, [qc]);
 
     return (
         <aside className="border-r border-zinc-800 flex flex-col bg-zinc-950">

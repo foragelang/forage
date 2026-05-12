@@ -6,7 +6,16 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 /// On-disk location of the user's recipe library.
+///
+/// Honors the `FORAGE_LIBRARY_ROOT` env var first — useful for tests
+/// (sandbox into a tempdir) and for users who want to point Studio at a
+/// repo checkout instead of the OS-conventional library directory.
 pub fn library_root() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("FORAGE_LIBRARY_ROOT") {
+        if !override_dir.is_empty() {
+            return PathBuf::from(override_dir);
+        }
+    }
     if cfg!(target_os = "macos") {
         if let Some(home) = dirs::home_dir() {
             return home.join("Library").join("Forage").join("Recipes");
@@ -104,16 +113,20 @@ pub fn read_source(slug: &str) -> std::io::Result<String> {
 /// so a malicious slug can't escape the library root with `../etc/passwd`.
 /// The slug must already exist as a directory directly under the library.
 pub fn delete_recipe(slug: &str) -> std::io::Result<()> {
+    delete_recipe_in(&library_root(), slug)
+}
+
+/// Test-friendly variant of `delete_recipe` that takes an explicit root.
+fn delete_recipe_in(root: &Path, slug: &str) -> std::io::Result<()> {
     if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid recipe slug: {slug:?}"),
         ));
     }
-    let dir = recipe_dir(slug);
+    let dir = root.join(slug);
     // Confirm the target sits inside the library root before deleting — a
     // hardlink or symlink would otherwise let us nuke unrelated content.
-    let root = library_root();
     let canonical = dir.canonicalize()?;
     let root_canonical = root.canonicalize()?;
     if !canonical.starts_with(&root_canonical) {
@@ -192,4 +205,56 @@ pub fn ensure_path<P: AsRef<Path>>(p: P) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_recipe(root: &Path, slug: &str) {
+        let dir = root.join(slug);
+        fs::create_dir_all(dir.join("fixtures")).unwrap();
+        fs::write(dir.join("recipe.forage"), "recipe \"x\" { engine http }").unwrap();
+        fs::write(dir.join("fixtures").join("inputs.json"), "{}").unwrap();
+    }
+
+    #[test]
+    fn delete_removes_directory_and_fixtures() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_recipe(tmp.path(), "to-delete");
+        assert!(tmp.path().join("to-delete/recipe.forage").exists());
+        assert!(tmp.path().join("to-delete/fixtures/inputs.json").exists());
+
+        delete_recipe_in(tmp.path(), "to-delete").unwrap();
+
+        assert!(!tmp.path().join("to-delete").exists());
+    }
+
+    #[test]
+    fn delete_rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let siblings = tempfile::tempdir().unwrap();
+        let victim = siblings.path().join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("important.txt"), "DO NOT DELETE").unwrap();
+
+        for bad in ["..", "../victim", "./x", "a/b", "a\\b", ""] {
+            let err = delete_recipe_in(tmp.path(), bad).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "slug {bad:?}");
+        }
+        assert!(victim.join("important.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("important.txt"), "DO NOT DELETE").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("evil")).unwrap();
+
+        let err = delete_recipe_in(tmp.path(), "evil").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(outside.path().join("important.txt").exists());
+    }
 }
