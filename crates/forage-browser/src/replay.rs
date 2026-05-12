@@ -134,6 +134,7 @@ fn run_statement(
             variable,
             collection,
             body,
+            ..
         } => {
             let collection_val = evaluator.eval_extraction(collection, scope)?;
             run_for_each_item(collection_val, body, variable, evaluator, scope, snapshot)

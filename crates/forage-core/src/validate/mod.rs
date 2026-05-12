@@ -302,6 +302,7 @@ impl<'a> Validator<'a> {
                 variable,
                 collection,
                 body,
+                ..
             } => {
                 self.check_extraction(collection);
                 let inserted = self.known_vars.insert(variable.clone());

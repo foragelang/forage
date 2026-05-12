@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ast::json::JSONValue;
+use crate::ast::span::Span;
 
 /// `$.x.y?.z`, `$input.storeId`, `$cat.id`, `$secret.password`, etc.
 /// The runtime evaluates these against the current scope to produce a
@@ -111,6 +112,10 @@ pub struct TransformCall {
 pub struct Emission {
     pub type_name: String,
     pub bindings: Vec<FieldBinding>,
+    /// Source range from `emit` keyword through the closing `}`. Populated
+    /// by the parser; default (`0..0`) when constructed by hand.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

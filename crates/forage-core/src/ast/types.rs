@@ -2,12 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ast::span::Span;
+
 /// A recipe-declared type. Recipes ship their own type catalog;
 /// forage-core doesn't pre-define `Product` / `Variant` / etc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecipeType {
     pub name: String,
     pub fields: Vec<RecipeField>,
+    /// Source range covering the whole `type Name { … }` block. Default
+    /// (`0..0`) when constructed by hand.
+    #[serde(default)]
+    pub span: Span,
 }
 
 impl RecipeType {
@@ -44,6 +50,8 @@ pub enum FieldType {
 pub struct RecipeEnum {
     pub name: String,
     pub variants: Vec<String>,
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Consumer-supplied input declaration. The runtime validates the supplied
@@ -53,4 +61,6 @@ pub struct InputDecl {
     pub name: String,
     pub ty: FieldType,
     pub optional: bool,
+    #[serde(default)]
+    pub span: Span,
 }

@@ -72,6 +72,26 @@ impl Parser {
             .unwrap_or(self.eof_pos..self.eof_pos)
     }
 
+    /// Byte offset where the *previous* token (the one just consumed) ends.
+    /// Used to close out a span for a parsed construct: capture
+    /// `current_span().start` at entry, consume the construct's tokens, then
+    /// `prev_end()` is the end of the closing brace / last consumed token.
+    fn prev_end(&self) -> usize {
+        if self.pos == 0 {
+            return 0;
+        }
+        self.toks
+            .get(self.pos - 1)
+            .map(|(_, s)| s.end)
+            .unwrap_or(self.eof_pos)
+    }
+
+    /// Build a span from `start` (captured at entry) to the end of the
+    /// previously-consumed token.
+    fn span_to_here(&self, start: usize) -> std::ops::Range<usize> {
+        start..self.prev_end()
+    }
+
     fn bump(&mut self) -> Option<&(Token, std::ops::Range<usize>)> {
         let r = self.toks.get(self.pos);
         if r.is_some() {
@@ -306,6 +326,7 @@ impl Parser {
 
     /// type_decl := 'type' TypeName '{' field (';'|',')? ... '}'
     fn parse_type_decl(&mut self) -> Result<RecipeType, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("type")?;
         let name = self.expect_typename()?;
         self.expect_punct(&Token::LBrace)?;
@@ -316,7 +337,11 @@ impl Parser {
             let _ = self.eat_punct(&Token::Semicolon) || self.eat_punct(&Token::Comma);
         }
         self.expect_punct(&Token::RBrace)?;
-        Ok(RecipeType { name, fields })
+        Ok(RecipeType {
+            name,
+            fields,
+            span: self.span_to_here(start),
+        })
     }
 
     fn parse_field(&mut self) -> Result<RecipeField, ParseError> {
@@ -401,6 +426,7 @@ impl Parser {
     }
 
     fn parse_enum_decl(&mut self) -> Result<RecipeEnum, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("enum")?;
         let name = self.expect_typename()?;
         self.expect_punct(&Token::LBrace)?;
@@ -416,16 +442,26 @@ impl Parser {
             let _ = self.eat_punct(&Token::Comma) || self.eat_punct(&Token::Semicolon);
         }
         self.expect_punct(&Token::RBrace)?;
-        Ok(RecipeEnum { name, variants })
+        Ok(RecipeEnum {
+            name,
+            variants,
+            span: self.span_to_here(start),
+        })
     }
 
     fn parse_input_decl(&mut self) -> Result<InputDecl, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("input")?;
         let name = self.expect_field_name()?;
         self.expect_punct(&Token::Colon)?;
         let ty = self.parse_field_type()?;
         let optional = self.eat_punct(&Token::Question);
-        Ok(InputDecl { name, ty, optional })
+        Ok(InputDecl {
+            name,
+            ty,
+            optional,
+            span: self.span_to_here(start),
+        })
     }
 
     // --- expressions -------------------------------------------------------
@@ -617,6 +653,7 @@ impl Parser {
     }
 
     fn parse_for_loop(&mut self) -> Result<Statement, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("for")?;
         let var = match self.peek().cloned() {
             Some(Token::DollarVar(s)) => {
@@ -637,10 +674,12 @@ impl Parser {
             variable: var,
             collection,
             body,
+            span: self.span_to_here(start),
         })
     }
 
     fn parse_emit(&mut self) -> Result<Emission, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("emit")?;
         let type_name = self.expect_typename()?;
         self.expect_punct(&Token::LBrace)?;
@@ -661,10 +700,12 @@ impl Parser {
         Ok(Emission {
             type_name,
             bindings,
+            span: self.span_to_here(start),
         })
     }
 
     fn parse_step(&mut self) -> Result<HTTPStep, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("step")?;
         let name = self.expect_field_name()?;
         self.expect_punct(&Token::LBrace)?;
@@ -800,6 +841,7 @@ impl Parser {
             request: req,
             pagination,
             extract,
+            span: self.span_to_here(start),
         })
     }
 

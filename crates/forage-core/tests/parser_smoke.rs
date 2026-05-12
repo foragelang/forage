@@ -111,3 +111,62 @@ fn import_directive_parses() {
     assert_eq!(r.imports[0].author, "alice");
     assert_eq!(r.imports[0].slug, "zen-leaf");
 }
+
+#[test]
+fn ast_nodes_carry_byte_spans() {
+    // Without spans on AST nodes, Studio + the LSP can't anchor
+    // diagnostics or breakpoints at the right line. Pin the parser to
+    // fill `span` on every locatable node: spans must be non-empty and
+    // the slice they cover must be the construct's source text.
+    let src = r#"recipe "spans" {
+    engine http
+    type Item { id: String }
+    input term: String
+    step list {
+        method "GET"
+        url    "https://api.example.com/items"
+    }
+    for $i in $list.items[*] {
+        emit Item { id ← $i.id }
+    }
+}
+"#;
+    let r = parse(src).expect("parse");
+
+    assert_eq!(r.types.len(), 1);
+    let ty_span = &r.types[0].span;
+    assert!(ty_span.start < ty_span.end, "type span empty: {ty_span:?}");
+    let ty_text = &src[ty_span.clone()];
+    assert!(ty_text.starts_with("type Item"), "got {ty_text:?}");
+    assert!(ty_text.ends_with('}'));
+
+    assert_eq!(r.inputs.len(), 1);
+    let in_span = &r.inputs[0].span;
+    assert_eq!(&src[in_span.clone()], "input term: String");
+
+    let Statement::Step(step) = &r.body[0] else {
+        panic!("expected step")
+    };
+    let step_text = &src[step.span.clone()];
+    assert!(step_text.starts_with("step list"), "got {step_text:?}");
+    assert!(step_text.ends_with('}'));
+
+    let Statement::ForLoop {
+        span: for_span,
+        body: for_body,
+        ..
+    } = &r.body[1]
+    else {
+        panic!("expected for-loop")
+    };
+    let for_text = &src[for_span.clone()];
+    assert!(for_text.starts_with("for $i in"), "got {for_text:?}");
+    assert!(for_text.ends_with('}'));
+
+    let Statement::Emit(em) = &for_body[0] else {
+        panic!("expected emit")
+    };
+    let em_text = &src[em.span.clone()];
+    assert!(em_text.starts_with("emit Item"), "got {em_text:?}");
+    assert!(em_text.ends_with('}'));
+}

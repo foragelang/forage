@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::expr::{PathExpr, Template};
 use crate::ast::json::JSONValue;
 use crate::ast::pagination::Pagination;
+use crate::ast::span::Span;
 
 /// One HTTP step. Iteration + pagination loops are wrapped around the step
 /// by the surrounding `Statement::ForLoop` / `HTTPStep::pagination`.
@@ -19,6 +20,12 @@ pub struct HTTPStep {
     /// with `auth.htmlPrime` to pull a nonce out of an HTML page.
     #[serde(default)]
     pub extract: Option<RegexExtract>,
+    /// Source range from `step` keyword through the closing `}`. Populated
+    /// by the parser; defaults to `0..0` when an `HTTPStep` is constructed
+    /// by hand (tests, fixtures). LSP + Studio use it to anchor diagnostics
+    /// and breakpoint markers at the actual step location.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

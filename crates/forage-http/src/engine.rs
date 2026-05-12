@@ -213,6 +213,7 @@ impl<'t> Engine<'t> {
                         variable,
                         collection,
                         body,
+                        ..
                     } => {
                         let collection_val = evaluator.eval_extraction(collection, scope)?;
                         let items = match collection_val {

@@ -38,6 +38,7 @@ fn typed_record_with_optional_field() {
                 optional: true,
             },
         ],
+        span: 0..0,
     };
     assert!(ty.field("id").is_some());
     assert!(ty.field("brand").is_some());

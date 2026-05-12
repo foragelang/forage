@@ -6,6 +6,7 @@ use crate::ast::auth::AuthStrategy;
 use crate::ast::browser::BrowserConfig;
 use crate::ast::expr::{Emission, ExtractionExpr};
 use crate::ast::http::HTTPStep;
+use crate::ast::span::Span;
 use crate::ast::types::{InputDecl, RecipeEnum, RecipeType};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,7 +64,22 @@ pub enum Statement {
         variable: String,
         collection: ExtractionExpr,
         body: Vec<Statement>,
+        /// Source range covering the whole `for $v in … { … }` construct.
+        #[serde(default)]
+        span: Span,
     },
+}
+
+impl Statement {
+    /// Source range of this statement. For `Step` / `Emit` this is the
+    /// inner node's span; for `ForLoop` it's the explicit `span` field.
+    pub fn span(&self) -> &Span {
+        match self {
+            Statement::Step(s) => &s.span,
+            Statement::Emit(e) => &e.span,
+            Statement::ForLoop { span, .. } => span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
