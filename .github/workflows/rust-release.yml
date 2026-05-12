@@ -47,7 +47,7 @@ jobs:
             librsvg2-dev \
             libsoup-3.0-dev
 
-      - name: Cross-compile for aarch64-linux
+      - name: Cross-compile setup for aarch64-linux
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu
@@ -88,11 +88,134 @@ jobs:
           name: forage-${{ matrix.target }}
           path: dist/
 
+  build-studio:
+    name: Build Forage Studio (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/studio/ui/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: apps/studio/ui
+        run: npm ci
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli@2.8 --locked
+
+      - name: Build frontend
+        working-directory: apps/studio/ui
+        run: npm run build
+
+      - name: Set up macOS code signing
+        if: matrix.os == 'macos-15' && env.APPLE_DEVELOPER_ID_CERT != ''
+        env:
+          APPLE_DEVELOPER_ID_CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+        run: |
+          echo "$APPLE_DEVELOPER_ID_CERT" | base64 -d > /tmp/cert.p12
+          KEYCHAIN=/tmp/forage-build.keychain
+          security create-keychain -p "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          rm /tmp/cert.p12
+
+      - name: Build Tauri bundle
+        working-directory: apps/studio/src-tauri
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_KEY_ISSUER_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p studio-dist
+          TGT="${{ matrix.target }}"
+          BUNDLE=apps/studio/src-tauri/target/$TGT/release/bundle
+          if [[ -d "$BUNDLE/dmg" ]]; then
+            cp "$BUNDLE/dmg"/*.dmg studio-dist/ 2>/dev/null || true
+          fi
+          if [[ -d "$BUNDLE/macos" ]]; then
+            for app in "$BUNDLE/macos"/*.app; do
+              [ -d "$app" ] || continue
+              name=$(basename "$app" .app)
+              ( cd "$BUNDLE/macos" && zip -ryq "${name}-${TGT}.zip" "$(basename "$app")" )
+              mv "$BUNDLE/macos/${name}-${TGT}.zip" studio-dist/
+            done
+          fi
+          if [[ -d "$BUNDLE/msi" ]]; then
+            cp "$BUNDLE/msi"/*.msi studio-dist/ 2>/dev/null || true
+          fi
+          if [[ -d "$BUNDLE/deb" ]]; then
+            cp "$BUNDLE/deb"/*.deb studio-dist/ 2>/dev/null || true
+          fi
+          if [[ -d "$BUNDLE/appimage" ]]; then
+            cp "$BUNDLE/appimage"/*.AppImage studio-dist/ 2>/dev/null || true
+          fi
+          ls -la studio-dist/
+
+      - name: SHA-256
+        shell: bash
+        run: |
+          cd studio-dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum * 2>/dev/null > forage-studio-${{ matrix.target }}.sha256 || true
+          else
+            shasum -a 256 * 2>/dev/null > forage-studio-${{ matrix.target }}.sha256 || true
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: forage-studio-${{ matrix.target }}
+          path: studio-dist/
+          if-no-files-found: warn
+
   release:
     name: GitHub Release
-    needs: build-cli
+    needs: [build-cli, build-studio]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -102,30 +225,89 @@ jobs:
       - name: Assemble release
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' -o -name '*.msi' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.sha256' \) -exec cp {} release/ \;
           ls -la release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           body: |
             ## Forage `${{ github.ref_name }}`
 
-            Rust workspace release. Forage Studio.app (Tauri) ships once
-            R9 lands; for now this release contains the `forage` CLI for
-            macOS (arm64 + x86_64), Linux (x86_64 + arm64), and Windows
-            (x86_64).
+            **CLI** for macOS (arm64 + x86_64), Linux (x86_64 + arm64),
+            and Windows (x86_64). Install:
 
-            Install:
             ```sh
             curl -fsSL https://foragelang.com/install.sh | sh
             ```
 
-            Or manually:
-            ```sh
-            curl -L https://github.com/foragelang/forage/releases/download/${{ github.ref_name }}/forage-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz \
-              | tar -xz
-            ./forage --version
-            ```
+            **Forage Studio** for macOS (.dmg), Windows (.msi), Linux
+            (.deb + .AppImage). Drag the .app from the DMG to
+            /Applications. If macOS Gatekeeper warns, right-click → Open
+            (ad-hoc signed) or trust the Developer ID once (signed +
+            notarized).
+
+  update-homebrew-tap:
+    name: Update foragelang/homebrew-tap
+    needs: release
+    runs-on: ubuntu-latest
+    if: vars.ENABLE_HOMEBREW_TAP_UPDATE == '1' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Generate formula
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_RELEASE: https://github.com/foragelang/forage/releases/download
+        run: |
+          mkdir -p tap-update/Formula
+          for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+            url="${GH_RELEASE}/${TAG}/forage-${TAG}-${arch}.tar.gz"
+            curl -fsSL -o "/tmp/forage-${TAG}-${arch}.tar.gz" "$url"
+            eval "SHA_${arch//-/_}=$(sha256sum "/tmp/forage-${TAG}-${arch}.tar.gz" | awk '{print $1}')"
+          done
+          cat > tap-update/Formula/forage.rb <<EOF
+          class Forage < Formula
+            desc "Declarative scraping recipes — parser, runner, hub client"
+            homepage "https://foragelang.com"
+            version "${TAG#v}"
+            license "Apache-2.0 OR MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${GH_RELEASE}/${TAG}/forage-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_aarch64_apple_darwin}"
+              else
+                url "${GH_RELEASE}/${TAG}/forage-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_x86_64_apple_darwin}"
+              end
+            end
+
+            def install
+              bin.install "forage"
+            end
+
+            test do
+              system "#{bin}/forage", "--version"
+            end
+          end
+          EOF
+          cat tap-update/Formula/forage.rb
+
+      - name: Push formula to foragelang/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/foragelang/homebrew-tap.git" tap
+          cp tap-update/Formula/forage.rb tap/Formula/forage.rb
+          cd tap
+          git config user.name 'forage-release-bot'
+          git config user.email 'noreply@foragelang.com'
+          git add Formula/forage.rb
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "forage ${TAG}"
+            git push
+          fi

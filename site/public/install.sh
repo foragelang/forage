@@ -1,83 +1,134 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
+#
 # Forage CLI installer.
 #
 #   curl -fsSL https://foragelang.com/install.sh | sh
+#   curl -fsSL https://foragelang.com/install.sh | sh -s -- --to ~/bin
+#   curl -fsSL https://foragelang.com/install.sh | sh -s -- --version v0.1.0
 #
-# Env overrides:
-#   FORAGE_INSTALL_DIR  install location (default: $HOME/.local/bin)
-#   FORAGE_VERSION      tag to install (default: latest)
+# Detects platform, fetches the matching release tarball from GitHub,
+# verifies the bundled sha256, installs `forage` to ~/.local/bin (or the
+# `--to` directory). Prints a PATH hint if needed.
 
-set -euo pipefail
-
-OS="$(uname -s)"
-ARCH="$(uname -m)"
-
-if [ "$OS" != "Darwin" ]; then
-    echo "forage: only macOS is supported at the moment (saw $OS)." >&2
-    exit 1
-fi
-
-case "$ARCH" in
-    arm64|x86_64) ;;
-    *)
-        echo "forage: unsupported arch $ARCH" >&2
-        exit 1
-        ;;
-esac
+set -eu
 
 REPO="foragelang/forage"
-INSTALL_DIR="${FORAGE_INSTALL_DIR:-$HOME/.local/bin}"
+DEST="${HOME}/.local/bin"
+TAG="latest"
 
-if [ -n "${FORAGE_VERSION:-}" ]; then
-    TAG="$FORAGE_VERSION"
-else
-    META_URL="https://api.github.com/repos/${REPO}/releases/latest"
-    META=$(curl -fsSL "$META_URL")
-    TAG=$(printf '%s' "$META" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)
-fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --to) DEST="$2"; shift 2;;
+        --version) TAG="$2"; shift 2;;
+        -h|--help)
+            sed -n '2,16p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "unknown flag: $1" >&2
+            exit 1
+            ;;
+    esac
+done
 
-if [ -z "$TAG" ]; then
-    echo "forage: could not determine release tag." >&2
-    exit 1
-fi
+uname_s=$(uname -s)
+uname_m=$(uname -m)
 
-ASSET="forage-${TAG}-macos.tar.gz"
-URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
-SHA_URL="${URL}.sha256"
+case "$uname_s" in
+    Darwin) os=apple-darwin;;
+    Linux)  os=unknown-linux-gnu;;
+    MINGW*|MSYS*|CYGWIN*) os=pc-windows-msvc;;
+    *) echo "unsupported OS: $uname_s" >&2; exit 1;;
+esac
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+case "$uname_m" in
+    x86_64|amd64) arch=x86_64;;
+    arm64|aarch64) arch=aarch64;;
+    *) echo "unsupported arch: $uname_m" >&2; exit 1;;
+esac
 
-echo "Downloading forage ${TAG}…"
-curl -fsSL "$URL" -o "$TMP/$ASSET"
+target="${arch}-${os}"
 
-# Verify sha256 if the sibling .sha256 file is present in the release.
-if curl -fsSL "$SHA_URL" -o "$TMP/$ASSET.sha256" 2>/dev/null; then
-    EXPECTED=$(awk '{print $1}' "$TMP/$ASSET.sha256")
-    ACTUAL=$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')
-    if [ "$EXPECTED" != "$ACTUAL" ]; then
-        echo "forage: sha256 mismatch" >&2
-        echo "  expected: $EXPECTED" >&2
-        echo "  actual:   $ACTUAL" >&2
+case "$target" in
+    aarch64-apple-darwin) ;;
+    x86_64-apple-darwin) ;;
+    aarch64-unknown-linux-gnu) ;;
+    x86_64-unknown-linux-gnu) ;;
+    x86_64-pc-windows-msvc) ;;
+    *) echo "unsupported target: $target" >&2; exit 1;;
+esac
+
+if [ "$TAG" = "latest" ]; then
+    TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' \
+        | head -1 \
+        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    if [ -z "$TAG" ]; then
+        echo "could not resolve latest tag" >&2
         exit 1
     fi
-    echo "sha256 verified."
-else
-    echo "forage: no sha256 file in release; skipping verification." >&2
 fi
 
-mkdir -p "$INSTALL_DIR"
-tar -xzf "$TMP/$ASSET" -C "$TMP"
-install -m 0755 "$TMP/forage" "$INSTALL_DIR/forage"
+ext=tar.gz
+[ "$os" = "pc-windows-msvc" ] && ext=zip
 
-echo "Installed forage to $INSTALL_DIR/forage"
+url="https://github.com/${REPO}/releases/download/${TAG}/forage-${TAG}-${target}.${ext}"
+sha_url="https://github.com/${REPO}/releases/download/${TAG}/forage-${target}.sha256"
+
+echo "==> Installing forage ${TAG} (${target}) to ${DEST}"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+archive="$tmp/forage.${ext}"
+echo "==> downloading $url"
+curl -fsSL -o "$archive" "$url"
+
+if curl -fsSL -o "$tmp/sha.txt" "$sha_url" 2>/dev/null; then
+    expected=$(awk '{print $1; exit}' "$tmp/sha.txt")
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$archive" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+    else
+        actual=""
+    fi
+    if [ -n "$actual" ] && [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
+        echo "checksum mismatch: expected $expected, got $actual" >&2
+        exit 1
+    fi
+fi
+
+mkdir -p "$DEST"
+case "$ext" in
+    tar.gz) tar -xzf "$archive" -C "$tmp";;
+    zip)    (cd "$tmp" && unzip -q "$archive");;
+esac
+
+binary="$tmp/forage"
+[ "$os" = "pc-windows-msvc" ] && binary="$tmp/forage.exe"
+if [ ! -f "$binary" ]; then
+    echo "extraction did not produce $binary" >&2
+    exit 1
+fi
+chmod +x "$binary"
+install_target="$DEST/$(basename "$binary")"
+mv "$binary" "$install_target"
+
+echo "==> installed: $install_target"
+
 case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
+    *":$DEST:"*)
+        echo "==> $DEST is on PATH"
+        ;;
     *)
-        echo
-        echo "Note: $INSTALL_DIR is not on your PATH. Add it with:"
-        echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
+        echo "==> add $DEST to your PATH:"
+        if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-/bin/sh}")" = "zsh" ]; then
+            echo "      echo 'export PATH=\"$DEST:\$PATH\"' >> ~/.zshrc"
+        else
+            echo "      echo 'export PATH=\"$DEST:\$PATH\"' >> ~/.bashrc"
+        fi
         ;;
 esac
 
-"$INSTALL_DIR/forage" --version || true
+"$install_target" --version
