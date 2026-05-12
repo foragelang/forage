@@ -429,13 +429,13 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 - **D9.5 — Replayer support.** `BrowserReplayer` routes `kind: .document` captures to the document rule (matching how live runs handle them). Archived runs round-trip cleanly.
 - **D9.6 — Reference recipes.**
   - **`recipes/letterboxd-popular/`** — the flagship live demo. Letterboxd's "films popular this week" page is Cloudflare-gated (`curl` gets a 403); the browser engine drives a WKWebView through the gate, `captures.document` extracts ~70 typed `Film` records per run. End-to-end working.
-  - **`recipes/ebay-sold/`** — kept as a shape reference. eBay's Akamai layer serves a CAPTCHA challenge to WKWebView, which our scraping policy (no bypassing technical controls) rules out solving. The recipe parses and validates; it documents what an eBay completed-listings recipe would look like, with a note about the CAPTCHA limitation.
+  - **`recipes/ebay-sold/`** — added as a shape reference at M9 (eBay's Akamai layer serves a human-verification challenge to WKWebView that the headless DSL can't programmatically solve). M10 makes it actually work via the interactive bootstrap flow — see M10 D10.7.
 - **D9.7 — Tests.** `Tests/ForageTests/DocumentCaptureTests.swift`: parser accepts `captures.document`, rejects duplicates, replayer routes a synthetic `.document` capture through the rule and emits expected records.
 - **D9.8 — Docs.** `site/docs/html-extraction.md` extended with a browser-engine section that pairs M8 (the extraction primitive) with M9 (the document-capture source).
 
 **Out of scope (intentional follow-ups):**
 
-- **CAPTCHA-walled sites** (eBay's Akamai layer, Datadome on hot-ticket sites, sites that require interactive proof-of-humanity). Bypassing these violates our scraping policy. A *user-driven* "show me the page so I can solve the challenge" mode in the Toolkit is a possible future, but it lives outside the headless DSL.
+- **CAPTCHA-walled sites in the headless DSL.** Programmatically defeating human-verification challenges is outside the headless engine's scope. The *user-driven* "show me the page so I can solve the challenge" mode is M10's interactive bootstrap, which now handles this class of target.
 - **Form submissions** in browser recipes (filling search boxes, posting filter forms). Today's recipes navigate via `initialURL`; multi-page flows through forms would need a new primitive.
 
 **Acceptance**
@@ -449,7 +449,7 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 
 **Status: landed.**
 
-**Result:** Recipes that hit a human-in-the-loop gate (CAPTCHA, age verification the recipe can't auto-fill, sign-in flows the recipe can't navigate) bootstrap once via a visible WebView, persist the resulting cookies + storage, and reuse the session for subsequent headless runs until it expires. The bot doesn't bypass the technical control — the *human* does, then the bot reuses the human-authorized session. This is what unlocks eBay-class and Akamai-class targets without violating `notes/legal.md` rule 5.
+**Result:** Recipes that hit a human-verification gate (CAPTCHA, "I'm not a robot", interactive puzzle) bootstrap once via a visible WebView, persist the resulting cookies + storage, and reuse the session for subsequent headless runs until it expires. Forage doesn't solve CAPTCHAs programmatically — the *human* does, then the engine reuses the human-authorized session. JS-execution-based bot checks (Cloudflare's basic challenge, Akamai's basic fingerprint check) continue to succeed against us *because we're a real WebKit*, not because we spoof anything — the existing posture discussed and accepted for Jane/Trilogy. M10 extends that posture to targets that escalate to human verification.
 
 **Deliverables (all landed):**
 
@@ -459,7 +459,7 @@ The `$` inside `captures.document { … }` is the parsed root node of the post-s
 - **D10.4 — Expiry detection.** Reuse mode (cached session, no `--interactive`) seeds the cached cookies into the WKWebView's data store + `HTTPCookieStorage.shared`, restores per-origin localStorage via `InjectedScripts.restoreLocalStorage`, then after navigation reads `document.documentElement.outerHTML` and checks for `sessionExpiredPattern`. Match → `stallReason: "session-expired: re-run with --interactive to refresh"` + evict the cache. Miss → proceeds with the normal pagination/captures flow.
 - **D10.5 — CLI flag.** `forage run --interactive recipes/<slug>` passes `InteractiveBootstrapMode.forceBootstrap` to the engine, ignoring any cached session.
 - **D10.6 — Toolkit integration.** Defer to a focused follow-up: the BrowserEngine init parameter is the seam, the Toolkit will pass `.forceBootstrap` from a menu item / Preferences pane. The visible-window UX already works; only the surfacing through the Toolkit UI is pending.
-- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated with `browser.interactive { cookieDomains: ["ebay.com", ".ebay.com"], sessionExpiredPattern: "Security Measure" }`. First run: `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens the visible window, user solves the Akamai challenge in the normal browser flow, clicks the ✓ overlay, session persists. Subsequent runs reuse headlessly; if eBay re-challenges, the recipe detects the literal "Security Measure" text on the rendered page and exits asking the user to re-run with `--interactive` (Forage never tries to defeat the page itself).
+- **D10.7 — Reference recipe upgrade.** `recipes/ebay-sold/` updated with `browser.interactive { cookieDomains: ["ebay.com", ".ebay.com"], sessionExpiredPattern: "Security Measure" }`. First run: `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens the visible window, user solves the Akamai human-verification challenge in the normal browser flow, clicks the ✓ overlay, session persists. Subsequent runs reuse headlessly; if eBay re-challenges, the recipe detects the literal "Security Measure" text on the rendered page and exits asking the user to re-run with `--interactive`. `sessionExpiredPattern` is a re-prompt signal, not a bypass hook — Forage doesn't try to solve the verification itself; the human re-bootstraps the session.
 - **D10.8 — Tests.** `Tests/ForageTests/InteractiveSessionTests.swift`: parser accepts the block; duplicate `interactive` rejected; session JSON round-trip; store write+read with chmod 600 verification; evict removes file; expired sessions detected; path-separator-bearing slugs sanitized.
 - **D10.9 — Docs.** Recipe-level `// comment` in `recipes/ebay-sold/recipe.forage` explains the bootstrap flow; the broader site/docs page is a follow-up alongside the Toolkit UI wiring.
 

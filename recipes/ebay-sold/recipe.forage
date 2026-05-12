@@ -1,27 +1,35 @@
 // eBay completed-listings — sold price + date for items matching a query.
 //
-// eBay's Akamai layer serves a CAPTCHA challenge to any browser the
-// site doesn't recognize. Our scraping policy (notes/legal.md rule 5:
-// "no bypassing technical controls") rules out solving the CAPTCHA
-// programmatically — but a *human* solving it is the technical control
-// working as designed, not a bypass.
+// What Forage does and doesn't do here, plainly:
 //
-// M10's `browser.interactive { … }` block handles this: first run with
-// `--interactive` opens a real WKWebView window, the user solves the
-// CAPTCHA in the normal browser flow, then clicks the on-page
-// "✓ Scrape this page" overlay. The engine snapshots cookies +
-// localStorage to `~/Library/Forage/Sessions/ebay-sold/`. Subsequent
-// `forage run recipes/ebay-sold ...` runs headlessly using that
-// session.
+// - Forage's browser engine runs a real WKWebView (= a real Safari
+//   engine). JS-execution-based bot checks at the network edge —
+//   Cloudflare's basic challenge, Akamai's basic fingerprint check —
+//   succeed against us *because we're a real browser*, not because we
+//   spoof anything. We send an honest User-Agent (the WKWebView
+//   default — Safari's), we don't rotate IPs, we don't mimic
+//   googlebot. This is the existing project posture, previously
+//   discussed and accepted for Jane/Trilogy; the eBay recipe extends
+//   the same posture.
 //
-// `sessionExpiredPattern` below is the literal text that appears on
-// eBay's challenge page when our session has timed out and they want
-// to re-challenge the human. Forage does **not** try to defeat that
-// page — when it sees this string in the rendered HTML, it exits with
-// `stallReason: "session-expired"` and asks the user to re-run with
-// `--interactive` to re-handshake. The pattern is a signal that the
-// human's prior authorization is no longer valid, not a hook to bypass
-// anything.
+// - When the site escalates to a *human-verification* challenge
+//   (CAPTCHA, "I'm not a robot", interactive puzzle), Forage stops.
+//   We do not solve those programmatically. M10's
+//   `browser.interactive { … }` block hands off to a person: first
+//   run with `--interactive` opens a visible WKWebView window, the
+//   human solves the challenge in the normal browser flow, then
+//   clicks the on-page "✓ Scrape this page" overlay. The engine
+//   snapshots cookies + localStorage to
+//   `~/Library/Forage/Sessions/ebay-sold/`. Subsequent
+//   `forage run recipes/ebay-sold ...` runs headlessly using that
+//   human-authorized session.
+//
+// - `sessionExpiredPattern` below is the literal text that appears
+//   when eBay re-challenges (the human's prior authorization timed
+//   out). When Forage sees that string in the rendered HTML, it
+//   stops with `stallReason: "session-expired"` and asks the user to
+//   re-run with `--interactive`. Forage doesn't try to defeat the
+//   re-challenge — the pattern is purely a re-prompt signal.
 
 recipe "ebay-sold" {
     engine browser

@@ -103,7 +103,7 @@ The `$` inside the block is the parsed root of the post-settle document — reci
 Coverage:
 
 - **Works for Cloudflare-protected sites with JS challenges** (Letterboxd, many mid-tier e-commerce sites, smaller news sites). The browser engine passes the challenge by virtue of being a real WebKit.
-- **Does not work for CAPTCHA-walled sites** (eBay's Akamai layer, Datadome on hot-ticket sites). Forage doesn't bypass technical controls — see `notes/legal.md` rule 5. `recipes/ebay-sold/` is in tree as a shape reference but doesn't actually run against live eBay.
+- **CAPTCHA-walled sites** (eBay's Akamai layer, Datadome on hot-ticket sites) need M10's interactive-bootstrap flow — the headless engine itself doesn't solve human-verification challenges. `recipes/ebay-sold/` uses `browser.interactive { … }` so a human passes the challenge once in a visible window; subsequent runs reuse the session headlessly. See the M10 entry in ROADMAP.md.
 - **Works in replay mode.** Archived runs preserve the document capture in `captures.jsonl`; `BrowserReplayer` routes it back to the document rule without re-navigating.
 
 ## Recipe inventory
@@ -111,6 +111,6 @@ Coverage:
 - **`recipes/hacker-news-html/`** — HN front page scraped from the rendered HTML, as a companion to the JSON-API version in `recipes/hacker-news/`. Same record shape, different data source.
 - **`recipes/scotus-opinions/`** — US Supreme Court slip opinions for a given term, extracted from supremecourt.gov's HTML table. Typed `Opinion` records with date, docket number, case name, PDF URL, and holding text.
 - **`recipes/letterboxd-popular/`** — Films popular this week on Letterboxd, scraped via the browser engine through Cloudflare. End-to-end demonstration of `captures.document`.
-- **`recipes/ebay-sold/`** — eBay completed listings. Shape reference only; CAPTCHA-walled in practice.
+- **`recipes/ebay-sold/`** — eBay completed listings. Uses M10's interactive bootstrap: first run with `--interactive` lets a human pass the Akamai challenge; subsequent runs reuse the session headlessly.
 
 The HTTP recipes (HN HTML, SCOTUS) are the smallest end-to-end uses of the M8 primitive. The browser-engine recipe (Letterboxd) is the smallest use of M9. Copy any of them as a starting template.
