@@ -629,6 +629,20 @@ pub fn auth_logout(hub_url: String) -> Result<(), String> {
     AuthStore::new().delete(&host).map_err(|e| e.to_string())
 }
 
+/// Hover info at a given (line, col) in the source buffer. Powered by
+/// `forage_lsp::intel::hover_at` — the same logic the LSP's textDocument/
+/// hover handler runs. Returns `null` when the position isn't on a
+/// recognizable identifier (transform / type / input / enum / secret /
+/// step name).
+#[tauri::command]
+pub fn recipe_hover(
+    source: String,
+    line: u32,
+    col: u32,
+) -> Option<forage_lsp::intel::HoverInfo> {
+    forage_lsp::intel::hover_at(&source, line, col)
+}
+
 /// Snapshot of the language's reserved word + transform inventory.
 /// Studio fetches this once at startup so Monaco syntax highlighting,
 /// completion, and any future linting all draw from the same canonical

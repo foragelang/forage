@@ -136,6 +136,30 @@ function applyDictionary(monaco: typeof Monaco, dict: Dictionary) {
     // Stash the completion provider's disposer so re-applying replaces
     // rather than stacking duplicate keyword suggestions on top of the
     // previous registration.
+    if (hoverDisposer) hoverDisposer.dispose();
+    hoverDisposer = monaco.languages.registerHoverProvider(FORAGE_LANG_ID, {
+        async provideHover(model, position) {
+            // Drive hover through the same `forage_lsp::intel::hover_at`
+            // the LSP uses. Source comes from the model so unsaved edits
+            // are reflected; (line, col) is 0-based on the Rust side
+            // while Monaco is 1-based.
+            try {
+                const info = await api.recipeHover(
+                    model.getValue(),
+                    position.lineNumber - 1,
+                    position.column - 1,
+                );
+                if (!info) return null;
+                return {
+                    contents: [{ value: info.markdown, isTrusted: false }],
+                };
+            } catch (e) {
+                console.warn("recipe_hover failed", e);
+                return null;
+            }
+        },
+    });
+
     if (completionDisposer) completionDisposer.dispose();
     completionDisposer = monaco.languages.registerCompletionItemProvider(
         FORAGE_LANG_ID,
@@ -181,3 +205,4 @@ function applyDictionary(monaco: typeof Monaco, dict: Dictionary) {
 }
 
 let completionDisposer: { dispose(): void } | null = null;
+let hoverDisposer: { dispose(): void } | null = null;

@@ -69,6 +69,7 @@ pub fn run() {
             commands::load_recipe_breakpoints,
             commands::set_pause_iterations,
             commands::recipe_outline,
+            commands::recipe_hover,
             commands::language_dictionary,
             commands::publish_recipe,
             commands::auth_whoami,

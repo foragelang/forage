@@ -12,6 +12,7 @@ import type { DebugFrame } from "../bindings/DebugFrame";
 import type { DebugScope } from "../bindings/DebugScope";
 import type { Diagnostic } from "../bindings/Diagnostic";
 import type { DiagnosticReport } from "../bindings/DiagnosticReport";
+import type { HoverInfo } from "../bindings/HoverInfo";
 import type { IterationPause } from "../bindings/IterationPause";
 import type { LanguageDictionary } from "../bindings/LanguageDictionary";
 import type { PausePayload } from "../bindings/PausePayload";
@@ -33,6 +34,7 @@ export type {
     DebugScope,
     Diagnostic,
     DiagnosticReport,
+    HoverInfo,
     IterationPause,
     LanguageDictionary,
     PausePayload,
@@ -101,6 +103,8 @@ export const api = {
         invoke<string[]>("load_recipe_breakpoints", { slug }),
     recipeOutline: (source: string) =>
         invoke<RecipeOutline>("recipe_outline", { source }),
+    recipeHover: (source: string, line: number, col: number) =>
+        invoke<HoverInfo | null>("recipe_hover", { source, line, col }),
     languageDictionary: () =>
         invoke<LanguageDictionary>("language_dictionary"),
     publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>

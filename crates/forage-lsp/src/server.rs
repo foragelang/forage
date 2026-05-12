@@ -145,83 +145,17 @@ impl LanguageServer for ForageLsp {
     async fn hover(&self, params: HoverParams) -> tower_lsp::jsonrpc::Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let response = self.store.with(&uri, |doc| {
-            // Find the word at `pos`.
-            let line_str = doc.source.lines().nth(pos.line as usize)?;
-            let col = pos.character as usize;
-            let bytes = line_str.as_bytes();
-            if col > bytes.len() {
-                return None;
-            }
-            let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-            let mut s = col;
-            while s > 0 && is_word(bytes[s - 1]) {
-                s -= 1;
-            }
-            let mut e = col;
-            while e < bytes.len() && is_word(bytes[e]) {
-                e += 1;
-            }
-            let word = std::str::from_utf8(&bytes[s..e]).ok()?.to_string();
-            if word.is_empty() {
-                return None;
-            }
-            // Match against transforms, keywords, recipe symbols.
-            if BUILTIN_TRANSFORMS.contains(&word.as_str()) {
-                return Some(Hover {
-                    contents: HoverContents::Scalar(MarkedString::String(format!(
-                        "**{word}** — built-in transform"
-                    ))),
-                    range: None,
-                });
-            }
-            if let Some(r) = &doc.recipe {
-                if let Some(ty) = r.types.iter().find(|t| t.name == word) {
-                    let fields: Vec<String> = ty
-                        .fields
-                        .iter()
-                        .map(|f| {
-                            format!(
-                                "{}: {}{}",
-                                f.name,
-                                field_type_label(&f.ty),
-                                if f.optional { "?" } else { "" }
-                            )
-                        })
-                        .collect();
-                    return Some(Hover {
-                        contents: HoverContents::Scalar(MarkedString::String(format!(
-                            "**{}**\n\n{{ {} }}",
-                            ty.name,
-                            fields.join(", ")
-                        ))),
-                        range: None,
-                    });
-                }
-                if let Some(inp) = r.inputs.iter().find(|i| i.name == word) {
-                    return Some(Hover {
-                        contents: HoverContents::Scalar(MarkedString::String(format!(
-                            "**input {}** — {}",
-                            inp.name,
-                            field_type_label(&inp.ty)
-                        ))),
-                        range: None,
-                    });
-                }
-                if let Some(en) = r.enums.iter().find(|e| e.name == word) {
-                    return Some(Hover {
-                        contents: HoverContents::Scalar(MarkedString::String(format!(
-                            "**enum {}** {{ {} }}",
-                            en.name,
-                            en.variants.join(" | ")
-                        ))),
-                        range: None,
-                    });
-                }
-            }
-            None
-        });
-        Ok(response.flatten())
+        // Delegate to the shared `intel::hover_at` so Studio (which
+        // calls intel directly via Tauri) and LSP-protocol clients
+        // (which take this path) always agree on hover content.
+        let info = self
+            .store
+            .with(&uri, |doc| crate::intel::hover_at(&doc.source, pos.line, pos.character))
+            .flatten();
+        Ok(info.map(|h| Hover {
+            contents: HoverContents::Scalar(MarkedString::String(h.markdown)),
+            range: None,
+        }))
     }
 
     async fn document_symbol(
