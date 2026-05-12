@@ -910,6 +910,8 @@ dependencies = [
  "clap",
  "forage-core",
  "forage-http",
+ "forage-hub",
+ "forage-keychain",
  "forage-replay",
  "indexmap 2.14.0",
  "owo-colors",
