@@ -8,7 +8,9 @@ use forage_core::parse::ParseError;
 use forage_core::{parse, validate};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
-use crate::offsets::LineMap;
+use forage_core::LineMap;
+
+use crate::offsets::lsp_range;
 
 pub struct DocStore {
     docs: Mutex<HashMap<Url, Document>>,
@@ -79,11 +81,12 @@ fn build_diagnostics(source: &str, line_map: &LineMap) -> (Option<Recipe>, Vec<D
                 forage_core::Severity::Error => DiagnosticSeverity::ERROR,
                 forage_core::Severity::Warning => DiagnosticSeverity::WARNING,
             };
-            // The validator doesn't carry spans yet, so we anchor each
-            // issue at the start of the recipe. R7 followup will thread
-            // spans through the validator.
+            // `0..0` is the validator's convention for "no specific
+            // location" (recipe-wide invariants like engine mismatches);
+            // anchor those at the start of the file. Everything else
+            // squiggles at the actual construct.
             diagnostics.push(Diagnostic {
-                range: line_map.range_for(0..0),
+                range: lsp_range(line_map, issue.span.clone()),
                 severity: Some(severity),
                 code: Some(tower_lsp::lsp_types::NumberOrString::String(format!(
                     "{:?}",
@@ -105,17 +108,17 @@ fn parse_error_diagnostic(e: &ParseError, _source: &str, line_map: &LineMap) -> 
             expected,
             found,
         } => (
-            line_map.range_for(span.clone()),
+            lsp_range(line_map, span.clone()),
             format!("unexpected {found}, expected {expected}"),
         ),
         ParseError::UnexpectedEof { expected } => (
-            line_map.range_for(0..0),
+            lsp_range(line_map, 0..0),
             format!("unexpected end of input, expected {expected}"),
         ),
         ParseError::Generic { span, message } => {
-            (line_map.range_for(span.clone()), message.clone())
+            (lsp_range(line_map, span.clone()), message.clone())
         }
-        ParseError::Lex(le) => (line_map.range_for(0..0), format!("{le}")),
+        ParseError::Lex(le) => (lsp_range(line_map, 0..0), format!("{le}")),
     };
     Diagnostic {
         range,

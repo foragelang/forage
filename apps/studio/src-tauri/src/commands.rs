@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
-use forage_core::{EvalValue, Snapshot, parse, validate};
+use forage_core::{EvalValue, LineMap, Snapshot, parse, validate};
 use forage_http::{
     Debugger, Engine, LiveTransport, ProgressSink, ReplayTransport, ResumeAction, RunEvent,
     StepPause,
@@ -29,8 +29,23 @@ use crate::state::StudioState;
 #[derive(Serialize)]
 pub struct ValidationOutcome {
     pub ok: bool,
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One validation issue with a precise source location. Maps onto
+/// Monaco's `IMarkerData` shape on the frontend so squigglies land
+/// under the offending token instead of at line 1.
+#[derive(Serialize)]
+pub struct Diagnostic {
+    pub severity: &'static str,
+    pub code: String,
+    pub message: String,
+    /// 0-based line/column for the start of the span.
+    pub start_line: u32,
+    pub start_col: u32,
+    /// 0-based line/column for the end of the span (exclusive).
+    pub end_line: u32,
+    pub end_col: u32,
 }
 
 #[tauri::command]
@@ -490,32 +505,68 @@ pub fn auth_logout(hub_url: String) -> Result<(), String> {
 }
 
 fn validate_source(source: &str) -> ValidationOutcome {
+    let line_map = LineMap::new(source);
+    let to_diag = |span: std::ops::Range<usize>,
+                   severity: &'static str,
+                   code: String,
+                   message: String|
+     -> Diagnostic {
+        let r = line_map.range(span);
+        Diagnostic {
+            severity,
+            code,
+            message,
+            start_line: r.start.line,
+            start_col: r.start.character,
+            end_line: r.end.line,
+            end_col: r.end.character,
+        }
+    };
     match parse(source) {
         Ok(r) => {
             let report = validate(&r);
-            let errors: Vec<String> = report
+            let mut diagnostics: Vec<Diagnostic> = report
                 .issues
-                .iter()
-                .filter(|i| matches!(i.severity, forage_core::Severity::Error))
-                .map(|i| i.message.clone())
+                .into_iter()
+                .map(|i| {
+                    let sev = match i.severity {
+                        forage_core::Severity::Error => "error",
+                        forage_core::Severity::Warning => "warning",
+                    };
+                    to_diag(i.span, sev, format!("{:?}", i.code), i.message)
+                })
                 .collect();
-            let warnings: Vec<String> = report
-                .issues
-                .iter()
-                .filter(|i| matches!(i.severity, forage_core::Severity::Warning))
-                .map(|i| i.message.clone())
-                .collect();
+            // Stable order: file position first, then severity.
+            diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
+            let ok = !diagnostics.iter().any(|d| d.severity == "error");
+            ValidationOutcome { ok, diagnostics }
+        }
+        Err(e) => {
+            // Parse errors carry their own span via ParseError variants.
+            let (span, msg) = parse_error_span(&e);
+            let diag = to_diag(span, "error", "ParseError".into(), msg);
             ValidationOutcome {
-                ok: errors.is_empty(),
-                errors,
-                warnings,
+                ok: false,
+                diagnostics: vec![diag],
             }
         }
-        Err(e) => ValidationOutcome {
-            ok: false,
-            errors: vec![format!("{e}")],
-            warnings: vec![],
-        },
+    }
+}
+
+fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usize>, String) {
+    use forage_core::parse::ParseError as PE;
+    match e {
+        PE::UnexpectedToken {
+            span,
+            expected,
+            found,
+        } => (
+            span.clone(),
+            format!("unexpected {found}, expected {expected}"),
+        ),
+        PE::UnexpectedEof { expected } => (0..0, format!("unexpected end of input, expected {expected}")),
+        PE::Generic { span, message } => (span.clone(), message.clone()),
+        PE::Lex(le) => (0..0, format!("{le}")),
     }
 }
 

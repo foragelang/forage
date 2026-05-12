@@ -8,6 +8,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::docstore::DocStore;
+use crate::offsets::lsp_range;
 
 pub struct ForageLsp {
     client: Client,
@@ -290,7 +291,7 @@ impl LanguageServer for ForageLsp {
                     kind: SymbolKind::STRUCT,
                     location: Location {
                         uri: uri.clone(),
-                        range: doc.line_map.range_for(0..0),
+                        range: lsp_range(&doc.line_map, ty.span.clone()),
                     },
                     tags: None,
                     deprecated: None,
@@ -304,7 +305,7 @@ impl LanguageServer for ForageLsp {
                     kind: SymbolKind::ENUM,
                     location: Location {
                         uri: uri.clone(),
-                        range: doc.line_map.range_for(0..0),
+                        range: lsp_range(&doc.line_map, en.span.clone()),
                     },
                     tags: None,
                     deprecated: None,
@@ -318,12 +319,29 @@ impl LanguageServer for ForageLsp {
                     kind: SymbolKind::VARIABLE,
                     location: Location {
                         uri: uri.clone(),
-                        range: doc.line_map.range_for(0..0),
+                        range: lsp_range(&doc.line_map, inp.span.clone()),
                     },
                     tags: None,
                     deprecated: None,
                     container_name: Some(r.name.clone()),
                 });
+            }
+            // Steps too — they're top-level locatable nodes now.
+            #[allow(deprecated)]
+            for s in &r.body {
+                if let forage_core::ast::Statement::Step(step) = s {
+                    out.push(SymbolInformation {
+                        name: format!("step {}", step.name),
+                        kind: SymbolKind::FUNCTION,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: lsp_range(&doc.line_map, step.span.clone()),
+                        },
+                        tags: None,
+                        deprecated: None,
+                        container_name: Some(r.name.clone()),
+                    });
+                }
             }
             out
         });

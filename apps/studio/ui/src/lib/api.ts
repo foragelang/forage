@@ -10,8 +10,21 @@ export type RecipeEntry = {
 
 export type ValidationOutcome = {
     ok: boolean;
-    errors: string[];
-    warnings: string[];
+    diagnostics: Diagnostic[];
+};
+
+export type Diagnostic = {
+    severity: "error" | "warning";
+    code: string;
+    message: string;
+    /** 0-based line of the span start. */
+    start_line: number;
+    /** 0-based column of the span start. */
+    start_col: number;
+    /** 0-based line of the span end (exclusive). */
+    end_line: number;
+    /** 0-based column of the span end (exclusive). */
+    end_col: number;
 };
 
 export type Snapshot = {

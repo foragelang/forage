@@ -35,6 +35,11 @@ pub struct ValidationIssue {
     pub severity: Severity,
     pub code: ValidationCode,
     pub message: String,
+    /// Byte range in the source pinpointing what the issue is about.
+    /// `0..0` means "no specific location" (typically a recipe-wide
+    /// invariant) and consumers should render it at the file root.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +116,11 @@ struct Validator<'a> {
     /// step names (recipe-body-wide), for-loop variables (nested),
     /// htmlPrime-extracted vars (from auth or step.extract.regex.groups).
     known_vars: std::collections::HashSet<String>,
+    /// Source range of the enclosing AST node being checked. Set by the
+    /// callers as they descend (`with_span` / `Statement::span`) and read
+    /// by `err_here` / `warn_here` so diagnostics inherit the smallest
+    /// available location without every call needing to thread spans.
+    cur_span: Span,
 }
 
 impl<'a> Validator<'a> {
@@ -141,23 +151,54 @@ impl<'a> Validator<'a> {
             recipe,
             issues: Vec::new(),
             known_vars,
+            cur_span: 0..0,
         }
     }
 
-    fn err(&mut self, code: ValidationCode, message: impl Into<String>) {
+    /// Run `f` with `cur_span` temporarily set to `span`. Restores the
+    /// previous span on the way out. Used by checks that descend into a
+    /// new locatable construct (Step, Emit, ForLoop, …) and want inner
+    /// `err_here` calls to anchor at that construct.
+    fn with_span<R>(&mut self, span: Span, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = std::mem::replace(&mut self.cur_span, span);
+        let r = f(self);
+        self.cur_span = saved;
+        r
+    }
+
+    /// Emit an issue anchored at the current span.
+    fn err_here(&mut self, code: ValidationCode, message: impl Into<String>) {
+        self.err(self.cur_span.clone(), code, message);
+    }
+    fn warn_here(&mut self, code: ValidationCode, message: impl Into<String>) {
+        self.warn(self.cur_span.clone(), code, message);
+    }
+
+    fn err(&mut self, span: Span, code: ValidationCode, message: impl Into<String>) {
         self.issues.push(ValidationIssue {
             severity: Severity::Error,
             code,
             message: message.into(),
+            span,
         });
     }
 
-    fn warn(&mut self, code: ValidationCode, message: impl Into<String>) {
+    fn warn(&mut self, span: Span, code: ValidationCode, message: impl Into<String>) {
         self.issues.push(ValidationIssue {
             severity: Severity::Warning,
             code,
             message: message.into(),
+            span,
         });
+    }
+
+    /// Cross-cutting issue with no specific source location (engine
+    /// consistency, missing-recipe-wide-decl). Renders at the file root.
+    fn err_recipe(&mut self, code: ValidationCode, message: impl Into<String>) {
+        self.err(0..0, code, message);
+    }
+    fn warn_recipe(&mut self, code: ValidationCode, message: impl Into<String>) {
+        self.warn(0..0, code, message);
     }
 
     fn run(&mut self) {
@@ -174,6 +215,7 @@ impl<'a> Validator<'a> {
         for t in &self.recipe.types {
             if !seen_types.insert(&t.name) {
                 self.err(
+                    t.span.clone(),
                     ValidationCode::DuplicateType,
                     format!("type '{}' declared more than once", t.name),
                 );
@@ -183,6 +225,7 @@ impl<'a> Validator<'a> {
         for e in &self.recipe.enums {
             if !seen_enums.insert(&e.name) {
                 self.err(
+                    e.span.clone(),
                     ValidationCode::DuplicateEnum,
                     format!("enum '{}' declared more than once", e.name),
                 );
@@ -192,6 +235,7 @@ impl<'a> Validator<'a> {
         for i in &self.recipe.inputs {
             if !seen_inputs.insert(&i.name) {
                 self.err(
+                    i.span.clone(),
                     ValidationCode::DuplicateInput,
                     format!("input '{}' declared more than once", i.name),
                 );
@@ -200,7 +244,7 @@ impl<'a> Validator<'a> {
         let mut seen_secrets = std::collections::HashSet::new();
         for s in &self.recipe.secrets {
             if !seen_secrets.insert(s) {
-                self.err(
+                self.err_recipe(
                     ValidationCode::DuplicateSecret,
                     format!("secret '{s}' declared more than once"),
                 );
@@ -214,7 +258,7 @@ impl<'a> Validator<'a> {
         match self.recipe.engine_kind {
             EngineKind::Http => {
                 if self.recipe.browser.is_some() {
-                    self.err(
+                    self.err_recipe(
                         ValidationCode::UnexpectedBrowserConfig,
                         "HTTP-engine recipe must not declare a `browser { … }` block",
                     );
@@ -222,13 +266,13 @@ impl<'a> Validator<'a> {
             }
             EngineKind::Browser => {
                 if self.recipe.browser.is_none() {
-                    self.err(
+                    self.err_recipe(
                         ValidationCode::MissingBrowserConfig,
                         "browser-engine recipe must declare a `browser { … }` block",
                     );
                 }
                 if matches!(self.recipe.auth, Some(AuthStrategy::Session(_))) {
-                    self.warn(
+                    self.warn_recipe(
                         ValidationCode::AuthOnBrowserEngine,
                         "auth.session.* on a browser-engine recipe — credentials are best handled inside the browser flow",
                     );
@@ -242,7 +286,7 @@ impl<'a> Validator<'a> {
                 .iter()
                 .any(|s| matches!(s, Statement::Step(st) if &st.name == step_name));
             if !referenced {
-                self.err(
+                self.err_recipe(
                     ValidationCode::MissingAuthStep,
                     format!("auth.htmlPrime references step '{step_name}' which is not declared"),
                 );
@@ -287,63 +331,66 @@ impl<'a> Validator<'a> {
     }
 
     fn check_statement(&mut self, s: &Statement) {
-        match s {
+        let span = s.span().clone();
+        self.with_span(span, |v| match s {
             Statement::Step(step) => {
-                self.check_template(&step.request.url);
-                for (_, v) in &step.request.headers {
-                    self.check_template(v);
+                v.check_template(&step.request.url);
+                for (_, hv) in &step.request.headers {
+                    v.check_template(hv);
                 }
                 if let Some(b) = &step.request.body {
-                    self.check_body(b);
+                    v.check_body(b);
                 }
             }
-            Statement::Emit(em) => self.check_emit(em),
+            Statement::Emit(em) => v.check_emit(em),
             Statement::ForLoop {
                 variable,
                 collection,
                 body,
                 ..
             } => {
-                self.check_extraction(collection);
-                let inserted = self.known_vars.insert(variable.clone());
+                v.check_extraction(collection);
+                let inserted = v.known_vars.insert(variable.clone());
                 for s in body {
-                    self.check_statement(s);
+                    v.check_statement(s);
                 }
                 if inserted {
-                    self.known_vars.remove(variable);
+                    v.known_vars.remove(variable);
                 }
             }
-        }
+        });
     }
 
     fn check_emit(&mut self, em: &Emission) {
-        if self.recipe.ty(&em.type_name).is_none() {
-            self.err(
-                ValidationCode::UnknownType,
-                format!("emit Type '{}' is not declared", em.type_name),
-            );
-            return;
-        }
-        let ty = self.recipe.ty(&em.type_name).unwrap().clone();
-        let bound: std::collections::HashSet<&str> =
-            em.bindings.iter().map(|b| b.field_name.as_str()).collect();
-        for f in &ty.fields {
-            if !f.optional && !bound.contains(f.name.as_str()) {
-                self.err(
-                    ValidationCode::MissingRequiredField,
-                    format!("emit {} missing required field '{}'", em.type_name, f.name),
+        self.with_span(em.span.clone(), |v| {
+            if v.recipe.ty(&em.type_name).is_none() {
+                v.err_here(
+                    ValidationCode::UnknownType,
+                    format!("emit Type '{}' is not declared", em.type_name),
                 );
+                return;
             }
-        }
-        for b in &em.bindings {
-            if ty.field(&b.field_name).is_none() {
-                self.err(
-                    ValidationCode::UnknownField,
-                    format!("type {} has no field '{}'", em.type_name, b.field_name),
-                );
+            let ty = v.recipe.ty(&em.type_name).unwrap().clone();
+            let bound: std::collections::HashSet<&str> =
+                em.bindings.iter().map(|b| b.field_name.as_str()).collect();
+            for f in &ty.fields {
+                if !f.optional && !bound.contains(f.name.as_str()) {
+                    v.err_here(
+                        ValidationCode::MissingRequiredField,
+                        format!("emit {} missing required field '{}'", em.type_name, f.name),
+                    );
+                }
             }
-            self.check_extraction(&b.expr);
-        }
+            for b in &em.bindings {
+                if ty.field(&b.field_name).is_none() {
+                    v.err_here(
+                        ValidationCode::UnknownField,
+                        format!("type {} has no field '{}'", em.type_name, b.field_name),
+                    );
+                }
+                v.check_extraction(&b.expr);
+            }
+        });
     }
 
     fn check_extraction(&mut self, e: &ExtractionExpr) {
@@ -385,7 +432,7 @@ impl<'a> Validator<'a> {
 
     fn check_transform_name(&mut self, name: &str) {
         if !BUILTIN_TRANSFORMS.contains(&name) {
-            self.err(
+            self.err_here(
                 ValidationCode::UnknownTransform,
                 format!("transform '{name}' is not registered"),
             );
@@ -406,7 +453,7 @@ impl<'a> Validator<'a> {
                 let used: Vec<String> = labels.map(|s| s.to_string()).collect();
                 for l in &used {
                     if !known.contains(l.as_str()) {
-                        self.err(
+                        self.err_here(
                             ValidationCode::UnknownEnumVariant,
                             format!("case label '{l}' is not a variant of enum {enum_name}"),
                         );
@@ -416,7 +463,7 @@ impl<'a> Validator<'a> {
                     used.iter().map(|s| s.as_str()).collect();
                 for v in &en.variants {
                     if !used_set.contains(v.as_str()) {
-                        self.warn(
+                        self.warn_here(
                             ValidationCode::UnknownEnumVariant,
                             format!("case-of over {enum_name} doesn't cover variant '{v}'"),
                         );
@@ -447,7 +494,7 @@ impl<'a> Validator<'a> {
         match p {
             PathExpr::Secret(name) => {
                 if !self.recipe.secrets.iter().any(|s| s == name) {
-                    self.err(
+                    self.err_here(
                         ValidationCode::UnknownSecret,
                         format!("$secret.{name} references an undeclared secret"),
                     );
@@ -455,7 +502,7 @@ impl<'a> Validator<'a> {
             }
             PathExpr::Variable(name) => {
                 if !self.known_vars.contains(name) {
-                    self.err(
+                    self.err_here(
                         ValidationCode::UnknownVariable,
                         format!("$ {name} is an unbound variable"),
                     );
@@ -465,7 +512,7 @@ impl<'a> Validator<'a> {
                 // `$input.X` — check X is declared.
                 if let PathExpr::Input = base.as_ref() {
                     if self.recipe.input(field).is_none() {
-                        self.err(
+                        self.err_here(
                             ValidationCode::UnknownInput,
                             format!("$input.{field} references an undeclared input"),
                         );
@@ -533,13 +580,17 @@ impl<'a> Validator<'a> {
         // Verify each declared type's field types either resolve to a
         // primitive, an Array of one, an EnumRef to a declared enum, or a
         // Record reference to a declared type.
-        for ty in &self.recipe.types {
-            for f in &ty.fields {
-                self.check_field_type(&f.ty, &format!("type {}.{}", ty.name, f.name));
-            }
+        for ty in &self.recipe.types.clone() {
+            self.with_span(ty.span.clone(), |v| {
+                for f in &ty.fields {
+                    v.check_field_type(&f.ty, &format!("type {}.{}", ty.name, f.name));
+                }
+            });
         }
-        for inp in &self.recipe.inputs {
-            self.check_field_type(&inp.ty, &format!("input {}", inp.name));
+        for inp in &self.recipe.inputs.clone() {
+            self.with_span(inp.span.clone(), |v| {
+                v.check_field_type(&inp.ty, &format!("input {}", inp.name));
+            });
         }
     }
 
@@ -548,7 +599,7 @@ impl<'a> Validator<'a> {
             FieldType::Array(inner) => self.check_field_type(inner, where_),
             FieldType::Record(name) => {
                 if self.recipe.ty(name).is_none() && self.recipe.recipe_enum(name).is_none() {
-                    self.err(
+                    self.err_here(
                         ValidationCode::UnknownType,
                         format!("{where_} references unknown type '{name}'"),
                     );
@@ -556,7 +607,7 @@ impl<'a> Validator<'a> {
             }
             FieldType::EnumRef(name) => {
                 if self.recipe.recipe_enum(name).is_none() {
-                    self.err(
+                    self.err_here(
                         ValidationCode::UnknownEnum,
                         format!("{where_} references unknown enum '{name}'"),
                     );
@@ -659,6 +710,75 @@ mod tests {
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::MissingRequiredField))
+        );
+    }
+
+    #[test]
+    fn validation_issues_carry_span_to_their_construct() {
+        // Without spans on ValidationIssue, the LSP anchored every
+        // diagnostic at byte 0 of the file. Pin the validator to
+        // attach the span of the construct the issue is about:
+        //
+        // - duplicate type → the duplicate type-decl block
+        // - missing required field → the emit block
+        // - unknown transform → the enclosing emit (until expression
+        //   spans land; granularity ≥ statement is the contract)
+        let src = r#"recipe "spans" {
+    engine http
+    type Item { id: String }
+    type Item { name: String }
+    step list {
+        method "GET"
+        url "https://example.com"
+    }
+    for $x in $list.items[*] {
+        emit Item { id ← $x.id | nopeTransform }
+    }
+    emit Item { }
+}
+"#;
+        let r = parse(src).unwrap();
+        let rep = validate(&r);
+
+        let dup = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::DuplicateType)
+            .expect("DuplicateType");
+        assert!(dup.span.start < dup.span.end, "empty span: {dup:?}");
+        // The duplicate is the *second* `type Item { … }` block. The
+        // first is at the canonical location; the validator emits the
+        // duplicate at the second, so the span should slice that one.
+        assert!(
+            src[dup.span.clone()].starts_with("type Item { name"),
+            "got {:?}",
+            &src[dup.span.clone()],
+        );
+
+        let unk = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::UnknownTransform)
+            .expect("UnknownTransform");
+        // Anchored at the enclosing emit (granularity ≥ statement).
+        assert!(unk.span.start < unk.span.end);
+        assert!(
+            src[unk.span.clone()].starts_with("emit Item { id ← $x.id | nopeTransform }"),
+            "got {:?}",
+            &src[unk.span.clone()],
+        );
+
+        let missing = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::MissingRequiredField)
+            .expect("MissingRequiredField");
+        // The bare `emit Item { }` at the bottom.
+        assert!(missing.span.start < missing.span.end);
+        assert!(
+            src[missing.span.clone()].starts_with("emit Item { }"),
+            "got {:?}",
+            &src[missing.span.clone()],
         );
     }
 

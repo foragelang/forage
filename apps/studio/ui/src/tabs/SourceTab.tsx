@@ -106,24 +106,25 @@ export function SourceTab() {
     useEffect(() => {
         if (!monacoRef.current) return;
         const monaco = monacoRef.current;
-        const issues = validation
-            ? [
-                  ...(validation.errors || []).map((m) => ({ message: m, severity: 8 })),
-                  ...(validation.warnings || []).map((m) => ({ message: m, severity: 4 })),
-              ]
-            : [];
+        const diagnostics = validation?.diagnostics ?? [];
         const models = monaco.editor.getModels();
         for (const model of models) {
             monaco.editor.setModelMarkers(
                 model,
                 "forage",
-                issues.map((i) => ({
-                    severity: i.severity,
-                    message: i.message,
-                    startLineNumber: 1,
-                    startColumn: 1,
-                    endLineNumber: 1,
-                    endColumn: 1,
+                diagnostics.map((d) => ({
+                    // Monaco's MarkerSeverity: 8 = Error, 4 = Warning.
+                    severity: d.severity === "error" ? 8 : 4,
+                    message: d.message,
+                    code: d.code,
+                    // Monaco is 1-based for lines AND columns; backend is
+                    // 0-based for both. Bump by one. End-col is exclusive
+                    // in our spans and exclusive in Monaco's marker shape,
+                    // so no off-by-one adjustment beyond the bias.
+                    startLineNumber: d.start_line + 1,
+                    startColumn: d.start_col + 1,
+                    endLineNumber: d.end_line + 1,
+                    endColumn: d.end_col + 1,
                 })),
             );
         }
@@ -177,22 +178,35 @@ export function SourceTab() {
             </div>
             {paused && <DebuggerPanel />}
             {validation && !paused && (
-                <div className="border-t border-zinc-800 px-4 py-2 max-h-32 overflow-y-auto text-xs">
-                    {validation.ok && validation.warnings.length === 0 && (
-                        <span className="text-emerald-400">✓ validates</span>
-                    )}
-                    {validation.errors.map((e, i) => (
-                        <div key={`e${i}`} className="text-red-400">
-                            <span className="text-red-300 font-medium">error:</span> {e}
-                        </div>
-                    ))}
-                    {validation.warnings.map((w, i) => (
-                        <div key={`w${i}`} className="text-amber-400">
-                            <span className="text-amber-300 font-medium">warning:</span> {w}
-                        </div>
-                    ))}
-                </div>
+                <ValidationStrip diagnostics={validation.diagnostics} />
             )}
+        </div>
+    );
+}
+
+function ValidationStrip({ diagnostics }: { diagnostics: import("../lib/api").Diagnostic[] }) {
+    if (diagnostics.length === 0) {
+        return (
+            <div className="border-t border-zinc-800 px-4 py-2 text-xs">
+                <span className="text-emerald-400">✓ validates</span>
+            </div>
+        );
+    }
+    return (
+        <div className="border-t border-zinc-800 px-4 py-2 max-h-32 overflow-y-auto text-xs space-y-0.5">
+            {diagnostics.map((d, i) => {
+                const tone = d.severity === "error" ? "text-red-400" : "text-amber-400";
+                const tag = d.severity === "error" ? "text-red-300" : "text-amber-300";
+                return (
+                    <div key={i} className={tone}>
+                        <span className="text-zinc-500 font-mono">
+                            {d.start_line + 1}:{d.start_col + 1}
+                        </span>{" "}
+                        <span className={`${tag} font-medium`}>{d.severity}:</span>{" "}
+                        {d.message}
+                    </div>
+                );
+            })}
         </div>
     );
 }
