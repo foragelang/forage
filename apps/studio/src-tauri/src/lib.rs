@@ -19,12 +19,19 @@ pub fn run() {
     // tauri-plugin-log needed (and indeed adding both panics with
     // "logger already set").
     //
-    // RUST_LOG overrides; default shows DEBUG for our crates, INFO else.
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,forage_http=debug,forage_core=debug,forage_studio=debug,forage_browser=debug",
-        )
-    });
+    // RUST_LOG *adds to* our defaults rather than replacing them.
+    // `EnvFilter::try_from_default_env()` would honor RUST_LOG verbatim,
+    // and `RUST_LOG=forage_http=trace` is exclusive — it disables every
+    // other target including our own logs. Prepending the defaults and
+    // letting RUST_LOG come last means env-supplied directives win for
+    // their target while everything else stays visible.
+    let defaults =
+        "info,forage_http=debug,forage_core=debug,forage_studio=debug,forage_browser=debug";
+    let directives = match std::env::var("RUST_LOG") {
+        Ok(env) if !env.is_empty() => format!("{defaults},{env}"),
+        _ => defaults.to_string(),
+    };
+    let filter = EnvFilter::new(directives);
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
