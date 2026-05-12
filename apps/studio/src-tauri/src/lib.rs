@@ -57,6 +57,7 @@ pub fn run() {
             commands::list_recipes,
             commands::load_recipe,
             commands::save_recipe,
+            commands::validate_recipe,
             commands::create_recipe,
             commands::delete_recipe,
             commands::show_recipe_context_menu,

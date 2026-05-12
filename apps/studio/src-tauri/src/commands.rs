@@ -88,6 +88,15 @@ pub fn save_recipe(slug: String, source: String) -> Result<ValidationOutcome, St
     Ok(validate_source(&source))
 }
 
+/// Validate a source buffer without touching disk. Studio fires this on
+/// every keystroke (debounced) to keep diagnostics live. `save_recipe`
+/// still re-validates after writing so editor markers remain accurate
+/// even if the user only saves without typing.
+#[tauri::command]
+pub fn validate_recipe(source: String) -> ValidationOutcome {
+    validate_source(&source)
+}
+
 #[tauri::command]
 pub fn create_recipe() -> Result<String, String> {
     library::create_recipe(None).map_err(|e| e.to_string())

@@ -129,6 +129,8 @@ export const api = {
     loadRecipe: (slug: string) => invoke<string>("load_recipe", { slug }),
     saveRecipe: (slug: string, source: string) =>
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
+    validateRecipe: (source: string) =>
+        invoke<ValidationOutcome>("validate_recipe", { source }),
     createRecipe: () => invoke<string>("create_recipe"),
     deleteRecipe: (slug: string) => invoke<void>("delete_recipe", { slug }),
     runRecipe: (slug: string, replay: boolean) =>

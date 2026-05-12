@@ -7,6 +7,28 @@ import { FORAGE_LANG_ID, registerForageLanguage } from "../lib/monaco-forage";
 import { useStudio } from "../lib/store";
 import { DebuggerPanel } from "../components/DebuggerPanel";
 
+/// Validate the source on every change, debounced. Result lands in the
+/// Studio store via `setValidation` so SourceTab's marker effect picks
+/// it up and re-paints squigglies without waiting for a save.
+function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
+    const setValidation = useStudio((s) => s.setValidation);
+    useEffect(() => {
+        if (!slug) return;
+        let cancelled = false;
+        const id = window.setTimeout(() => {
+            api.validateRecipe(source)
+                .then((v) => {
+                    if (!cancelled) setValidation(v);
+                })
+                .catch((e) => console.warn("validate_recipe failed", e));
+        }, delayMs);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(id);
+        };
+    }, [source, slug, delayMs, setValidation]);
+}
+
 type Editor = MonacoNs.editor.IStandaloneCodeEditor;
 
 /// Subscribe to the parser-driven outline of the current source. Debounced
@@ -34,6 +56,7 @@ function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
 
 export function SourceTab() {
     const {
+        activeSlug,
         source,
         setSource,
         validation,
@@ -45,6 +68,7 @@ export function SourceTab() {
     const editorRef = useRef<Editor | null>(null);
     const decorationsRef = useRef<string[]>([]);
 
+    useLiveValidation(source, activeSlug);
     const stepLocations = useRecipeOutline(source);
 
     // Map for the gutter click handler: clicked line → step name (if any).
