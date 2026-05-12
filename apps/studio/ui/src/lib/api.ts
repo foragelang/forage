@@ -79,6 +79,7 @@ export const api = {
     saveRecipe: (slug: string, source: string) =>
         invoke<ValidationOutcome>("save_recipe", { slug, source }),
     createRecipe: () => invoke<string>("create_recipe"),
+    deleteRecipe: (slug: string) => invoke<void>("delete_recipe", { slug }),
     runRecipe: (slug: string, replay: boolean) =>
         invoke<RunOutcome>("run_recipe", { slug, replay }),
     cancelRun: () => invoke<void>("cancel_run"),

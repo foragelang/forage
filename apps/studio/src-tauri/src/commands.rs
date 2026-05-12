@@ -52,6 +52,11 @@ pub fn create_recipe() -> Result<String, String> {
     library::create_recipe(None).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn delete_recipe(slug: String) -> Result<(), String> {
+    library::delete_recipe(&slug).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 pub struct RunOutcome {
     pub ok: bool,

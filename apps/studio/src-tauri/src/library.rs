@@ -98,6 +98,33 @@ pub fn read_source(slug: &str) -> std::io::Result<String> {
     fs::read_to_string(recipe_path(slug))
 }
 
+/// Delete a recipe directory under the library root.
+///
+/// Refuses anything that isn't a single path segment (no slashes, no `..`),
+/// so a malicious slug can't escape the library root with `../etc/passwd`.
+/// The slug must already exist as a directory directly under the library.
+pub fn delete_recipe(slug: &str) -> std::io::Result<()> {
+    if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid recipe slug: {slug:?}"),
+        ));
+    }
+    let dir = recipe_dir(slug);
+    // Confirm the target sits inside the library root before deleting — a
+    // hardlink or symlink would otherwise let us nuke unrelated content.
+    let root = library_root();
+    let canonical = dir.canonicalize()?;
+    let root_canonical = root.canonicalize()?;
+    if !canonical.starts_with(&root_canonical) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("recipe path {canonical:?} escapes library root {root_canonical:?}"),
+        ));
+    }
+    fs::remove_dir_all(&dir)
+}
+
 pub fn write_source(slug: &str, source: &str) -> std::io::Result<()> {
     let path = recipe_path(slug);
     if let Some(parent) = path.parent() {
