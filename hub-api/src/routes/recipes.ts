@@ -30,6 +30,13 @@ const SEGMENT_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}\/[a-z0-9][a-z0-9-]{1,63}$/
 const RECIPE_HEAD_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"/
 
+// Request body size limits (envelope JSON, not the raw recipe text).
+// Recipe source is bounded by `MAX_RECIPE_BODY` inside `validatePublish`;
+// fixtures + snapshot are larger but still capped here so a 50MB
+// publish never spins up a Worker.
+const MAX_PUBLISH_PAYLOAD = 16 * 1024 * 1024 // 16 MiB
+const MAX_RECIPE_BODY = 1 * 1024 * 1024 // 1 MiB
+
 // --- Listing -------------------------------------------------------------
 
 export async function listRecipes(
@@ -204,11 +211,31 @@ export async function publishRecipe(
         return jsonError(401, 'unauthorized', 'missing or invalid bearer token')
     }
 
+    // Reject oversize payloads up front so a 50MB request doesn't make
+    // it past the gate. Cloudflare's hard ceiling is much higher; this
+    // is a polite floor that catches accidents.
+    const declaredLen = request.headers.get('content-length')
+    if (declaredLen && Number(declaredLen) > MAX_PUBLISH_PAYLOAD) {
+        return jsonError(
+            413,
+            'payload_too_large',
+            `publish payload exceeds limit (${MAX_PUBLISH_PAYLOAD} bytes)`,
+        )
+    }
+
     let payload: PublishRequest
     try {
         payload = (await request.json()) as PublishRequest
     } catch {
         return jsonError(400, 'bad_json', 'request body is not valid JSON')
+    }
+
+    if (payload.body && payload.body.length > MAX_RECIPE_BODY) {
+        return jsonError(
+            413,
+            'recipe_too_large',
+            `recipe source exceeds limit (${MAX_RECIPE_BODY} bytes)`,
+        )
     }
 
     const validationError = validatePublish(payload)
