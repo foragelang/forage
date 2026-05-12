@@ -44,10 +44,17 @@ enum Command {
         #[arg(long)]
         update: bool,
     },
-    /// Launch a webview and record fetch/XHR exchanges to JSONL. (R5.)
+    /// Launch a webview and record fetch/XHR exchanges to JSONL. Ships
+    /// with Forage Studio (R9) — needs a tao event loop to host wry.
     Capture,
-    /// Build a starter .forage recipe from a captures JSONL file. (R5.)
-    Scaffold,
+    /// Build a starter .forage recipe from a captures JSONL file.
+    Scaffold {
+        /// Path to a captures.jsonl file.
+        captures: PathBuf,
+        /// Recipe name (defaults to the parent directory name).
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Push a recipe to the Forage hub.
     Publish {
         recipe_dir: PathBuf,
@@ -115,13 +122,13 @@ fn main() -> Result<()> {
         } => rt.block_on(run(&recipe_dir, replay, output)),
         Command::Test { recipe_dir, update } => rt.block_on(test(&recipe_dir, update)),
         Command::Capture => {
-            println!("`forage capture` lands in R5.");
+            println!(
+                "{} `forage capture` opens a real webview and ships with Forage Studio (R9). Use Studio for now.",
+                "note:".yellow()
+            );
             Ok(())
         }
-        Command::Scaffold => {
-            println!("`forage scaffold` lands in R5.");
-            Ok(())
-        }
+        Command::Scaffold { captures, name } => do_scaffold(&captures, name),
         Command::Publish {
             recipe_dir,
             hub,
@@ -329,6 +336,81 @@ fn group_by_type(records: &[forage_core::Record]) -> IndexMap<String, Vec<&forag
         map.entry(r.type_name.clone()).or_default().push(r);
     }
     map
+}
+
+fn do_scaffold(captures_path: &Path, name: Option<String>) -> Result<()> {
+    let raw = std::fs::read_to_string(captures_path)?;
+    let mut groups: indexmap::IndexMap<String, Vec<String>> = indexmap::IndexMap::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let c: Capture =
+            serde_json::from_str(line).with_context(|| format!("parsing {captures_path:?}"))?;
+        match c {
+            Capture::Http(h) => {
+                groups
+                    .entry(format!("HTTP {} {}", h.method, scaffold_pattern(&h.url)))
+                    .or_default()
+                    .push(h.url);
+            }
+            Capture::Browser(forage_replay::BrowserCapture::Match { url, method, .. }) => {
+                groups
+                    .entry(format!("browser {} {}", method, scaffold_pattern(&url)))
+                    .or_default()
+                    .push(url);
+            }
+            Capture::Browser(forage_replay::BrowserCapture::Document { url, .. }) => {
+                groups
+                    .entry(format!("document {url}"))
+                    .or_default()
+                    .push(url);
+            }
+        }
+    }
+
+    let recipe_name = name.unwrap_or_else(|| {
+        captures_path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "scaffolded".to_string())
+    });
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "// Scaffolded from {} on {} captures.\n",
+        captures_path.display(),
+        groups.len()
+    ));
+    out.push_str(&format!("recipe \"{}\" {{\n", recipe_name));
+    out.push_str("    engine http\n\n");
+    out.push_str("    type Item {\n        id:   String\n        name: String?\n    }\n\n");
+    for (i, (label, urls)) in groups.iter().enumerate() {
+        out.push_str(&format!("    // {label}  ({} requests)\n", urls.len()));
+        out.push_str(&format!("    step s{} {{\n", i));
+        out.push_str("        method \"GET\"\n");
+        out.push_str(&format!(
+            "        url    {:?}\n",
+            urls.first().cloned().unwrap_or_default()
+        ));
+        out.push_str("    }\n\n");
+    }
+    out.push_str("    for $i in $s0.items[*] {\n");
+    out.push_str("        emit Item {\n            id   ← $i.id\n            name ← $i.name\n        }\n    }\n");
+    out.push_str("}\n");
+
+    print!("{out}");
+    Ok(())
+}
+
+fn scaffold_pattern(url: &str) -> String {
+    // Strip query string + collapse the path so similar URLs land in the
+    // same group.
+    let no_query = url.split('?').next().unwrap_or(url);
+    no_query.to_string()
 }
 
 async fn do_publish(
