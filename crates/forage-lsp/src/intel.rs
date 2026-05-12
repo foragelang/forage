@@ -36,9 +36,7 @@ pub fn hover_at(source: &str, line: u32, col: u32) -> Option<HoverInfo> {
         });
     }
 
-    let Some(r) = recipe.as_ref() else {
-        return None;
-    };
+    let r = recipe.as_ref()?;
 
     if let Some(ty) = r.types.iter().find(|t| t.name == word) {
         let fields: Vec<String> = ty
