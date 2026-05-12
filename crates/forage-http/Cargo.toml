@@ -1,0 +1,39 @@
+[package]
+name = "forage-http"
+description = "Forage HTTP engine: auth flavors, pagination, session cache."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forage-core      = { workspace = true }
+forage-keychain  = { workspace = true }
+forage-replay    = { workspace = true }
+
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+futures     = { workspace = true }
+
+reqwest     = { workspace = true }
+url         = { workspace = true }
+tower       = { workspace = true }
+tower-http  = { workspace = true }
+
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+regex       = { workspace = true }
+indexmap    = { workspace = true }
+aes-gcm     = { workspace = true }
+sha2        = { workspace = true }
+rand        = { workspace = true }
+dirs        = { workspace = true }
+
+[dev-dependencies]
+wiremock    = { workspace = true }
+tempfile    = { workspace = true }

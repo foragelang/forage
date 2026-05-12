@@ -6,3 +6,15 @@ Package.resolved
 xcuserdata/
 DerivedData/
 .wrangler/
+
+# Rust
+target/
+**/target/
+*.rs.bk
+Cargo.lock.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

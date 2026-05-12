@@ -1,0 +1,30 @@
+[package]
+name = "forage-browser"
+description = "Forage browser engine: drives wry webviews, captures fetch/XHR, M10 interactive bootstrap."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forage-core    = { workspace = true }
+forage-replay  = { workspace = true }
+
+tokio          = { workspace = true }
+async-trait    = { workspace = true }
+futures        = { workspace = true }
+
+wry            = { workspace = true }
+tao            = { workspace = true }
+scraper        = { workspace = true }
+
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }
+
+regex          = { workspace = true }
+dirs           = { workspace = true }
+url            = { workspace = true }
