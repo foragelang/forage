@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 forage-core  = { workspace = true }
 
-tokio        = { workspace = true }
+tokio        = { workspace = true, features = ["io-std"] }
 tower-lsp    = { workspace = true }
 
 serde        = { workspace = true }

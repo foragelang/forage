@@ -18,7 +18,8 @@ forage-http      = { workspace = true }
 forage-replay    = { workspace = true }
 forage-hub       = { workspace = true }
 forage-keychain  = { workspace = true }
-# forage-browser + forage-lsp wired up in R5, R7.
+forage-lsp       = { workspace = true }
+# forage-browser wired up in R5.
 
 tokio       = { workspace = true }
 clap        = { workspace = true }

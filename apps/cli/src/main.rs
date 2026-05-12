@@ -65,7 +65,7 @@ enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
-    /// Start the Forage Language Server (stdio or WebSocket). (R7.)
+    /// Start the Forage Language Server on stdio.
     Lsp,
 }
 
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
         } => rt.block_on(do_publish(&recipe_dir, hub, publish, token)),
         Command::Auth { action } => rt.block_on(do_auth(action)),
         Command::Lsp => {
-            println!("`forage lsp` lands in R7.");
+            rt.block_on(forage_lsp::server::run_stdio());
             Ok(())
         }
     }

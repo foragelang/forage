@@ -912,6 +912,7 @@ dependencies = [
  "forage-http",
  "forage-hub",
  "forage-keychain",
+ "forage-lsp",
  "forage-replay",
  "indexmap 2.14.0",
  "owo-colors",

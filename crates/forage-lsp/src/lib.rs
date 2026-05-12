@@ -1,5 +1,9 @@
-//! Forage Language Server. Built on tower-lsp; reuses forage-core for parse
-//! and validate. Provides diagnostics, completion, hover, go-to-definition,
-//! document symbols, and formatting.
-//!
-//! Filled in during R7.
+//! Forage Language Server — built on `tower-lsp`. Reuses `forage-core`
+//! for parsing + validation; surfaces diagnostics, completion, hover,
+//! goto-def, document symbols, formatting.
+
+pub mod docstore;
+pub mod offsets;
+pub mod server;
+
+pub use server::ForageLsp;
