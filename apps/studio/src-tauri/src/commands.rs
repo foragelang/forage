@@ -2,7 +2,7 @@
 
 use indexmap::IndexMap;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
@@ -10,6 +10,7 @@ use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
 
+use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::library::{self, RecipeEntry};
 use crate::state::StudioState;
 
@@ -54,7 +55,7 @@ pub struct RunOutcome {
 }
 
 #[tauri::command]
-pub async fn run_recipe(slug: String, replay: bool) -> Result<RunOutcome, String> {
+pub async fn run_recipe(app: AppHandle, slug: String, replay: bool) -> Result<RunOutcome, String> {
     let source = library::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
         Ok(r) => r,
@@ -108,14 +109,9 @@ pub async fn run_recipe(slug: String, replay: bool) -> Result<RunOutcome, String
             run_browser_replay(&recipe, &captures, inputs, secrets).map_err(|e| format!("{e}"))
         }
         (EngineKind::Browser, false) => {
-            return Ok(RunOutcome {
-                ok: false,
-                snapshot: None,
-                error: Some(
-                    "Browser-engine live runs ship with R4 followup (wry-driven). Use replay mode for now."
-                        .into(),
-                ),
-            });
+            // Open a Tauri WebviewWindow + inject the shim; collect
+            // captures; route through the replay engine.
+            run_browser_live(&app, &recipe, inputs, secrets, LiveRunOptions::default()).await
         }
     };
     match snapshot {

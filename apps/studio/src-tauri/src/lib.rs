@@ -1,5 +1,6 @@
 //! Forage Studio — Tauri backend.
 
+mod browser_driver;
 mod commands;
 mod library;
 mod state;

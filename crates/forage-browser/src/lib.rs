@@ -15,6 +15,8 @@
 
 pub mod error;
 pub mod replay;
+pub mod shim;
 
 pub use error::{BrowserError, BrowserResult};
 pub use replay::{ReplayEngine, run_browser_replay};
+pub use shim::{DUMP_DOCUMENT_JS, FETCH_INTERCEPT_JS, INTERACTIVE_OVERLAY_JS, SCROLL_TO_BOTTOM_JS};
