@@ -7,11 +7,13 @@
 
 pub mod auth;
 pub mod body;
+pub mod client;
 pub mod engine;
 pub mod error;
 pub mod paginate;
 pub mod transport;
 
+pub use client::{LiveTransport, LiveTransportConfig};
 pub use engine::{Engine, EngineConfig};
 pub use error::{HttpError, HttpResult};
 pub use transport::{HttpRequest, HttpResponse, ReplayTransport, Transport};

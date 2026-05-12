@@ -9,7 +9,7 @@ use owo_colors::OwoColorize;
 
 use forage_core::ast::JSONValue;
 use forage_core::{EvalValue, Snapshot, parse, validate};
-use forage_http::{Engine, ReplayTransport};
+use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_replay::Capture;
 
 #[derive(Parser)]
@@ -114,7 +114,12 @@ async fn run(recipe_dir: &Path, replay: bool, output: OutputFormat) -> Result<()
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
     } else {
-        bail!("live HTTP transport ships in R2 follow-up — use --replay for now");
+        let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let engine = Engine::new(&transport);
+        engine
+            .run(&recipe, inputs, secrets)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
     };
 
     match output {
