@@ -1,0 +1,22 @@
+[book]
+title = "Forage"
+authors = ["Dmitry Minkovsky"]
+description = "Declarative scraping recipes — language, runtime, hub."
+src = "src"
+language = "en"
+
+[build]
+build-dir = "out"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/foragelang/forage"
+edit-url-template = "https://github.com/foragelang/forage/edit/main/docs/{path}"
+site-url = "/docs/"
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
