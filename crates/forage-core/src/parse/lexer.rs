@@ -1,0 +1,476 @@
+//! Hand-rolled lexer for `.forage` source.
+//!
+//! Produces `Vec<(Token, Span)>`. Handles `//` line comments, `/* */`
+//! block comments, escaped strings, integer/float/bool/null/date literals,
+//! and the multi-char operators `\u{2190}` (binding), `\u{2192}` (case arrow),
+//! `?.`, `[*]`.
+//!
+//! Mirrors `Sources/Forage/Parser/Lexer.swift` byte-for-byte semantics so
+//! all in-tree recipes tokenize identically.
+
+use thiserror::Error;
+
+use crate::ast::Span;
+use crate::parse::token::{Token, is_keyword};
+
+pub fn lex(source: &str) -> Result<Vec<(Token, Span)>, LexError> {
+    let mut lx = Lexer::new(source);
+    lx.run()?;
+    Ok(lx.out)
+}
+
+#[derive(Debug, Clone, Error, PartialEq)]
+pub enum LexError {
+    #[error("unexpected character '{ch}' at byte offset {offset}")]
+    UnexpectedCharacter { ch: char, offset: usize },
+    #[error("unterminated string starting at byte offset {offset}")]
+    UnterminatedString { offset: usize },
+    #[error("invalid number '{raw}' at byte offset {offset}")]
+    InvalidNumber { raw: String, offset: usize },
+}
+
+struct Lexer<'a> {
+    src: &'a str,
+    bytes: &'a [u8],
+    pos: usize,
+    out: Vec<(Token, Span)>,
+    /// After `import`, the next non-whitespace blob becomes a `Ref` token.
+    pending_ref_scan: bool,
+}
+
+impl<'a> Lexer<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            src: source,
+            bytes: source.as_bytes(),
+            pos: 0,
+            out: Vec::new(),
+            pending_ref_scan: false,
+        }
+    }
+
+    fn run(&mut self) -> Result<(), LexError> {
+        while self.pos < self.bytes.len() {
+            self.skip_ws_and_comments();
+            if self.pos >= self.bytes.len() {
+                break;
+            }
+
+            if self.pending_ref_scan {
+                self.pending_ref_scan = false;
+                self.scan_ref()?;
+                continue;
+            }
+
+            let start = self.pos;
+            let c = self.peek_char();
+            match c {
+                '{' => self.single(Token::LBrace, start),
+                '}' => self.single(Token::RBrace, start),
+                '(' => self.single(Token::LParen, start),
+                ')' => self.single(Token::RParen, start),
+                '[' => {
+                    if self.starts_with_at(self.pos + 1, "*]") {
+                        self.pos += 3;
+                        self.out.push((Token::Wildcard, start..self.pos));
+                    } else {
+                        self.single(Token::LBracket, start);
+                    }
+                }
+                ']' => self.single(Token::RBracket, start),
+                ',' => self.single(Token::Comma, start),
+                ';' => self.single(Token::Semicolon, start),
+                ':' => self.single(Token::Colon, start),
+                '.' => self.single(Token::Dot, start),
+                '?' => {
+                    if self.peek_char_at(1) == '.' {
+                        self.pos += 2;
+                        self.out.push((Token::QDot, start..self.pos));
+                    } else {
+                        self.single(Token::Question, start);
+                    }
+                }
+                '|' => self.single(Token::Pipe, start),
+                '=' => self.single(Token::Equal, start),
+                '>' => self.single(Token::Gt, start),
+                '<' => self.single(Token::Lt, start),
+                '!' => self.single(Token::Bang, start),
+                '←' => self.multi(Token::Arrow, start, '←'.len_utf8()),
+                '→' => self.multi(Token::CaseArrow, start, '→'.len_utf8()),
+                '"' => self.scan_string(start)?,
+                '$' => self.scan_dollar(start),
+                c if c.is_ascii_digit() => self.scan_number_or_date(start)?,
+                '-' if self.peek_char_at(1).is_ascii_digit() => self.scan_number_or_date(start)?,
+                c if c.is_ascii_alphabetic() || c == '_' => self.scan_ident_or_keyword(start),
+                c => {
+                    return Err(LexError::UnexpectedCharacter {
+                        ch: c,
+                        offset: start,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn single(&mut self, tok: Token, start: usize) {
+        self.pos += 1;
+        self.out.push((tok, start..self.pos));
+    }
+
+    fn multi(&mut self, tok: Token, start: usize, width: usize) {
+        self.pos += width;
+        self.out.push((tok, start..self.pos));
+    }
+
+    fn scan_ref(&mut self) -> Result<(), LexError> {
+        let start = self.pos;
+        let mut end = start;
+        while end < self.bytes.len() {
+            let c = self.bytes[end] as char;
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ';' {
+                break;
+            }
+            end += 1;
+        }
+        if end == start {
+            return Err(LexError::UnexpectedCharacter {
+                ch: self.peek_char(),
+                offset: start,
+            });
+        }
+        let raw = self.src[start..end].to_string();
+        self.pos = end;
+        self.out.push((Token::Ref(raw), start..end));
+        Ok(())
+    }
+
+    fn scan_string(&mut self, start: usize) -> Result<(), LexError> {
+        self.pos += 1; // consume opening quote
+        let mut s = String::new();
+        while self.pos < self.bytes.len() {
+            let c = self.peek_char();
+            if c == '"' {
+                self.pos += 1;
+                self.out.push((Token::Str(s), start..self.pos));
+                return Ok(());
+            }
+            if c == '\\' {
+                self.pos += 1;
+                if self.pos >= self.bytes.len() {
+                    return Err(LexError::UnterminatedString { offset: start });
+                }
+                let esc = self.peek_char();
+                match esc {
+                    '"' => s.push('"'),
+                    '\\' => s.push('\\'),
+                    'n' => s.push('\n'),
+                    't' => s.push('\t'),
+                    'r' => s.push('\r'),
+                    other => s.push(other),
+                }
+                self.pos += esc.len_utf8();
+            } else {
+                s.push(c);
+                self.pos += c.len_utf8();
+            }
+        }
+        Err(LexError::UnterminatedString { offset: start })
+    }
+
+    fn scan_dollar(&mut self, start: usize) {
+        self.pos += 1; // consume $
+        if self.pos < self.bytes.len() {
+            let c = self.peek_char();
+            if c.is_ascii_alphabetic() || c == '_' {
+                let name = self.read_ident();
+                let tok = match name.as_str() {
+                    "input" => Token::DollarInput,
+                    "secret" => Token::DollarSecret,
+                    _ => Token::DollarVar(name),
+                };
+                self.out.push((tok, start..self.pos));
+                return;
+            }
+        }
+        // Bare `$` — for current-value paths like `$.foo`.
+        self.out.push((Token::DollarRoot, start..self.pos));
+    }
+
+    fn scan_number_or_date(&mut self, start: usize) -> Result<(), LexError> {
+        let mut end = self.pos;
+        let negative = self.bytes[end] == b'-';
+        if negative {
+            end += 1;
+        }
+        let int_start = end;
+        while end < self.bytes.len() && self.bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        let int_str = &self.src[int_start..end];
+
+        // YYYY-MM-DD?
+        if !negative && end < self.bytes.len() && self.bytes[end] == b'-' && int_str.len() == 4 {
+            let mid = end + 1;
+            let mut m_end = mid;
+            while m_end < self.bytes.len() && self.bytes[m_end].is_ascii_digit() {
+                m_end += 1;
+            }
+            if m_end - mid == 2 && m_end < self.bytes.len() && self.bytes[m_end] == b'-' {
+                let day_start = m_end + 1;
+                let mut day_end = day_start;
+                while day_end < self.bytes.len() && self.bytes[day_end].is_ascii_digit() {
+                    day_end += 1;
+                }
+                if day_end - day_start == 2 {
+                    let y: i32 = int_str.parse().expect("4 digits");
+                    let m: u32 = self.src[mid..m_end].parse().expect("2 digits");
+                    let d: u32 = self.src[day_start..day_end].parse().expect("2 digits");
+                    self.pos = day_end;
+                    self.out.push((
+                        Token::Date {
+                            year: y,
+                            month: m,
+                            day: d,
+                        },
+                        start..day_end,
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+
+        // Decimal?
+        if end < self.bytes.len()
+            && self.bytes[end] == b'.'
+            && end + 1 < self.bytes.len()
+            && self.bytes[end + 1].is_ascii_digit()
+        {
+            end += 1;
+            while end < self.bytes.len() && self.bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            let raw = &self.src[start..end];
+            let parsed: f64 = raw.parse().map_err(|_| LexError::InvalidNumber {
+                raw: raw.into(),
+                offset: start,
+            })?;
+            self.pos = end;
+            self.out.push((Token::Float(parsed), start..end));
+            return Ok(());
+        }
+
+        let raw = &self.src[start..end];
+        let parsed: i64 = raw.parse().map_err(|_| LexError::InvalidNumber {
+            raw: raw.into(),
+            offset: start,
+        })?;
+        self.pos = end;
+        self.out.push((Token::Int(parsed), start..end));
+        Ok(())
+    }
+
+    fn scan_ident_or_keyword(&mut self, start: usize) {
+        let name = self.read_ident();
+        let span = start..self.pos;
+        let tok = if name == "true" {
+            Token::Bool(true)
+        } else if name == "false" {
+            Token::Bool(false)
+        } else if name == "null" {
+            Token::Null
+        } else if is_keyword(&name) {
+            if name == "import" {
+                self.pending_ref_scan = true;
+            }
+            Token::Keyword(name)
+        } else if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            Token::TypeName(name)
+        } else {
+            Token::Ident(name)
+        };
+        self.out.push((tok, span));
+    }
+
+    fn read_ident(&mut self) -> String {
+        let start = self.pos;
+        while self.pos < self.bytes.len() {
+            let c = self.bytes[self.pos];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        self.src[start..self.pos].to_string()
+    }
+
+    fn skip_ws_and_comments(&mut self) {
+        loop {
+            while self.pos < self.bytes.len() {
+                let c = self.bytes[self.pos];
+                if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos + 1 < self.bytes.len() && &self.bytes[self.pos..self.pos + 2] == b"//" {
+                while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+                    self.pos += 1;
+                }
+                continue;
+            }
+            if self.pos + 1 < self.bytes.len() && &self.bytes[self.pos..self.pos + 2] == b"/*" {
+                self.pos += 2;
+                while self.pos + 1 < self.bytes.len()
+                    && &self.bytes[self.pos..self.pos + 2] != b"*/"
+                {
+                    self.pos += 1;
+                }
+                if self.pos + 1 < self.bytes.len() {
+                    self.pos += 2;
+                }
+                continue;
+            }
+            break;
+        }
+    }
+
+    fn peek_char(&self) -> char {
+        self.src[self.pos..].chars().next().unwrap_or('\0')
+    }
+
+    fn peek_char_at(&self, offset: usize) -> char {
+        let mut chars = self.src[self.pos..].chars();
+        for _ in 0..offset {
+            if chars.next().is_none() {
+                return '\0';
+            }
+        }
+        chars.next().unwrap_or('\0')
+    }
+
+    fn starts_with_at(&self, at: usize, s: &str) -> bool {
+        self.src.get(at..at + s.len()).is_some_and(|x| x == s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens_only(src: &str) -> Vec<Token> {
+        lex(src).unwrap().into_iter().map(|(t, _)| t).collect()
+    }
+
+    #[test]
+    fn simple_punctuation() {
+        let t = tokens_only("{ } ( ) [ ] , ; : .");
+        assert_eq!(
+            t,
+            vec![
+                Token::LBrace,
+                Token::RBrace,
+                Token::LParen,
+                Token::RParen,
+                Token::LBracket,
+                Token::RBracket,
+                Token::Comma,
+                Token::Semicolon,
+                Token::Colon,
+                Token::Dot,
+            ]
+        );
+    }
+
+    #[test]
+    fn wildcard_and_qdot() {
+        let t = tokens_only("[*] ?.");
+        assert_eq!(t, vec![Token::Wildcard, Token::QDot]);
+    }
+
+    #[test]
+    fn arrows() {
+        let t = tokens_only("\u{2190} \u{2192}");
+        assert_eq!(t, vec![Token::Arrow, Token::CaseArrow]);
+    }
+
+    #[test]
+    fn string_with_escapes() {
+        let t = tokens_only(r#""hello \"world\" \n""#);
+        assert_eq!(t, vec![Token::Str("hello \"world\" \n".into())]);
+    }
+
+    #[test]
+    fn numbers_and_dates() {
+        let t = tokens_only("42 -7 2.5 1990-01-01");
+        assert_eq!(
+            t,
+            vec![
+                Token::Int(42),
+                Token::Int(-7),
+                Token::Float(2.5),
+                Token::Date {
+                    year: 1990,
+                    month: 1,
+                    day: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn idents_and_keywords() {
+        let t = tokens_only("recipe foo Bar baz_qux");
+        assert_eq!(
+            t,
+            vec![
+                Token::Keyword("recipe".into()),
+                Token::Ident("foo".into()),
+                Token::TypeName("Bar".into()),
+                Token::Ident("baz_qux".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dollar_forms() {
+        let t = tokens_only("$ $input $secret $name");
+        assert_eq!(
+            t,
+            vec![
+                Token::DollarRoot,
+                Token::DollarInput,
+                Token::DollarSecret,
+                Token::DollarVar("name".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn comments() {
+        let t = tokens_only("// line comment\n42 /* block */ 7");
+        assert_eq!(t, vec![Token::Int(42), Token::Int(7)]);
+    }
+
+    #[test]
+    fn import_ref_scan() {
+        let t = tokens_only("import alice/zen-leaf\nimport hub.example.com/team/foo");
+        assert_eq!(
+            t,
+            vec![
+                Token::Keyword("import".into()),
+                Token::Ref("alice/zen-leaf".into()),
+                Token::Keyword("import".into()),
+                Token::Ref("hub.example.com/team/foo".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn bool_and_null() {
+        let t = tokens_only("true false null");
+        assert_eq!(t, vec![Token::Bool(true), Token::Bool(false), Token::Null]);
+    }
+}

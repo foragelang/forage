@@ -12,7 +12,21 @@ use crate::ast::pagination::Pagination;
 pub struct HTTPStep {
     pub name: String,
     pub request: HTTPRequest,
+    #[serde(default)]
     pub pagination: Option<Pagination>,
+    /// Regex extract block: pull named groups out of the response body and
+    /// bind them as scope variables for subsequent steps. Commonly used
+    /// with `auth.htmlPrime` to pull a nonce out of an HTML page.
+    #[serde(default)]
+    pub extract: Option<RegexExtract>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegexExtract {
+    pub pattern: String,
+    /// Names for each capture group, in order; group N (1-based) binds to
+    /// the Nth name in this list.
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

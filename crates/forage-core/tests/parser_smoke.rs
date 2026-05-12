@@ -1,0 +1,113 @@
+//! Parser smoke tests over a handful of representative recipes.
+
+use forage_core::ast::*;
+use forage_core::parse;
+
+const TINY_HTTP: &str = r#"
+recipe "tiny" {
+    engine http
+
+    type Item {
+        id: String,
+        name: String,
+    }
+
+    input limit: Int
+
+    step list {
+        method "GET"
+        url    "https://example.com/items?limit={$input.limit}"
+    }
+
+    for $i in $list.items[*] {
+        emit Item {
+            id   ← $i.id
+            name ← $i.name
+        }
+    }
+
+    expect { records.where(typeName == "Item").count >= 1 }
+}
+"#;
+
+#[test]
+fn parses_tiny_http_recipe() {
+    let r = parse(TINY_HTTP).expect("parse");
+    assert_eq!(r.name, "tiny");
+    assert_eq!(r.engine_kind, EngineKind::Http);
+    assert_eq!(r.types.len(), 1);
+    assert_eq!(r.types[0].name, "Item");
+    assert_eq!(r.types[0].fields.len(), 2);
+    assert_eq!(r.inputs.len(), 1);
+    assert_eq!(r.inputs[0].name, "limit");
+    assert!(matches!(r.inputs[0].ty, FieldType::Int));
+    assert_eq!(r.body.len(), 2); // step + for
+    assert_eq!(r.expectations.len(), 1);
+}
+
+const TINY_BROWSER: &str = r#"
+recipe "tiny-browser" {
+    engine browser
+
+    type Film {
+        title: String,
+        url:   String?,
+    }
+
+    browser {
+        initialURL: "https://example.com"
+        observe:    "example.com"
+        paginate browserPaginate.scroll {
+            until: noProgressFor(2)
+            maxIterations: 5
+            iterationDelay: 1.5
+        }
+        captures.document {
+            for $poster in $ {
+                emit Film {
+                    title ← $poster.title
+                    url   ← $poster.url
+                }
+            }
+        }
+    }
+
+    expect { records.where(typeName == "Film").count > 0 }
+}
+"#;
+
+#[test]
+fn parses_tiny_browser_recipe() {
+    let r = parse(TINY_BROWSER).expect("parse");
+    assert_eq!(r.engine_kind, EngineKind::Browser);
+    let b = r.browser.expect("browser block");
+    assert_eq!(b.observe, "example.com");
+    assert_eq!(b.pagination.mode, BrowserPaginationMode::Scroll);
+    assert_eq!(b.pagination.max_iterations, 5);
+    assert!(b.document_capture.is_some());
+}
+
+#[test]
+fn template_interpolation_renders_to_parts() {
+    let r = parse(TINY_HTTP).expect("parse");
+    let Statement::Step(step) = &r.body[0] else {
+        panic!("expected step")
+    };
+    // url template: "https://example.com/items?limit={$input.limit}"
+    let parts = &step.request.url.parts;
+    assert!(parts.len() >= 2);
+    // Last part should be an interpolation referring to $input.limit.
+    assert!(matches!(parts.last(), Some(TemplatePart::Interp(_))));
+}
+
+#[test]
+fn import_directive_parses() {
+    let src = r#"
+        import alice/zen-leaf
+        recipe "uses-import" { engine http }
+    "#;
+    let r = parse(src).expect("parse");
+    assert_eq!(r.imports.len(), 1);
+    assert_eq!(r.imports[0].author, "alice");
+    assert_eq!(r.imports[0].slug, "zen-leaf");
+}

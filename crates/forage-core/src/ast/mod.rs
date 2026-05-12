@@ -26,7 +26,7 @@ pub use browser::{
 pub use expr::{
     Emission, ExtractionExpr, FieldBinding, PathExpr, Template, TemplatePart, TransformCall,
 };
-pub use http::{BodyValue, HTTPBody, HTTPBodyKV, HTTPRequest, HTTPStep};
+pub use http::{BodyValue, HTTPBody, HTTPBodyKV, HTTPRequest, HTTPStep, RegexExtract};
 pub use json::JSONValue;
 pub use pagination::Pagination;
 pub use recipe::{

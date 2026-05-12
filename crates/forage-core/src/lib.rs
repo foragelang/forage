@@ -14,3 +14,4 @@ pub mod validate;
 
 pub use ast::Recipe;
 pub use error::{ForageError, ForageResult};
+pub use parse::parse;
