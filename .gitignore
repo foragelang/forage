@@ -1,22 +1,26 @@
-.build/
-.swiftpm/
-Package.resolved
-*.xcodeproj
-.DS_Store
-xcuserdata/
-DerivedData/
-.wrangler/
-
 # Rust
 target/
 **/target/
 *.rs.bk
 Cargo.lock.bak
 
+# Node
+node_modules/
+**/node_modules/
+.npm/
+*.tsbuildinfo
+
+# Frontend build output
+apps/studio/ui/dist/
+
 # mdbook output
 docs/out/
 
-# IDE
+# Cloudflare
+.wrangler/
+
+# OS / IDE
+.DS_Store
 .vscode/
 .idea/
 *.swp

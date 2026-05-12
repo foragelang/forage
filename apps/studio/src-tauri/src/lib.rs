@@ -3,6 +3,7 @@
 mod browser_driver;
 mod commands;
 mod library;
+mod menu;
 mod state;
 
 use state::StudioState;
@@ -17,7 +18,12 @@ pub fn run() {
                     .plugin(tauri_plugin_log::Builder::default().build())?;
             }
             app.manage(StudioState::default());
+            let m = menu::build_menu(app.handle())?;
+            app.set_menu(m)?;
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            menu::on_menu_event(app, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_recipes,
