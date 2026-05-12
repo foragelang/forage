@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use forage_core::parse;
+use forage_core::{parse, validate};
 
 fn recipes_root() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -31,8 +31,17 @@ fn parses_every_in_tree_recipe() {
         let slug = path.file_name().unwrap().to_string_lossy().into_owned();
         let source = fs::read_to_string(&recipe).unwrap();
         match parse(&source) {
-            Ok(_) => parsed += 1,
-            Err(e) => failures.push((slug, format!("{e}"))),
+            Ok(r) => {
+                parsed += 1;
+                let rep = validate(&r);
+                for e in rep.errors() {
+                    failures.push((
+                        slug.clone(),
+                        format!("validate: {} ({:?})", e.message, e.code),
+                    ));
+                }
+            }
+            Err(e) => failures.push((slug, format!("parse: {e}"))),
         }
     }
     println!("parsed {parsed} recipes cleanly");
@@ -40,6 +49,6 @@ fn parses_every_in_tree_recipe() {
         for (slug, err) in &failures {
             eprintln!("--- {slug}: {err}");
         }
-        panic!("{} recipes failed to parse", failures.len());
+        panic!("{} recipe issues", failures.len());
     }
 }
