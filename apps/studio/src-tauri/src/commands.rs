@@ -188,11 +188,10 @@ struct StudioDebugger {
 impl Debugger for StudioDebugger {
     async fn before_step(&self, pause: StepPause) -> ResumeAction {
         let state = self.app.state::<crate::state::StudioState>();
-        let on_breakpoint = state
-            .breakpoints
-            .lock()
-            .expect("breakpoints mutex")
-            .contains(&pause.step);
+        // Hot path: read the breakpoint set without locking. ArcSwap
+        // gives a refcounted snapshot in nanoseconds; the comparison
+        // against the step name is the dominant cost.
+        let on_breakpoint = state.breakpoints.load().contains(&pause.step);
         let step_over = self
             .session
             .step_over_pending
@@ -202,7 +201,14 @@ impl Debugger for StudioDebugger {
         }
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        *self.session.pending.lock().expect("pending mutex") = Some(tx);
+        // The Mutex is the right primitive here — see DebugSession docs:
+        // we need atomic take-and-fire on the resume path so two
+        // concurrent debug_resume callers can't both grab the sender.
+        *self
+            .session
+            .pending
+            .lock()
+            .expect("debug session pending sender") = Some(tx);
         let _ = self.app.emit(DEBUG_PAUSED_EVENT, &pause);
         rx.await.unwrap_or(ResumeAction::Stop)
     }
@@ -249,21 +255,20 @@ pub async fn run_recipe(
 
     let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink { app: app.clone() });
 
-    // Install a cancellation handle so `cancel_run` can interrupt this run.
-    // Replaces any previous handle — Studio only runs one recipe at a time.
+    // Install a cancellation handle so `cancel_run` can interrupt this
+    // run. Replaces any previous handle — Studio only runs one recipe at
+    // a time, so any leftover from a prior aborted run is stale.
     let cancel = Arc::new(Notify::new());
-    {
-        let mut guard = state.run_cancel.lock().expect("run_cancel mutex");
-        *guard = Some(cancel.clone());
-    }
+    state.run_cancel.store(Some(cancel.clone()));
 
-    // Install a debugger for every HTTP run — breakpoint hits drive pauses,
-    // so the debugger has to be present even if no breakpoints are set yet
-    // (the user might toggle one mid-run). Browser-engine runs go through
-    // a separate driver that the v1 debugger doesn't hook into.
+    // Install a debugger for every HTTP run — breakpoint hits drive
+    // pauses, so the debugger has to be present even if no breakpoints
+    // are set yet (the user might toggle one mid-run). Browser-engine
+    // runs go through a separate driver that the v1 debugger doesn't
+    // hook into.
     let debugger: Option<Arc<dyn Debugger>> = if recipe.engine_kind == EngineKind::Http {
         let session = Arc::new(crate::state::DebugSession::default());
-        *state.debug_session.lock().expect("debug_session mutex") = Some(session.clone());
+        state.debug_session.store(Some(session.clone()));
         Some(Arc::new(StudioDebugger {
             app: app.clone(),
             session,
@@ -307,17 +312,12 @@ pub async fn run_recipe(
         }
     };
 
-    // Clear the cancellation handle so a stale notify can't fire on the next run.
-    {
-        let mut guard = state.run_cancel.lock().expect("run_cancel mutex");
-        *guard = None;
-    }
-    // Clear the debug session so a stale oneshot can't be resumed against
-    // a finished run. Dropping the Arc drops any unfilled sender too.
-    {
-        let mut guard = state.debug_session.lock().expect("debug_session mutex");
-        *guard = None;
-    }
+    // Clear the cancellation handle so a stale notify can't fire on the
+    // next run, and tear down the debug session so the resume path
+    // can't wake into a finished engine. Dropping the session's Arc
+    // drops any unfilled oneshot sender along with it.
+    state.run_cancel.store(None);
+    state.debug_session.store(None);
 
     match snapshot {
         Ok(s) => Ok(RunOutcome {
@@ -346,12 +346,7 @@ pub fn debug_resume(
     state: State<'_, crate::state::StudioState>,
     action: String,
 ) -> Result<(), String> {
-    let session = state
-        .debug_session
-        .lock()
-        .expect("debug_session mutex")
-        .clone();
-    let Some(session) = session else {
+    let Some(session) = state.debug_session.load_full() else {
         return Ok(());
     };
 
@@ -367,7 +362,11 @@ pub fn debug_resume(
         other => return Err(format!("unknown debug action: {other}")),
     };
 
-    let pending = session.pending.lock().expect("pending mutex").take();
+    let pending = session
+        .pending
+        .lock()
+        .expect("debug session pending sender")
+        .take();
     if let Some(tx) = pending {
         // send() fails only when the receiver has been dropped (run was
         // cancelled). Either way, nothing else to do.
@@ -383,18 +382,19 @@ pub fn set_breakpoints(
     state: State<'_, crate::state::StudioState>,
     steps: Vec<String>,
 ) -> Result<(), String> {
-    let mut g = state.breakpoints.lock().expect("breakpoints mutex");
-    *g = steps.into_iter().collect();
+    state
+        .breakpoints
+        .store(Arc::new(steps.into_iter().collect()));
     Ok(())
 }
 
 /// Cancel the currently-running recipe (if any). Idempotent — calling when
-/// nothing is running is a no-op. Wakes the `tokio::select!` in `run_recipe`,
-/// which drops the engine future and any in-flight reqwest call.
+/// nothing is running is a no-op. Wakes the `tokio::select!` in
+/// `run_recipe`, which drops the engine future and any in-flight reqwest
+/// call.
 #[tauri::command]
 pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), String> {
-    let guard = state.run_cancel.lock().expect("run_cancel mutex");
-    if let Some(n) = guard.as_ref() {
+    if let Some(n) = state.run_cancel.load_full() {
         n.notify_one();
     }
     Ok(())
