@@ -93,12 +93,26 @@ export function App() {
     // Subscribe once to the engine progress event stream. The listener stays
     // active for the life of the app; events outside a run are ignored by
     // the store (runBegin clears the log before each run).
+    //
+    // The `cancelled` flag is load-bearing: React.StrictMode mounts the
+    // effect, immediately unmounts it, then remounts. With an async
+    // `.then(u => un = u)`, both cleanups run before either listen()
+    // promise resolves — `un` is undefined in cleanup #1, so the first
+    // listener never gets disposed. Result: two live listeners and every
+    // event fires twice. Tracking the cancellation lets us dispose the
+    // first handle the moment its promise resolves.
     useEffect(() => {
+        let cancelled = false;
         let un: (() => void) | undefined;
         listen<RunEvent>(RUN_EVENT, (e) => runAppend(e.payload)).then((u) => {
-            un = u;
+            if (cancelled) {
+                u();
+            } else {
+                un = u;
+            }
         });
         return () => {
+            cancelled = true;
             un?.();
         };
     }, []);

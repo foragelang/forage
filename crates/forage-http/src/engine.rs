@@ -753,6 +753,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn leafbridge_flow_prime_then_paginated_per_menu_type() {
+        // Integration regression for the Leafbridge pattern used by the
+        // remedy-* / zen-leaf-* recipes. Exercises:
+        //   - auth.htmlPrime: GET menu page, regex-extract $ajaxUrl + $ajaxNonce
+        //   - for $menu in $input.menuTypes: paginated POSTs
+        //   - body templating with {$page} (without it, the loop would never
+        //     terminate because the body would always say page=1)
+        //   - $page resets to 1 at the start of each step invocation
+        //
+        // The mock transport returns 2 pages of 2 products per menu type, with
+        // page 3 returning an empty list to terminate untilEmpty pagination.
+        use crate::transport::{HttpRequest, HttpResponse};
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct LeafbridgeMock {
+            seen: Mutex<Vec<HttpRequest>>,
+        }
+
+        #[async_trait]
+        impl Transport for LeafbridgeMock {
+            async fn fetch(&self, req: HttpRequest) -> HttpResult<HttpResponse> {
+                self.seen.lock().unwrap().push(req.clone());
+
+                if req.method == "GET" {
+                    let html = r#"<html><script>
+                        var leafbridge_public_ajax_obj = {"ajaxurl":"https://remedy.test/wp-admin/admin-ajax.php","nonce":"deadbeef1234"};
+                    </script></html>"#;
+                    return Ok(HttpResponse {
+                        status: 200,
+                        headers: IndexMap::new(),
+                        body: html.as_bytes().to_vec(),
+                    });
+                }
+
+                let body =
+                    String::from_utf8(req.body.clone().unwrap_or_default()).expect("utf8 body");
+                let page: u32 = form_field(&body, "prods_pageNumber")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let menu_type = form_field(&body, "wizard_data%5Bmenu_type%5D").unwrap_or_default();
+
+                let products_json = if page <= 2 {
+                    format!(
+                        r#"[{{"id":"{menu_type}-p{page}-a","name":"{menu_type} P{page}A"}},{{"id":"{menu_type}-p{page}-b","name":"{menu_type} P{page}B"}}]"#,
+                    )
+                } else {
+                    "[]".into()
+                };
+                let body = format!(r#"{{"data":{{"products_list":{products_json}}}}}"#);
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: IndexMap::new(),
+                    body: body.into_bytes(),
+                })
+            }
+        }
+
+        fn form_field(form: &str, key: &str) -> Option<String> {
+            let prefix = format!("{key}=");
+            for kv in form.split('&') {
+                if let Some(rest) = kv.strip_prefix(&prefix) {
+                    return Some(rest.to_string());
+                }
+            }
+            None
+        }
+
+        let src = r#"
+            recipe "leafbridge-flow" {
+                engine http
+                type Product { id: String, name: String }
+                enum MenuType { RECREATIONAL, MEDICAL }
+
+                input menuPageURL: String
+                input menuTypes: [MenuType]
+                input retailerId: String
+
+                auth.htmlPrime {
+                    step:        prime
+                    nonceVar:    "ajaxNonce"
+                    ajaxUrlVar:  "ajaxUrl"
+                }
+
+                step prime {
+                    method "GET"
+                    url    "{$input.menuPageURL}"
+                    extract.regex {
+                        pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
+                        groups: [ajaxUrl, ajaxNonce]
+                    }
+                }
+
+                for $menu in $input.menuTypes {
+                    step products {
+                        method "POST"
+                        url    "{$ajaxUrl}"
+                        body.form {
+                            "nonce_ajax":                          "{$ajaxNonce}"
+                            "wizard_data[retailer_id]":            "{$input.retailerId}"
+                            "wizard_data[menu_type]":              case $menu of {
+                                                                       RECREATIONAL → "RECREATIONAL"
+                                                                       MEDICAL      → "MEDICAL"
+                                                                   }
+                            "prods_pageNumber":                    "{$page}"
+                        }
+                        paginate untilEmpty {
+                            items:     $.data.products_list
+                            pageParam: "prods_pageNumber"
+                        }
+                    }
+
+                    for $p in $products[*] {
+                        emit Product { id ← $p.id, name ← $p.name }
+                    }
+                }
+            }
+        "#;
+        let recipe = parse(src).expect("recipe parses");
+        let validation = forage_core::validate(&recipe);
+        assert!(
+            !validation.has_errors(),
+            "validation errors: {validation:?}"
+        );
+
+        let inputs: IndexMap<String, EvalValue> = [
+            (
+                "menuPageURL".into(),
+                EvalValue::String("https://remedy.test/menu".into()),
+            ),
+            (
+                "menuTypes".into(),
+                EvalValue::Array(vec![
+                    EvalValue::String("RECREATIONAL".into()),
+                    EvalValue::String("MEDICAL".into()),
+                ]),
+            ),
+            ("retailerId".into(), EvalValue::String("uuid-1234".into())),
+        ]
+        .into_iter()
+        .collect();
+
+        let transport = LeafbridgeMock {
+            seen: Mutex::new(Vec::new()),
+        };
+        let snap = Engine::new(&transport)
+            .run(&recipe, inputs, IndexMap::new())
+            .await
+            .expect("run ok");
+
+        // 2 menu types × 2 non-empty pages × 2 products = 8 records.
+        let products: Vec<_> = snap
+            .records
+            .iter()
+            .filter(|r| r.type_name == "Product")
+            .collect();
+        assert_eq!(products.len(), 8, "expected 8 products, got {products:?}");
+
+        // 1 prime GET + 2 menu types × 3 POSTs (page 1, 2, 3-empty) = 7 requests.
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), 7, "expected 7 requests, got {}", seen.len());
+        assert_eq!(seen[0].method, "GET");
+        assert!(seen[0].url.contains("/menu"));
+        for r in &seen[1..] {
+            assert_eq!(r.method, "POST");
+            assert!(
+                r.url
+                    .starts_with("https://remedy.test/wp-admin/admin-ajax.php")
+            );
+        }
+
+        // Bodies should show $page templating: pages 1,2,3 for RECREATIONAL,
+        // then pages 1,2,3 for MEDICAL.
+        let body_str = |r: &HttpRequest| -> String {
+            String::from_utf8(r.body.clone().unwrap_or_default()).unwrap()
+        };
+        let expected_pages = [1u32, 2, 3, 1, 2, 3];
+        let expected_menus = [
+            "RECREATIONAL",
+            "RECREATIONAL",
+            "RECREATIONAL",
+            "MEDICAL",
+            "MEDICAL",
+            "MEDICAL",
+        ];
+        for (i, r) in seen[1..].iter().enumerate() {
+            let b = body_str(r);
+            let p = expected_pages[i];
+            let m = expected_menus[i];
+            assert!(
+                b.contains(&format!("prods_pageNumber={p}")),
+                "request {i}: expected prods_pageNumber={p}, body was {b}",
+            );
+            assert!(
+                b.contains(&format!("wizard_data%5Bmenu_type%5D={m}")),
+                "request {i}: expected menu_type={m}, body was {b}",
+            );
+            assert!(
+                b.contains("nonce_ajax=deadbeef1234"),
+                "request {i}: expected captured nonce in body, was {b}",
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn missing_fixture_errors() {
         let src = r#"
             recipe "tiny" {
