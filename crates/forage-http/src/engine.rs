@@ -7,7 +7,7 @@
 use indexmap::IndexMap;
 use tracing::debug;
 
-use crate::auth::apply_request_headers;
+use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
@@ -67,10 +67,22 @@ impl<'t> Engine<'t> {
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
 
+        // Run session-auth login flow if declared. Cookies thread via
+        // the Transport's cookie jar; bearer tokens flow through AuthState.
+        let auth_state = run_session_login(
+            recipe.auth.as_ref(),
+            self.transport,
+            &evaluator,
+            &scope,
+            &self.config.user_agent,
+        )
+        .await?;
+
         let mut requests_made: u32 = 0;
         self.run_statements(
             &recipe.body,
             recipe,
+            &auth_state,
             &evaluator,
             &mut scope,
             &mut snapshot,
@@ -86,6 +98,7 @@ impl<'t> Engine<'t> {
         &'a self,
         body: &'a [Statement],
         recipe: &'a Recipe,
+        auth_state: &'a AuthState,
         evaluator: &'a Evaluator<'a>,
         scope: &'a mut Scope,
         snapshot: &'a mut Snapshot,
@@ -95,7 +108,7 @@ impl<'t> Engine<'t> {
             for s in body {
                 match s {
                     Statement::Step(step) => {
-                        self.run_step(step, recipe, evaluator, scope, requests_made)
+                        self.run_step(step, recipe, auth_state, evaluator, scope, requests_made)
                             .await?;
                     }
                     Statement::Emit(em) => {
@@ -123,6 +136,7 @@ impl<'t> Engine<'t> {
                             self.run_statements(
                                 body,
                                 recipe,
+                                auth_state,
                                 evaluator,
                                 scope,
                                 snapshot,
@@ -143,6 +157,7 @@ impl<'t> Engine<'t> {
         &self,
         step: &HTTPStep,
         recipe: &Recipe,
+        auth_state: &AuthState,
         evaluator: &Evaluator<'_>,
         scope: &mut Scope,
         requests_made: &mut u32,
@@ -159,7 +174,8 @@ impl<'t> Engine<'t> {
             }
             *requests_made += 1;
 
-            let req = self.build_request(step, recipe, evaluator, scope, &extra_query)?;
+            let req =
+                self.build_request(step, recipe, auth_state, evaluator, scope, &extra_query)?;
             debug!(method = %req.method, url = %req.url, "step request");
 
             let resp = self.transport.fetch(req.clone()).await?;
@@ -175,6 +191,13 @@ impl<'t> Engine<'t> {
             // Bind `$<stepName>` to the response body for downstream eval.
             scope.bind(&step.name, body_val.clone());
             scope.current = Some(body_val.clone());
+
+            // extract.regex { pattern, groups } — bind each group name from
+            // the response body. Used by Leafbridge-style auth.htmlPrime.
+            if let Some(ex) = &step.extract {
+                let body_str = resp.body_str();
+                apply_regex_extract(ex, body_str, scope)?;
+            }
 
             match driver.as_mut() {
                 Some(d) => match d.advance(evaluator, scope)? {
@@ -211,6 +234,7 @@ impl<'t> Engine<'t> {
         &self,
         step: &HTTPStep,
         recipe: &Recipe,
+        auth_state: &AuthState,
         evaluator: &Evaluator<'_>,
         scope: &Scope,
         extra_query: &[(String, String)],
@@ -233,7 +257,13 @@ impl<'t> Engine<'t> {
         headers
             .entry("User-Agent".into())
             .or_insert(self.config.user_agent.clone());
-        apply_request_headers(recipe.auth.as_ref(), evaluator, scope, &mut headers)?;
+        apply_request_headers(
+            recipe.auth.as_ref(),
+            auth_state,
+            evaluator,
+            scope,
+            &mut headers,
+        )?;
 
         let body = if let Some(b) = &step.request.body {
             let (content_type, bytes) = render_body(b, evaluator, scope)?;
@@ -250,6 +280,21 @@ impl<'t> Engine<'t> {
             body,
         })
     }
+}
+
+fn apply_regex_extract(ex: &RegexExtract, body: &str, scope: &mut Scope) -> HttpResult<()> {
+    let re = regex::Regex::new(&ex.pattern)
+        .map_err(|e| HttpError::Generic(format!("regex compile: {e}")))?;
+    if let Some(caps) = re.captures(body) {
+        for (i, group_name) in ex.groups.iter().enumerate() {
+            let v = caps
+                .get(i + 1)
+                .map(|m| EvalValue::String(m.as_str().to_string()))
+                .unwrap_or(EvalValue::Null);
+            scope.bind(group_name, v);
+        }
+    }
+    Ok(())
 }
 
 fn parse_response_body(url: &str, resp: &HttpResponse) -> HttpResult<EvalValue> {
