@@ -9,10 +9,10 @@ pub mod error;
 pub mod eval;
 pub mod parse;
 pub mod snapshot;
-pub mod transforms;
 pub mod validate;
 
 pub use ast::Recipe;
 pub use error::{ForageError, ForageResult};
+pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
 pub use parse::parse;
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
