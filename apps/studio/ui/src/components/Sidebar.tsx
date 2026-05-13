@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Database, FileText, Plus } from "lucide-react";
+import { FileText, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +13,6 @@ import {
     SidebarGroup,
     SidebarHeader,
     SidebarMenu,
-    SidebarMenuBadge,
     SidebarMenuButton,
     SidebarMenuItem,
     SidebarMenuSkeleton,
@@ -173,11 +172,6 @@ export function Sidebar() {
                                             {r.slug}
                                         </span>
                                     </SidebarMenuButton>
-                                    {r.has_fixtures && (
-                                        <SidebarMenuBadge className="top-1/2 -translate-y-1/2 text-muted-foreground">
-                                            <Database className="size-3" />
-                                        </SidebarMenuBadge>
-                                    )}
                                 </SidebarMenuItem>
                             ))}
                         {!recipes.isLoading && items.length === 0 && (
