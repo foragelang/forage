@@ -620,16 +620,15 @@ mod tests {
     #[tokio::test]
     async fn runs_one_step_recipe_against_replay() {
         let src = r#"
-            recipe "tiny" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url "https://api.example.com/items"
-                }
-                for $i in $list.items[*] {
-                    emit Item { id ← $i.id }
-                }
+            recipe "tiny"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -662,20 +661,19 @@ mod tests {
         // object `{list: [...], total: N}` must bind `$<step>` to the
         // flattened items list across pages, not the last page's body.
         let src = r#"
-            recipe "paged" {
-                engine http
-                type Item { id: String }
-                step products {
-                    method "GET"
-                    url "https://api.example.com/items"
-                    paginate pageWithTotal {
-                        items: $.list, total: $.total,
-                        pageParam: "page", pageSize: 2
-                    }
+            recipe "paged"
+            engine http
+            type Item { id: String }
+            step products {
+                method "GET"
+                url "https://api.example.com/items"
+                paginate pageWithTotal {
+                    items: $.list, total: $.total,
+                    pageParam: "page", pageSize: 2
                 }
-                for $p in $products[*] {
-                    emit Item { id ← $p.id }
-                }
+            }
+            for $p in $products[*] {
+                emit Item { id ← $p.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -750,22 +748,21 @@ mod tests {
         }
 
         let src = r#"
-            recipe "leafy" {
-                engine http
-                type Item { id: String }
-                step products {
-                    method "POST"
-                    url "https://example.com/ajax"
-                    body.form {
-                        "page": "{$page}"
-                    }
-                    paginate untilEmpty {
-                        items: $.list, pageParam: "page"
-                    }
+            recipe "leafy"
+            engine http
+            type Item { id: String }
+            step products {
+                method "POST"
+                url "https://example.com/ajax"
+                body.form {
+                    "page": "{$page}"
                 }
-                for $p in $products[*] {
-                    emit Item { id ← $p.id }
+                paginate untilEmpty {
+                    items: $.list, pageParam: "page"
                 }
+            }
+            for $p in $products[*] {
+                emit Item { id ← $p.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -805,16 +802,15 @@ mod tests {
         use std::sync::Arc;
 
         let src = r#"
-            recipe "events" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url "https://api.example.com/items"
-                }
-                for $i in $list.items[*] {
-                    emit Item { id ← $i.id }
-                }
+            recipe "events"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -881,15 +877,14 @@ mod tests {
         use std::sync::Arc;
 
         let src = r#"
-            recipe "broken" {
-                engine http
-                type T { x: String }
-                step go {
-                    method "GET"
-                    url "https://api.example.com/missing"
-                }
-                emit T { x ← "hi" }
+            recipe "broken"
+            engine http
+            type T { x: String }
+            step go {
+                method "GET"
+                url "https://api.example.com/missing"
             }
+            emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
         let transport = ReplayTransport::new(vec![]);
@@ -976,52 +971,51 @@ mod tests {
         }
 
         let src = r#"
-            recipe "leafbridge-flow" {
-                engine http
-                type Product { id: String, name: String }
-                enum MenuType { RECREATIONAL, MEDICAL }
+            recipe "leafbridge-flow"
+            engine http
+            type Product { id: String, name: String }
+            enum MenuType { RECREATIONAL, MEDICAL }
 
-                input menuPageURL: String
-                input menuTypes: [MenuType]
-                input retailerId: String
+            input menuPageURL: String
+            input menuTypes: [MenuType]
+            input retailerId: String
 
-                auth.htmlPrime {
-                    step:        prime
-                    nonceVar:    "ajaxNonce"
-                    ajaxUrlVar:  "ajaxUrl"
+            auth.htmlPrime {
+                step:        prime
+                nonceVar:    "ajaxNonce"
+                ajaxUrlVar:  "ajaxUrl"
+            }
+
+            step prime {
+                method "GET"
+                url    "{$input.menuPageURL}"
+                extract.regex {
+                    pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
+                    groups: [ajaxUrl, ajaxNonce]
+                }
+            }
+
+            for $menu in $input.menuTypes {
+                step products {
+                    method "POST"
+                    url    "{$ajaxUrl}"
+                    body.form {
+                        "nonce_ajax":                          "{$ajaxNonce}"
+                        "wizard_data[retailer_id]":            "{$input.retailerId}"
+                        "wizard_data[menu_type]":              case $menu of {
+                                                                   RECREATIONAL → "RECREATIONAL"
+                                                                   MEDICAL      → "MEDICAL"
+                                                               }
+                        "prods_pageNumber":                    "{$page}"
+                    }
+                    paginate untilEmpty {
+                        items:     $.data.products_list
+                        pageParam: "prods_pageNumber"
+                    }
                 }
 
-                step prime {
-                    method "GET"
-                    url    "{$input.menuPageURL}"
-                    extract.regex {
-                        pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
-                        groups: [ajaxUrl, ajaxNonce]
-                    }
-                }
-
-                for $menu in $input.menuTypes {
-                    step products {
-                        method "POST"
-                        url    "{$ajaxUrl}"
-                        body.form {
-                            "nonce_ajax":                          "{$ajaxNonce}"
-                            "wizard_data[retailer_id]":            "{$input.retailerId}"
-                            "wizard_data[menu_type]":              case $menu of {
-                                                                       RECREATIONAL → "RECREATIONAL"
-                                                                       MEDICAL      → "MEDICAL"
-                                                                   }
-                            "prods_pageNumber":                    "{$page}"
-                        }
-                        paginate untilEmpty {
-                            items:     $.data.products_list
-                            pageParam: "prods_pageNumber"
-                        }
-                    }
-
-                    for $p in $products[*] {
-                        emit Product { id ← $p.id, name ← $p.name }
-                    }
+                for $p in $products[*] {
+                    emit Product { id ← $p.id, name ← $p.name }
                 }
             }
         "#;
@@ -1114,15 +1108,14 @@ mod tests {
     #[tokio::test]
     async fn missing_fixture_errors() {
         let src = r#"
-            recipe "tiny" {
-                engine http
-                type T { x: String }
-                step go {
-                    method "GET"
-                    url "https://api.example.com/nope"
-                }
-                emit T { x ← "hi" }
+            recipe "tiny"
+            engine http
+            type T { x: String }
+            step go {
+                method "GET"
+                url "https://api.example.com/nope"
             }
+            emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
         let transport = ReplayTransport::new(vec![]);
@@ -1143,21 +1136,20 @@ mod tests {
         use crate::debug::RecordingDebugger;
 
         let src = r#"
-            recipe "twostep" {
-                engine http
-                secret token
-                type Item { id: String }
-                step first {
-                    method "GET"
-                    url "https://api.example.com/a"
-                }
-                step second {
-                    method "GET"
-                    url "https://api.example.com/b"
-                }
-                for $i in $second.items[*] {
-                    emit Item { id ← $i.id }
-                }
+            recipe "twostep"
+            engine http
+            secret token
+            type Item { id: String }
+            step first {
+                method "GET"
+                url "https://api.example.com/a"
+            }
+            step second {
+                method "GET"
+                url "https://api.example.com/b"
+            }
+            for $i in $second.items[*] {
+                emit Item { id ← $i.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -1231,15 +1223,14 @@ mod tests {
         use crate::debug::RecordingDebugger;
 
         let src = r#"
-            recipe "oneStep" {
-                engine http
-                type T { x: String }
-                step go {
-                    method "GET"
-                    url "https://api.example.com/x"
-                }
-                emit T { x ← "hi" }
+            recipe "oneStep"
+            engine http
+            type T { x: String }
+            step go {
+                method "GET"
+                url "https://api.example.com/x"
             }
+            emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
         // An empty ReplayTransport would error on any fetch — if the engine
@@ -1270,16 +1261,15 @@ mod tests {
         use crate::debug::RecordingDebugger;
 
         let src = r#"
-            recipe "iter" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url "https://api.example.com/items"
-                }
-                for $i in $list.items[*] {
-                    emit Item { id ← $i.id }
-                }
+            recipe "iter"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
             }
         "#;
         let recipe = parse(src).unwrap();
@@ -1332,16 +1322,15 @@ mod tests {
         use crate::debug::RecordingDebugger;
 
         let src = r#"
-            recipe "iter-stop" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url "https://api.example.com/items"
-                }
-                for $i in $list.items[*] {
-                    emit Item { id ← $i.id }
-                }
+            recipe "iter-stop"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
             }
         "#;
         let recipe = parse(src).unwrap();

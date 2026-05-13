@@ -648,17 +648,16 @@ mod tests {
     #[test]
     fn clean_recipe_has_no_errors() {
         let src = r#"
-            recipe "ok" {
-                engine http
-                type Item { id: String }
-                input limit: Int
-                step list {
-                    method "GET"
-                    url    "https://example.com/items?limit={$input.limit}"
-                }
-                for $x in $list.items[*] {
-                    emit Item { id ← $x.id }
-                }
+            recipe "ok"
+            engine http
+            type Item { id: String }
+            input limit: Int
+            step list {
+                method "GET"
+                url    "https://example.com/items?limit={$input.limit}"
+            }
+            for $x in $list.items[*] {
+                emit Item { id ← $x.id }
             }
         "#;
         let r = parse(src).unwrap();
@@ -669,16 +668,15 @@ mod tests {
     #[test]
     fn unknown_input_flagged() {
         let src = r#"
-            recipe "bad" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url    "https://example.com/items?limit={$input.notDeclared}"
-                }
-                for $x in $list.items[*] {
-                    emit Item { id ← $x.id }
-                }
+            recipe "bad"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url    "https://example.com/items?limit={$input.notDeclared}"
+            }
+            for $x in $list.items[*] {
+                emit Item { id ← $x.id }
             }
         "#;
         let r = parse(src).unwrap();
@@ -693,16 +691,15 @@ mod tests {
     #[test]
     fn missing_required_field_flagged() {
         let src = r#"
-            recipe "bad" {
-                engine http
-                type Item { id: String, name: String }
-                step list {
-                    method "GET"
-                    url "https://example.com"
-                }
-                for $x in $list.items[*] {
-                    emit Item { id ← $x.id }
-                }
+            recipe "bad"
+            engine http
+            type Item { id: String, name: String }
+            step list {
+                method "GET"
+                url "https://example.com"
+            }
+            for $x in $list.items[*] {
+                emit Item { id ← $x.id }
             }
         "#;
         let r = parse(src).unwrap();
@@ -723,19 +720,18 @@ mod tests {
         // - missing required field → the emit block
         // - unknown transform → the enclosing emit (until expression
         //   spans land; granularity ≥ statement is the contract)
-        let src = r#"recipe "spans" {
-    engine http
-    type Item { id: String }
-    type Item { name: String }
-    step list {
-        method "GET"
-        url "https://example.com"
-    }
-    for $x in $list.items[*] {
-        emit Item { id ← $x.id | nopeTransform }
-    }
-    emit Item { }
+        let src = r#"recipe "spans"
+engine http
+type Item { id: String }
+type Item { name: String }
+step list {
+    method "GET"
+    url "https://example.com"
 }
+for $x in $list.items[*] {
+    emit Item { id ← $x.id | nopeTransform }
+}
+emit Item { }
 "#;
         let r = parse(src).unwrap();
         let rep = validate(&r);
@@ -785,14 +781,13 @@ mod tests {
     #[test]
     fn http_recipe_with_browser_block_flagged() {
         let src = r#"
-            recipe "bad" {
-                engine http
-                type Item { id: String }
-                browser {
-                    initialURL: "x"
-                    observe:    "y"
-                    paginate browserPaginate.scroll { until: noProgressFor(1) }
-                }
+            recipe "bad"
+            engine http
+            type Item { id: String }
+            browser {
+                initialURL: "x"
+                observe:    "y"
+                paginate browserPaginate.scroll { until: noProgressFor(1) }
             }
         "#;
         let r = parse(src).unwrap();
@@ -806,16 +801,15 @@ mod tests {
     #[test]
     fn undeclared_secret_flagged() {
         let src = r#"
-            recipe "bad" {
-                engine http
-                type Item { id: String }
-                step list {
-                    method "GET"
-                    url "https://example.com/{$secret.token}"
-                }
-                for $x in $list.items[*] {
-                    emit Item { id ← $x.id }
-                }
+            recipe "bad"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://example.com/{$secret.token}"
+            }
+            for $x in $list.items[*] {
+                emit Item { id ← $x.id }
             }
         "#;
         let r = parse(src).unwrap();

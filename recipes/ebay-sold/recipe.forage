@@ -31,45 +31,44 @@
 //   re-run with `--interactive`. Forage doesn't try to defeat the
 //   re-challenge — the pattern is purely a re-prompt signal.
 
-recipe "ebay-sold" {
-    engine browser
+recipe "ebay-sold"
+engine browser
 
-    type SoldListing {
-        title:     String
-        soldPrice: String?
-        condition: String?
-        url:       String?
-        soldDate:  String?
+type SoldListing {
+    title:     String
+    soldPrice: String?
+    condition: String?
+    url:       String?
+    soldDate:  String?
+}
+
+input query: String
+
+browser {
+    initialURL: "https://www.ebay.com/sch/i.html?_nkw={$input.query}&LH_Sold=1&LH_Complete=1"
+    observe:    "ebay.com/sch"
+    paginate browserPaginate.scroll {
+        until:          noProgressFor(2)
+        maxIterations:  0
+        iterationDelay: 1.5
     }
 
-    input query: String
+    interactive {
+        cookieDomains: ["ebay.com", ".ebay.com"]
+        sessionExpiredPattern: "Security Measure"
+    }
 
-    browser {
-        initialURL: "https://www.ebay.com/sch/i.html?_nkw={$input.query}&LH_Sold=1&LH_Complete=1"
-        observe:    "ebay.com/sch"
-        paginate browserPaginate.scroll {
-            until:          noProgressFor(2)
-            maxIterations:  0
-            iterationDelay: 1.5
-        }
-
-        interactive {
-            cookieDomains: ["ebay.com", ".ebay.com"]
-            sessionExpiredPattern: "Security Measure"
-        }
-
-        captures.document {
-            for $card in $ | select("li.s-item") {
-                emit SoldListing {
-                    title     ← $card | select(".s-item__title span") | text
-                    soldPrice ← $card | select(".s-item__price") | text
-                    condition ← $card | select(".SECONDARY_INFO") | text
-                    url       ← $card | select("a.s-item__link") | attr("href")
-                    soldDate  ← $card | select(".s-item__caption--row .POSITIVE") | text
-                }
+    captures.document {
+        for $card in $ | select("li.s-item") {
+            emit SoldListing {
+                title     ← $card | select(".s-item__title span") | text
+                soldPrice ← $card | select(".s-item__price") | text
+                condition ← $card | select(".SECONDARY_INFO") | text
+                url       ← $card | select("a.s-item__link") | attr("href")
+                soldDate  ← $card | select(".s-item__caption--row .POSITIVE") | text
             }
         }
     }
-
-    expect { records.where(typeName == "SoldListing").count >= 1 }
 }
+
+expect { records.where(typeName == "SoldListing").count >= 1 }

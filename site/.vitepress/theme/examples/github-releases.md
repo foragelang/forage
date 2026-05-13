@@ -1,29 +1,28 @@
 ```forage
-recipe "github-releases" {
-    engine http
+recipe "github-releases"
+engine http
 
-    type Release {
-        tag:       String
-        name:      String?
-        published: String
-        url:       String
-    }
+type Release {
+    tag:       String
+    name:      String?
+    published: String
+    url:       String
+}
 
-    input owner: String
-    input repo:  String
+input owner: String
+input repo:  String
 
-    step releases {
-        method "GET"
-        url    "https://api.github.com/repos/{$input.owner}/{$input.repo}/releases?per_page=15"
-    }
+step releases {
+    method "GET"
+    url    "https://api.github.com/repos/{$input.owner}/{$input.repo}/releases?per_page=15"
+}
 
-    for $r in $releases[*] {
-        emit Release {
-            tag       ← $r.tag_name
-            name      ← $r.name
-            published ← $r.published_at
-            url       ← $r.html_url
-        }
+for $r in $releases[*] {
+    emit Release {
+        tag       ← $r.tag_name
+        name      ← $r.name
+        published ← $r.published_at
+        url       ← $r.html_url
     }
 }
 ```

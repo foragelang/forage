@@ -190,7 +190,13 @@ impl Parser {
 
     // --- grammar -----------------------------------------------------------
 
-    /// recipe := imports? recipe_decl
+    /// recipe := imports? 'recipe' STRING 'engine' kind decl*
+    ///
+    /// The recipe header and body live flat at the top level — the file IS
+    /// the recipe, so there is no surrounding `{ }` block. The first two
+    /// declarations must be `recipe "<name>"` and `engine <kind>`; every
+    /// subsequent top-level form (type / enum / input / secret / auth /
+    /// browser / step / for / emit / expect) belongs to this recipe.
     fn parse_recipe(&mut self) -> Result<Recipe, ParseError> {
         let mut imports = Vec::new();
         while self.eat_keyword("import") {
@@ -200,7 +206,6 @@ impl Parser {
 
         self.expect_keyword("recipe")?;
         let name = self.expect_string()?;
-        self.expect_punct(&Token::LBrace)?;
 
         // engine <kind>
         self.expect_keyword("engine")?;
@@ -215,7 +220,7 @@ impl Parser {
         let mut browser: Option<BrowserConfig> = None;
         let mut expectations: Vec<Expectation> = Vec::new();
 
-        while !matches!(self.peek(), Some(Token::RBrace) | None) {
+        while self.peek().is_some() {
             match self.peek().cloned() {
                 Some(Token::Keyword(k)) => match k.as_str() {
                     "type" => types.push(self.parse_type_decl()?),
@@ -242,18 +247,22 @@ impl Parser {
                     "step" | "for" | "emit" => {
                         body.push(self.parse_statement()?);
                     }
+                    "recipe" => {
+                        return Err(self.generic(
+                            "a file may only declare one recipe (and the header must come first)",
+                        ));
+                    }
                     other => return Err(self.generic(&format!("unexpected keyword '{other}'"))),
                 },
                 Some(other) => {
                     return Err(self.generic(&format!(
-                        "unexpected token in recipe body: {}",
+                        "unexpected token at top level: {}",
                         other.describe()
                     )));
                 }
                 None => break,
             }
         }
-        self.expect_punct(&Token::RBrace)?;
 
         Ok(Recipe {
             name,

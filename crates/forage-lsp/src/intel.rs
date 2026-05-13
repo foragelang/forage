@@ -148,20 +148,19 @@ fn _recipe_ty(_r: &Recipe) {}
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = r#"recipe "test" {
-    engine http
-    type Item { id: String, name: String? }
-    input limit: Int
-    secret token
+    const FIXTURE: &str = r#"recipe "test"
+engine http
+type Item { id: String, name: String? }
+input limit: Int
+secret token
 
-    step list {
-        method "GET"
-        url "https://example.com"
-    }
+step list {
+    method "GET"
+    url "https://example.com"
+}
 
-    for $i in $list[*] {
-        emit Item { id ← $i.id | trim }
-    }
+for $i in $list[*] {
+    emit Item { id ← $i.id | trim }
 }
 "#;
 
@@ -212,9 +211,9 @@ mod tests {
     #[test]
     fn hover_on_step_name_identifies_step() {
         // Land in the middle of `list` (the step name), not on the
-        // `step` keyword. The fixture has `    step list {` — column
-        // 10 is the `s` of `list`.
-        let h = hover_at(FIXTURE, 6, 10).expect("hover on 'list'");
+        // `step` keyword. The fixture has `step list {` at top level —
+        // column 6 is the `i` of `list`.
+        let h = hover_at(FIXTURE, 6, 6).expect("hover on 'list'");
         assert!(h.markdown.contains("step"));
         assert!(h.markdown.contains("list"));
     }

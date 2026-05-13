@@ -85,26 +85,25 @@ describe('html extraction primitives', () => {
 describe('html extraction end-to-end', () => {
     it('iterates HTML via for-loop with pipe-driven collection', async () => {
         const source = `
-            recipe "html-listings" {
-                engine http
+            recipe "html-listings"
+            engine http
 
-                type Item {
-                    title: String
-                    url:   String?
-                }
+            type Item {
+                title: String
+                url:   String?
+            }
 
-                input page: String
+            input page: String
 
-                step fetch {
-                    method "GET"
-                    url    "{$input.page}"
-                }
+            step fetch {
+                method "GET"
+                url    "{$input.page}"
+            }
 
-                for $li in $fetch | parseHtml | select("li.story") {
-                    emit Item {
-                        title ← $li | select("a") | text
-                        url   ← $li | select("a") | attr("href")
-                    }
+            for $li in $fetch | parseHtml | select("li.story") {
+                emit Item {
+                    title ← $li | select("a") | text
+                    url   ← $li | select("a") | attr("href")
                 }
             }
         `

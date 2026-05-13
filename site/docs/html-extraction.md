@@ -5,24 +5,23 @@ Forage treats HTML the same way it treats JSON: a parsed value queryable by path
 ## The shape
 
 ```forage
-recipe "example" {
-    engine http
+recipe "example"
+engine http
 
-    type Story {
-        title: String
-        url:   String?
-    }
+type Story {
+    title: String
+    url:   String?
+}
 
-    step front {
-        method "GET"
-        url    "https://news.ycombinator.com"
-    }
+step front {
+    method "GET"
+    url    "https://news.ycombinator.com"
+}
 
-    for $title in $front | parseHtml | select(".titleline") {
-        emit Story {
-            title ← $title | select("a") | text
-            url   ← $title | select("a") | attr("href")
-        }
+for $title in $front | parseHtml | select(".titleline") {
+    emit Story {
+        title ← $title | select("a") | text
+        url   ← $title | select("a") | attr("href")
     }
 }
 ```
@@ -74,24 +73,23 @@ The fallback is intentional: an HTML response doesn't crash the recipe; it just 
 Some sites lock HTTP scrapers out — Cloudflare, Akamai, and similar serve a JS challenge or a 403 to anything that isn't a real browser. For those, Forage's **browser engine** drives a hidden WKWebView through the gate, and the rendered HTML is captured via a `captures.document { … }` block.
 
 ```forage
-recipe "letterboxd-popular" {
-    engine browser
+recipe "letterboxd-popular"
+engine browser
 
-    type Film { title: String, url: String? }
+type Film { title: String, url: String? }
 
-    browser {
-        initialURL: "https://letterboxd.com/films/popular/this/week/"
-        observe:    "letterboxd.com"
-        paginate browserPaginate.scroll {
-            until: noProgressFor(2)
-            maxIterations: 0
-        }
-        captures.document {
-            for $poster in $ | select("div.poster.film-poster") {
-                emit Film {
-                    title ← $poster | select("span.frame-title") | text
-                    url   ← $poster | select("a.frame") | attr("href")
-                }
+browser {
+    initialURL: "https://letterboxd.com/films/popular/this/week/"
+    observe:    "letterboxd.com"
+    paginate browserPaginate.scroll {
+        until: noProgressFor(2)
+        maxIterations: 0
+    }
+    captures.document {
+        for $poster in $ | select("div.poster.film-poster") {
+            emit Film {
+                title ← $poster | select("span.frame-title") | text
+                url   ← $poster | select("a.frame") | attr("href")
             }
         }
     }

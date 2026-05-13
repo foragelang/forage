@@ -5,27 +5,26 @@ import { run } from '../src/runner.js'
 
 describe('parser: auth.session', () => {
     it('parses auth.session.formLogin with secret references', () => {
-        const src = `recipe "p" {
-            engine http
-            secret username
-            secret password
-            type Item { id: String }
-            auth.session.formLogin {
-                url: "https://example.com/login"
-                method: "POST"
-                body.form {
-                    "username": $secret.username
-                    "password": $secret.password
-                }
-                captureCookies: true
-                maxReauthRetries: 2
-                cache: 3600
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items {
-                emit Item { id ← $it.id }
-            }
-        }`
+        const src = `recipe "p"
+engine http
+secret username
+secret password
+type Item { id: String }
+auth.session.formLogin {
+    url: "https://example.com/login"
+    method: "POST"
+    body.form {
+        "username": $secret.username
+        "password": $secret.password
+    }
+    captureCookies: true
+    maxReauthRetries: 2
+    cache: 3600
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
+}`
         const recipe = Parser.parse(src)
         expect(recipe.auth?.tag).toBe('session')
         if (recipe.auth?.tag !== 'session') throw new Error('not session')
@@ -38,25 +37,24 @@ describe('parser: auth.session', () => {
     })
 
     it('parses auth.session.bearerLogin with tokenPath', () => {
-        const src = `recipe "p" {
-            engine http
-            secret clientId
-            secret clientSecret
-            type Item { id: String }
-            auth.session.bearerLogin {
-                url: "https://example.com/token"
-                body.json {
-                    client_id: $secret.clientId
-                    client_secret: $secret.clientSecret
-                }
-                tokenPath: $.access_token
-                headerPrefix: "Bearer "
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items {
-                emit Item { id ← $it.id }
-            }
-        }`
+        const src = `recipe "p"
+engine http
+secret clientId
+secret clientSecret
+type Item { id: String }
+auth.session.bearerLogin {
+    url: "https://example.com/token"
+    body.json {
+        client_id: $secret.clientId
+        client_secret: $secret.clientSecret
+    }
+    tokenPath: $.access_token
+    headerPrefix: "Bearer "
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
+}`
         const recipe = Parser.parse(src)
         expect(recipe.auth?.tag).toBe('session')
         if (recipe.auth?.tag !== 'session') throw new Error('not session')
@@ -72,19 +70,18 @@ describe('parser: auth.session', () => {
     })
 
     it('parses auth.session.cookiePersist with netscape format', () => {
-        const src = `recipe "p" {
-            engine http
-            secret cookieFile
-            type Item { id: String }
-            auth.session.cookiePersist {
-                sourcePath: "{$secret.cookieFile}"
-                format: netscape
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items {
-                emit Item { id ← $it.id }
-            }
-        }`
+        const src = `recipe "p"
+engine http
+secret cookieFile
+type Item { id: String }
+auth.session.cookiePersist {
+    sourcePath: "{$secret.cookieFile}"
+    format: netscape
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
+}`
         const recipe = Parser.parse(src)
         if (recipe.auth?.tag !== 'session') throw new Error('not session')
         if (recipe.auth.session.kind.tag !== 'cookiePersist') throw new Error('not cookiePersist')
@@ -94,16 +91,15 @@ describe('parser: auth.session', () => {
 
 describe('validator: secrets', () => {
     it('warns on referenced-but-undeclared secret', () => {
-        const src = `recipe "v" {
-            engine http
-            type Item { id: String }
-            auth.session.formLogin {
-                url: "https://example.com/login"
-                body.form { "username": $secret.typoed }
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items { emit Item { id ← $it.id } }
-        }`
+        const src = `recipe "v"
+engine http
+type Item { id: String }
+auth.session.formLogin {
+    url: "https://example.com/login"
+    body.form { "username": $secret.typoed }
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items { emit Item { id ← $it.id } }`
         const recipe = Parser.parse(src)
         const issues = validate(recipe)
         const warnings = issues.filter(i => i.severity === 'warning').map(i => i.message)
@@ -111,13 +107,12 @@ describe('validator: secrets', () => {
     })
 
     it('warns on declared-but-unreferenced secret', () => {
-        const src = `recipe "v" {
-            engine http
-            secret unused
-            type Item { id: String }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items { emit Item { id ← $it.id } }
-        }`
+        const src = `recipe "v"
+engine http
+secret unused
+type Item { id: String }
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items { emit Item { id ← $it.id } }`
         const recipe = Parser.parse(src)
         const issues = validate(recipe)
         const warnings = issues.filter(i => i.severity === 'warning').map(i => i.message)
@@ -125,21 +120,20 @@ describe('validator: secrets', () => {
     })
 
     it('clean recipe: declared + referenced match → no secret warnings', () => {
-        const src = `recipe "v" {
-            engine http
-            secret username
-            secret password
-            type Item { id: String }
-            auth.session.formLogin {
-                url: "https://example.com/login"
-                body.form {
-                    "username": $secret.username
-                    "password": $secret.password
-                }
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items { emit Item { id ← $it.id } }
-        }`
+        const src = `recipe "v"
+engine http
+secret username
+secret password
+type Item { id: String }
+auth.session.formLogin {
+    url: "https://example.com/login"
+    body.form {
+        "username": $secret.username
+        "password": $secret.password
+    }
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items { emit Item { id ← $it.id } }`
         const recipe = Parser.parse(src)
         const issues = validate(recipe)
         expect(hasErrors(issues)).toBe(false)
@@ -151,17 +145,16 @@ describe('validator: secrets', () => {
 
 describe('referencedSecretsInPath', () => {
     it('extracts secret name from a $secret.<name> path', () => {
-        const src = `recipe "v" {
-            engine http
-            secret apikey
-            type Item { id: String }
-            auth.session.formLogin {
-                url: "https://example.com/login"
-                body.form { "key": $secret.apikey }
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items { emit Item { id ← $it.id } }
-        }`
+        const src = `recipe "v"
+engine http
+secret apikey
+type Item { id: String }
+auth.session.formLogin {
+    url: "https://example.com/login"
+    body.form { "key": $secret.apikey }
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items { emit Item { id ← $it.id } }`
         const recipe = Parser.parse(src)
         if (recipe.auth?.tag !== 'session') throw new Error('not session')
         if (recipe.auth.session.kind.tag !== 'formLogin') throw new Error('not formLogin')
@@ -176,17 +169,16 @@ describe('referencedSecretsInPath', () => {
 
 describe('runner: session unsupported', () => {
     it('refuses to run session-auth recipes with a clear message', async () => {
-        const src = `recipe "v" {
-            engine http
-            secret password
-            type Item { id: String }
-            auth.session.formLogin {
-                url: "https://example.com/login"
-                body.form { "password": $secret.password }
-            }
-            step items { method "GET"; url "https://example.com/items" }
-            for $it in $items { emit Item { id ← $it.id } }
-        }`
+        const src = `recipe "v"
+engine http
+secret password
+type Item { id: String }
+auth.session.formLogin {
+    url: "https://example.com/login"
+    body.form { "password": $secret.password }
+}
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items { emit Item { id ← $it.id } }`
         const recipe = Parser.parse(src)
         // Stub fetch — the runner should bail before any network call.
         let called = false

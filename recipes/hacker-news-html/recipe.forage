@@ -7,30 +7,29 @@
 // would. Useful as a demo of `parseHtml` + `select` + `text` + `attr`
 // against a real, classic, table-laid-out page with no anti-bot.
 
-recipe "hacker-news-html" {
-    engine http
+recipe "hacker-news-html"
+engine http
 
-    type Story {
-        title: String
-        url:   String?
-        host:  String?
-    }
-
-    step front {
-        method "GET"
-        url    "https://news.ycombinator.com"
-    }
-
-    // Each story's title row has class `titleline`. The score / author
-    // row is the next <tr>, which makes that data sibling-relative —
-    // we keep this recipe minimal and only extract the title row.
-    for $title in $front | parseHtml | select(".titleline") {
-        emit Story {
-            title ← $title | select("a") | text
-            url   ← $title | select("a") | attr("href")
-            host  ← $title | select(".sitestr") | text
-        }
-    }
-
-    expect { records.where(typeName == "Story").count >= 20 }
+type Story {
+    title: String
+    url:   String?
+    host:  String?
 }
+
+step front {
+    method "GET"
+    url    "https://news.ycombinator.com"
+}
+
+// Each story's title row has class `titleline`. The score / author
+// row is the next <tr>, which makes that data sibling-relative —
+// we keep this recipe minimal and only extract the title row.
+for $title in $front | parseHtml | select(".titleline") {
+    emit Story {
+        title ← $title | select("a") | text
+        url   ← $title | select("a") | attr("href")
+        host  ← $title | select(".sitestr") | text
+    }
+}
+
+expect { records.where(typeName == "Story").count >= 20 }

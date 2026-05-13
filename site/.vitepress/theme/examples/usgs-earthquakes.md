@@ -1,28 +1,27 @@
 ```forage
-recipe "usgs-earthquakes" {
-    engine http
+recipe "usgs-earthquakes"
+engine http
 
-    type Quake {
-        magnitude: Double
-        place:     String?
-        time:      Int
-        depth:     Double
-        url:       String
-    }
+type Quake {
+    magnitude: Double
+    place:     String?
+    time:      Int
+    depth:     Double
+    url:       String
+}
 
-    step feed {
-        method "GET"
-        url    "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson"
-    }
+step feed {
+    method "GET"
+    url    "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson"
+}
 
-    for $f in $feed.features[*] {
-        emit Quake {
-            magnitude ← $f.properties.mag
-            place     ← $f.properties.place
-            time      ← $f.properties.time
-            depth     ← $f.geometry.coordinates[2]
-            url       ← $f.properties.url
-        }
+for $f in $feed.features[*] {
+    emit Quake {
+        magnitude ← $f.properties.mag
+        place     ← $f.properties.place
+        time      ← $f.properties.time
+        depth     ← $f.geometry.coordinates[2]
+        url       ← $f.properties.url
     }
 }
 ```

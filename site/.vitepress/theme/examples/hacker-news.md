@@ -1,28 +1,27 @@
 ```forage
-recipe "hacker-news" {
-    engine http
+recipe "hacker-news"
+engine http
 
-    type Story {
-        title:    String
-        url:      String?
-        points:   Int
-        author:   String
-        comments: Int
-    }
+type Story {
+    title:    String
+    url:      String?
+    points:   Int
+    author:   String
+    comments: Int
+}
 
-    step front {
-        method "GET"
-        url    "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30"
-    }
+step front {
+    method "GET"
+    url    "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30"
+}
 
-    for $hit in $front.hits[*] {
-        emit Story {
-            title    ← $hit.title
-            url      ← $hit.url
-            points   ← $hit.points
-            author   ← $hit.author
-            comments ← $hit.num_comments
-        }
+for $hit in $front.hits[*] {
+    emit Story {
+        title    ← $hit.title
+        url      ← $hit.url
+        points   ← $hit.points
+        author   ← $hit.author
+        comments ← $hit.num_comments
     }
 }
 ```

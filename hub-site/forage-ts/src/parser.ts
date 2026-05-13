@@ -64,9 +64,15 @@ export class Parser {
 
         this.expectKeyword('recipe')
         const name = this.consumeStringLit()
-        this.expect('lbrace', '{')
 
-        let engineKind: EngineKind = 'http'
+        // engine <kind>
+        this.expectKeyword('engine')
+        const engineKindLex = this.consumeIdentifierOrKeyword()
+        let engineKind: EngineKind
+        if (engineKindLex === 'http') engineKind = 'http'
+        else if (engineKindLex === 'browser') engineKind = 'browser'
+        else throw new ParseError(this.peek().loc, `unknown engine kind '${engineKindLex}'`)
+
         const types: RecipeType[] = []
         const enums: RecipeEnum[] = []
         const inputs: InputDecl[] = []
@@ -76,13 +82,8 @@ export class Parser {
         const expectations: Expectation[] = []
         const secrets: string[] = []
 
-        while (!this.check('rbrace') && !this.check('eof')) {
-            if (this.matchKeyword('engine')) {
-                const k = this.consumeIdentifierOrKeyword()
-                if (k === 'http') engineKind = 'http'
-                else if (k === 'browser') engineKind = 'browser'
-                else throw new ParseError(this.peek().loc, `unknown engine kind '${k}'`)
-            } else if (this.matchKeyword('type')) {
+        while (!this.check('eof')) {
+            if (this.matchKeyword('type')) {
                 types.push(this.parseTypeDecl())
             } else if (this.matchKeyword('enum')) {
                 enums.push(this.parseEnumDecl())
@@ -101,11 +102,15 @@ export class Parser {
                 expectations.push(this.parseExpectation())
             } else if (this.checkKeyword('step') || this.checkKeyword('for') || this.checkKeyword('emit')) {
                 body.push(this.parseStatement())
+            } else if (this.checkKeyword('recipe')) {
+                throw new ParseError(
+                    this.peek().loc,
+                    'a file may only declare one recipe (and the header must come first)',
+                )
             } else {
                 throw new ParseError(this.peek().loc, `unknown top-level declaration '${this.peek().lexeme}'`)
             }
         }
-        this.expect('rbrace', '}')
 
         return {
             name,

@@ -6,36 +6,35 @@ data lives in the initial document body — perfect for the HTTP engine
 + HTML transforms.
 
 ```forage
-recipe "scotus-opinions" {
-    engine http
+recipe "scotus-opinions"
+engine http
 
-    type Opinion {
-        date:        String
-        docket:      String
-        caseName:    String
-        pdfUrl:      String
-        holdingText: String?
-    }
-
-    input term: String   // "24" for OT24, etc.
-
-    step term_page {
-        method "GET"
-        url    "https://www.supremecourt.gov/opinions/slipopinion/{$input.term}"
-    }
-
-    for $row in $term_page | parseHtml | select("table#OpinionsTable tbody tr") {
-        emit Opinion {
-            date     ← $row | select("td:nth-child(1)") | text
-            docket   ← $row | select("td:nth-child(2)") | text
-            caseName ← $row | select("td:nth-child(3) a") | text
-            pdfUrl   ← $row | select("td:nth-child(3) a") | attr("href")
-            holdingText ← $row | select("td:nth-child(4)") | text
-        }
-    }
-
-    expect { records.where(typeName == "Opinion").count >= 1 }
+type Opinion {
+    date:        String
+    docket:      String
+    caseName:    String
+    pdfUrl:      String
+    holdingText: String?
 }
+
+input term: String   // "24" for OT24, etc.
+
+step term_page {
+    method "GET"
+    url    "https://www.supremecourt.gov/opinions/slipopinion/{$input.term}"
+}
+
+for $row in $term_page | parseHtml | select("table#OpinionsTable tbody tr") {
+    emit Opinion {
+        date     ← $row | select("td:nth-child(1)") | text
+        docket   ← $row | select("td:nth-child(2)") | text
+        caseName ← $row | select("td:nth-child(3) a") | text
+        pdfUrl   ← $row | select("td:nth-child(3) a") | attr("href")
+        holdingText ← $row | select("td:nth-child(4)") | text
+    }
+}
+
+expect { records.where(typeName == "Opinion").count >= 1 }
 ```
 
 ## What's new vs Hacker News

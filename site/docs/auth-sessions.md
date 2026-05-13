@@ -21,12 +21,11 @@ Three variants, picked per recipe:
 Declare each secret the recipe needs at the top:
 
 ```forage
-recipe "example" {
-    engine http
-    secret username
-    secret password
-    ...
-}
+recipe "example"
+engine http
+secret username
+secret password
+...
 ```
 
 The validator emits a warning if a recipe references `$secret.foo` without declaring `secret foo`, and another if a declared secret is never used. Both catch typos cleanly.
@@ -34,28 +33,27 @@ The validator emits a warning if a recipe references `$secret.foo` without decla
 ## formLogin
 
 ```forage
-recipe "site-with-cookies" {
-    engine http
-    secret username
-    secret password
-    type Item { id: String }
+recipe "site-with-cookies"
+engine http
+secret username
+secret password
+type Item { id: String }
 
-    auth.session.formLogin {
-        url:    "https://example.com/login"
-        method: "POST"
-        body.form {
-            "username": $secret.username
-            "password": $secret.password
-        }
-        captureCookies: true
-        maxReauthRetries: 1
-        cache: 3600         // seconds; omit to disable caching
+auth.session.formLogin {
+    url:    "https://example.com/login"
+    method: "POST"
+    body.form {
+        "username": $secret.username
+        "password": $secret.password
     }
+    captureCookies: true
+    maxReauthRetries: 1
+    cache: 3600         // seconds; omit to disable caching
+}
 
-    step items { method "GET"; url "https://example.com/items" }
-    for $it in $items {
-        emit Item { id ← $it.id }
-    }
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
 }
 ```
 
@@ -70,28 +68,27 @@ If `items` returns `401`/`403`, the engine drops the cached session, re-runs the
 ## bearerLogin
 
 ```forage
-recipe "oauth-style" {
-    engine http
-    secret clientId
-    secret clientSecret
-    type Item { id: String }
+recipe "oauth-style"
+engine http
+secret clientId
+secret clientSecret
+type Item { id: String }
 
-    auth.session.bearerLogin {
-        url: "https://example.com/oauth/token"
-        body.json {
-            client_id:     $secret.clientId
-            client_secret: $secret.clientSecret
-            grant_type:    "client_credentials"
-        }
-        tokenPath:    $.access_token
-        headerName:   "Authorization"     // default
-        headerPrefix: "Bearer "           // default
+auth.session.bearerLogin {
+    url: "https://example.com/oauth/token"
+    body.json {
+        client_id:     $secret.clientId
+        client_secret: $secret.clientSecret
+        grant_type:    "client_credentials"
     }
+    tokenPath:    $.access_token
+    headerName:   "Authorization"     // default
+    headerPrefix: "Bearer "           // default
+}
 
-    step items { method "GET"; url "https://example.com/items" }
-    for $it in $items {
-        emit Item { id ← $it.id }
-    }
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
 }
 ```
 
@@ -102,20 +99,19 @@ The runtime extracts `$.access_token` from the login response JSON and adds `Aut
 For sites whose login flow the recipe can't drive — interactive MFA across multiple devices, an embedded CAPTCHA, anything where a human has to click — manage the session externally and point Forage at the resulting cookie file:
 
 ```forage
-recipe "escape-hatch" {
-    engine http
-    secret cookieFile
-    type Item { id: String }
+recipe "escape-hatch"
+engine http
+secret cookieFile
+type Item { id: String }
 
-    auth.session.cookiePersist {
-        sourcePath: "{$secret.cookieFile}"
-        format:     json
-    }
+auth.session.cookiePersist {
+    sourcePath: "{$secret.cookieFile}"
+    format:     json
+}
 
-    step items { method "GET"; url "https://example.com/items" }
-    for $it in $items {
-        emit Item { id ← $it.id }
-    }
+step items { method "GET"; url "https://example.com/items" }
+for $it in $items {
+    emit Item { id ← $it.id }
 }
 ```
 

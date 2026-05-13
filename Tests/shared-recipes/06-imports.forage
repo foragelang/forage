@@ -1,17 +1,16 @@
 import alice/awesome v2
 import demo
 
-recipe "imports-demo" {
-    engine http
+recipe "imports-demo"
+engine http
 
-    type Note { text: String }
+type Note { text: String }
 
-    step s {
-        method "GET"
-        url "https://x.test/s"
-    }
+step s {
+    method "GET"
+    url "https://x.test/s"
+}
 
-    for $i in $s.items[*] {
-        emit Note { text ← $i.text }
-    }
+for $i in $s.items[*] {
+    emit Note { text ← $i.text }
 }

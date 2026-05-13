@@ -4,16 +4,15 @@ Every construct in the `.forage` DSL. Read top-to-bottom for a tour; jump to a s
 
 ## Recipe header
 
-A file is a single `recipe` block. The name is a string literal; it appears in error messages and snapshot metadata.
+A file declares one recipe. The header — `recipe "<name>"` followed by `engine <kind>` — sits flat at the top of the file; every subsequent declaration (types, inputs, steps, emits, for-loops, expectations) belongs to that recipe. There is no surrounding `{ }` block: the file IS the recipe.
 
 ```forage
-recipe "my-platform" {
-    engine http   // or: browser
-    // ... body ...
-}
+recipe "my-platform"
+engine http   // or: browser
+// ... body ...
 ```
 
-Comments are `//` to end-of-line or `/* … */` block.
+The name is a string literal; it appears in error messages and snapshot metadata. Comments are `//` to end-of-line or `/* … */` block.
 
 ## Types
 

@@ -8,38 +8,37 @@ data via fetch/XHR that's easier to capture than to reverse.
 A browser recipe declares one `browser { … }` block:
 
 ```forage
-recipe "letterboxd-popular" {
-    engine browser
+recipe "letterboxd-popular"
+engine browser
 
-    type Film { title: String, url: String?, posterUrl: String? }
+type Film { title: String, url: String?, posterUrl: String? }
 
-    browser {
-        initialURL: "https://letterboxd.com/films/popular/this/week/"
-        observe:    "letterboxd.com"
+browser {
+    initialURL: "https://letterboxd.com/films/popular/this/week/"
+    observe:    "letterboxd.com"
 
-        ageGate.autoFill { dob: 1990-01-01, reloadAfter: true }
-        dismissals { maxIterations: 4 }
-        warmupClicks: [".cookie-banner button.dismiss"]
+    ageGate.autoFill { dob: 1990-01-01, reloadAfter: true }
+    dismissals { maxIterations: 4 }
+    warmupClicks: [".cookie-banner button.dismiss"]
 
-        paginate browserPaginate.scroll {
-            until:          noProgressFor(2)
-            maxIterations:  0           // 0 = unbounded, until-rule decides
-            iterationDelay: 1.8
-        }
+    paginate browserPaginate.scroll {
+        until:          noProgressFor(2)
+        maxIterations:  0           // 0 = unbounded, until-rule decides
+        iterationDelay: 1.8
+    }
 
-        captures.document {
-            for $poster in $ | select("div.poster.film-poster") {
-                emit Film {
-                    title     ← $poster | select("span.frame-title") | text
-                    url       ← $poster | select("a.frame") | attr("href")
-                    posterUrl ← $poster | select("img") | attr("src")
-                }
+    captures.document {
+        for $poster in $ | select("div.poster.film-poster") {
+            emit Film {
+                title     ← $poster | select("span.frame-title") | text
+                url       ← $poster | select("a.frame") | attr("href")
+                posterUrl ← $poster | select("img") | attr("src")
             }
         }
     }
-
-    expect { records.where(typeName == "Film").count >= 50 }
 }
+
+expect { records.where(typeName == "Film").count >= 50 }
 ```
 
 ## Fields

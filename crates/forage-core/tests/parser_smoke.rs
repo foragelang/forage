@@ -4,30 +4,29 @@ use forage_core::ast::*;
 use forage_core::parse;
 
 const TINY_HTTP: &str = r#"
-recipe "tiny" {
-    engine http
+recipe "tiny"
+engine http
 
-    type Item {
-        id: String,
-        name: String,
-    }
-
-    input limit: Int
-
-    step list {
-        method "GET"
-        url    "https://example.com/items?limit={$input.limit}"
-    }
-
-    for $i in $list.items[*] {
-        emit Item {
-            id   ← $i.id
-            name ← $i.name
-        }
-    }
-
-    expect { records.where(typeName == "Item").count >= 1 }
+type Item {
+    id: String,
+    name: String,
 }
+
+input limit: Int
+
+step list {
+    method "GET"
+    url    "https://example.com/items?limit={$input.limit}"
+}
+
+for $i in $list.items[*] {
+    emit Item {
+        id   ← $i.id
+        name ← $i.name
+    }
+}
+
+expect { records.where(typeName == "Item").count >= 1 }
 "#;
 
 #[test]
@@ -46,34 +45,33 @@ fn parses_tiny_http_recipe() {
 }
 
 const TINY_BROWSER: &str = r#"
-recipe "tiny-browser" {
-    engine browser
+recipe "tiny-browser"
+engine browser
 
-    type Film {
-        title: String,
-        url:   String?,
+type Film {
+    title: String,
+    url:   String?,
+}
+
+browser {
+    initialURL: "https://example.com"
+    observe:    "example.com"
+    paginate browserPaginate.scroll {
+        until: noProgressFor(2)
+        maxIterations: 5
+        iterationDelay: 1.5
     }
-
-    browser {
-        initialURL: "https://example.com"
-        observe:    "example.com"
-        paginate browserPaginate.scroll {
-            until: noProgressFor(2)
-            maxIterations: 5
-            iterationDelay: 1.5
-        }
-        captures.document {
-            for $poster in $ {
-                emit Film {
-                    title ← $poster.title
-                    url   ← $poster.url
-                }
+    captures.document {
+        for $poster in $ {
+            emit Film {
+                title ← $poster.title
+                url   ← $poster.url
             }
         }
     }
-
-    expect { records.where(typeName == "Film").count > 0 }
 }
+
+expect { records.where(typeName == "Film").count > 0 }
 "#;
 
 #[test]
@@ -104,7 +102,8 @@ fn template_interpolation_renders_to_parts() {
 fn import_directive_parses() {
     let src = r#"
         import alice/zen-leaf
-        recipe "uses-import" { engine http }
+        recipe "uses-import"
+        engine http
     "#;
     let r = parse(src).expect("parse");
     assert_eq!(r.imports.len(), 1);
@@ -118,17 +117,16 @@ fn ast_nodes_carry_byte_spans() {
     // diagnostics or breakpoints at the right line. Pin the parser to
     // fill `span` on every locatable node: spans must be non-empty and
     // the slice they cover must be the construct's source text.
-    let src = r#"recipe "spans" {
-    engine http
-    type Item { id: String }
-    input term: String
-    step list {
-        method "GET"
-        url    "https://api.example.com/items"
-    }
-    for $i in $list.items[*] {
-        emit Item { id ← $i.id }
-    }
+    let src = r#"recipe "spans"
+engine http
+type Item { id: String }
+input term: String
+step list {
+    method "GET"
+    url    "https://api.example.com/items"
+}
+for $i in $list.items[*] {
+    emit Item { id ← $i.id }
 }
 "#;
     let r = parse(src).expect("parse");
@@ -169,4 +167,42 @@ fn ast_nodes_carry_byte_spans() {
     let em_text = &src[em.span.clone()];
     assert!(em_text.starts_with("emit Item"), "got {em_text:?}");
     assert!(em_text.ends_with('}'));
+}
+
+/// Regression: the recipe header is flat. A leftover `{` after the name
+/// (the old block syntax) must be rejected — otherwise stale recipes would
+/// parse "by accident" once the parser tolerates the brace.
+#[test]
+fn legacy_block_syntax_is_rejected() {
+    let src = r#"
+        recipe "old" {
+            engine http
+        }
+    "#;
+    let err = parse(src).expect_err("legacy block syntax must not parse");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("engine") || msg.contains("'{'") || msg.contains("'}'") || msg.contains("{"),
+        "unexpected error: {msg}"
+    );
+}
+
+/// Regression: two `recipe` headers in one file is a hard error — the file
+/// IS the recipe, so a second header is meaningless and almost certainly
+/// indicates copy-paste rot.
+#[test]
+fn second_recipe_header_is_rejected() {
+    let src = r#"
+        recipe "first"
+        engine http
+
+        recipe "second"
+        engine http
+    "#;
+    let err = parse(src).expect_err("second recipe header must not parse");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("only declare one recipe") || msg.contains("recipe"),
+        "unexpected error: {msg}"
+    );
 }

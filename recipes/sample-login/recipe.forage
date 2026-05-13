@@ -19,43 +19,42 @@
 // Expected snapshot:
 //   { records: [ { typeName: "SessionInfo", fields: { cookieName: "session" } } ] }
 
-recipe "sample-login" {
-    engine http
+recipe "sample-login"
+engine http
 
-    secret username
-    secret password
+secret username
+secret password
 
-    type SessionInfo {
-        cookieName: String
-        cookieValue: String
+type SessionInfo {
+    cookieName: String
+    cookieValue: String
+}
+
+// httpbin doesn't actually authenticate — it just sets a cookie when you
+// hit /cookies/set?<name>=<value>. We treat it as a stand-in for a real
+// login endpoint, sending the secrets through as the cookie name/value
+// so they round-trip in the response below.
+auth.session.formLogin {
+    url:    "https://httpbin.org/cookies/set?session={$secret.username}"
+    method: "GET"
+    body.form {
+        "password": $secret.password
     }
+    captureCookies: true
+    maxReauthRetries: 1
+    cache: 600        // 10 minutes
+}
 
-    // httpbin doesn't actually authenticate — it just sets a cookie when you
-    // hit /cookies/set?<name>=<value>. We treat it as a stand-in for a real
-    // login endpoint, sending the secrets through as the cookie name/value
-    // so they round-trip in the response below.
-    auth.session.formLogin {
-        url:    "https://httpbin.org/cookies/set?session={$secret.username}"
-        method: "GET"
-        body.form {
-            "password": $secret.password
-        }
-        captureCookies: true
-        maxReauthRetries: 1
-        cache: 600        // 10 minutes
-    }
+// Subsequent step: /cookies returns the cookies the client just sent.
+// Forage threads the captured cookie back in via the Cookie: header.
+step echoCookies {
+    method "GET"
+    url    "https://httpbin.org/cookies"
+}
 
-    // Subsequent step: /cookies returns the cookies the client just sent.
-    // Forage threads the captured cookie back in via the Cookie: header.
-    step echoCookies {
-        method "GET"
-        url    "https://httpbin.org/cookies"
-    }
-
-    for $kv in $echoCookies.cookies {
-        emit SessionInfo {
-            cookieName  ← "session"
-            cookieValue ← $echoCookies.cookies.session
-        }
+for $kv in $echoCookies.cookies {
+    emit SessionInfo {
+        cookieName  ← "session"
+        cookieValue ← $echoCookies.cookies.session
     }
 }

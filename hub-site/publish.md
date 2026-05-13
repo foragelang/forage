@@ -41,7 +41,7 @@ Body:
     "summary": "Short description.",
     "tags": ["dispensary", "json-api"],
     "platform": "sweed",
-    "body": "recipe \"my-recipe\" { engine http\n  ... }\n"
+    "body": "recipe \"my-recipe\"\nengine http\n...\n"
 }
 ```
 

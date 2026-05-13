@@ -1,31 +1,30 @@
 ```forage
-recipe "nasa-apod" {
-    engine http
+recipe "nasa-apod"
+engine http
 
-    type Picture {
-        date:        String
-        title:       String
-        url:         String
-        explanation: String
-        copyright:   String?
-    }
+type Picture {
+    date:        String
+    title:       String
+    url:         String
+    explanation: String
+    copyright:   String?
+}
 
-    input start: String
-    input end:   String
+input start: String
+input end:   String
 
-    step archive {
-        method "GET"
-        url    "https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&start_date={$input.start}&end_date={$input.end}"
-    }
+step archive {
+    method "GET"
+    url    "https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&start_date={$input.start}&end_date={$input.end}"
+}
 
-    for $a in $archive[*] {
-        emit Picture {
-            date        ← $a.date
-            title       ← $a.title
-            url         ← $a.url
-            explanation ← $a.explanation
-            copyright   ← $a.copyright
-        }
+for $a in $archive[*] {
+    emit Picture {
+        date        ← $a.date
+        title       ← $a.title
+        url         ← $a.url
+        explanation ← $a.explanation
+        copyright   ← $a.copyright
     }
 }
 ```

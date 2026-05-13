@@ -6,11 +6,10 @@ Recipes can pull in shared types, enums, and inputs from the hub.
 import alice/zen-leaf v2
 import demo
 
-recipe "uses-imports" {
-    engine http
-    // Types + enums declared by zen-leaf v2 + demo are now in scope.
-    // Their inputs union into this recipe's input set.
-}
+recipe "uses-imports"
+engine http
+// Types + enums declared by zen-leaf v2 + demo are now in scope.
+// Their inputs union into this recipe's input set.
 ```
 
 ## Syntax

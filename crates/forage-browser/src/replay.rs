@@ -205,21 +205,20 @@ mod tests {
     #[test]
     fn captures_match_emits_records() {
         let src = r#"
-            recipe "demo" {
-                engine browser
-                type Item { id: String }
-                browser {
-                    initialURL: "https://example.com"
-                    observe:    "example.com/api"
-                    paginate browserPaginate.scroll {
-                        until: noProgressFor(2)
-                        maxIterations: 5
-                    }
-                    captures.match {
-                        urlPattern: "example.com/api/items"
-                        for $r in $.items[*] {
-                            emit Item { id ← $r.id }
-                        }
+            recipe "demo"
+            engine browser
+            type Item { id: String }
+            browser {
+                initialURL: "https://example.com"
+                observe:    "example.com/api"
+                paginate browserPaginate.scroll {
+                    until: noProgressFor(2)
+                    maxIterations: 5
+                }
+                captures.match {
+                    urlPattern: "example.com/api/items"
+                    for $r in $.items[*] {
+                        emit Item { id ← $r.id }
                     }
                 }
             }
@@ -238,21 +237,20 @@ mod tests {
     #[test]
     fn captures_document_emits_records() {
         let src = r#"
-            recipe "letterboxd" {
-                engine browser
-                type Film { title: String }
-                browser {
-                    initialURL: "https://letterboxd.com/films/popular"
-                    observe:    "letterboxd.com"
-                    paginate browserPaginate.scroll {
-                        until: noProgressFor(2)
-                        maxIterations: 5
-                    }
-                    captures.document {
-                        for $poster in $ | select(".film-poster") {
-                            emit Film {
-                                title ← $poster | select(".frame-title") | text
-                            }
+            recipe "letterboxd"
+            engine browser
+            type Film { title: String }
+            browser {
+                initialURL: "https://letterboxd.com/films/popular"
+                observe:    "letterboxd.com"
+                paginate browserPaginate.scroll {
+                    until: noProgressFor(2)
+                    maxIterations: 5
+                }
+                captures.document {
+                    for $poster in $ | select(".film-poster") {
+                        emit Film {
+                            title ← $poster | select(".frame-title") | text
                         }
                     }
                 }

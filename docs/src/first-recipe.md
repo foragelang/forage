@@ -5,34 +5,33 @@ directory next to it. The simplest possible recipe is one HTTP step
 plus an emit loop:
 
 ```forage
-recipe "hacker-news" {
-    engine http
+recipe "hacker-news"
+engine http
 
-    type Story {
-        title:    String
-        url:      String?
-        points:   Int
-        author:   String
-        comments: Int
-    }
-
-    step front {
-        method "GET"
-        url    "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30"
-    }
-
-    for $hit in $front.hits[*] {
-        emit Story {
-            title    ← $hit.title
-            url      ← $hit.url
-            points   ← $hit.points
-            author   ← $hit.author
-            comments ← $hit.num_comments
-        }
-    }
-
-    expect { records.where(typeName == "Story").count >= 20 }
+type Story {
+    title:    String
+    url:      String?
+    points:   Int
+    author:   String
+    comments: Int
 }
+
+step front {
+    method "GET"
+    url    "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30"
+}
+
+for $hit in $front.hits[*] {
+    emit Story {
+        title    ← $hit.title
+        url      ← $hit.url
+        points   ← $hit.points
+        author   ← $hit.author
+        comments ← $hit.num_comments
+    }
+}
+
+expect { records.where(typeName == "Story").count >= 20 }
 ```
 
 Run it live:
@@ -52,7 +51,7 @@ the runtime evaluates expectations against the snapshot.
 
 ## Anatomy
 
-- `recipe "<name>" { … }` — top-level wrapper. The name is informational;
+- `recipe "<name>"` — top-level recipe header. The name is informational;
   the slug (when published to the hub) comes from the directory layout.
 - `engine http` — pick `http` for JSON APIs, `browser` for SPAs.
 - `type <Name> { field: T, … }` — recipe-declared record types. Required

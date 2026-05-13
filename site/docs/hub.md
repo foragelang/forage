@@ -105,10 +105,9 @@ Recipes can pull declarations from another published recipe by adding an
 import shared-types
 import alice/awesome-utils v3
 
-recipe "my-recipe" {
-    engine http
-    // …Item, Product, ProductPrice all live in shared-types now
-}
+recipe "my-recipe"
+engine http
+// …Item, Product, ProductPrice all live in shared-types now
 ```
 
 Grammar:
@@ -189,7 +188,7 @@ Where `payload.json` matches:
     "displayName": "My recipe",
     "summary": "What this recipe does",
     "tags": ["dispensary"],
-    "body": "recipe \"my-recipe\" { engine http … }",
+    "body": "recipe \"my-recipe\"\nengine http\n…",
     "fixtures": "{\"…jsonl content…\"}",
     "snapshot": "{\"…snapshot json…\"}"
 }

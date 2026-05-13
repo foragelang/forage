@@ -94,7 +94,7 @@ pub fn create_recipe(template_slug: Option<&str>) -> std::io::Result<String> {
         if !candidate_path.exists() {
             fs::create_dir_all(candidate_path.join("fixtures"))?;
             let source = format!(
-                "recipe \"{candidate}\" {{\n    engine http\n\n    type Item {{\n        id: String\n    }}\n\n    step list {{\n        method \"GET\"\n        url    \"https://example.com\"\n    }}\n\n    for $i in $list.items[*] {{\n        emit Item {{\n            id ← $i.id\n        }}\n    }}\n}}\n"
+                "recipe \"{candidate}\"\nengine http\n\ntype Item {{\n    id: String\n}}\n\nstep list {{\n    method \"GET\"\n    url    \"https://example.com\"\n}}\n\nfor $i in $list.items[*] {{\n    emit Item {{\n        id ← $i.id\n    }}\n}}\n"
             );
             fs::write(candidate_path.join("recipe.forage"), source)?;
             return Ok(candidate);
@@ -245,7 +245,7 @@ mod tests {
     fn make_recipe(root: &Path, slug: &str) {
         let dir = root.join(slug);
         fs::create_dir_all(dir.join("fixtures")).unwrap();
-        fs::write(dir.join("recipe.forage"), "recipe \"x\" { engine http }").unwrap();
+        fs::write(dir.join("recipe.forage"), "recipe \"x\"\nengine http\n").unwrap();
         fs::write(dir.join("fixtures").join("inputs.json"), "{}").unwrap();
     }
 

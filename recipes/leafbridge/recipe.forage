@@ -9,170 +9,169 @@
 // the cookie automatically (the HTTP client carries cookies forward) and pulls
 // the nonce out of the response body via regex.
 
-recipe "leafbridge" {
-    engine http
+recipe "leafbridge"
+engine http
 
-    /* ---------- Recipe-declared types ---------- */
+/* ---------- Recipe-declared types ---------- */
 
-    type Dispensary {
-        slug: String
-        name: String
-        platform: String
-        storeId: String?
-        address: String?
-        website: String?
-        timezone: String?
-    }
-    type Category {
-        externalId: String
-        name: String
-    }
-    type Variant {
-        externalId: String
-        name: String?
-        sizeValue: Double?
-        sizeUnit: String?
-    }
-    type Product {
-        externalId: String
-        name: String
-        description: String?
-        brand: String?
-        strainPrevalence: String?
-        productType: String?
-        categoryExternalId: String?
-        images: [String]
-    }
-    type PriceObservation {
-        productExternalId: String
-        variantExternalId: String
-        menuType: MenuType
-        price: Double?
-        promoPrice: Double?
-        availableQty: Double?
-        thcPct: Double?
-        cbdPct: Double?
-    }
-
-    enum MenuType { RECREATIONAL, MEDICAL }
-
-    /* ---------- Inputs ---------- */
-
-    input dispensarySlug: String
-    input dispensaryName: String
-    input retailerId: String        // UUID
-    input menuPageURL: String       // e.g. https://remedymaryland.com/locations/.../shop-rec/
-    input menuTypes: [MenuType]
-    input siteOrigin: String        // https://remedymaryland.com
-
-    /* ---------- Auth: prime the session ---------- */
-    //
-    // GET the per-retailer menu page; that drops the __cf_bm cookie (carried
-    // automatically by the HTTP client) and contains the nonce we need for
-    // POSTs. The "extract" expression captures the nonce out of the HTML body.
-
-    auth.htmlPrime {
-        step:    prime
-        nonceVar: "ajaxNonce"
-        ajaxUrlVar: "ajaxUrl"
-    }
-
-    step prime {
-        method "GET"
-        url    "{$input.menuPageURL}"
-        extract.regex {
-            pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
-            groups: [ajaxUrl, ajaxNonce]
-        }
-    }
-
-    /* ---------- Dispensary header ---------- */
-
-    emit Dispensary {
-        slug      ← $input.dispensarySlug
-        name      ← $input.dispensaryName
-        platform  ← "leafbridge"
-        storeId   ← $input.retailerId
-        website   ← $input.menuPageURL
-        timezone  ← "America/New_York"
-    }
-
-    /* ---------- Per-menu paginated product fetch ---------- */
-
-    for $menu in $input.menuTypes {
-
-        step products {
-            method "POST"
-            url    "{$ajaxUrl}"
-            headers {
-                "Content-Type": "application/x-www-form-urlencoded"
-                "Origin":       "{$input.siteOrigin}"
-                "Referer":      "{$input.menuPageURL}"
-            }
-            body.form {
-                "action":                              "wizard_show_products"
-                "nonce_ajax":                          "{$ajaxNonce}"
-                "wizard_data[retailer_id]":            "{$input.retailerId}"
-                "wizard_data[menu_type]":              case $menu of {
-                                                          RECREATIONAL → "RECREATIONAL"
-                                                          MEDICAL      → "MEDICAL"
-                                                      }
-                "wizard_data[collection_method]":      "PICKUP"
-                "prods_pageNumber":                    "{$page}"
-                "filter_attributes[search_key_word]":  ""
-                "filter_attributes[sort_order]":       "NAME_ASC"
-            }
-            paginate untilEmpty {
-                items:     $.data.products_list
-                pageParam: "prods_pageNumber"
-            }
-        }
-
-        for $product in $products[*] {
-            emit Product {
-                externalId         ← $product.id
-                name               ← $product.name
-                description        ← $product.description
-                brand              ← $product.brand?.name
-                strainPrevalence   ← $product.strainType | prevalenceNormalize
-                productType        ← $product.subcategory | titleCase
-                categoryExternalId ← $product.category | titleCase
-                images             ← $product.images[*].url | dedup
-            }
-
-            emit Category {
-                externalId ← $product.category | titleCase
-                name       ← $product.category | titleCase
-            }
-
-            for $variant in $product.variants[*] {
-                emit Variant {
-                    externalId ← $variant.id
-                    name       ← $variant.option
-                    sizeValue  ← $variant.option | parseSize | normalizeOzToGrams | sizeValue
-                    sizeUnit   ← $variant.option | parseSize | normalizeOzToGrams | sizeUnit | normalizeUnitToGrams
-                }
-
-                emit PriceObservation {
-                    productExternalId ← $product.id
-                    variantExternalId ← $variant.id
-                    menuType          ← $menu
-                    price             ← case $menu of {
-                                            MEDICAL      → $variant.priceMed
-                                            RECREATIONAL → $variant.priceRec
-                                        }
-                    promoPrice        ← case $menu of {
-                                            MEDICAL      → coalesce($variant.specialPriceMed, $variant.priceMed)
-                                            RECREATIONAL → coalesce($variant.specialPriceRec, $variant.priceRec)
-                                        }
-                    availableQty      ← $variant.quantity
-                    thcPct            ← $product.potencyThc?.range[0]
-                    cbdPct            ← $product.potencyCbd?.range[0]
-                }
-            }
-        }
-    }
-
-    expect { records.where(typeName == "Product").count >= 100 }
-    expect { records.where(typeName == "PriceObservation").count > 0 }
+type Dispensary {
+    slug: String
+    name: String
+    platform: String
+    storeId: String?
+    address: String?
+    website: String?
+    timezone: String?
 }
+type Category {
+    externalId: String
+    name: String
+}
+type Variant {
+    externalId: String
+    name: String?
+    sizeValue: Double?
+    sizeUnit: String?
+}
+type Product {
+    externalId: String
+    name: String
+    description: String?
+    brand: String?
+    strainPrevalence: String?
+    productType: String?
+    categoryExternalId: String?
+    images: [String]
+}
+type PriceObservation {
+    productExternalId: String
+    variantExternalId: String
+    menuType: MenuType
+    price: Double?
+    promoPrice: Double?
+    availableQty: Double?
+    thcPct: Double?
+    cbdPct: Double?
+}
+
+enum MenuType { RECREATIONAL, MEDICAL }
+
+/* ---------- Inputs ---------- */
+
+input dispensarySlug: String
+input dispensaryName: String
+input retailerId: String        // UUID
+input menuPageURL: String       // e.g. https://remedymaryland.com/locations/.../shop-rec/
+input menuTypes: [MenuType]
+input siteOrigin: String        // https://remedymaryland.com
+
+/* ---------- Auth: prime the session ---------- */
+//
+// GET the per-retailer menu page; that drops the __cf_bm cookie (carried
+// automatically by the HTTP client) and contains the nonce we need for
+// POSTs. The "extract" expression captures the nonce out of the HTML body.
+
+auth.htmlPrime {
+    step:    prime
+    nonceVar: "ajaxNonce"
+    ajaxUrlVar: "ajaxUrl"
+}
+
+step prime {
+    method "GET"
+    url    "{$input.menuPageURL}"
+    extract.regex {
+        pattern: "leafbridge_public_ajax_obj\\s*=\\s*\\{\"ajaxurl\":\"([^\"]+)\",\"nonce\":\"([a-f0-9]+)\"\\}"
+        groups: [ajaxUrl, ajaxNonce]
+    }
+}
+
+/* ---------- Dispensary header ---------- */
+
+emit Dispensary {
+    slug      ← $input.dispensarySlug
+    name      ← $input.dispensaryName
+    platform  ← "leafbridge"
+    storeId   ← $input.retailerId
+    website   ← $input.menuPageURL
+    timezone  ← "America/New_York"
+}
+
+/* ---------- Per-menu paginated product fetch ---------- */
+
+for $menu in $input.menuTypes {
+
+    step products {
+        method "POST"
+        url    "{$ajaxUrl}"
+        headers {
+            "Content-Type": "application/x-www-form-urlencoded"
+            "Origin":       "{$input.siteOrigin}"
+            "Referer":      "{$input.menuPageURL}"
+        }
+        body.form {
+            "action":                              "wizard_show_products"
+            "nonce_ajax":                          "{$ajaxNonce}"
+            "wizard_data[retailer_id]":            "{$input.retailerId}"
+            "wizard_data[menu_type]":              case $menu of {
+                                                      RECREATIONAL → "RECREATIONAL"
+                                                      MEDICAL      → "MEDICAL"
+                                                  }
+            "wizard_data[collection_method]":      "PICKUP"
+            "prods_pageNumber":                    "{$page}"
+            "filter_attributes[search_key_word]":  ""
+            "filter_attributes[sort_order]":       "NAME_ASC"
+        }
+        paginate untilEmpty {
+            items:     $.data.products_list
+            pageParam: "prods_pageNumber"
+        }
+    }
+
+    for $product in $products[*] {
+        emit Product {
+            externalId         ← $product.id
+            name               ← $product.name
+            description        ← $product.description
+            brand              ← $product.brand?.name
+            strainPrevalence   ← $product.strainType | prevalenceNormalize
+            productType        ← $product.subcategory | titleCase
+            categoryExternalId ← $product.category | titleCase
+            images             ← $product.images[*].url | dedup
+        }
+
+        emit Category {
+            externalId ← $product.category | titleCase
+            name       ← $product.category | titleCase
+        }
+
+        for $variant in $product.variants[*] {
+            emit Variant {
+                externalId ← $variant.id
+                name       ← $variant.option
+                sizeValue  ← $variant.option | parseSize | normalizeOzToGrams | sizeValue
+                sizeUnit   ← $variant.option | parseSize | normalizeOzToGrams | sizeUnit | normalizeUnitToGrams
+            }
+
+            emit PriceObservation {
+                productExternalId ← $product.id
+                variantExternalId ← $variant.id
+                menuType          ← $menu
+                price             ← case $menu of {
+                                        MEDICAL      → $variant.priceMed
+                                        RECREATIONAL → $variant.priceRec
+                                    }
+                promoPrice        ← case $menu of {
+                                        MEDICAL      → coalesce($variant.specialPriceMed, $variant.priceMed)
+                                        RECREATIONAL → coalesce($variant.specialPriceRec, $variant.priceRec)
+                                    }
+                availableQty      ← $variant.quantity
+                thcPct            ← $product.potencyThc?.range[0]
+                cbdPct            ← $product.potencyCbd?.range[0]
+            }
+        }
+    }
+}
+
+expect { records.where(typeName == "Product").count >= 100 }
+expect { records.where(typeName == "PriceObservation").count > 0 }

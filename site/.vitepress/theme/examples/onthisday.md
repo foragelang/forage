@@ -1,27 +1,26 @@
 ```forage
-recipe "onthisday" {
-    engine http
+recipe "onthisday"
+engine http
 
-    type Event {
-        year: Int
-        text: String
-        page: String?
-    }
+type Event {
+    year: Int
+    text: String
+    page: String?
+}
 
-    input month: String
-    input day:   String
+input month: String
+input day:   String
 
-    step feed {
-        method "GET"
-        url    "https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/events/{$input.month}/{$input.day}"
-    }
+step feed {
+    method "GET"
+    url    "https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/events/{$input.month}/{$input.day}"
+}
 
-    for $e in $feed.events[*] {
-        emit Event {
-            year ← $e.year
-            text ← $e.text
-            page ← $e.pages[0]?.titles?.normalized
-        }
+for $e in $feed.events[*] {
+    emit Event {
+        year ← $e.year
+        text ← $e.text
+        page ← $e.pages[0]?.titles?.normalized
     }
 }
 ```

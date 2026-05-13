@@ -279,10 +279,10 @@ mod tests {
     fn literal_eval() {
         let v = eval_recipe_expr(
             r#"
-            recipe "x" { engine http
-                type T { f: String }
-                emit T { f ← "hello" }
-            }
+            recipe "x"
+            engine http
+            type T { f: String }
+            emit T { f ← "hello" }
         "#,
         );
         assert_eq!(v, EvalValue::String("hello".into()));
@@ -292,11 +292,11 @@ mod tests {
     fn template_with_input() {
         let r = parse(
             r#"
-            recipe "x" { engine http
-                input name: String
-                type T { f: String }
-                emit T { f ← "hi {$input.name}" }
-            }
+            recipe "x"
+            engine http
+            input name: String
+            type T { f: String }
+            emit T { f ← "hi {$input.name}" }
         "#,
         )
         .unwrap();
@@ -318,10 +318,10 @@ mod tests {
     fn pipe_dedup_lowercases() {
         let r = parse(
             r#"
-            recipe "x" { engine http
-                type T { f: String }
-                emit T { f ← "HELLO" | lower }
-            }
+            recipe "x"
+            engine http
+            type T { f: String }
+            emit T { f ← "HELLO" | lower }
         "#,
         )
         .unwrap();
@@ -344,10 +344,10 @@ mod tests {
         // is now null-tolerant, matching the spirit of the `?.` chain.
         let r = parse(
             r#"
-            recipe "x" { engine http
-                type T { x: Int? }
-                emit T { x ← $p.range[0] }
-            }
+            recipe "x"
+            engine http
+            type T { x: Int? }
+            emit T { x ← $p.range[0] }
         "#,
         )
         .unwrap();
@@ -407,10 +407,10 @@ mod tests {
         // transforms (dedup, join, count) blow up because they see Null.
         let r = parse(
             r#"
-            recipe "x" { engine http
-                type T { fs: [String] }
-                emit T { fs ← $xs[*].name | dedup }
-            }
+            recipe "x"
+            engine http
+            type T { fs: [String] }
+            emit T { fs ← $xs[*].name | dedup }
         "#,
         )
         .unwrap();
@@ -451,10 +451,10 @@ mod tests {
         // distribute-over-array fix), `dedup` succeeds with [].
         let r = parse(
             r#"
-            recipe "x" { engine http
-                type T { fs: [String] }
-                emit T { fs ← $product.strain?.terpenes[*].name | dedup }
-            }
+            recipe "x"
+            engine http
+            type T { fs: [String] }
+            emit T { fs ← $product.strain?.terpenes[*].name | dedup }
         "#,
         )
         .unwrap();
@@ -481,11 +481,11 @@ mod tests {
     fn case_of_evaluates() {
         let r = parse(
             r#"
-            recipe "x" { engine http
-                input flag: Bool
-                type T { f: Int }
-                emit T { f ← case $input.flag of { true → 1, false → 0 } }
-            }
+            recipe "x"
+            engine http
+            input flag: Bool
+            type T { f: Int }
+            emit T { f ← case $input.flag of { true → 1, false → 0 } }
         "#,
         )
         .unwrap();

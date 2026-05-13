@@ -15,28 +15,27 @@ const props = defineProps({
     apiBase: { type: String, default: DEFAULT_HUB_API },
 })
 
-const blankTemplate = `recipe "my-recipe" {
-    engine http
+const blankTemplate = `recipe "my-recipe"
+engine http
 
-    type Item {
-        id: String
-        name: String
-    }
-
-    step list {
-        method "GET"
-        url "https://api.example.com/items"
-    }
-
-    for $item in $list.items[*] {
-        emit Item {
-            id   ← $item.id | toString
-            name ← $item.name
-        }
-    }
-
-    expect { records.where(typeName == "Item").count >= 1 }
+type Item {
+    id: String
+    name: String
 }
+
+step list {
+    method "GET"
+    url "https://api.example.com/items"
+}
+
+for $item in $list.items[*] {
+    emit Item {
+        id   ← $item.id | toString
+        name ← $item.name
+    }
+}
+
+expect { records.where(typeName == "Item").count >= 1 }
 `
 
 const source = ref(props.initialSource || blankTemplate)

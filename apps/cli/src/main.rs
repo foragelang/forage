@@ -385,22 +385,21 @@ fn do_scaffold(captures_path: &Path, name: Option<String>) -> Result<()> {
         captures_path.display(),
         groups.len()
     ));
-    out.push_str(&format!("recipe \"{}\" {{\n", recipe_name));
-    out.push_str("    engine http\n\n");
-    out.push_str("    type Item {\n        id:   String\n        name: String?\n    }\n\n");
+    out.push_str(&format!("recipe \"{}\"\n", recipe_name));
+    out.push_str("engine http\n\n");
+    out.push_str("type Item {\n    id:   String\n    name: String?\n}\n\n");
     for (i, (label, urls)) in groups.iter().enumerate() {
-        out.push_str(&format!("    // {label}  ({} requests)\n", urls.len()));
-        out.push_str(&format!("    step s{} {{\n", i));
-        out.push_str("        method \"GET\"\n");
+        out.push_str(&format!("// {label}  ({} requests)\n", urls.len()));
+        out.push_str(&format!("step s{} {{\n", i));
+        out.push_str("    method \"GET\"\n");
         out.push_str(&format!(
-            "        url    {:?}\n",
+            "    url    {:?}\n",
             urls.first().cloned().unwrap_or_default()
         ));
-        out.push_str("    }\n\n");
+        out.push_str("}\n\n");
     }
-    out.push_str("    for $i in $s0.items[*] {\n");
-    out.push_str("        emit Item {\n            id   ← $i.id\n            name ← $i.name\n        }\n    }\n");
-    out.push_str("}\n");
+    out.push_str("for $i in $s0.items[*] {\n");
+    out.push_str("    emit Item {\n        id   ← $i.id\n        name ← $i.name\n    }\n}\n");
 
     print!("{out}");
     Ok(())

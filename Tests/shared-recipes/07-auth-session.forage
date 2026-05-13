@@ -3,35 +3,34 @@
 // the entry in expected.json. The runtime (Swift HTTPEngine) actually
 // executes; the TS runner refuses with a clear "open in CLI / Studio" message.
 
-recipe "auth-session-demo" {
-    engine http
-    secret username
-    secret password
-    secret apiToken
-    type Item { id: String; name: String }
-    // FormLogin variant. Credentials live in `$secret.*` references which
-    // the host resolves at runtime (env vars on the CLI, Keychain in
-    // Studio). The recipe text contains zero credential material.
-    auth.session.formLogin {
-        url: "https://example.com/login"
-        method: "POST"
-        body.form {
-            "username": $secret.username
-            "password": $secret.password
-        }
-        captureCookies: true
-        maxReauthRetries: 1
-        cache: 3600
+recipe "auth-session-demo"
+engine http
+secret username
+secret password
+secret apiToken
+type Item { id: String; name: String }
+// FormLogin variant. Credentials live in `$secret.*` references which
+// the host resolves at runtime (env vars on the CLI, Keychain in
+// Studio). The recipe text contains zero credential material.
+auth.session.formLogin {
+    url: "https://example.com/login"
+    method: "POST"
+    body.form {
+        "username": $secret.username
+        "password": $secret.password
     }
-    step items {
-        method "GET"
-        url "https://example.com/items"
-        headers { "X-Token": "{$secret.apiToken}" }
-    }
-    for $it in $items {
-        emit Item {
-            id ← $it.id
-            name ← $it.name
-        }
+    captureCookies: true
+    maxReauthRetries: 1
+    cache: 3600
+}
+step items {
+    method "GET"
+    url "https://example.com/items"
+    headers { "X-Token": "{$secret.apiToken}" }
+}
+for $it in $items {
+    emit Item {
+        id ← $it.id
+        name ← $it.name
     }
 }

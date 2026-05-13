@@ -13,123 +13,122 @@
 // /v2/smartpage to count progress; emissions extract from each captured
 // smartpage response body.
 
-recipe "jane" {
-    engine browser
+recipe "jane"
+engine browser
 
-    /* ---------- Recipe-declared types ---------- */
+/* ---------- Recipe-declared types ---------- */
 
-    type Dispensary {
-        slug: String
-        name: String
-        platform: String
-        storeId: String?
-        website: String?
+type Dispensary {
+    slug: String
+    name: String
+    platform: String
+    storeId: String?
+    website: String?
+}
+type Variant {
+    externalId: String
+    name: String?
+    sizeValue: Double?
+    sizeUnit: String?
+}
+type Product {
+    externalId: String
+    name: String
+    description: String?
+    brand: String?
+    strainPrevalence: String?
+    productType: String?
+    images: [String]
+}
+type PriceObservation {
+    productExternalId: String
+    variantExternalId: String
+    menuType: MenuType
+    price: Double?
+    promoPrice: Double?
+    availableQty: Double?
+    thcPct: Double?
+    cbdPct: Double?
+}
+
+enum MenuType { RECREATIONAL, MEDICAL }
+
+/* ---------- Inputs ---------- */
+
+input dispensarySlug: String
+input dispensaryName: String
+input storeId: Int            // Jane Mongo ObjectId-ish (e.g. 6389)
+input menuPath: String        // e.g. "/shop/adult-use-menu"
+input siteOrigin: String      // e.g. "https://trilogy.health"
+input menuType: MenuType      // one menu per recipe run
+
+/* ---------- Browser engine config ---------- */
+
+browser {
+    initialURL: "{$input.siteOrigin}{$input.menuPath}/menu/all"
+
+    ageGate.autoFill {
+        dob:         1990-01-01
+        reloadAfter: true
     }
-    type Variant {
-        externalId: String
-        name: String?
-        sizeValue: Double?
-        sizeUnit: String?
-    }
-    type Product {
-        externalId: String
-        name: String
-        description: String?
-        brand: String?
-        strainPrevalence: String?
-        productType: String?
-        images: [String]
-    }
-    type PriceObservation {
-        productExternalId: String
-        variantExternalId: String
-        menuType: MenuType
-        price: Double?
-        promoPrice: Double?
-        availableQty: Double?
-        thcPct: Double?
-        cbdPct: Double?
+
+    observe: "iheartjane.com/v2/smartpage"
+
+    paginate browserPaginate.scroll {
+        until:          noProgressFor(3)
+        maxIterations:  30
+        iterationDelay: 1.8
     }
 
-    enum MenuType { RECREATIONAL, MEDICAL }
+    captures.match {
+        urlPattern: "iheartjane.com/v2/smartpage"
+        for $product in $.products[*] {
+            emit Product {
+                externalId       ← $product.search_attributes.objectID
+                name             ← $product.search_attributes.name
+                description      ← $product.search_attributes.description
+                brand            ← $product.search_attributes.brand
+                strainPrevalence ← $product.search_attributes.category | prevalenceNormalize
+                productType      ← coalesce($product.search_attributes.kind,
+                                             $product.search_attributes.custom_product_subtype)
+                images           ← $product.search_attributes.image_urls
+            }
 
-    /* ---------- Inputs ---------- */
-
-    input dispensarySlug: String
-    input dispensaryName: String
-    input storeId: Int            // Jane Mongo ObjectId-ish (e.g. 6389)
-    input menuPath: String        // e.g. "/shop/adult-use-menu"
-    input siteOrigin: String      // e.g. "https://trilogy.health"
-    input menuType: MenuType      // one menu per recipe run
-
-    /* ---------- Browser engine config ---------- */
-
-    browser {
-        initialURL: "{$input.siteOrigin}{$input.menuPath}/menu/all"
-
-        ageGate.autoFill {
-            dob:         1990-01-01
-            reloadAfter: true
-        }
-
-        observe: "iheartjane.com/v2/smartpage"
-
-        paginate browserPaginate.scroll {
-            until:          noProgressFor(3)
-            maxIterations:  30
-            iterationDelay: 1.8
-        }
-
-        captures.match {
-            urlPattern: "iheartjane.com/v2/smartpage"
-            for $product in $.products[*] {
-                emit Product {
-                    externalId       ← $product.search_attributes.objectID
-                    name             ← $product.search_attributes.name
-                    description      ← $product.search_attributes.description
-                    brand            ← $product.search_attributes.brand
-                    strainPrevalence ← $product.search_attributes.category | prevalenceNormalize
-                    productType      ← coalesce($product.search_attributes.kind,
-                                                 $product.search_attributes.custom_product_subtype)
-                    images           ← $product.search_attributes.image_urls
+            for $weight in $product.search_attributes.available_weights[*] {
+                emit Variant {
+                    externalId ← "{$product.search_attributes.objectID}:{$weight}"
+                    name       ← $weight
+                    sizeValue  ← $weight | parseJaneWeight
+                    sizeUnit   ← $weight | janeWeightUnit
                 }
 
-                for $weight in $product.search_attributes.available_weights[*] {
-                    emit Variant {
-                        externalId ← "{$product.search_attributes.objectID}:{$weight}"
-                        name       ← $weight
-                        sizeValue  ← $weight | parseJaneWeight
-                        sizeUnit   ← $weight | janeWeightUnit
-                    }
-
-                    emit PriceObservation {
-                        productExternalId ← $product.search_attributes.objectID
-                        variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
-                        menuType          ← $input.menuType
-                        price             ← getField($product.search_attributes, "price_{$weight | janeWeightKey}")
-                        promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight | janeWeightKey}")
-                        availableQty      ← case $product.search_attributes.at_visible_store of {
-                                                 true  → 1.0
-                                                 false → 0.0
-                                             }
-                        thcPct            ← $product.search_attributes.percent_thc
-                        cbdPct            ← $product.search_attributes.percent_cbd
-                    }
+                emit PriceObservation {
+                    productExternalId ← $product.search_attributes.objectID
+                    variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
+                    menuType          ← $input.menuType
+                    price             ← getField($product.search_attributes, "price_{$weight | janeWeightKey}")
+                    promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight | janeWeightKey}")
+                    availableQty      ← case $product.search_attributes.at_visible_store of {
+                                             true  → 1.0
+                                             false → 0.0
+                                         }
+                    thcPct            ← $product.search_attributes.percent_thc
+                    cbdPct            ← $product.search_attributes.percent_cbd
                 }
             }
         }
     }
-
-    /* ---------- Dispensary header (no HTTP needed) ---------- */
-
-    emit Dispensary {
-        slug     ← $input.dispensarySlug
-        name     ← $input.dispensaryName
-        platform ← "jane"
-        storeId  ← $input.storeId | toString
-        website  ← "{$input.siteOrigin}{$input.menuPath}/"
-    }
-
-    expect { records.where(typeName == "Product").count >= 500 }
-    expect { records.where(typeName == "PriceObservation").count > 0 }
 }
+
+/* ---------- Dispensary header (no HTTP needed) ---------- */
+
+emit Dispensary {
+    slug     ← $input.dispensarySlug
+    name     ← $input.dispensaryName
+    platform ← "jane"
+    storeId  ← $input.storeId | toString
+    website  ← "{$input.siteOrigin}{$input.menuPath}/"
+}
+
+expect { records.where(typeName == "Product").count >= 500 }
+expect { records.where(typeName == "PriceObservation").count > 0 }

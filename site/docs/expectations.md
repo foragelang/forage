@@ -4,20 +4,19 @@
 
 ## Syntax
 
-Expectations live at the top level of a recipe block, alongside `type`, `step`, and `emit`.
+Expectations live at the top level of a recipe, alongside `type`, `step`, and `emit`.
 
 ```forage
-recipe "example" {
-    engine http
+recipe "example"
+engine http
 
-    type Product { externalId: String; name: String }
-    type Variant { sku: String; price: Double }
+type Product { externalId: String; name: String }
+type Variant { sku: String; price: Double }
 
-    // ... steps and emits ...
+// ... steps and emits ...
 
-    expect { records.where(typeName == "Product").count >= 50 }
-    expect { records.where(typeName == "Variant").count > 0 }
-}
+expect { records.where(typeName == "Product").count >= 50 }
+expect { records.where(typeName == "Variant").count > 0 }
 ```
 
 The supported shape today is:

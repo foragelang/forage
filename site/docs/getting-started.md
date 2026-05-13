@@ -49,28 +49,27 @@ A minimal recipe against a documented JSON endpoint:
 ```forage
 // recipes/hello/recipe.forage
 
-recipe "hello" {
-    engine http
+recipe "hello"
+engine http
 
-    type Post {
-        externalId: String
-        title:      String
-        body:       String?
-    }
+type Post {
+    externalId: String
+    title:      String
+    body:       String?
+}
 
-    input userId: Int
+input userId: Int
 
-    step posts {
-        method "GET"
-        url    "https://jsonplaceholder.typicode.com/posts?userId={$input.userId}"
-    }
+step posts {
+    method "GET"
+    url    "https://jsonplaceholder.typicode.com/posts?userId={$input.userId}"
+}
 
-    for $p in $posts[*] {
-        emit Post {
-            externalId ← $p.id | toString
-            title      ← $p.title
-            body       ← $p.body
-        }
+for $p in $posts[*] {
+    emit Post {
+        externalId ← $p.id | toString
+        title      ← $p.title
+        body       ← $p.body
     }
 }
 ```

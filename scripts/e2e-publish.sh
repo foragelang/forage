@@ -26,21 +26,20 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 cat > "$TMP/recipe.forage" <<'EOF'
-recipe "smoke-test" {
-    engine http
+recipe "smoke-test"
+engine http
 
-    type Item { name: String }
+type Item { name: String }
 
-    input baseUrl: String
+input baseUrl: String
 
-    step list {
-        method "GET"
-        url    "{$input.baseUrl}/items"
-    }
+step list {
+    method "GET"
+    url    "{$input.baseUrl}/items"
+}
 
-    for $i in $list[*] {
-        emit Item { name ← $i.name }
-    }
+for $i in $list[*] {
+    emit Item { name ← $i.name }
 }
 EOF
 

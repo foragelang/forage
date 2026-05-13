@@ -4,42 +4,41 @@ A recipe that takes consumer inputs (`owner`, `repo`) and walks the
 GitHub releases API.
 
 ```forage
-recipe "github-releases" {
-    engine http
+recipe "github-releases"
+engine http
 
-    type Release {
-        tag:        String
-        name:       String?
-        publishedAt: String?
-        prerelease: Bool
-        url:        String
+type Release {
+    tag:        String
+    name:       String?
+    publishedAt: String?
+    prerelease: Bool
+    url:        String
+}
+
+input owner: String
+input repo:  String
+
+step list {
+    method "GET"
+    url    "https://api.github.com/repos/{$input.owner}/{$input.repo}/releases?per_page=100"
+    headers {
+        "Accept": "application/vnd.github+json"
+        "User-Agent": "forage"
     }
-
-    input owner: String
-    input repo:  String
-
-    step list {
-        method "GET"
-        url    "https://api.github.com/repos/{$input.owner}/{$input.repo}/releases?per_page=100"
-        headers {
-            "Accept": "application/vnd.github+json"
-            "User-Agent": "forage"
-        }
-        paginate cursor {
-            items:       $.
-            cursorPath:  $.<next-from-Link-header>     // (see below)
-            cursorParam: "page"
-        }
+    paginate cursor {
+        items:       $.
+        cursorPath:  $.<next-from-Link-header>     // (see below)
+        cursorParam: "page"
     }
+}
 
-    for $r in $list[*] {
-        emit Release {
-            tag         ← $r.tag_name
-            name        ← $r.name
-            publishedAt ← $r.published_at
-            prerelease  ← $r.prerelease
-            url         ← $r.html_url
-        }
+for $r in $list[*] {
+    emit Release {
+        tag         ← $r.tag_name
+        name        ← $r.name
+        publishedAt ← $r.published_at
+        prerelease  ← $r.prerelease
+        url         ← $r.html_url
     }
 }
 ```

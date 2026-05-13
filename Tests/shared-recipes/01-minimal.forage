@@ -1,18 +1,21 @@
-recipe "minimal" {
-    engine http
-    type Item {
-        id: String
-        name: String
-    }
-    input baseUrl: String
-    step list {
-        method "GET"
-        url "{$input.baseUrl}/items"
-    }
-    for $item in $list {
-        emit Item {
-            id ← $item.id | toString
-            name ← $item.name
-        }
+recipe "minimal"
+engine http
+
+type Item {
+    id: String
+    name: String
+}
+
+input baseUrl: String
+
+step list {
+    method "GET"
+    url "{$input.baseUrl}/items"
+}
+
+for $item in $list {
+    emit Item {
+        id ← $item.id | toString
+        name ← $item.name
     }
 }
