@@ -124,20 +124,17 @@ pub fn delete_recipe(slug: String) -> Result<(), String> {
     library::delete_recipe(&slug).map_err(|e| e.to_string())
 }
 
-/// Pop up a native context menu (NSMenu on macOS, etc.) at the given
-/// window-relative position with a "Delete recipe…" item. Selection
-/// flows back through the global on_menu_event handler, which emits
-/// `menu:recipe_delete` with the slug as payload.
+/// Pop up a native context menu (NSMenu on macOS, etc.) at the cursor
+/// location with a "Delete recipe…" item. Selection flows back through
+/// the global on_menu_event handler, which emits `menu:recipe_delete`
+/// with the slug as payload.
 #[tauri::command]
 pub fn show_recipe_context_menu(
     app: AppHandle,
     window: tauri::WebviewWindow,
     slug: String,
-    x: f64,
-    y: f64,
 ) -> Result<(), String> {
     let id = format!("recipe_delete:{slug}");
-    tracing::info!(slug = %slug, id = %id, x, y, "show_recipe_context_menu");
     let delete_item = tauri::menu::MenuItemBuilder::with_id(&id, "Delete Recipe…")
         .build(&app)
         .map_err(|e| e.to_string())?;
@@ -145,11 +142,14 @@ pub fn show_recipe_context_menu(
         .item(&delete_item)
         .build()
         .map_err(|e| e.to_string())?;
-    let position = tauri::Position::Logical(tauri::LogicalPosition { x, y });
-    window
-        .popup_menu_at(&menu, position)
-        .map_err(|e| e.to_string())?;
-    // The menu must outlive popup_menu_at on macOS — muda's NSMenu wrapper
+    // `popup_menu` (no `_at`) routes through muda's `position: None`
+    // branch, which reads the cursor directly via
+    // `NSEvent::mouseLocation()` and calls
+    // `popUpMenuPositioningItem(nil, mouse_location, inView: nil)` in
+    // screen coords. See muda f3e4baa
+    // src/platform_impl/macos/mod.rs:1204-1211.
+    window.popup_menu(&menu).map_err(|e| e.to_string())?;
+    // The menu must outlive popup_menu on macOS — muda's NSMenu wrapper
     // doesn't internally retain the Rust handle, so dropping it the
     // instant this function returns means the click event fires into a
     // freed receiver. Stash it on the StudioState until the next popup

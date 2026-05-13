@@ -154,8 +154,6 @@ export function Sidebar() {
                                         e.preventDefault();
                                         invoke("show_recipe_context_menu", {
                                             slug: r.slug,
-                                            x: e.clientX,
-                                            y: e.clientY,
                                         }).catch((err) =>
                                             console.warn("context menu failed", err),
                                         );
