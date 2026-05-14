@@ -64,4 +64,35 @@ describe('user profile', () => {
         const r = await fetchJson(get('https://hub/v1/users/nobody'))
         expect(r.status).toBe(404)
     })
+
+    it('paginates /users/:author/packages by cursor', async () => {
+        const a = await userToken('alice')
+        for (const slug of ['a', 'b', 'c']) {
+            await fetchJson(
+                authedPostJson(
+                    `https://hub/v1/packages/alice/${slug}/versions`,
+                    a,
+                    publishRequest({ description: slug }),
+                ),
+            )
+        }
+        const first = await fetchJson(
+            get('https://hub/v1/users/alice/packages?limit=2'),
+        )
+        expect(first.status).toBe(200)
+        expect(first.body.items.length).toBe(2)
+        expect(first.body.next_cursor).not.toBeNull()
+
+        const second = await fetchJson(
+            get(`https://hub/v1/users/alice/packages?limit=2&cursor=${encodeURIComponent(first.body.next_cursor)}`),
+        )
+        expect(second.body.items.length).toBe(1)
+        expect(second.body.next_cursor).toBeNull()
+
+        const allSlugs = new Set([
+            ...first.body.items.map((x: any) => x.slug),
+            ...second.body.items.map((x: any) => x.slug),
+        ])
+        expect(allSlugs).toEqual(new Set(['a', 'b', 'c']))
+    })
 })

@@ -69,15 +69,28 @@ export async function getProfile(
     return json(body, 200, request)
 }
 
-// `GET /v1/users/:author/packages`
+// `GET /v1/users/:author/packages?cursor=&limit=`
+//
+// Cursor-paginated to bound the response when a user has many
+// packages. The cursor is the `author/slug` ref of the last returned
+// item; the next page starts after it. Default limit 50, max 100.
 export async function getProfilePackages(
     request: Request,
     env: Env,
     author: string,
 ): Promise<Response> {
+    const url = new URL(request.url)
+    const cursor = url.searchParams.get('cursor')
+    const limit = clampInt(url.searchParams.get('limit'), 50, 1, 100)
+
     const refs = await listUserPackagesIndex(env, author)
+    const startIdx = cursor !== null
+        ? Math.max(0, refs.indexOf(cursor) + 1)
+        : 0
+    const slice = refs.slice(startIdx, startIdx + limit)
+
     const items: PackageListing[] = []
-    for (const r of refs) {
+    for (const r of slice) {
         const [a, s] = splitRef(r)
         const meta = await getPackage(env, a, s)
         if (meta === null) continue
@@ -95,7 +108,10 @@ export async function getProfilePackages(
             fork_count: meta.fork_count,
         })
     }
-    const body: ListProfilePackagesResponse = { items }
+    const nextCursor = startIdx + limit < refs.length
+        ? slice[slice.length - 1]
+        : null
+    const body: ListProfilePackagesResponse = { items, next_cursor: nextCursor }
     return json(body, 200, request)
 }
 
@@ -115,7 +131,7 @@ export async function getProfileStars(
         slug: s.slug,
         starred_at: s.starred_at,
     }))
-    const body: ListProfileStarsResponse & { next_cursor: string | null } = {
+    const body: ListProfileStarsResponse = {
         items: formatted,
         next_cursor: nextCursor,
     }

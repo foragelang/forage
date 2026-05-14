@@ -174,6 +174,7 @@ export interface Profile {
 
 export interface ListProfilePackagesResponse {
     items: PackageListing[]
+    next_cursor: string | null
 }
 
 // `GET /v1/users/:author/stars` — packages this user has starred.
@@ -185,6 +186,7 @@ export interface ProfileStar {
 
 export interface ListProfileStarsResponse {
     items: ProfileStar[]
+    next_cursor: string | null
 }
 
 // --- Errors --------------------------------------------------------------
