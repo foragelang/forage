@@ -7,7 +7,7 @@ import {
     run as runRecipe,
     HubClient,
     DEFAULT_HUB_API,
-} from '../../../forage-ts/src/index.ts'
+} from '../../../forage-wasm/adapter.ts'
 
 const props = defineProps({
     slug: { type: String, default: '' },
@@ -121,14 +121,14 @@ async function fetchRemoteRecipe() {
     }
 }
 
-function validateNow() {
+async function validateNow() {
     parseError.value = null
     validationIssues.value = []
     parsedRecipe.value = null
     try {
-        const recipe = Parser.parse(source.value)
+        const recipe = await Parser.parse(source.value)
         parsedRecipe.value = recipe
-        validationIssues.value = validate(recipe)
+        validationIssues.value = await validate(recipe)
         // Pre-seed inputs map for the Run tab.
         const seeded = {}
         for (const i of recipe.inputs) {
@@ -164,7 +164,7 @@ function applyEditorMarkers() {
     for (const issue of validationIssues.value) {
         markers.push({
             severity: issue.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
-            message: `${issue.message} [${issue.location}]`,
+            message: `${issue.message} [${issue.code}]`,
             startLineNumber: 1,
             startColumn: 1,
             endLineNumber: 1,
@@ -301,7 +301,7 @@ onBeforeUnmount(() => {
 
 async function runRecipeAgainstFixtures() {
     if (!parsedRecipe.value) return
-    if (parsedRecipe.value.engineKind !== 'http') {
+    if (parsedRecipe.value.engine_kind !== 'http') {
         runResult.value = {
             diagnostic: {
                 stallReason: 'Browser-engine recipes can only run in Forage Studio. Open this recipe in Studio to run it locally.',
@@ -439,23 +439,27 @@ function signOut() {
 
 const errorIssues = computed(() => validationIssues.value.filter(i => i.severity === 'error'))
 const warningIssues = computed(() => validationIssues.value.filter(i => i.severity === 'warning'))
-const isBrowserRecipe = computed(() => parsedRecipe.value?.engineKind === 'browser')
+const isBrowserRecipe = computed(() => parsedRecipe.value?.engine_kind === 'browser')
 const studioUrl = computed(() => `forage-studio://recipe/${encodeURIComponent(props.slug || publish.value.slug || 'new')}`)
 
+// Rust serializes `FieldType` as a tagged-by-variant enum: scalar
+// variants ship as bare strings (`"String"`, `"Int"`), data-carrying
+// variants as `{Variant: payload}` objects. The Vue side reads them
+// directly — same shape forage-core dumps over the WASM bridge.
 function inputTypeLabel(i) {
-    const t = i.type
-    if (!t) return ''
+    const t = i.ty
+    if (t === null || t === undefined) return ''
     const base = (() => {
-        switch (t.tag) {
-            case 'string': return 'String'
-            case 'int': return 'Int'
-            case 'double': return 'Double'
-            case 'bool': return 'Bool'
-            case 'array': return '[…]'
-            case 'record': return t.name
-            case 'enumRef': return t.name
-            default: return ''
+        if (typeof t === 'string') {
+            return t // "String" | "Int" | "Double" | "Bool"
         }
+        if (typeof t === 'object') {
+            if ('Array' in t) return '[…]'
+            if ('Record' in t) return t.Record
+            if ('EnumRef' in t) return t.EnumRef
+            if ('Ref' in t) return `Ref<${t.Ref}>`
+        }
+        return ''
     })()
     return i.optional ? `${base}?` : base
 }
@@ -491,12 +495,12 @@ function inputTypeLabel(i) {
                     <li v-for="(i, ix) in errorIssues" :key="`e${ix}`" class="ide-error">
                         <span class="ide-issue-label">error</span>
                         <span>{{ i.message }}</span>
-                        <span class="ide-issue-loc">[{{ i.location }}]</span>
+                        <span class="ide-issue-loc">[{{ i.code }}]</span>
                     </li>
                     <li v-for="(i, ix) in warningIssues" :key="`w${ix}`" class="ide-warn">
                         <span class="ide-issue-label">warn</span>
                         <span>{{ i.message }}</span>
-                        <span class="ide-issue-loc">[{{ i.location }}]</span>
+                        <span class="ide-issue-loc">[{{ i.code }}]</span>
                     </li>
                 </ul>
             </section>
