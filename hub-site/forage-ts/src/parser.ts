@@ -12,6 +12,7 @@ import {
     type Emission,
     type Expectation,
     type ExtractionExpr,
+    type FnDecl,
     type FieldBinding,
     type FieldType,
     type FormLogin,
@@ -113,12 +114,15 @@ export class Parser {
         const body: Statement[] = []
         const expectations: Expectation[] = []
         const secrets: string[] = []
+        const functions: FnDecl[] = []
 
         while (!this.check('eof')) {
             if (this.matchKeyword('type')) {
                 types.push(this.parseTypeDecl())
             } else if (this.matchKeyword('enum')) {
                 enums.push(this.parseEnumDecl())
+            } else if (this.matchKeyword('fn')) {
+                functions.push(this.parseFnDecl())
             } else if (this.matchKeyword('input')) {
                 inputs.push(this.parseInputDecl())
             } else if (this.matchKeyword('secret')) {
@@ -155,7 +159,29 @@ export class Parser {
             browser,
             expectations,
             secrets,
+            functions,
         }
+    }
+
+    /// fn_decl := 'fn' ident '(' ($ident (',' $ident)*)? ')' '{' extraction '}'
+    private parseFnDecl(): FnDecl {
+        const name = this.consumeIdentifierOrKeyword()
+        this.expect('lparen', '(')
+        const params: string[] = []
+        if (!this.check('rparen')) {
+            do {
+                const p = this.matchDollarVariable()
+                if (p === null) {
+                    throw new ParseError(this.peek().loc, `expected parameter ($name), got ${this.peek().lexeme}`)
+                }
+                params.push(p)
+            } while (this.match('comma'))
+        }
+        this.expect('rparen', ')')
+        this.expect('lbrace', '{')
+        const body = this.parseExtractionExpr()
+        this.expect('rbrace', '}')
+        return { name, params, body }
     }
 
     // ---- Type / enum / input decls ----

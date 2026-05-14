@@ -58,7 +58,9 @@ export async function run(
     }
 
     const fetchImpl: FetchLike = opts.fetch ?? ((u, i) => fetch(u, i))
-    const evaluator = new ExtractionEvaluator(new TransformImpls())
+    const transforms = new TransformImpls()
+    transforms.setUserFunctions(recipe.functions)
+    const evaluator = new ExtractionEvaluator(transforms)
     const inputsJSON: Record<string, JSONValue> = {}
     for (const [k, v] of Object.entries(inputs)) inputsJSON[k] = fromRawJSON(v)
 

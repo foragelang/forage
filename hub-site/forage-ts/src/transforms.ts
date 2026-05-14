@@ -1,6 +1,6 @@
 // Transform vocabulary — port of Sources/Forage/Engine/TransformImpls.swift.
 
-import type { JSONValue } from './ast.js'
+import type { FnDecl, JSONValue } from './ast.js'
 import * as cheerio from 'cheerio'
 
 export type TransformImpl = (value: JSONValue, args: JSONValue[]) => JSONValue
@@ -14,19 +14,37 @@ export class TransformError extends Error {
 
 export class TransformImpls {
     private readonly registry = new Map<string, TransformImpl>()
+    /// User-defined transforms layered on top of the built-in registry.
+    /// Consulted first on lookup, so a recipe-level `fn lower($x) { … }`
+    /// would shadow the built-in `lower` (the validator surfaces that
+    /// shadow as a warning).
+    private readonly userFunctions = new Map<string, FnDecl>()
 
     constructor() {
         this.registerDefaults()
     }
 
     has(name: string): boolean {
-        return this.registry.has(name)
+        return this.userFunctions.has(name) || this.registry.has(name)
     }
 
     apply(name: string, value: JSONValue, args: JSONValue[]): JSONValue {
         const impl = this.registry.get(name)
         if (!impl) throw new TransformError(`unknown transform '${name}'`)
         return impl(value, args)
+    }
+
+    /// Register a user-defined function. The evaluator looks here
+    /// before the built-in registry; calling code is responsible for
+    /// running the body itself (this class doesn't know how to
+    /// evaluate ExtractionExpr — only `ExtractionEvaluator` does).
+    setUserFunctions(fns: FnDecl[]): void {
+        this.userFunctions.clear()
+        for (const f of fns) this.userFunctions.set(f.name, f)
+    }
+
+    getUserFunction(name: string): FnDecl | undefined {
+        return this.userFunctions.get(name)
     }
 
     private register(name: string, impl: TransformImpl): void {

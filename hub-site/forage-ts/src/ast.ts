@@ -223,6 +223,17 @@ export interface Recipe {
     browser: BrowserConfig | null
     expectations: Expectation[]
     secrets: string[]
+    functions: FnDecl[]
+}
+
+/// A user-defined transform — `fn <name>(<$p1>, <$p2>) { <body> }`. The
+/// body is a single ExtractionExpr; the call site looks identical to a
+/// built-in transform.
+export interface FnDecl {
+    name: string
+    /// Parameter names without the leading `$`, in declaration order.
+    params: string[]
+    body: ExtractionExpr
 }
 
 /// A header-less `.forage` file: only `type` and `enum` declarations.

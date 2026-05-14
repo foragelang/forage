@@ -5,6 +5,7 @@ import type {
     BodyValue,
     ExtractionExpr,
     FieldType,
+    FnDecl,
     HTTPBody,
     Pagination,
     PathExpr,
@@ -29,6 +30,13 @@ export function validate(recipe: Recipe): ValidationIssue[] {
         for (const v of recipe.auth.capturedVars) topLevelNames.add(v.varName)
     }
     const transforms = new TransformImpls()
+    // User fns: name → declared arity. Built up front so forward
+    // references and mutual lookups resolve.
+    const userFnArity = new Map<string, number>()
+    for (const f of recipe.functions) {
+        if (!userFnArity.has(f.name)) userFnArity.set(f.name, f.params.length)
+    }
+    checkUserFunctions(recipe.functions, transforms, userFnArity, typeNames, enumNames, recipe, issues)
     const declaredSecrets = new Set(recipe.secrets)
     const referencedSecrets = collectReferencedSecrets(recipe)
     for (const n of referencedSecrets) {
@@ -92,14 +100,14 @@ export function validate(recipe: Recipe): ValidationIssue[] {
                 case 'step': {
                     const s = stmt.step
                     validateTemplate(
-                        s.request.url, transforms,
+                        s.request.url, transforms, userFnArity, null,
                         n => varInScope(n) || stepNames.has(n),
                         topLevelNames, typeNames, stepNames,
                         `step ${s.name}.url`, issues,
                     )
                     if (s.request.body) {
                         validateBody(
-                            s.request.body, transforms,
+                            s.request.body, transforms, userFnArity, null,
                             `step ${s.name}.body`, varInScope,
                             topLevelNames, typeNames, stepNames, issues,
                         )
@@ -128,7 +136,7 @@ export function validate(recipe: Recipe): ValidationIssue[] {
                     }
                     for (const fb of em.bindings) {
                         validateExtraction(
-                            fb.expr, transforms, varInScope,
+                            fb.expr, transforms, userFnArity, null, varInScope,
                             topLevelNames, typeNames, stepNames,
                             `emit ${em.typeName}.${fb.fieldName}`, issues,
                         )
@@ -139,6 +147,7 @@ export function validate(recipe: Recipe): ValidationIssue[] {
                     validateExtraction(
                         stmt.collection,
                         transforms,
+                        userFnArity, null,
                         n => varInScope(n) || stepNames.has(n),
                         topLevelNames,
                         typeNames,
@@ -159,6 +168,63 @@ export function validate(recipe: Recipe): ValidationIssue[] {
     walk(recipe.body)
 
     return issues
+}
+
+/// Validate every `fn` declaration: duplicate names, duplicate params,
+/// reserved-name shadow, built-in shadow warning, body validation in a
+/// closed scope, and direct-recursion warning.
+function checkUserFunctions(
+    fns: FnDecl[],
+    transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    typeNames: Set<string>,
+    _enumNames: Set<string>,
+    recipe: Recipe,
+    issues: ValidationIssue[],
+): void {
+    const seen = new Set<string>()
+    const stepNames = new Set<string>()
+    // Functions are validated at the recipe root, so step names are
+    // unknown to them by design — closed-unit semantics.
+    const topLevelInputs = new Set(recipe.inputs.map(i => i.name))
+    for (const f of fns) {
+        const loc = `fn ${f.name}`
+        if (seen.has(f.name)) {
+            issues.push(error(`function '${f.name}' declared more than once`, loc))
+        }
+        seen.add(f.name)
+        if (transforms.has(f.name)) {
+            issues.push(warning(`function '${f.name}' shadows a built-in transform of the same name`, loc))
+        }
+        const paramSeen = new Set<string>()
+        for (const p of f.params) {
+            if (paramSeen.has(p)) {
+                issues.push(error(`function '${f.name}' declares parameter '$${p}' more than once`, loc))
+            }
+            paramSeen.add(p)
+            if (p === 'page') {
+                issues.push(error(
+                    `function '${f.name}' parameter '$${p}' shadows the engine-injected '$page' binding`,
+                    loc,
+                ))
+            }
+        }
+        // Validate the body in a fresh scope: only the params are visible.
+        const bodyVars = new Set(f.params)
+        const inScope = (n: string): boolean => bodyVars.has(n)
+        validateExtraction(
+            f.body,
+            transforms,
+            userFnArity,
+            f.name,
+            inScope,
+            topLevelInputs,
+            typeNames,
+            stepNames,
+            loc,
+            issues,
+        )
+    }
 }
 
 function checkFieldType(
@@ -212,6 +278,8 @@ function validatePath(
 function validateTemplate(
     t: Template,
     transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    enclosingFn: string | null,
     knownVars: (n: string) => boolean,
     knownInputs: Set<string>,
     knownTypes: Set<string>,
@@ -221,7 +289,7 @@ function validateTemplate(
 ): void {
     for (const part of t.parts) {
         if (part.tag === 'interp') {
-            validateExtraction(part.expr, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+            validateExtraction(part.expr, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
         }
     }
 }
@@ -229,6 +297,8 @@ function validateTemplate(
 function validateBody(
     body: HTTPBody,
     transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    enclosingFn: string | null,
     location: string,
     knownVars: (n: string) => boolean,
     knownInputs: Set<string>,
@@ -239,16 +309,16 @@ function validateBody(
     switch (body.tag) {
         case 'jsonObject':
             for (const kv of body.entries) {
-                validateBodyValue(kv.value, transforms, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
+                validateBodyValue(kv.value, transforms, userFnArity, enclosingFn, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
             }
             return
         case 'form':
             for (const kv of body.entries) {
-                validateBodyValue(kv.value, transforms, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
+                validateBodyValue(kv.value, transforms, userFnArity, enclosingFn, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
             }
             return
         case 'raw':
-            validateTemplate(body.template, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+            validateTemplate(body.template, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
             return
     }
 }
@@ -256,6 +326,8 @@ function validateBody(
 function validateBodyValue(
     bv: BodyValue,
     transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    enclosingFn: string | null,
     location: string,
     knownVars: (n: string) => boolean,
     knownInputs: Set<string>,
@@ -265,24 +337,24 @@ function validateBodyValue(
 ): void {
     switch (bv.tag) {
         case 'templateString':
-            validateTemplate(bv.template, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues); return
+            validateTemplate(bv.template, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues); return
         case 'literal': return
         case 'path':
             validatePath(bv.path, knownVars, knownInputs, location, issues); return
         case 'object':
             for (const kv of bv.entries) {
-                validateBodyValue(kv.value, transforms, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
+                validateBodyValue(kv.value, transforms, userFnArity, enclosingFn, `${location}.${kv.key}`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
             }
             return
         case 'array':
             for (const v of bv.items) {
-                validateBodyValue(v, transforms, `${location}[]`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
+                validateBodyValue(v, transforms, userFnArity, enclosingFn, `${location}[]`, knownVars, knownInputs, knownTypes, knownStepNames, issues)
             }
             return
         case 'caseOf':
             validatePath(bv.scrutinee, knownVars, knownInputs, `${location}.case`, issues)
             for (const br of bv.branches) {
-                validateBodyValue(br.value, transforms, location, knownVars, knownInputs, knownTypes, knownStepNames, issues)
+                validateBodyValue(br.value, transforms, userFnArity, enclosingFn, location, knownVars, knownInputs, knownTypes, knownStepNames, issues)
             }
             return
     }
@@ -291,6 +363,8 @@ function validateBodyValue(
 function validateExtraction(
     expr: ExtractionExpr,
     transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    enclosingFn: string | null,
     knownVars: (n: string) => boolean,
     knownInputs: Set<string>,
     knownTypes: Set<string>,
@@ -302,20 +376,18 @@ function validateExtraction(
         case 'path':
             validatePath(expr.path, n => knownVars(n) || knownStepNames.has(n), knownInputs, location, issues); return
         case 'pipe':
-            validateExtraction(expr.inner, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+            validateExtraction(expr.inner, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
             for (const c of expr.calls) {
-                if (!transforms.has(c.name)) {
-                    issues.push(error(`${location}: unknown transform '${c.name}'`, location))
-                }
+                checkCallSite(c.name, c.args.length + 1, transforms, userFnArity, enclosingFn, location, issues)
                 for (const a of c.args) {
-                    validateExtraction(a, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+                    validateExtraction(a, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
                 }
             }
             return
         case 'caseOf':
             validatePath(expr.scrutinee, n => knownVars(n) || knownStepNames.has(n), knownInputs, `${location}.case`, issues)
             for (const br of expr.branches) {
-                validateExtraction(br.expr, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+                validateExtraction(br.expr, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
             }
             return
         case 'mapTo':
@@ -326,15 +398,46 @@ function validateExtraction(
             return
         case 'literal': return
         case 'template':
-            validateTemplate(expr.template, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues); return
+            validateTemplate(expr.template, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues); return
         case 'call':
-            if (!transforms.has(expr.name)) {
-                issues.push(error(`${location}: unknown transform '${expr.name}'`, location))
-            }
+            checkCallSite(expr.name, expr.args.length, transforms, userFnArity, enclosingFn, location, issues)
             for (const a of expr.args) {
-                validateExtraction(a, transforms, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
+                validateExtraction(a, transforms, userFnArity, enclosingFn, knownVars, knownInputs, knownTypes, knownStepNames, location, issues)
             }
             return
+    }
+}
+
+/// Resolve a call-site name against user fns first, then built-ins.
+/// `callArity` is the total number of values supplied at the call site
+/// (head + explicit args for pipe; explicit args for direct call).
+function checkCallSite(
+    name: string,
+    callArity: number,
+    transforms: TransformImpls,
+    userFnArity: Map<string, number>,
+    enclosingFn: string | null,
+    location: string,
+    issues: ValidationIssue[],
+): void {
+    const declared = userFnArity.get(name)
+    if (declared !== undefined) {
+        if (declared !== callArity) {
+            issues.push(error(
+                `${location}: function '${name}' expects ${declared} argument${declared === 1 ? '' : 's'}, got ${callArity}`,
+                location,
+            ))
+        }
+        if (name === enclosingFn) {
+            issues.push(warning(
+                `${location}: function '${name}' calls itself; the runtime has no recursion guard`,
+                location,
+            ))
+        }
+        return
+    }
+    if (!transforms.has(name)) {
+        issues.push(error(`${location}: unknown transform '${name}'`, location))
     }
 }
 

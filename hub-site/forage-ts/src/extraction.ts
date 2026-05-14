@@ -4,6 +4,7 @@
 import type {
     Emission,
     ExtractionExpr,
+    FnDecl,
     JSONValue,
     PathExpr,
     Template,
@@ -122,7 +123,7 @@ export class ExtractionEvaluator {
                 let v = this.evaluateToJSON(expr.inner, scope)
                 for (const call of expr.calls) {
                     const args = call.args.map(a => this.evaluateToJSON(a, scope))
-                    v = this.transforms.apply(call.name, v, args)
+                    v = this.applyPipeCall(call.name, v, args, scope)
                 }
                 return v
             }
@@ -147,11 +148,52 @@ export class ExtractionEvaluator {
             }
             case 'call': {
                 const args = expr.args.map(a => this.evaluateToJSON(a, scope))
+                // Direct call: user fns consume every explicit arg as a
+                // parameter. Built-in transforms historically take
+                // `scope.current` as head + explicit args.
+                const userFn = this.transforms.getUserFunction(expr.name)
+                if (userFn) {
+                    const head = args.length > 0 ? args[0] : { tag: 'null' } as JSONValue
+                    const rest = args.slice(1)
+                    return this.applyUserFn(userFn, head, rest, scope)
+                }
                 const value = args[0] ?? { tag: 'null' }
                 const rest = args.slice(1)
                 return this.transforms.apply(expr.name, value, rest)
             }
         }
+    }
+
+    /// Pipe-style application: `<head> |> name(args...)`. User fns
+    /// resolve to the body's expression in a child scope; built-ins
+    /// go through the transform registry unchanged.
+    private applyPipeCall(name: string, head: JSONValue, args: JSONValue[], scope: Scope): JSONValue {
+        const userFn = this.transforms.getUserFunction(name)
+        if (userFn) return this.applyUserFn(userFn, head, args, scope)
+        return this.transforms.apply(name, head, args)
+    }
+
+    /// Evaluate a user-fn body with its parameters bound. The body sees
+    /// only its parameters plus the recipe-level `$secret.*` / `$input.*`
+    /// — for-loop and `as $v` bindings at the call site are invisible.
+    private applyUserFn(decl: FnDecl, head: JSONValue, rest: JSONValue[], scope: Scope): JSONValue {
+        const expected = decl.params.length
+        const provided = rest.length + 1
+        if (provided !== expected) {
+            throw new EvaluationError(
+                `function '${decl.name}' expects ${expected} argument${expected === 1 ? '' : 's'}, got ${provided}`,
+            )
+        }
+        // Build a closed scope: only the recipe-level inputs + secrets
+        // remain; the parent's frames (loop vars, refs) are excluded.
+        let child = new Scope(scope.inputs, [{}], null, scope.secrets)
+        if (decl.params.length > 0) {
+            child = child.with(decl.params[0], head)
+            for (let i = 1; i < decl.params.length; i++) {
+                child = child.with(decl.params[i], rest[i - 1])
+            }
+        }
+        return this.evaluateToJSON(decl.body, child)
     }
 
     emit(emission: Emission, scope: Scope): JSONValue {

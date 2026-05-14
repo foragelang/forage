@@ -48,7 +48,7 @@ export interface Token {
 }
 
 export const KEYWORDS: ReadonlySet<string> = new Set([
-    'recipe', 'engine', 'http', 'browser', 'type', 'enum', 'input',
+    'recipe', 'engine', 'http', 'browser', 'type', 'enum', 'fn', 'input',
     'step', 'method', 'url', 'headers', 'body', 'json', 'form', 'raw',
     'auth', 'staticHeader', 'htmlPrime', 'extract', 'regex', 'groups',
     'paginate', 'pageWithTotal', 'untilEmpty', 'cursor',
