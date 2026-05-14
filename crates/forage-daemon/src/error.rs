@@ -38,6 +38,13 @@ pub enum DaemonError {
 /// written, so the daemon's fortress invariant — only validated,
 /// frozen versions enter the store — holds even when callers feed
 /// junk.
+///
+/// SQLite / Serde / corruption surfaces fold into a single
+/// `Daemon(#[from] DaemonError)` variant instead of redundant
+/// per-source variants on this enum: every `db::*` helper already
+/// returns `DaemonError`, so `?` lifts straight through without
+/// re-wrapping. Splitting them out would only duplicate the wrapping
+/// types `DaemonError` already carries.
 #[derive(Debug, Error)]
 pub enum DeployError {
     #[error("parse: {0}")]
