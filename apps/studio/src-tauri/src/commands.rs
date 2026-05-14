@@ -36,8 +36,49 @@ pub enum PausePayload {
 }
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
+use crate::daemon_browser::StudioLiveBrowserDriver;
 use crate::state::StudioState;
 use crate::workspace;
+use forage_daemon::Daemon;
+
+/// Pull the live daemon out of state, or surface "no workspace open" to
+/// the frontend. Every workspace-scoped command goes through this so the
+/// commands can stay readable — `state.daemon.foo()` becomes
+/// `require_daemon(&state)?.foo()`.
+fn require_daemon(state: &State<'_, StudioState>) -> Result<Arc<Daemon>, String> {
+    state
+        .daemon
+        .load_full()
+        .ok_or_else(|| "no workspace open".to_string())
+}
+
+/// Pull the live workspace out of state, or surface "no workspace open".
+fn require_workspace(
+    state: &State<'_, StudioState>,
+) -> Result<Arc<forage_core::workspace::Workspace>, String> {
+    state
+        .workspace
+        .load_full()
+        .ok_or_else(|| "no workspace open".to_string())
+}
+
+/// Wire Studio's browser driver and run-completed callback into a newly
+/// constructed daemon, then start its scheduler. Shared by the
+/// `open_workspace` command and any future bootstrapping path so the
+/// daemon-attach sequence stays in one place.
+pub fn install_daemon(app: &AppHandle, daemon: &Arc<Daemon>) {
+    let handle = app.clone();
+    daemon.set_browser_driver(Arc::new(StudioLiveBrowserDriver::new(handle.clone())));
+
+    let cb_handle = handle.clone();
+    daemon.on_run_completed(Box::new(move |sr| {
+        if let Err(e) = cb_handle.emit("forage:daemon-run-completed", sr) {
+            tracing::warn!(error = %e, "emit daemon-run-completed failed");
+        }
+    }));
+
+    daemon.start_scheduler();
+}
 
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
@@ -103,20 +144,26 @@ pub fn validate_recipe(source: String) -> ValidationOutcome {
 /// slug and uses it to scope the live-run / scheduled-run progress
 /// bar to a single type instead of summing all emits.
 #[tauri::command]
-pub fn recipe_progress_unit(slug: String) -> Result<Option<forage_core::ProgressUnit>, String> {
-    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
+pub fn recipe_progress_unit(
+    state: State<'_, StudioState>,
+    slug: String,
+) -> Result<Option<forage_core::ProgressUnit>, String> {
+    let ws = require_workspace(&state)?;
+    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
     let recipe = forage_core::parse(&source).map_err(|e| format!("{e}"))?;
     Ok(forage_core::infer_progress_unit(&recipe))
 }
 
 #[tauri::command]
-pub fn create_recipe() -> Result<String, String> {
-    workspace::create_recipe(None).map_err(|e| e.to_string())
+pub fn create_recipe(state: State<'_, StudioState>) -> Result<String, String> {
+    let ws = require_workspace(&state)?;
+    workspace::create_recipe(&ws.root, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn delete_recipe(slug: String) -> Result<(), String> {
-    workspace::delete_recipe(&slug).map_err(|e| e.to_string())
+pub fn delete_recipe(state: State<'_, StudioState>, slug: String) -> Result<(), String> {
+    let ws = require_workspace(&state)?;
+    workspace::delete_recipe(&ws.root, &slug).map_err(|e| e.to_string())
 }
 
 /// Pop up a native context menu (NSMenu on macOS, etc.) at the cursor
@@ -332,7 +379,9 @@ pub async fn run_recipe(
     replay: bool,
 ) -> Result<RunOutcome, String> {
     tracing::info!(slug = %slug, replay, "run_recipe");
-    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
+    let ws = require_workspace(&state)?;
+    let daemon = require_daemon(&state)?;
+    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
         Ok(r) => r,
         Err(e) => {
@@ -344,7 +393,7 @@ pub async fn run_recipe(
             });
         }
     };
-    let catalog = match build_catalog_for_slug(&slug, &recipe) {
+    let catalog = match build_catalog_for_slug(&ws.root, &slug, &recipe) {
         Ok(c) => c,
         Err(e) => {
             return Ok(RunOutcome {
@@ -365,14 +414,14 @@ pub async fn run_recipe(
             daemon_warning: None,
         });
     }
-    let raw_inputs = workspace::read_inputs(&slug);
+    let raw_inputs = workspace::read_inputs(&ws.root, &slug);
     let mut inputs: IndexMap<String, EvalValue> = IndexMap::new();
     for (k, v) in raw_inputs {
         inputs.insert(k, EvalValue::from(&v));
     }
     let secrets = workspace::read_secrets_from_env(&recipe);
     let captures = if replay {
-        workspace::read_captures(&slug)
+        workspace::read_captures(&ws.root, &slug)
     } else {
         Vec::new()
     };
@@ -470,7 +519,7 @@ pub async fn run_recipe(
             // outcome as a soft warning so the UI can banner it. A
             // silent log line was the old failure mode — the user
             // would see no Run row and have no idea why.
-            let daemon_warning = match state.daemon.ensure_run(&slug) {
+            let daemon_warning = match daemon.ensure_run(&slug) {
                 Ok(_) => None,
                 Err(e) => {
                     tracing::warn!(slug = %slug, error = %e, "ensure_run after dev-run failed");
@@ -563,13 +612,14 @@ pub fn set_recipe_breakpoints(
     slug: String,
     steps: Vec<String>,
 ) -> Result<(), String> {
-    let mut all = workspace::read_breakpoints().map_err(|e| e.to_string())?;
+    let ws = require_workspace(&state)?;
+    let mut all = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
     if steps.is_empty() {
         all.remove(&slug);
     } else {
         all.insert(slug, steps.clone());
     }
-    workspace::write_breakpoints(&all).map_err(|e| e.to_string())?;
+    workspace::write_breakpoints(&ws.root, &all).map_err(|e| e.to_string())?;
     state
         .breakpoints
         .store(Arc::new(steps.into_iter().collect()));
@@ -581,8 +631,12 @@ pub fn set_recipe_breakpoints(
 /// default. A malformed sidecar surfaces as an error so the user sees
 /// the parse failure instead of silently losing every breakpoint.
 #[tauri::command]
-pub fn load_recipe_breakpoints(slug: String) -> Result<Vec<String>, String> {
-    let mut map = workspace::read_breakpoints().map_err(|e| e.to_string())?;
+pub fn load_recipe_breakpoints(
+    state: State<'_, crate::state::StudioState>,
+    slug: String,
+) -> Result<Vec<String>, String> {
+    let ws = require_workspace(&state)?;
+    let mut map = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
     Ok(map.remove(&slug).unwrap_or_default())
 }
 
@@ -616,13 +670,15 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
 
 #[tauri::command]
 pub async fn publish_recipe(
+    state: State<'_, crate::state::StudioState>,
     slug: String,
     hub_url: String,
     dry_run: bool,
 ) -> Result<RunOutcome, String> {
-    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
+    let ws = require_workspace(&state)?;
+    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
     let recipe = parse(&source).map_err(|e| format!("{e}"))?;
-    let catalog = build_catalog_for_slug(&slug, &recipe).map_err(|e| format!("{e}"))?;
+    let catalog = build_catalog_for_slug(&ws.root, &slug, &recipe).map_err(|e| format!("{e}"))?;
     if validate(&recipe, &catalog).has_errors() {
         return Err("recipe failed validation".into());
     }
@@ -837,7 +893,11 @@ fn collect_step_locations(
 /// catalog (via `build_catalog_for_slug`), and attaches workspace
 /// errors as document-level diagnostics. Used by `save_recipe`, which
 /// always has a slug context.
-fn validate_source_with_slug(slug: &str, source: &str) -> ValidationOutcome {
+fn validate_source_with_slug(
+    workspace_root: &Path,
+    slug: &str,
+    source: &str,
+) -> ValidationOutcome {
     let line_map = LineMap::new(source);
     let to_diag = |span: std::ops::Range<usize>,
                    severity: &'static str,
@@ -857,7 +917,7 @@ fn validate_source_with_slug(slug: &str, source: &str) -> ValidationOutcome {
     };
     match parse(source) {
         Ok(r) => {
-            let catalog = match build_catalog_for_slug(slug, &r) {
+            let catalog = match build_catalog_for_slug(workspace_root, slug, &r) {
                 Ok(c) => c,
                 Err(e) => {
                     let diag = to_diag(0..0, "error", "WorkspaceError".into(), format!("{e}"));
@@ -977,10 +1037,11 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
 /// caller instead of being silently swallowed — the user has to see
 /// them to fix them.
 fn build_catalog_for_slug(
+    workspace_root: &Path,
     slug: &str,
     recipe: &forage_core::Recipe,
 ) -> Result<forage_core::TypeCatalog, forage_core::workspace::WorkspaceError> {
-    let path = workspace::recipe_path(slug);
+    let path = workspace::recipe_path(workspace_root, slug);
     if let Some(ws) = forage_core::workspace::discover(&path) {
         return ws.catalog(recipe, |p| std::fs::read_to_string(p));
     }
@@ -1007,28 +1068,25 @@ fn host_of(url: &str) -> String {
 
 use std::path::{Path, PathBuf};
 
-use forage_core::workspace::Workspace;
 use forage_daemon::{
     DaemonStatus, DeployedVersion, Run, RunConfig, ScheduledRun, validate_cron,
 };
 
 use crate::workspace::{
-    DeployedState, DraftState, FileNode, RecipeStatus, WorkspaceInfo, build_file_tree,
+    DeployedState, DraftState, FileNode, RecentWorkspace, RecipeStatus, WorkspaceInfo,
+    build_file_tree,
 };
 
-fn read_workspace<'a>(
-    state: &'a State<'_, StudioState>,
-) -> std::sync::RwLockReadGuard<'a, Workspace> {
-    state.workspace.read().expect("workspace lock poisoned")
-}
-
 /// Snapshot of the loaded workspace: root path, manifest's `name`,
-/// and `[deps]`. The file list is fetched separately via
-/// `list_workspace_files` so polling the tree doesn't redundantly
-/// reship the manifest.
+/// and `[deps]`. Returns `None` when no workspace is open — Studio
+/// boots into that state and the frontend's top-level branch reads
+/// this value to decide whether to render Welcome.
 #[tauri::command]
-pub fn current_workspace(state: State<'_, StudioState>) -> WorkspaceInfo {
-    WorkspaceInfo::from_workspace(&read_workspace(&state))
+pub fn current_workspace(state: State<'_, StudioState>) -> Option<WorkspaceInfo> {
+    state
+        .workspace
+        .load_full()
+        .map(|ws| WorkspaceInfo::from_workspace(&ws))
 }
 
 /// Recursive directory tree rooted at the workspace root, with each
@@ -1037,8 +1095,8 @@ pub fn current_workspace(state: State<'_, StudioState>) -> WorkspaceInfo {
 /// authored content, not runtime state.
 #[tauri::command]
 pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, String> {
-    let root = read_workspace(&state).root.clone();
-    build_file_tree(&root).map_err(|e| e.to_string())
+    let ws = require_workspace(&state)?;
+    build_file_tree(&ws.root).map_err(|e| e.to_string())
 }
 
 /// Re-scan the workspace from disk and replace the cached snapshot.
@@ -1047,9 +1105,9 @@ pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, S
 /// without restarting Studio.
 #[tauri::command]
 pub fn refresh_workspace(state: State<'_, StudioState>) -> Result<(), String> {
-    let root = read_workspace(&state).root.clone();
-    let fresh = forage_core::workspace::load(&root).map_err(|e| e.to_string())?;
-    *state.workspace.write().expect("workspace lock poisoned") = fresh;
+    let ws = require_workspace(&state)?;
+    let fresh = forage_core::workspace::load(&ws.root).map_err(|e| e.to_string())?;
+    state.workspace.store(Some(Arc::new(fresh)));
     Ok(())
 }
 
@@ -1087,8 +1145,8 @@ fn resolve_existing_in_workspace(
     state: &State<'_, StudioState>,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    let root = read_workspace(state).root.clone();
-    resolve_existing(&root, path)
+    let ws = require_workspace(state)?;
+    resolve_existing(&ws.root, path)
 }
 
 /// Resolve a path that may not exist yet (e.g. `save_file` creating
@@ -1100,13 +1158,13 @@ fn resolve_new_in_workspace(
     state: &State<'_, StudioState>,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    let root = read_workspace(state).root.clone();
-    resolve_new(&root, path)
+    let ws = require_workspace(state)?;
+    resolve_new(&ws.root, path)
 }
 
 fn workspace_root_canonical(state: &State<'_, StudioState>) -> Result<PathBuf, String> {
-    let root = read_workspace(state).root.clone();
-    canonicalize_root(&root)
+    let ws = require_workspace(state)?;
+    canonicalize_root(&ws.root)
 }
 
 /// Inner helper for `resolve_existing_in_workspace` that takes the
@@ -1220,7 +1278,7 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
-        return validate_source_with_slug(&slug, source);
+        return validate_source_with_slug(root, &slug, source);
     }
 
     // Any other `.forage` location is a sidecar — neither a
@@ -1278,17 +1336,19 @@ fn validate_declarations_source(source: &str) -> ValidationOutcome {
 
 #[tauri::command]
 pub fn daemon_status(state: State<'_, StudioState>) -> Result<DaemonStatus, String> {
-    state.daemon.status().map_err(|e| e.to_string())
+    require_daemon(&state)?.status().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn list_runs(state: State<'_, StudioState>) -> Result<Vec<Run>, String> {
-    state.daemon.list_runs().map_err(|e| e.to_string())
+    require_daemon(&state)?.list_runs().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_run(state: State<'_, StudioState>, run_id: String) -> Result<Option<Run>, String> {
-    state.daemon.get_run(&run_id).map_err(|e| e.to_string())
+    require_daemon(&state)?
+        .get_run(&run_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1297,15 +1357,16 @@ pub fn configure_run(
     slug: String,
     cfg: RunConfig,
 ) -> Result<Run, String> {
-    state
-        .daemon
+    require_daemon(&state)?
         .configure_run(&slug, cfg)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn remove_run(state: State<'_, StudioState>, run_id: String) -> Result<(), String> {
-    state.daemon.remove_run(&run_id).map_err(|e| e.to_string())
+    require_daemon(&state)?
+        .remove_run(&run_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1313,9 +1374,7 @@ pub async fn trigger_run(
     state: State<'_, StudioState>,
     run_id: String,
 ) -> Result<ScheduledRun, String> {
-    // Clone the Arc — `trigger_run` takes `&Arc<Self>` so we need an
-    // owned handle to call across the await.
-    let daemon = state.daemon.clone();
+    let daemon = require_daemon(&state)?;
     daemon.trigger_run(&run_id).await.map_err(|e| e.to_string())
 }
 
@@ -1326,8 +1385,7 @@ pub fn list_scheduled_runs(
     limit: u32,
     before: Option<i64>,
 ) -> Result<Vec<ScheduledRun>, String> {
-    state
-        .daemon
+    require_daemon(&state)?
         .list_scheduled_runs(&run_id, limit, before)
         .map_err(|e| e.to_string())
 }
@@ -1339,8 +1397,7 @@ pub fn load_run_records(
     type_name: String,
     limit: u32,
 ) -> Result<Vec<serde_json::Value>, String> {
-    state
-        .daemon
+    require_daemon(&state)?
         .load_records(&scheduled_run_id, &type_name, limit)
         .map_err(|e| e.to_string())
 }
@@ -1366,30 +1423,20 @@ pub fn deploy_recipe(
     state: State<'_, StudioState>,
     slug: String,
 ) -> Result<DeployedVersion, String> {
-    // Source path and catalog must come from the same workspace root.
-    // `workspace::read_source` reads through `workspace_root()` which
-    // resolves `FORAGE_WORKSPACE_ROOT` afresh each call — a mid-session
-    // env swap would have it disagree with the cached
-    // `state.workspace.root` used for catalog resolution. Anchoring
-    // both reads on `read_workspace(&state).root` keeps deploy
-    // self-consistent: the source we pin is the source the catalog
-    // resolves against.
-    let (source, catalog) = {
-        let ws = read_workspace(&state);
-        let recipe_path = ws.root.join(&slug).join("recipe.forage");
-        let source = std::fs::read_to_string(&recipe_path)
-            .map_err(|e| format!("read {}: {e}", recipe_path.display()))?;
-        let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
-        let catalog = ws
-            .catalog(&recipe, |p| std::fs::read_to_string(p))
-            .map_err(|e| format!("catalog: {e}"))?;
-        (source, catalog)
-    };
+    let ws = require_workspace(&state)?;
+    let daemon = require_daemon(&state)?;
+    // Source and catalog anchored on the same workspace handle so a
+    // mid-deploy refresh can't make the source disagree with the
+    // catalog it resolves against.
+    let recipe_path = ws.root.join(&slug).join("recipe.forage");
+    let source = std::fs::read_to_string(&recipe_path)
+        .map_err(|e| format!("read {}: {e}", recipe_path.display()))?;
+    let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
+    let catalog = ws
+        .catalog(&recipe, |p| std::fs::read_to_string(p))
+        .map_err(|e| format!("catalog: {e}"))?;
     let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-    state
-        .daemon
-        .deploy(&slug, source, wire)
-        .map_err(|e| e.to_string())
+    daemon.deploy(&slug, source, wire).map_err(|e| e.to_string())
 }
 
 /// All deployed versions for one slug, newest first. Returns an
@@ -1399,8 +1446,7 @@ pub fn list_deployed_versions(
     state: State<'_, StudioState>,
     slug: String,
 ) -> Result<Vec<DeployedVersion>, String> {
-    state
-        .daemon
+    require_daemon(&state)?
         .deployed_versions(&slug)
         .map_err(|e| e.to_string())
 }
@@ -1416,52 +1462,48 @@ pub fn list_recipe_statuses(
     use forage_core::workspace::WorkspaceFileKind;
     use std::collections::BTreeMap;
 
+    let ws = require_workspace(&state)?;
+    let daemon = require_daemon(&state)?;
     let mut by_slug: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
 
-    {
-        let ws = read_workspace(&state);
-        for entry in &ws.files {
-            match &entry.kind {
-                WorkspaceFileKind::Recipe { slug } => {
-                    by_slug.insert(
-                        slug.clone(),
-                        (
-                            DraftState::Valid {
-                                path: entry.path.clone(),
-                            },
-                            DeployedState::None,
-                        ),
-                    );
-                }
-                WorkspaceFileKind::Broken {
-                    slug: Some(slug),
-                    error,
-                } => {
-                    by_slug.insert(
-                        slug.clone(),
-                        (
-                            DraftState::Broken {
-                                path: entry.path.clone(),
-                                error: error.clone(),
-                            },
-                            DeployedState::None,
-                        ),
-                    );
-                }
-                WorkspaceFileKind::Declarations | WorkspaceFileKind::Broken { slug: None, .. } => {
-                    // Declarations files have no slug; a broken file
-                    // we couldn't derive a slug for can't be paired
-                    // with a deployment. Both are skipped here — the
-                    // file tree surfaces them elsewhere.
-                }
+    for entry in &ws.files {
+        match &entry.kind {
+            WorkspaceFileKind::Recipe { slug } => {
+                by_slug.insert(
+                    slug.clone(),
+                    (
+                        DraftState::Valid {
+                            path: entry.path.clone(),
+                        },
+                        DeployedState::None,
+                    ),
+                );
+            }
+            WorkspaceFileKind::Broken {
+                slug: Some(slug),
+                error,
+            } => {
+                by_slug.insert(
+                    slug.clone(),
+                    (
+                        DraftState::Broken {
+                            path: entry.path.clone(),
+                            error: error.clone(),
+                        },
+                        DeployedState::None,
+                    ),
+                );
+            }
+            WorkspaceFileKind::Declarations | WorkspaceFileKind::Broken { slug: None, .. } => {
+                // Declarations files have no slug; a broken file
+                // we couldn't derive a slug for can't be paired
+                // with a deployment. Both are skipped here — the
+                // file tree surfaces them elsewhere.
             }
         }
     }
 
-    let deployments = state
-        .daemon
-        .deployed_slugs()
-        .map_err(|e| e.to_string())?;
+    let deployments = daemon.deployed_slugs().map_err(|e| e.to_string())?;
     for dv in deployments {
         let entry = by_slug.entry(dv.slug.clone()).or_insert((
             DraftState::Missing,
@@ -1481,6 +1523,151 @@ pub fn list_recipe_statuses(
             deployed,
         })
         .collect())
+}
+
+// ---------------------------------------------------------------------
+// Workspace lifecycle: open / new / close, recents, menu wiring.
+//
+// All four commands serialize through `state.workspace_switch` so a
+// concurrent ⌘O firing while a prior open is still resolving can't
+// half-install a daemon. The mutex also makes the in-place
+// "switch workspace" operation safe: we close the previous daemon and
+// install the new one without ever exposing a state where neither (or
+// both) are live to readers.
+// ---------------------------------------------------------------------
+
+/// Drop the current workspace (if any), close its daemon, then install
+/// a fresh workspace + daemon for `root`. Updates the recents sidecar
+/// and emits a `forage:workspace-opened` event for the frontend.
+#[tauri::command]
+pub async fn open_workspace(
+    state: State<'_, StudioState>,
+    app: AppHandle,
+    path: PathBuf,
+) -> Result<WorkspaceInfo, String> {
+    let _guard = state.workspace_switch.lock().await;
+    open_workspace_inner(&state, &app, path).await
+}
+
+/// Scaffold a new workspace at `path` (creates the directory if
+/// missing, writes an empty `forage.toml`), then dispatch into
+/// `open_workspace_inner` to install it. Refuses paths that already
+/// hold a `forage.toml` — the user should pick Open in that case.
+#[tauri::command]
+pub async fn new_workspace(
+    state: State<'_, StudioState>,
+    app: AppHandle,
+    path: PathBuf,
+) -> Result<WorkspaceInfo, String> {
+    let _guard = state.workspace_switch.lock().await;
+    workspace::write_empty_manifest(&path).map_err(|e| e.to_string())?;
+    open_workspace_inner(&state, &app, path).await
+}
+
+/// Close the active workspace. Idempotent: a second close on an
+/// already-empty state returns `Ok(())` without panicking.
+#[tauri::command]
+pub async fn close_workspace(
+    state: State<'_, StudioState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let _guard = state.workspace_switch.lock().await;
+    close_workspace_inner(&state, &app);
+    Ok(())
+}
+
+/// Recents list, filtered down to entries whose path still exists on
+/// disk. The Welcome view fetches this through TanStack Query; the
+/// switcher popover ignores it.
+#[tauri::command]
+pub fn list_recent_workspaces() -> Result<Vec<RecentWorkspace>, String> {
+    Ok(workspace::read_recents())
+}
+
+/// The transactional core of opening a workspace. Caller must hold
+/// `state.workspace_switch`. Closes any prior workspace+daemon first
+/// so the swap is atomic from the frontend's perspective.
+async fn open_workspace_inner(
+    state: &State<'_, StudioState>,
+    app: &AppHandle,
+    path: PathBuf,
+) -> Result<WorkspaceInfo, String> {
+    // Close the previous workspace first. If the user is switching,
+    // the old daemon's scheduler stops before the new one starts.
+    close_workspace_inner(state, app);
+
+    if !path.exists() {
+        return Err(format!("workspace path does not exist: {}", path.display()));
+    }
+    if !path.join("forage.toml").exists() {
+        return Err(format!(
+            "{} is not a workspace (missing forage.toml)",
+            path.display()
+        ));
+    }
+
+    let workspace = forage_core::workspace::load(&path)
+        .map_err(|e| format!("load workspace at {}: {e}", path.display()))?;
+    let daemon = forage_daemon::Daemon::open(path.clone())
+        .map_err(|e| format!("open daemon at {}: {e}", path.display()))?;
+
+    install_daemon(app, &daemon);
+
+    // Cache before recording so the recents row reflects what the user
+    // actually opened (manifest name + recipe count both come off the
+    // loaded workspace).
+    let info = WorkspaceInfo::from_workspace(&workspace);
+    let display_name = workspace::derive_workspace_name(&workspace);
+    let recipe_count = workspace.recipes().count() as u32;
+    let workspace_arc = Arc::new(workspace);
+    state.workspace.store(Some(workspace_arc));
+    state.daemon.store(Some(daemon));
+
+    if let Err(e) = workspace::record_recent(&path, display_name, recipe_count) {
+        tracing::warn!(error = %e, path = %path.display(), "record_recent failed");
+    }
+
+    set_close_workspace_enabled(state, true);
+    let _ = app.emit("forage:workspace-opened", &info);
+    Ok(info)
+}
+
+/// The transactional core of closing the active workspace. Caller must
+/// hold `state.workspace_switch`. Safe to call when no workspace is
+/// open — drops to a no-op.
+fn close_workspace_inner(state: &State<'_, StudioState>, app: &AppHandle) {
+    // Tear down any in-flight run before the daemon shuts down — the
+    // engine task would otherwise keep running against a closed
+    // workspace.
+    if let Some(n) = state.run_cancel.swap(None) {
+        n.notify_one();
+    }
+    state.debug_session.store(None);
+
+    let prior_daemon = state.daemon.swap(None);
+    let was_open = prior_daemon.is_some();
+    if let Some(d) = prior_daemon {
+        d.close();
+    }
+    state.workspace.store(None);
+
+    if was_open {
+        set_close_workspace_enabled(state, false);
+        let _ = app.emit("forage:workspace-closed", ());
+    }
+}
+
+fn set_close_workspace_enabled(state: &State<'_, StudioState>, enabled: bool) {
+    if let Some(item) = state
+        .menu_close_workspace
+        .lock()
+        .expect("menu_close_workspace mutex")
+        .as_ref()
+    {
+        if let Err(e) = item.set_enabled(enabled) {
+            tracing::warn!(error = %e, "set_enabled on Close Workspace menu item failed");
+        }
+    }
 }
 
 #[cfg(test)]

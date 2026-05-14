@@ -23,6 +23,7 @@ import type { Outcome } from "../bindings/Outcome";
 import type { PausePayload } from "../bindings/PausePayload";
 import type { RecipeRecord } from "../bindings/RecipeRecord";
 import type { ProgressUnit } from "../bindings/ProgressUnit";
+import type { RecentWorkspace } from "../bindings/RecentWorkspace";
 import type { RecipeOutline } from "../bindings/RecipeOutline";
 import type { ResumeAction } from "../bindings/ResumeAction";
 import type { Run } from "../bindings/Run";
@@ -55,6 +56,7 @@ export type {
     Outcome,
     PausePayload,
     ProgressUnit,
+    RecentWorkspace,
     RecipeOutline,
     RecipeRecord,
     ResumeAction,
@@ -102,7 +104,17 @@ export const DEBUG_PAUSED_EVENT = "forage:debug-paused";
 
 export const api = {
     version: () => invoke<string>("studio_version"),
-    currentWorkspace: () => invoke<WorkspaceInfo>("current_workspace"),
+    // `currentWorkspace` returns null when no workspace is open — Studio
+    // boots into the no-workspace state and the frontend renders Welcome
+    // until the user picks one.
+    currentWorkspace: () => invoke<WorkspaceInfo | null>("current_workspace"),
+    openWorkspace: (path: string) =>
+        invoke<WorkspaceInfo>("open_workspace", { path }),
+    newWorkspace: (path: string) =>
+        invoke<WorkspaceInfo>("new_workspace", { path }),
+    closeWorkspace: () => invoke<void>("close_workspace"),
+    listRecentWorkspaces: () =>
+        invoke<RecentWorkspace[]>("list_recent_workspaces"),
     listWorkspaceFiles: () => invoke<FileNode>("list_workspace_files"),
     loadFile: (path: string) => invoke<string>("load_file", { path }),
     saveFile: (path: string, source: string) =>

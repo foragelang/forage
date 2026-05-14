@@ -1,67 +1,55 @@
-//! Studio's filesystem-backed workspace at `~/Library/Forage/Recipes/`.
+//! Filesystem helpers anchored on a workspace root. The root is whatever
+//! the user opened — there's no longer a single global workspace.
 //!
 //! Each recipe lives in `<workspace>/<slug>/recipe.forage`; the
 //! workspace itself is marked by a `forage.toml` at the root and may
 //! include header-less declarations files shared across recipes.
+//!
+//! This module also owns the cross-workspace **recents sidecar**: a
+//! JSON file in the OS data dir tracking which workspaces the user has
+//! opened recently. It lives outside any workspace because Studio needs
+//! to read it before any workspace is open.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use forage_core::workspace::{MANIFEST_NAME, Manifest, Workspace, serialize_manifest};
 
-/// On-disk location of the user's recipe workspace.
-///
-/// Honors `FORAGE_WORKSPACE_ROOT` first — useful for tests (sandbox
-/// into a tempdir) and for users who want to point Studio at a repo
-/// checkout instead of the OS-conventional workspace directory.
-pub fn workspace_root() -> PathBuf {
-    if let Ok(override_dir) = std::env::var("FORAGE_WORKSPACE_ROOT") {
-        if !override_dir.is_empty() {
-            return PathBuf::from(override_dir);
-        }
-    }
-    if cfg!(target_os = "macos") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join("Library").join("Forage").join("Recipes");
-        }
-    }
-    if let Some(data) = dirs::data_dir() {
-        return data.join("Forage").join("Recipes");
-    }
-    PathBuf::from(".forage-recipes")
-}
-
-/// Drop an empty `forage.toml` at `<workspace_root>/forage.toml` if it
-/// doesn't exist. Studio calls this on app init so an existing folder
-/// of recipes silently becomes a workspace on first launch.
-pub fn ensure_workspace_manifest(root: &Path) -> std::io::Result<()> {
+/// Drop an empty `forage.toml` at `<root>/forage.toml` if it doesn't
+/// exist. Called from `new_workspace` after `mkdir -p` so a brand-new
+/// directory becomes a workspace; refuses to overwrite existing
+/// manifests so re-opening with the New action would surface a real
+/// "already exists" error.
+pub fn write_empty_manifest(root: &Path) -> io::Result<()> {
     fs::create_dir_all(root)?;
     let path = root.join(MANIFEST_NAME);
     if path.exists() {
-        return Ok(());
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} already has a forage.toml — use Open instead", root.display()),
+        ));
     }
     let body = serialize_manifest(&Manifest::default())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     fs::write(&path, body)
 }
 
-pub fn recipe_path(slug: &str) -> PathBuf {
-    workspace_root().join(slug).join("recipe.forage")
+pub fn recipe_path(root: &Path, slug: &str) -> PathBuf {
+    root.join(slug).join("recipe.forage")
 }
 
-pub fn recipe_dir(slug: &str) -> PathBuf {
-    workspace_root().join(slug)
+pub fn recipe_dir(root: &Path, slug: &str) -> PathBuf {
+    root.join(slug)
 }
 
-pub fn create_recipe(template_slug: Option<&str>) -> std::io::Result<String> {
-    let root = workspace_root();
-    fs::create_dir_all(&root)?;
-    // Find an `untitled-N` slug that doesn't exist yet.
+pub fn create_recipe(root: &Path, template_slug: Option<&str>) -> io::Result<String> {
+    fs::create_dir_all(root)?;
     let base = template_slug.unwrap_or("untitled");
     let mut n = 1;
     loop {
@@ -81,13 +69,13 @@ pub fn create_recipe(template_slug: Option<&str>) -> std::io::Result<String> {
         }
         n += 1;
         if n > 1000 {
-            return Err(std::io::Error::other("too many untitled recipes"));
+            return Err(io::Error::other("too many untitled recipes"));
         }
     }
 }
 
-pub fn read_source(slug: &str) -> std::io::Result<String> {
-    fs::read_to_string(recipe_path(slug))
+pub fn read_source(root: &Path, slug: &str) -> io::Result<String> {
+    fs::read_to_string(recipe_path(root, slug))
 }
 
 /// Delete a recipe directory under the workspace root.
@@ -95,15 +83,10 @@ pub fn read_source(slug: &str) -> std::io::Result<String> {
 /// Refuses anything that isn't a single path segment (no slashes, no `..`),
 /// so a malicious slug can't escape the workspace root with `../etc/passwd`.
 /// The slug must already exist as a directory directly under the workspace.
-pub fn delete_recipe(slug: &str) -> std::io::Result<()> {
-    delete_recipe_in(&workspace_root(), slug)
-}
-
-/// Test-friendly variant of `delete_recipe` that takes an explicit root.
-fn delete_recipe_in(root: &Path, slug: &str) -> std::io::Result<()> {
+pub fn delete_recipe(root: &Path, slug: &str) -> io::Result<()> {
     if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
             format!("invalid recipe slug: {slug:?}"),
         ));
     }
@@ -113,16 +96,16 @@ fn delete_recipe_in(root: &Path, slug: &str) -> std::io::Result<()> {
     let canonical = dir.canonicalize()?;
     let root_canonical = root.canonicalize()?;
     if !canonical.starts_with(&root_canonical) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
             format!("recipe path {canonical:?} escapes workspace root {root_canonical:?}"),
         ));
     }
     fs::remove_dir_all(&dir)
 }
 
-pub fn read_inputs(slug: &str) -> indexmap::IndexMap<String, serde_json::Value> {
-    let path = recipe_dir(slug).join("fixtures").join("inputs.json");
+pub fn read_inputs(root: &Path, slug: &str) -> indexmap::IndexMap<String, serde_json::Value> {
+    let path = recipe_dir(root, slug).join("fixtures").join("inputs.json");
     if !path.exists() {
         return indexmap::IndexMap::new();
     }
@@ -140,8 +123,8 @@ pub fn read_inputs(slug: &str) -> indexmap::IndexMap<String, serde_json::Value> 
     out
 }
 
-pub fn read_captures(slug: &str) -> Vec<forage_replay::Capture> {
-    let path = recipe_dir(slug).join("fixtures").join("captures.jsonl");
+pub fn read_captures(root: &Path, slug: &str) -> Vec<forage_replay::Capture> {
+    let path = recipe_dir(root, slug).join("fixtures").join("captures.jsonl");
     if !path.exists() {
         return Vec::new();
     }
@@ -166,12 +149,12 @@ pub fn read_captures(slug: &str) -> Vec<forage_replay::Capture> {
 /// `<workspace_root>/breakpoints.json` keyed by recipe slug. The file is
 /// missing until the user sets a first breakpoint, so the empty-map
 /// case is the steady state for fresh workspaces.
-pub fn breakpoints_path() -> PathBuf {
-    workspace_root().join("breakpoints.json")
+pub fn breakpoints_path(root: &Path) -> PathBuf {
+    root.join("breakpoints.json")
 }
 
-pub fn read_breakpoints() -> io::Result<std::collections::HashMap<String, Vec<String>>> {
-    let path = breakpoints_path();
+pub fn read_breakpoints(root: &Path) -> io::Result<std::collections::HashMap<String, Vec<String>>> {
+    let path = breakpoints_path(root);
     let raw = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -186,14 +169,15 @@ pub fn read_breakpoints() -> io::Result<std::collections::HashMap<String, Vec<St
 }
 
 pub fn write_breakpoints(
+    root: &Path,
     map: &std::collections::HashMap<String, Vec<String>>,
-) -> std::io::Result<()> {
-    let path = breakpoints_path();
+) -> io::Result<()> {
+    let path = breakpoints_path(root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let body = serde_json::to_string_pretty(map)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, body)
 }
 
@@ -483,6 +467,165 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
     FileKind::Other
 }
 
+// ---------------------------------------------------------------------
+// Recents sidecar.
+// ---------------------------------------------------------------------
+
+/// One row in the recents list. Captured at workspace-open time;
+/// `recipe_count` is a cached integer so the Welcome view doesn't have
+/// to scan every recent workspace's disk.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RecentWorkspace {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    pub name: String,
+    /// Milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub opened_at: i64,
+    pub recipe_count: u32,
+}
+
+/// File layout of the recents sidecar. Wrapped in a single-field struct
+/// so future top-level fields (e.g. a schema version) can land without
+/// breaking shape.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RecentsFile {
+    #[serde(default)]
+    workspaces: Vec<RecentWorkspace>,
+}
+
+/// Resolve the cross-workspace recents sidecar path. Honors
+/// `FORAGE_DATA_DIR` first — tests sandbox into a tempdir; users
+/// shouldn't need this in practice.
+pub fn recents_path() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("FORAGE_DATA_DIR")
+        && !override_dir.is_empty()
+    {
+        return PathBuf::from(override_dir).join("recents.json");
+    }
+    dirs::data_dir()
+        .map(|d| d.join("Forage"))
+        .unwrap_or_else(|| PathBuf::from(".forage-data"))
+        .join("recents.json")
+}
+
+/// Load the recents list, filtering out entries whose path no longer
+/// exists on disk. Missing or corrupt sidecars degrade to an empty
+/// list — recents are nice-to-have, not load-bearing.
+///
+/// Corrupt files log at `warn` and return empty rather than panicking;
+/// the user can keep using the app and the next successful write
+/// replaces the bad file.
+pub fn read_recents() -> Vec<RecentWorkspace> {
+    let path = recents_path();
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "failed to read recents sidecar");
+            return Vec::new();
+        }
+    };
+    let file: RecentsFile = match serde_json::from_str(&raw) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "recents sidecar is not valid JSON");
+            return Vec::new();
+        }
+    };
+    file.workspaces
+        .into_iter()
+        .filter(|w| {
+            if w.path.exists() {
+                true
+            } else {
+                tracing::debug!(path = %w.path.display(), "dropping recent workspace whose path no longer exists");
+                false
+            }
+        })
+        .collect()
+}
+
+/// Atomic write of the recents sidecar. Uses tempfile + rename to mirror
+/// the daemon-fortress deployments pattern: the rename is atomic on the
+/// same filesystem, so readers either see the old file or the new file
+/// — never a half-written truncation.
+fn write_recents(list: &[RecentWorkspace]) -> io::Result<()> {
+    let path = recents_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_vec_pretty(&RecentsFile {
+        workspaces: list.to_vec(),
+    })
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Tempfile in the same dir so the rename stays on one filesystem.
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(&body)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(&path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+/// Read the sidecar without the path-still-exists filter — the recorder
+/// needs to dedupe against entries that may no longer exist on disk so
+/// stale rows don't keep accumulating.
+fn read_recents_raw() -> Vec<RecentWorkspace> {
+    let path = recents_path();
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let file: RecentsFile = match serde_json::from_str(&raw) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    file.workspaces
+}
+
+/// Push a freshly-opened workspace to the front of the recents list.
+/// Dedupes by canonical path; truncates to 10 entries. The recents
+/// sidecar lives outside any workspace, so this is safe to call from
+/// any path-resolution state.
+pub fn record_recent(path: &Path, name: String, recipe_count: u32) -> io::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let entry = RecentWorkspace {
+        path: canonical.clone(),
+        name,
+        opened_at: now,
+        recipe_count,
+    };
+    let mut list = read_recents_raw();
+    list.retain(|w| w.path != canonical);
+    list.insert(0, entry);
+    list.truncate(10);
+    write_recents(&list)
+}
+
+/// The workspace's display name for the recents sidecar and switcher
+/// header. Prefers the manifest `name` (publish slug) — split after the
+/// last `/` so `dima/zen-leaf` shows as `zen-leaf` in the UI. Falls
+/// back to the directory basename when the manifest has no name.
+pub fn derive_workspace_name(ws: &Workspace) -> String {
+    if let Some(name) = ws.manifest.name.as_deref() {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.rsplit('/').next().unwrap_or(trimmed).to_string();
+        }
+    }
+    ws.root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ws.root.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,7 +644,7 @@ mod tests {
         assert!(tmp.path().join("to-delete/recipe.forage").exists());
         assert!(tmp.path().join("to-delete/fixtures/inputs.json").exists());
 
-        delete_recipe_in(tmp.path(), "to-delete").unwrap();
+        delete_recipe(tmp.path(), "to-delete").unwrap();
 
         assert!(!tmp.path().join("to-delete").exists());
     }
@@ -515,8 +658,8 @@ mod tests {
         fs::write(victim.join("important.txt"), "DO NOT DELETE").unwrap();
 
         for bad in ["..", "../victim", "./x", "a/b", "a\\b", ""] {
-            let err = delete_recipe_in(tmp.path(), bad).unwrap_err();
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "slug {bad:?}");
+            let err = delete_recipe(tmp.path(), bad).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "slug {bad:?}");
         }
         assert!(victim.join("important.txt").exists());
     }
@@ -529,8 +672,8 @@ mod tests {
         fs::write(outside.path().join("important.txt"), "DO NOT DELETE").unwrap();
         std::os::unix::fs::symlink(outside.path(), tmp.path().join("evil")).unwrap();
 
-        let err = delete_recipe_in(tmp.path(), "evil").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let err = delete_recipe(tmp.path(), "evil").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(outside.path().join("important.txt").exists());
     }
 
@@ -564,7 +707,6 @@ mod tests {
         .unwrap();
         fs::write(recipe_dir.join("fixtures").join("inputs.json"), "{}").unwrap();
         fs::write(recipe_dir.join("snapshot.json"), "{}").unwrap();
-        // Random non-tracked file under the recipe dir.
         fs::write(recipe_dir.join("README.md"), "").unwrap();
 
         let tree = build_file_tree(root).unwrap();
@@ -572,7 +714,6 @@ mod tests {
             panic!("expected Folder at root");
         };
 
-        // Hidden entries are gone.
         for child in &children {
             match child {
                 FileNode::File { name, .. } | FileNode::Folder { name, .. } => {
@@ -584,7 +725,6 @@ mod tests {
             }
         }
 
-        // Collect (relative-name, file_kind) pairs for assertions.
         let mut by_name: BTreeMap<String, FileKind> = BTreeMap::new();
         let mut folders: BTreeMap<String, Vec<FileNode>> = BTreeMap::new();
         for child in children {
@@ -600,7 +740,6 @@ mod tests {
             }
         }
 
-        // Root-level classification.
         assert_eq!(
             by_name.get("forage.toml").copied(),
             Some(FileKind::Manifest)
@@ -609,7 +748,6 @@ mod tests {
             by_name.get("cannabis.forage").copied(),
             Some(FileKind::Declarations)
         );
-        // Recipe folder is present.
         let recipe_children = folders.get("trilogy-rec").expect("recipe folder");
 
         let mut recipe_files: BTreeMap<String, FileKind> = BTreeMap::new();
@@ -634,13 +772,11 @@ mod tests {
             recipe_files.get("snapshot.json").copied(),
             Some(FileKind::Snapshot)
         );
-        // Random file is classified as Other, not silently dropped.
         assert_eq!(
             recipe_files.get("README.md").copied(),
             Some(FileKind::Other)
         );
 
-        // Fixtures subfolder contains a fixture file.
         let fixtures = recipe_subfolders.get("fixtures").expect("fixtures folder");
         let inputs = fixtures
             .iter()
@@ -678,10 +814,8 @@ mod tests {
         else {
             panic!("expected Folder at root");
         };
-        // Root folder's relative path is empty.
         assert_eq!(root_path.as_os_str(), "");
 
-        // Collect (name, path) pairs at every depth.
         fn walk(node: &FileNode, out: &mut Vec<(String, PathBuf)>) {
             match node {
                 FileNode::File { name, path, .. } => {
@@ -741,8 +875,6 @@ mod tests {
                 FileNode::File { name, .. } | FileNode::Folder { name, .. } => name.clone(),
             })
             .collect();
-        // a-folder is a directory; both .forage and forage.toml are
-        // files. The directory must come first.
         let folder_idx = names.iter().position(|n| n == "a-folder").unwrap();
         let toml_idx = names.iter().position(|n| n == "forage.toml").unwrap();
         let z_idx = names.iter().position(|n| n == "z.forage").unwrap();
@@ -766,5 +898,151 @@ mod tests {
         let info = WorkspaceInfo::from_workspace(&ws);
         assert_eq!(info.name.as_deref(), Some("dima/cannabis"));
         assert_eq!(info.deps.get("dima/shared-types"), Some(&3));
+    }
+
+    // -----------------------------------------------------------------
+    // Recents sidecar tests.
+    //
+    // Each test stamps a unique `FORAGE_DATA_DIR` via tempdir so they
+    // don't share state with each other or with the user's real
+    // recents file. The env var is read on every `recents_path()` call,
+    // so as long as we set it before invoking the helpers the override
+    // wins.
+    // -----------------------------------------------------------------
+
+    /// `cargo test` runs tests on a thread pool; setting a process-wide
+    /// env var from multiple threads concurrently produces interleaved
+    /// reads. Serialize through a static mutex so each recents test
+    /// gets exclusive use of `FORAGE_DATA_DIR` for its duration.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_data_dir<F: FnOnce()>(f: F) {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("FORAGE_DATA_DIR").ok();
+        // Safety: the mutex guarantees we're the only thread touching
+        // this env var during the call.
+        unsafe {
+            std::env::set_var("FORAGE_DATA_DIR", tmp.path());
+        }
+        f();
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("FORAGE_DATA_DIR", v),
+                None => std::env::remove_var("FORAGE_DATA_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn recents_path_resolves_under_data_dir() {
+        with_data_dir(|| {
+            let p = recents_path();
+            assert!(p.ends_with("recents.json"), "got {p:?}");
+        });
+    }
+
+    #[test]
+    fn read_recents_on_missing_file_returns_empty() {
+        with_data_dir(|| {
+            assert!(read_recents().is_empty());
+        });
+    }
+
+    #[test]
+    fn read_recents_on_corrupt_json_returns_empty() {
+        with_data_dir(|| {
+            let path = recents_path();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "not json {{{").unwrap();
+            // Should not panic; logs at warn.
+            assert!(read_recents().is_empty());
+        });
+    }
+
+    #[test]
+    fn record_recent_deduplicates_and_truncates() {
+        with_data_dir(|| {
+            // Twelve distinct workspaces; the 7th + 9th get re-recorded
+            // later so we can check dedup and ordering.
+            let dirs: Vec<_> = (0..12)
+                .map(|_| {
+                    let d = tempfile::tempdir().unwrap();
+                    // Write a forage.toml so `exists()` returns true.
+                    fs::write(d.path().join("forage.toml"), "").unwrap();
+                    d
+                })
+                .collect();
+
+            for (i, d) in dirs.iter().enumerate() {
+                record_recent(d.path(), format!("w{i}"), i as u32).unwrap();
+            }
+            // Re-record one of the older ones — it should jump to the
+            // front and the list should still be 10 entries.
+            record_recent(dirs[3].path(), "w3-again".into(), 99).unwrap();
+
+            let list = read_recents();
+            assert_eq!(list.len(), 10);
+            // Most-recent is the re-recorded entry.
+            assert_eq!(list[0].name, "w3-again");
+            assert_eq!(list[0].recipe_count, 99);
+            // No duplicate of w3 anywhere else.
+            let dupes = list.iter().filter(|w| w.path == list[0].path).count();
+            assert_eq!(dupes, 1);
+        });
+    }
+
+    #[test]
+    fn read_recents_drops_entries_whose_path_is_missing() {
+        with_data_dir(|| {
+            let stable = tempfile::tempdir().unwrap();
+            fs::write(stable.path().join("forage.toml"), "").unwrap();
+            record_recent(stable.path(), "stable".into(), 1).unwrap();
+            // Record a second entry, then delete the directory so the
+            // recents file points at a now-missing path.
+            let throwaway = tempfile::tempdir().unwrap();
+            fs::write(throwaway.path().join("forage.toml"), "").unwrap();
+            let throwaway_path = throwaway.path().to_path_buf();
+            record_recent(&throwaway_path, "gone".into(), 0).unwrap();
+            drop(throwaway);
+
+            let list = read_recents();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].name, "stable");
+        });
+    }
+
+    #[test]
+    fn derive_workspace_name_prefers_manifest_publish_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("forage.toml"),
+            "name = \"dima/zen-leaf\"\n",
+        )
+        .unwrap();
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        assert_eq!(derive_workspace_name(&ws), "zen-leaf");
+    }
+
+    #[test]
+    fn derive_workspace_name_falls_back_to_basename() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a child dir with a known name so the tempdir's
+        // randomized suffix doesn't make this test flaky.
+        let inner = tmp.path().join("my-recipes");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("forage.toml"), "").unwrap();
+        let ws = forage_core::workspace::load(&inner).unwrap();
+        assert_eq!(derive_workspace_name(&ws), "my-recipes");
+    }
+
+    #[test]
+    fn new_workspace_rejects_dir_with_existing_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("forage.toml"), "").unwrap();
+        let err = write_empty_manifest(tmp.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     }
 }

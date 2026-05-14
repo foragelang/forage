@@ -7,3 +7,14 @@
 
 export const scheduledRunsKey = (runId: string, opts: { limit: number }) =>
     ["scheduledRuns", runId, opts] as const;
+
+/// The boot-blocking query: which workspace, if any, is currently open.
+/// Invalidated by `forage:workspace-opened` and `forage:workspace-closed`
+/// events from the backend so the App's top-level branch flips between
+/// Welcome and StudioShell without a reload.
+export const currentWorkspaceKey = () => ["currentWorkspace"] as const;
+
+/// The Welcome view's recents list. Invalidated on workspace open so a
+/// freshly-opened workspace floats to the top of the list before the
+/// user returns to Welcome.
+export const recentWorkspacesKey = () => ["recentWorkspaces"] as const;

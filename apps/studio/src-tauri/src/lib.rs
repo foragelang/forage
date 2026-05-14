@@ -7,11 +7,8 @@ mod menu;
 mod state;
 mod workspace;
 
-use std::sync::Arc;
-
-use daemon_browser::StudioLiveBrowserDriver;
 use state::StudioState;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,69 +43,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Note: no tauri-plugin-log — tracing-subscriber above already
-            // captures both `tracing::` events and (via its tracing-log
-            // bridge) `log::` records from reqwest / cookie_store / tao.
-            // Adding tauri-plugin-log on top panics with "logger already set."
-            //
-            // Drop an empty `forage.toml` at the workspace root on first
-            // launch so an existing user workspace quietly becomes
-            // discoverable. The check is idempotent — no overwrite if
-            // the manifest is already there. Failure surfaces as a real
-            // setup error: Studio can't operate without a writable
-            // workspace, so silent fallback isn't useful.
-            let ws_root = workspace::workspace_root();
-            workspace::ensure_workspace_manifest(&ws_root).map_err(|e| {
-                format!(
-                    "failed to initialize workspace manifest at {}: {e}",
-                    ws_root.display()
-                )
-            })?;
+            // Studio boots without a workspace. The Welcome screen is
+            // the entry point; the user picks Open, New, or a recent
+            // workspace to install a daemon. The daemon's lifecycle is
+            // now tied to a workspace, not to the app — see
+            // `commands::open_workspace`.
+            let state = StudioState::new_empty();
 
-            // Load the workspace once. The daemon never scans the
-            // edit folder — Studio owns that view, refreshes it on
-            // filesystem changes, and resolves catalogs against it.
-            let workspace = forage_core::workspace::load(&ws_root).map_err(|e| {
-                format!("failed to load workspace at {}: {e}", ws_root.display())
-            })?;
+            let (menu, close_workspace_item) = menu::build_menu(app.handle())?;
+            // Stash the Close Workspace MenuItem so the open/close
+            // commands can toggle its enabled state. The item is
+            // disabled at build time; `open_workspace_inner` flips
+            // it on when a workspace lands in state.
+            *state
+                .menu_close_workspace
+                .lock()
+                .expect("menu_close_workspace mutex") = Some(close_workspace_item);
 
-            // Open the daemon. It manages its own `.forage/` data
-            // directory under the same root; recipes outside that
-            // directory are Studio's concern.
-            let daemon = forage_daemon::Daemon::open(ws_root.clone()).map_err(|e| {
-                format!("failed to open daemon at {}: {e}", ws_root.display())
-            })?;
-
-            // Plug Studio's live browser driver into the daemon so
-            // scheduled `engine browser` recipes can run. Without
-            // this, the daemon fails those runs with
-            // `NoBrowserDriver` at `run_once` time.
-            let handle = app.handle().clone();
-            daemon.set_browser_driver(Arc::new(StudioLiveBrowserDriver::new(handle.clone())));
-
-            // Forward daemon run completions to the frontend as a
-            // single Tauri event. The store-keeping (refresh runs
-            // sidebar, refetch scheduled-runs) happens entirely in
-            // the UI's event listener.
-            let cb_handle = handle.clone();
-            daemon.on_run_completed(Box::new(move |sr| {
-                if let Err(e) = cb_handle.emit("forage:daemon-run-completed", sr) {
-                    tracing::warn!(error = %e, "emit daemon-run-completed failed");
-                }
-            }));
-
-            // Spawn the scheduler last so it doesn't tick before the
-            // browser driver / callback are in place. `start_scheduler`
-            // calls `tokio::spawn` internally; the Tauri setup closure
-            // runs on the main thread outside the runtime, so enter it
-            // via `block_on` before the spawn.
-            tauri::async_runtime::block_on(async {
-                daemon.start_scheduler();
-            });
-
-            app.manage(StudioState::new(daemon, workspace));
-            let m = menu::build_menu(app.handle())?;
-            app.set_menu(m)?;
+            app.manage(state);
+            app.set_menu(menu)?;
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -136,6 +89,11 @@ pub fn run() {
             commands::auth_poll_device,
             commands::auth_logout,
             commands::studio_version,
+            // Workspace lifecycle.
+            commands::open_workspace,
+            commands::new_workspace,
+            commands::close_workspace,
+            commands::list_recent_workspaces,
             // Workspace + files + daemon.
             commands::current_workspace,
             commands::list_workspace_files,

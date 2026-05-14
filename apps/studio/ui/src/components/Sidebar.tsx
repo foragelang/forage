@@ -29,6 +29,11 @@ import {
 
 import { Button } from "@/components/ui/button";
 import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
+import {
     Sidebar as SidebarRoot,
     SidebarContent,
     SidebarFooter,
@@ -44,7 +49,13 @@ import { cn } from "@/lib/utils";
 
 import { api, type FileNode, type Health, type Run, type WorkspaceInfo } from "@/lib/api";
 import { shortenHome, slugOf } from "@/lib/path";
+import { currentWorkspaceKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
+import {
+    closeWorkspaceAction,
+    openWorkspaceAction,
+} from "@/lib/studioActions";
+import { X } from "lucide-react";
 
 // ── module-scope context-menu plumbing ──────────────────────────────
 //
@@ -102,7 +113,7 @@ export function Sidebar() {
     const qc = useQueryClient();
 
     const workspace = useQuery({
-        queryKey: ["workspace"],
+        queryKey: currentWorkspaceKey(),
         queryFn: api.currentWorkspace,
     });
     const files = useQuery({
@@ -183,43 +194,112 @@ type Dep = { slug: string; version: number };
 // ── workspace header ─────────────────────────────────────────────────
 
 function WorkspaceHeader({ workspace }: { workspace: WorkspaceInfo | null }) {
-    const display = workspace ? shortenHome(workspace.root, workspace.home) : "";
+    const qc = useQueryClient();
+    const [open, setOpen] = useState(false);
+
+    if (!workspace) {
+        // Defensive — the App-level branch swaps to Welcome when no
+        // workspace is open, so we shouldn't reach this. Rendering an
+        // empty header keeps the sidebar layout stable during the
+        // brief moment between a `forage:workspace-closed` event and
+        // the App re-rendering.
+        return <SidebarHeader />;
+    }
+
+    const displayName = workspace.name
+        ? workspace.name.split("/").pop() ?? workspace.name
+        : workspace.root.split("/").pop() ?? workspace.root;
+    const displayPath = shortenHome(workspace.root, workspace.home);
+
     return (
-        <SidebarHeader className="border-b">
-            <Tooltip>
-                <TooltipTrigger asChild>
+        <SidebarHeader>
+            <Popover open={open} onOpenChange={setOpen}>
+                <PopoverTrigger asChild>
                     <button
                         type="button"
-                        // No handler yet — the workspace picker isn't
-                        // built. The tooltip ("Switch workspace (coming
-                        // soon)") tells the user; this button just
-                        // displays the current workspace path.
                         className={cn(
-                            "flex w-full items-center gap-2 px-1.5 py-1 text-left",
-                            "rounded-sm transition-colors hover:bg-sidebar-accent",
+                            "workspace-switcher-trigger",
+                            "flex w-full items-center gap-2 rounded-md px-[10px] py-[7px] text-left text-[12.5px] font-medium",
                             "group-data-[collapsible=icon]:justify-center",
                         )}
                     >
+                        <span className="ws-folder inline-flex">
+                            <Folder className="size-[14px]" />
+                        </span>
                         <span
                             className={cn(
-                                "min-w-0 flex-1 truncate font-mono text-xs text-sidebar-foreground/80",
+                                "ws-name min-w-0 flex-1 truncate",
                                 "group-data-[collapsible=icon]:hidden",
                             )}
                         >
-                            {display}
+                            {displayName}
                         </span>
                         <ChevronDown
                             className={cn(
-                                "size-3 text-sidebar-foreground/50 shrink-0",
+                                "ws-chev size-[14px] shrink-0 transition-transform",
+                                open && "rotate-180",
                                 "group-data-[collapsible=icon]:hidden",
                             )}
                         />
                     </button>
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                    Switch workspace (coming soon)
-                </TooltipContent>
-            </Tooltip>
+                </PopoverTrigger>
+                <PopoverContent
+                    align="start"
+                    sideOffset={6}
+                    className="workspace-switcher-popover w-[228px] rounded-md p-[5px]"
+                >
+                    <div className="flex flex-col gap-[2px] px-[10px] pt-2 pb-[6px]">
+                        <span className="ws-pop-label text-[9px] font-semibold uppercase tracking-[0.1em]">
+                            Current workspace
+                        </span>
+                        <span
+                            className="ws-pop-path overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px]"
+                            title={workspace.root}
+                        >
+                            {displayPath}
+                        </span>
+                    </div>
+                    <div className="ws-pop-divider mx-1 my-1 h-px" />
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setOpen(false);
+                            void openWorkspaceAction(qc);
+                        }}
+                        className="ws-pop-item flex w-full items-center gap-[9px] rounded-[4px] px-[10px] py-[7px] text-left text-[12.5px]"
+                    >
+                        <Folder className="size-[14px] opacity-80" />
+                        <span className="flex-1">Open Workspace…</span>
+                        <span className="inline-flex gap-[2px]">
+                            <span className="ws-pop-kbd inline-flex h-[18px] min-w-[18px] items-center justify-center rounded px-1 font-mono text-[10px]">
+                                ⌘
+                            </span>
+                            <span className="ws-pop-kbd inline-flex h-[18px] min-w-[18px] items-center justify-center rounded px-1 font-mono text-[10px]">
+                                O
+                            </span>
+                        </span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setOpen(false);
+                            void closeWorkspaceAction(qc);
+                        }}
+                        className="ws-pop-item is-danger flex w-full items-center gap-[9px] rounded-[4px] px-[10px] py-[7px] text-left text-[12.5px]"
+                    >
+                        <X className="size-[14px] opacity-80" />
+                        <span className="flex-1">Close Workspace</span>
+                        <span className="inline-flex gap-[2px]">
+                            <span className="ws-pop-kbd inline-flex h-[18px] min-w-[18px] items-center justify-center rounded px-1 font-mono text-[10px]">
+                                ⌘
+                            </span>
+                            <span className="ws-pop-kbd inline-flex h-[18px] min-w-[18px] items-center justify-center rounded px-1 font-mono text-[10px]">
+                                W
+                            </span>
+                        </span>
+                    </button>
+                </PopoverContent>
+            </Popover>
         </SidebarHeader>
     );
 }

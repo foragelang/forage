@@ -14,14 +14,33 @@ import {
     type RunEvent,
     type ScheduledRun,
 } from "@/lib/api";
+import {
+    currentWorkspaceKey,
+    recentWorkspacesKey,
+} from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 import {
+    closeWorkspaceAction,
     createAndOpenRecipe,
+    newWorkspaceAction,
+    openWorkspaceAction,
     runActive,
     saveActive,
 } from "@/lib/studioActions";
+import type { WorkspaceInfo } from "@/lib/api";
+
+/// Read the latest `currentWorkspace` query value from the cache so
+/// keyboard / menu handlers can branch on workspace presence without
+/// re-subscribing. Returns `null` when no workspace is open OR the
+/// query hasn't resolved yet — the menu handler treats both as "no
+/// workspace", which matches the Welcome view's branch.
+function readWorkspace(qc: import("@tanstack/react-query").QueryClient) {
+    return qc.getQueryData<WorkspaceInfo | null>(currentWorkspaceKey()) ?? null;
+}
 
 const DAEMON_RUN_COMPLETED_EVENT = "forage:daemon-run-completed";
+const WORKSPACE_OPENED_EVENT = "forage:workspace-opened";
+const WORKSPACE_CLOSED_EVENT = "forage:workspace-closed";
 
 export function useStudioEffects() {
     const qc = useQueryClient();
@@ -93,7 +112,8 @@ export function useStudioEffects() {
         };
     }, [qc]);
 
-    // ⌘S → save, ⌘R → run live, ⇧⌘R → replay, ⌘N → new recipe.
+    // ⌘S → save, ⌘R → run live, ⇧⌘R → replay, ⌘N → new recipe (with a
+    // workspace open) or new workspace (on Welcome).
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
             if (!(e.metaKey || e.ctrlKey)) return;
@@ -108,7 +128,11 @@ export function useStudioEffects() {
                 void runActive(true);
             } else if (e.key === "n") {
                 e.preventDefault();
-                void createAndOpenRecipe(qc);
+                if (readWorkspace(qc)) {
+                    void createAndOpenRecipe(qc);
+                } else {
+                    void newWorkspaceAction(qc);
+                }
             }
         };
         window.addEventListener("keydown", handler);
@@ -128,11 +152,77 @@ export function useStudioEffects() {
                 else offs.push(u);
             });
         };
-        register("menu:new_recipe", () => void createAndOpenRecipe(qc));
+        register("menu:new_recipe", () => {
+            if (readWorkspace(qc)) {
+                void createAndOpenRecipe(qc);
+            } else {
+                void newWorkspaceAction(qc);
+            }
+        });
         register("menu:save", () => void saveActive());
         register("menu:run_live", () => void runActive(false));
         register("menu:run_replay", () => void runActive(true));
         register("menu:validate", () => void saveActive());
+        register("menu:open_workspace", () => void openWorkspaceAction(qc));
+        register("menu:close_workspace", () => void closeWorkspaceAction(qc));
+        return () => {
+            cancelled = true;
+            offs.forEach((u) => u());
+        };
+    }, [qc]);
+
+    // Backend-emitted workspace lifecycle events. The commands
+    // invalidate `currentWorkspace` on the calling side, but the menu
+    // path and any future programmatic open/close also need to flip
+    // the App's top-level branch — listening here keeps that wiring in
+    // one place.
+    //
+    // On close we drop every workspace-scoped query (files, runs,
+    // daemon, scheduledRuns, recipe statuses) so the next open
+    // refetches against the new workspace's daemon rather than serving
+    // stale rows.
+    useEffect(() => {
+        let cancelled = false;
+        const offs: (() => void)[] = [];
+        const register = (name: string, handler: () => void) => {
+            listen(name, handler).then((u) => {
+                if (cancelled) u();
+                else offs.push(u);
+            });
+        };
+        register(WORKSPACE_OPENED_EVENT, () => {
+            qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
+            qc.invalidateQueries({ queryKey: recentWorkspacesKey() });
+        });
+        register(WORKSPACE_CLOSED_EVENT, () => {
+            // Drop active editor state so a fresh workspace doesn't
+            // inherit the previous one's selected file or run.
+            useStudio.setState({
+                activeFilePath: null,
+                activeRunId: null,
+                selectedScheduledRunId: null,
+                source: "",
+                dirty: false,
+                validation: null,
+                snapshot: null,
+                runError: null,
+                running: false,
+                runLog: [],
+                runCounts: {},
+                paused: null,
+            });
+            qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
+            qc.removeQueries({
+                predicate: (q) =>
+                    Array.isArray(q.queryKey) &&
+                    (q.queryKey[0] === "files" ||
+                        q.queryKey[0] === "runs" ||
+                        q.queryKey[0] === "daemon" ||
+                        q.queryKey[0] === "scheduledRuns" ||
+                        q.queryKey[0] === "workspace" ||
+                        q.queryKey[0] === "recipeStatuses"),
+            });
+        });
         return () => {
             cancelled = true;
             offs.forEach((u) => u());

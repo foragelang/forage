@@ -12,9 +12,9 @@
 //!   stale state from a previous run is dropped when the new session
 //!   replaces it.
 //! - **Mutexes** remain only where genuine mutation through `&self`
-//!   would otherwise need `RwLock`: the muda `Menu` handle (only
-//!   accessed from the Tauri main thread, but the type isn't easy to
-//!   wrap in `ArcSwap`).
+//!   would otherwise need `RwLock`: the muda `Menu` / `MenuItem` handles
+//!   (only accessed from the Tauri main thread, but the types aren't
+//!   easy to wrap in `ArcSwap`).
 //!
 //! Studio owns the user-facing workspace: scans for recipes, tracks
 //! declarations, resolves catalogs against on-disk drafts. The daemon
@@ -22,28 +22,37 @@
 //! through the `deploy_recipe` Tauri command, which validates a draft
 //! against the Studio-side catalog and hands the frozen pair to the
 //! daemon.
+//!
+//! Both `daemon` and `workspace` are optional. Studio boots into the
+//! no-workspace state and only constructs them when the user opens or
+//! creates a workspace. The `workspace_switch` mutex serializes
+//! open/close transitions so two concurrent commands can't half-install
+//! a daemon while the other is closing it.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use forage_core::workspace::Workspace;
 use forage_daemon::Daemon;
 use forage_http::ResumeAction;
 use tauri::Wry;
+use tauri::menu::MenuItem;
 use tokio::sync::{Notify, oneshot};
 
 pub struct StudioState {
     /// In-process daemon for scheduling, run history, and output stores.
-    /// Owned for the life of the Studio process; closed during teardown.
-    pub daemon: Arc<Daemon>,
+    /// Empty until the user opens a workspace; closed and replaced when
+    /// the user closes or switches workspaces.
+    pub daemon: ArcSwapOption<Daemon>,
     /// Cached on-disk workspace view: recipes, declarations files,
-    /// manifest. Loaded at boot via `forage_core::workspace::load` and
-    /// refreshed by the `refresh_workspace` command on filesystem
-    /// changes. Held briefly under `read()` for catalog resolution and
-    /// file-tree listing; `write()` only fires during a refresh.
-    pub workspace: RwLock<Workspace>,
+    /// manifest. Empty until the user opens a workspace; loaded via
+    /// `forage_core::workspace::load` at open time and refreshed by
+    /// the `refresh_workspace` command on filesystem changes. Reads
+    /// are lock-free `ArcSwap` loads; writes happen on
+    /// open/close/refresh.
+    pub workspace: ArcSwapOption<Workspace>,
     /// Cancellation signal for the in-flight `run_recipe` call. The
     /// frontend `cancel_run` command notifies through this; `run_recipe`
     /// selects against it so the engine future drops mid-fetch. Lifecycle:
@@ -56,6 +65,17 @@ pub struct StudioState {
     /// dropped before the click event fires, losing the event. Only
     /// touched on the Tauri main thread.
     pub last_context_menu: Mutex<Option<tauri::menu::Menu<Wry>>>,
+    /// The native File menu's `Close Workspace` item handle. Stashed so
+    /// `open_workspace` / `close_workspace` can toggle its enabled
+    /// state — disabled when no workspace is open, enabled otherwise.
+    /// Populated once by `lib.rs::run` during setup.
+    pub menu_close_workspace: Mutex<Option<MenuItem<Wry>>>,
+    /// Serializes open/close transitions. The open path on a live
+    /// workspace is `close → open`; without this mutex two concurrent
+    /// `open_workspace` calls (e.g. ⌘O firing while the dialog from a
+    /// prior ⌘O is still resolving) could interleave their close+open
+    /// sequences and leak a daemon scheduler.
+    pub workspace_switch: tokio::sync::Mutex<()>,
     /// Step names with breakpoints set. Persists across runs and is read
     /// on every engine-step pause; the frontend pushes a fresh set via
     /// `set_breakpoints` whenever the user toggles a gutter marker.
@@ -67,16 +87,17 @@ pub struct StudioState {
 }
 
 impl StudioState {
-    /// Build a `StudioState` around an already-opened daemon and a
-    /// pre-loaded workspace. `lib.rs::run` does the construction at
-    /// app boot so the daemon's scheduler is alive before any command
-    /// fires; tests construct one through here too.
-    pub fn new(daemon: Arc<Daemon>, workspace: Workspace) -> Self {
+    /// Construct an empty state — no workspace, no daemon. The boot
+    /// path no longer requires a daemon up front; `open_workspace`
+    /// installs one when the user picks a folder.
+    pub fn new_empty() -> Self {
         Self {
-            daemon,
-            workspace: RwLock::new(workspace),
+            daemon: ArcSwapOption::empty(),
+            workspace: ArcSwapOption::empty(),
             run_cancel: ArcSwapOption::empty(),
             last_context_menu: Mutex::new(None),
+            menu_close_workspace: Mutex::new(None),
+            workspace_switch: tokio::sync::Mutex::new(()),
             breakpoints: ArcSwap::new(Arc::new(HashSet::new())),
             debug_session: ArcSwapOption::empty(),
         }

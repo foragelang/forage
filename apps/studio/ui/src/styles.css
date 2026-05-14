@@ -230,3 +230,147 @@
     color: var(--destructive);
     background: color-mix(in oklab, var(--destructive) 14%, transparent);
 }
+
+/*
+ * Welcome view + workspace switcher palette.
+ *
+ * These tokens are pulled verbatim from
+ * `plans/workspace-lifecycle-design/styles.css`. They give the no-workspace
+ * surfaces a slightly warmer dark scale than the rest of the studio
+ * (where shadcn's neutral oklch ramp dominates) plus the amber accents
+ * the design calls for. Scoping is by class — only descendants of
+ * `.welcome` / `.workspace-switcher-*` read these.
+ */
+.welcome,
+.workspace-switcher-trigger,
+.workspace-switcher-popover {
+    --wa-bg-0: oklch(0.155 0.005 60);
+    --wa-bg-1: oklch(0.185 0.005 60);
+    --wa-bg-2: oklch(0.215 0.005 60);
+    --wa-bg-3: oklch(0.245 0.005 60);
+    --wa-border: oklch(0.275 0.005 60);
+    --wa-border-strong: oklch(0.34 0.005 60);
+    --wa-fg-0: oklch(0.96 0.002 60);
+    --wa-fg-1: oklch(0.86 0.005 60);
+    --wa-fg-2: oklch(0.65 0.012 60);
+    --wa-fg-3: oklch(0.48 0.012 60);
+    --wa-amber: oklch(0.82 0.13 78);
+    --wa-amber-bg: oklch(0.3 0.07 78 / 0.35);
+    --wa-red: oklch(0.72 0.2 25);
+}
+
+.welcome {
+    background: var(--wa-bg-0);
+    color: var(--wa-fg-0);
+}
+.welcome .mono {
+    font-family: var(--font-mono);
+}
+.welcome-mark {
+    color: var(--wa-amber);
+}
+.welcome-tag {
+    color: var(--wa-fg-2);
+}
+.welcome-action {
+    background: var(--wa-bg-1);
+    border-color: var(--wa-border);
+    color: var(--wa-fg-1);
+    cursor: pointer;
+}
+.welcome-action:hover {
+    background: var(--wa-bg-2);
+}
+.welcome-action-icon {
+    background: var(--wa-bg-3);
+    color: var(--wa-amber);
+}
+.welcome-action-title {
+    color: var(--wa-fg-0);
+}
+.welcome-action-sub {
+    color: var(--wa-fg-3);
+}
+.welcome-kbd {
+    background: var(--wa-bg-3);
+    border-color: var(--wa-border);
+    color: var(--wa-fg-2);
+}
+.welcome-section {
+    color: var(--wa-fg-3);
+}
+.welcome-recent {
+    background: transparent;
+    color: var(--wa-fg-1);
+    cursor: pointer;
+}
+.welcome-recent:hover {
+    background: var(--wa-bg-1);
+}
+.welcome-recent-icon {
+    color: var(--wa-fg-3);
+}
+.welcome-recent-path,
+.welcome-recent-meta {
+    color: var(--wa-fg-3);
+}
+.welcome-foot {
+    background: var(--wa-bg-1);
+    border-top: 1px solid var(--wa-border);
+    color: var(--wa-fg-3);
+}
+
+/*
+ * Workspace switcher: amber-ringed header button + Radix popover.
+ *
+ * The amber ring (`box-shadow: 0 0 0 3px ...`) doesn't have a Tailwind
+ * utility for the exact oklch token mix, so it lives here. The popover
+ * content carries the same warmer palette as the Welcome view.
+ */
+.workspace-switcher-trigger {
+    background: var(--wa-bg-2);
+    border: 1px solid var(--wa-amber);
+    box-shadow: 0 0 0 3px var(--wa-amber-bg);
+    color: var(--wa-fg-0);
+}
+.workspace-switcher-trigger:hover {
+    background: oklch(0.235 0.005 60);
+}
+.workspace-switcher-trigger .ws-name {
+    color: var(--wa-fg-0);
+}
+.workspace-switcher-trigger .ws-folder {
+    color: var(--wa-amber);
+}
+.workspace-switcher-trigger .ws-chev {
+    color: var(--wa-fg-2);
+}
+.workspace-switcher-popover {
+    background: var(--wa-bg-2);
+    border: 1px solid var(--wa-border-strong);
+    color: var(--wa-fg-0);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+.workspace-switcher-popover .ws-pop-label {
+    color: var(--wa-fg-3);
+}
+.workspace-switcher-popover .ws-pop-path {
+    color: var(--wa-fg-1);
+}
+.workspace-switcher-popover .ws-pop-divider {
+    background: var(--wa-border);
+}
+.workspace-switcher-popover .ws-pop-item {
+    color: var(--wa-fg-1);
+}
+.workspace-switcher-popover .ws-pop-item:hover {
+    background: var(--wa-bg-3);
+}
+.workspace-switcher-popover .ws-pop-item.is-danger {
+    color: var(--wa-red);
+}
+.workspace-switcher-popover .ws-pop-kbd {
+    background: var(--wa-bg-3);
+    border: 1px solid var(--wa-border);
+    color: var(--wa-fg-2);
+}

@@ -8,9 +8,11 @@
 //! here.
 
 import type { QueryClient } from "@tanstack/react-query";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { api } from "./api";
 import { slugOf } from "./path";
+import { currentWorkspaceKey, recentWorkspacesKey } from "./queryKeys";
 import { useStudio } from "./store";
 
 export async function saveActive() {
@@ -91,6 +93,68 @@ export async function createAndOpenRecipe(qc: QueryClient) {
         const slug = await api.createRecipe();
         qc.invalidateQueries({ queryKey: ["files"] });
         await useStudio.getState().setActiveFilePath(`${slug}/recipe.forage`);
+    } catch (e) {
+        useStudio.getState().setRunError(String(e));
+    }
+}
+
+/// Workspace lifecycle actions. Each invalidates the boot query so the
+/// top-level App branch flips between Welcome and StudioShell, plus the
+/// recents bucket so the Welcome view reflects the freshly-opened entry
+/// next time the user returns.
+async function pickWorkspaceDirectory(title: string): Promise<string | null> {
+    const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title,
+    });
+    return typeof picked === "string" ? picked : null;
+}
+
+export async function openWorkspaceAction(qc: QueryClient) {
+    const path = await pickWorkspaceDirectory("Open workspace");
+    if (!path) return;
+    try {
+        await api.openWorkspace(path);
+        await Promise.all([
+            qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
+            qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
+        ]);
+    } catch (e) {
+        useStudio.getState().setRunError(String(e));
+    }
+}
+
+export async function newWorkspaceAction(qc: QueryClient) {
+    const path = await pickWorkspaceDirectory("New workspace");
+    if (!path) return;
+    try {
+        await api.newWorkspace(path);
+        await Promise.all([
+            qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
+            qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
+        ]);
+    } catch (e) {
+        useStudio.getState().setRunError(String(e));
+    }
+}
+
+export async function openRecentWorkspaceAction(qc: QueryClient, path: string) {
+    try {
+        await api.openWorkspace(path);
+        await Promise.all([
+            qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
+            qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
+        ]);
+    } catch (e) {
+        useStudio.getState().setRunError(String(e));
+    }
+}
+
+export async function closeWorkspaceAction(qc: QueryClient) {
+    try {
+        await api.closeWorkspace();
+        await qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
     } catch (e) {
         useStudio.getState().setRunError(String(e));
     }
