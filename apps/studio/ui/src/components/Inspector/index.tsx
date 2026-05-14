@@ -18,11 +18,14 @@ import { HistoryPane } from "./HistoryPane";
 import { RecordsPane } from "./RecordsPane";
 import { RunPane } from "./RunPane";
 
-export function Inspector() {
+export function Inspector({ width }: { width: number }) {
     const inspectorMode = useStudio((s) => s.inspectorMode);
     const setInspectorMode = useStudio((s) => s.setInspectorMode);
     return (
-        <aside className="w-[420px] shrink-0 border-l min-h-0 flex flex-col">
+        <aside
+            style={{ width }}
+            className="shrink-0 min-h-0 flex flex-col"
+        >
             <Tabs
                 value={inspectorMode}
                 onValueChange={(v) => setInspectorMode(v as InspectorMode)}

@@ -69,13 +69,17 @@ export function RecordsPane() {
     }
 
     return (
-        <div className="flex-1 min-h-0 flex flex-col">
-            <div className="border-b p-2">
+        <div className="flex-1 min-h-0 flex flex-col min-w-0">
+            {/* overflow-x-auto so the type-tab row scrolls horizontally
+                when there are more types than fit at the current
+                inspector width. The user can also drag the inspector
+                wider via the gutter on its left edge. */}
+            <div className="border-b p-2 overflow-x-auto">
                 <Tabs
                     value={activeType ?? ""}
                     onValueChange={(v) => setActiveType(v)}
                 >
-                    <TabsList variant="line" className="h-7">
+                    <TabsList variant="line" className="h-7 w-max">
                         {types.map((t) => (
                             <TabsTrigger key={t} value={t}>
                                 <span className="font-mono">{t}</span>
