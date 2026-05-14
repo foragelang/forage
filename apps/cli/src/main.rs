@@ -12,7 +12,8 @@ use forage_core::ast::{EngineKind, JSONValue};
 use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{
-    AuthStore, AuthTokens, HubClient, PackageFile, device::run_device_flow, publish_package,
+    AuthStore, AuthTokens, HubClient, HubError, device::run_device_flow, fetch_to_cache,
+    fork_from_hub, hub_cache_root, publish_from_workspace, sync_from_hub,
 };
 use forage_replay::Capture;
 
@@ -80,8 +81,10 @@ enum Command {
         #[arg(long)]
         hub: Option<String>,
     },
-    /// Push the workspace to the Forage hub as a package. Requires
-    /// `name = "<slug>"` in `forage.toml`.
+    /// Push the workspace's recipe to the Forage hub. Requires
+    /// `name = "<author>/<slug>"` in `forage.toml`. Sends the atomic
+    /// per-version artifact (recipe + workspace decls + fixtures +
+    /// snapshot + base_version).
     Publish {
         /// Workspace root (defaults to cwd).
         #[arg(default_value = ".")]
@@ -95,6 +98,35 @@ enum Command {
         /// Bearer token override (default: $FORAGE_HUB_TOKEN or auth store).
         #[arg(long, env = "FORAGE_HUB_TOKEN")]
         token: Option<String>,
+    },
+    /// Clone a published recipe into the current workspace.
+    Sync {
+        /// `@author/slug` to clone. The leading `@` is optional.
+        spec: String,
+        /// Workspace destination (defaults to cwd).
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Pin to a specific version (default: latest).
+        #[arg(long)]
+        version: Option<u32>,
+        /// Hub URL override (default: $FORAGE_HUB_URL or https://api.foragelang.com).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+    /// Fork an upstream recipe into your account, then clone the new
+    /// fork into the current workspace.
+    Fork {
+        /// `@author/slug` of the upstream to fork.
+        spec: String,
+        /// Slug for the new fork. Defaults to the upstream slug.
+        #[arg(long = "as")]
+        r#as: Option<String>,
+        /// Workspace destination (defaults to cwd).
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Hub URL override (default: $FORAGE_HUB_URL or https://api.foragelang.com).
+        #[arg(long)]
+        hub: Option<String>,
     },
     /// Sign in / out / check status against the Forage hub via GitHub.
     Auth {
@@ -165,6 +197,18 @@ fn main() -> Result<()> {
             publish,
             token,
         } => rt.block_on(do_publish(&dir, hub, publish, token)),
+        Command::Sync {
+            spec,
+            dir,
+            version,
+            hub,
+        } => rt.block_on(do_sync(&spec, &dir, version, hub)),
+        Command::Fork {
+            spec,
+            r#as,
+            dir,
+            hub,
+        } => rt.block_on(do_fork(&spec, r#as, &dir, hub)),
         Command::Auth { action } => rt.block_on(do_auth(action)),
         Command::Lsp => {
             rt.block_on(forage_lsp::server::run_stdio());
@@ -516,27 +560,18 @@ fn do_init(dir: &Path) -> Result<()> {
 
 async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
     let ws = forage_core::workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
-    let hub = hub_override
-        .or_else(|| std::env::var("FORAGE_HUB_URL").ok())
-        .unwrap_or_else(|| "https://api.foragelang.com".into());
+    let hub = resolve_hub(hub_override);
     if ws.manifest.deps.is_empty() {
         println!("{} [deps] is empty; nothing to do", "note:".dimmed());
         return Ok(());
     }
-    let host = host_of(&hub);
-    let token = AuthStore::new()
-        .read(&host)
-        .ok()
-        .flatten()
-        .map(|t| t.access_token);
-    let mut client = HubClient::new(&hub);
-    if let Some(t) = token {
-        client = client.with_token(t);
-    }
+    let client = hub_client(&hub, None);
+    let cache_root = hub_cache_root();
 
     let mut lock = forage_core::workspace::Lockfile::default();
     for (slug, &version) in &ws.manifest.deps {
-        let fetched = forage_hub::fetch_package(&client, slug, version)
+        let (author, slug_only) = split_dep_slug(slug)?;
+        let fetched = fetch_to_cache(&client, &cache_root, author, slug_only, version)
             .await
             .with_context(|| format!("fetching {slug}@{version}"))?;
         println!(
@@ -548,7 +583,7 @@ async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
             slug.clone(),
             forage_core::workspace::LockedDep {
                 version,
-                hash: fetched.sha256.unwrap_or_default(),
+                hash: fetched.sha256,
             },
         );
     }
@@ -576,12 +611,158 @@ async fn do_publish(
                 .display()
         );
     };
-    let hub = hub_override
-        .or_else(|| std::env::var("FORAGE_HUB_URL").ok())
-        .unwrap_or_else(|| "https://api.foragelang.com".into());
+    let (author, slug) = split_dep_slug(&name)?;
+    let description = ws.manifest.description.clone();
+    let category = ws.manifest.category.clone();
+    let tags = ws.manifest.tags.clone();
+    if description.is_empty() {
+        bail!("forage.toml is missing `description = \"…\"` (required for publish)");
+    }
+    if category.is_empty() {
+        bail!("forage.toml is missing `category = \"…\"` (required for publish)");
+    }
 
-    // Bearer source: CLI arg > $FORAGE_HUB_TOKEN > auth store.
+    let hub = resolve_hub(hub_override);
+
+    if !really_publish {
+        let preview =
+            forage_hub::assemble_publish_request(&ws.root, slug, description, category, tags)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let bytes = preview.recipe.len()
+            + preview.decls.iter().map(|d| d.source.len()).sum::<usize>()
+            + preview.fixtures.iter().map(|f| f.content.len()).sum::<usize>();
+        println!(
+            "{} would POST atomic artifact ({bytes} bytes total) to {hub}/v1/packages/{author}/{slug}/versions",
+            "dry-run:".yellow(),
+        );
+        println!(
+            "    · recipe.forage ({} bytes)",
+            preview.recipe.len()
+        );
+        for f in &preview.decls {
+            println!("    · {} ({} bytes)", f.name, f.source.len());
+        }
+        for f in &preview.fixtures {
+            println!("    · {} ({} bytes)", f.name, f.content.len());
+        }
+        println!(
+            "    · base_version: {}",
+            preview
+                .base_version
+                .map(|v| format!("v{v}"))
+                .unwrap_or_else(|| "(first publish)".into())
+        );
+        println!("Re-run with --publish to actually POST.");
+        return Ok(());
+    }
+
+    let client = hub_client(&hub, token_override);
+    match publish_from_workspace(&client, &ws.root, author, slug, description, category, tags).await
+    {
+        Ok(resp) => {
+            println!(
+                "{} {}/{} v{} (latest is now v{})",
+                "published".green(),
+                resp.author,
+                resp.slug,
+                resp.version,
+                resp.latest_version,
+            );
+            Ok(())
+        }
+        Err(HubError::StaleBase {
+            latest_version,
+            your_base,
+            message,
+        }) => {
+            let base_str = your_base
+                .map(|v| format!("v{v}"))
+                .unwrap_or_else(|| "(none)".into());
+            bail!(
+                "stale base: hub is at v{latest_version}, your base is {base_str}. {message}\nrefresh and retry."
+            );
+        }
+        Err(e) => bail!("{e}"),
+    }
+}
+
+async fn do_sync(
+    spec: &str,
+    dir: &Path,
+    version: Option<u32>,
+    hub_override: Option<String>,
+) -> Result<()> {
+    let (author, slug) = parse_spec(spec)?;
+    let hub = resolve_hub(hub_override);
+    let client = hub_client(&hub, None);
+    let outcome = sync_from_hub(&client, dir, &author, &slug, version)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "{} {} → {}",
+        "synced".green(),
+        outcome.meta.origin,
+        outcome.recipe_dir.display()
+    );
+    Ok(())
+}
+
+async fn do_fork(
+    spec: &str,
+    r#as: Option<String>,
+    dir: &Path,
+    hub_override: Option<String>,
+) -> Result<()> {
+    let (upstream_author, upstream_slug) = parse_spec(spec)?;
+    let hub = resolve_hub(hub_override);
     let host = host_of(&hub);
+    let token = AuthStore::new()
+        .read(&host)
+        .ok()
+        .flatten()
+        .map(|t| t.access_token);
+    let Some(token) = token else {
+        bail!("sign in first: `forage auth login --hub {hub}`");
+    };
+    let client = HubClient::new(&hub).with_token(token);
+    let outcome = fork_from_hub(&client, dir, &upstream_author, &upstream_slug, r#as)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "{} {} → {}",
+        "forked".green(),
+        outcome.meta.origin,
+        outcome.recipe_dir.display()
+    );
+    Ok(())
+}
+
+/// Parse `@author/slug` (the leading `@` is optional) into the two
+/// segments the hub expects. Rejects bare slugs without an author and
+/// any segment that the hub's regex would reject.
+fn parse_spec(spec: &str) -> Result<(String, String)> {
+    let trimmed = spec.strip_prefix('@').unwrap_or(spec);
+    let (author, slug) = trimmed
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("expected `@author/slug`, got {spec:?}"))?;
+    if author.is_empty() || slug.is_empty() {
+        bail!("invalid spec: {spec:?}");
+    }
+    Ok((author.to_string(), slug.to_string()))
+}
+
+fn split_dep_slug(slug: &str) -> Result<(&str, &str)> {
+    slug.split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("expected `author/slug`, got {slug:?}"))
+}
+
+fn resolve_hub(over: Option<String>) -> String {
+    over.or_else(|| std::env::var("FORAGE_HUB_URL").ok())
+        .unwrap_or_else(|| "https://api.foragelang.com".into())
+}
+
+fn hub_client(hub: &str, token_override: Option<String>) -> HubClient {
+    let host = host_of(hub);
     let token = token_override.or_else(|| {
         AuthStore::new()
             .read(&host)
@@ -589,60 +770,11 @@ async fn do_publish(
             .flatten()
             .map(|t| t.access_token)
     });
-
-    // Build the package: every `.forage` file in the workspace, named by
-    // its path relative to the workspace root. Recipes nested under
-    // `<slug>/recipe.forage` ship verbatim — importers know the layout.
-    let mut files = Vec::new();
-    for entry in &ws.files {
-        let rel = entry
-            .path
-            .strip_prefix(&ws.root)
-            .unwrap_or(&entry.path)
-            .to_string_lossy()
-            .into_owned();
-        let body = std::fs::read_to_string(&entry.path)
-            .with_context(|| format!("reading {}", entry.path.display()))?;
-        files.push(PackageFile { name: rel, body });
-    }
-    if files.is_empty() {
-        bail!("workspace has no .forage files to publish");
-    }
-
-    if !really_publish {
-        println!(
-            "{} would POST {} files ({} bytes total) to {hub}/v1/packages/{name}",
-            "dry-run:".yellow(),
-            files.len(),
-            files.iter().map(|f| f.body.len()).sum::<usize>(),
-        );
-        for f in &files {
-            println!("    · {} ({} bytes)", f.name, f.body.len());
-        }
-        if let Some(t) = &token {
-            println!("{} (token: {}…)", "auth:".dimmed(), &t[..t.len().min(8)]);
-        } else {
-            println!("{} no token; live publish would 401", "auth:".yellow());
-        }
-        println!("Re-run with --publish to actually POST.");
-        return Ok(());
-    }
-
-    let mut client = HubClient::new(&hub);
+    let mut client = HubClient::new(hub);
     if let Some(t) = token {
         client = client.with_token(t);
     }
-    let resp = publish_package(&client, &name, files, Some(&name), None, vec![], None)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!(
-        "{} {} v{} (sha256 {})",
-        "published".green(),
-        resp.slug,
-        resp.version,
-        resp.sha256.as_deref().unwrap_or("?")
-    );
-    Ok(())
+    client
 }
 
 async fn do_auth(action: AuthAction) -> Result<()> {
