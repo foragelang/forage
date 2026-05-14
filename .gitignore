@@ -29,3 +29,7 @@ docs/out/
 # Claude Code instructions (machine-local, symlinked from agent-instructions/projects/)
 CLAUDE.md
 .claude/
+
+# Local working state (per CLAUDE.md notes/ vs plans/ convention)
+design/
+plans/
