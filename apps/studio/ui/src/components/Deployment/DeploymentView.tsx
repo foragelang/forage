@@ -5,10 +5,11 @@
 //! - Body: TrendCards over the recent runs + a dense run log table.
 //! - RunDrawer mounts on the right when a row is clicked.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     Cloud,
+    Loader2,
     Pause,
     PlayCircle,
     Settings,
@@ -166,14 +167,10 @@ function DepHeader({
                             </>
                         )}
                     </Button>
-                    <Button
-                        size="sm"
+                    <RunNowButton
                         onClick={() => triggerNow.mutate()}
-                        disabled={triggerNow.isPending}
-                    >
-                        <PlayCircle />
-                        Run now
-                    </Button>
+                        running={triggerNow.isPending}
+                    />
                 </div>
             </div>
             <div className="px-4 pb-3 flex flex-wrap items-baseline gap-x-6 gap-y-1 text-xs">
@@ -224,6 +221,52 @@ function DepHeader({
             </div>
             {editing && <ScheduleEditor run={run} onClose={() => setEditing(false)} />}
         </div>
+    );
+}
+
+/// Run-now button with live-elapsed feedback. The mutation can take many
+/// seconds (the daemon awaits the whole run); a static disabled button
+/// reads as "nothing happening" — the elapsed counter and spinner give
+/// the same shape of feedback the live-run path has via RunningBadge.
+function RunNowButton({
+    onClick,
+    running,
+}: {
+    onClick: () => void;
+    running: boolean;
+}) {
+    const [startedAt, setStartedAt] = useState<number | null>(null);
+    const [now, setNow] = useState(Date.now());
+
+    useEffect(() => {
+        if (!running) {
+            setStartedAt(null);
+            return;
+        }
+        const start = Date.now();
+        setStartedAt(start);
+        setNow(start);
+        const id = window.setInterval(() => setNow(Date.now()), 250);
+        return () => window.clearInterval(id);
+    }, [running]);
+
+    const seconds =
+        startedAt !== null ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+
+    return (
+        <Button size="sm" onClick={onClick} disabled={running}>
+            {running ? (
+                <>
+                    <Loader2 className="animate-spin" />
+                    <span className="font-mono tabular-nums">running {seconds}s</span>
+                </>
+            ) : (
+                <>
+                    <PlayCircle />
+                    Run now
+                </>
+            )}
+        </Button>
     );
 }
 
