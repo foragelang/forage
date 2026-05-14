@@ -1,7 +1,7 @@
 // End-to-end tests for the per-version-atomic package surface. Each
 // test boots a fresh worker context with isolated KV/R2.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
     fetchJson,
     userToken,
@@ -9,9 +9,13 @@ import {
     authedPostJson,
     get,
     resetStorage,
+    setR2FallbackThreshold,
+    clearR2FallbackThreshold,
+    testEnv,
 } from './_helpers'
 
 beforeEach(resetStorage)
+afterEach(clearR2FallbackThreshold)
 
 describe('publish + retrieve', () => {
     it('publishes v1 of a new package', async () => {
@@ -289,6 +293,43 @@ describe('listing + filtering', () => {
         )
         expect(sorted.body.items[0].slug).toBe('hi')
         expect(sorted.body.items[0].stars).toBe(2)
+    })
+})
+
+describe('R2 fallback for oversized version artifacts', () => {
+    it('routes a publish past the threshold through R2 and reads back transparently', async () => {
+        // Drop the threshold to 100 bytes so the canonical
+        // publishRequest (~240 bytes serialized) lands above it.
+        setR2FallbackThreshold(100)
+
+        const token = await userToken('alice')
+        const publish = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/big/versions',
+                token,
+                publishRequest({ description: 'goes to R2' }),
+            ),
+        )
+        expect(publish.status).toBe(201)
+
+        // The KV slot must hold a pointer, not the inline JSON.
+        const kvSlot = await testEnv.METADATA.get('ver:alice:big:1')
+        expect(kvSlot).not.toBeNull()
+        const parsed = JSON.parse(kvSlot as string)
+        expect(parsed).toHaveProperty('r2_key')
+        expect(parsed.r2_key).toBe('versions/alice/big/1.json')
+
+        // The R2 object exists and round-trips through the GET handler.
+        const r2Obj = await testEnv.BLOBS.get('versions/alice/big/1.json')
+        expect(r2Obj).not.toBeNull()
+
+        const fetched = await fetchJson(
+            get('https://hub/v1/packages/alice/big/versions/1'),
+        )
+        expect(fetched.status).toBe(200)
+        expect(fetched.body.recipe.length).toBeGreaterThan(0)
+        expect(fetched.body.author).toBe('alice')
+        expect(fetched.body.slug).toBe('big')
     })
 })
 

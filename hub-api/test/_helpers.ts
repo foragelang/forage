@@ -20,6 +20,19 @@ import {
 // full worker `Env` shape.
 export const testEnv: Env = env as unknown as Env
 
+// Mutate the R2-fallback threshold for a single test. Restored
+// automatically by `resetStorage` (which wipes the env-var binding
+// alongside KV/R2). Pass a byte count; subsequent putVersion calls
+// during the same test use the override.
+export function setR2FallbackThreshold(bytes: number): void {
+    ;(testEnv as { R2_FALLBACK_THRESHOLD_BYTES?: string }).R2_FALLBACK_THRESHOLD_BYTES =
+        String(bytes)
+}
+
+export function clearR2FallbackThreshold(): void {
+    delete (testEnv as { R2_FALLBACK_THRESHOLD_BYTES?: string }).R2_FALLBACK_THRESHOLD_BYTES
+}
+
 // Wipe every binding's state. Use as `beforeEach(resetStorage)` to
 // keep tests independent within a file (the pool isolates between
 // files, not between individual tests).

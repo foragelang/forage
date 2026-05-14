@@ -13,12 +13,16 @@ export interface Env {
     METADATA: KVNamespace
     // R2: oversized version artifacts (the artifact itself does not
     // get split — only the storage location moves out of KV when the
-    // serialized JSON would exceed `KV_VERSION_MAX_BYTES`).
+    // serialized JSON would exceed the R2 fallback threshold).
     BLOBS: R2Bucket
     HUB_PUBLISH_TOKEN: string
     GITHUB_CLIENT_ID?: string
     GITHUB_CLIENT_SECRET?: string
     JWT_SIGNING_KEY?: string
+    // Override the inline-vs-R2 split threshold (bytes). Defaults to
+    // 20 MiB when unset. Tests set this very low to exercise the R2
+    // path with small payloads.
+    R2_FALLBACK_THRESHOLD_BYTES?: string
 }
 
 // --- Packages ------------------------------------------------------------

@@ -12,8 +12,8 @@ import type {
 //   ver:<author>:<slug>:<n>              → PackageVersion JSON
 //                                          OR { "r2_key": "..." } pointing
 //                                          at the same JSON in R2 (used when
-//                                          the artifact exceeds
-//                                          KV_VERSION_MAX_BYTES).
+//                                          the artifact exceeds the R2
+//                                          fallback threshold).
 //   star:<author>:<slug>:<user>          → "" (presence)
 //   stars_by:<user>:<author>:<slug>      → ISO timestamp (presence + when)
 //   idx:packages                         → JSON array of "<author>/<slug>"
@@ -33,9 +33,24 @@ import type {
 // indexes that used to live here were dead code (never read by any
 // surface) so they were dropped.
 
-// Versions over 20 MiB serialized go to R2. KV's hard ceiling is 25
-// MiB; this leaves headroom for the metadata pointer wrapper.
-export const KV_VERSION_MAX_BYTES = 20 * 1024 * 1024
+// Versions whose serialized JSON exceeds the threshold go to R2.
+// Cloudflare KV's hard ceiling is 25 MiB; the default leaves
+// headroom for the pointer wrapper. The threshold is overridable
+// via `env.R2_FALLBACK_THRESHOLD_BYTES` so tests can exercise the
+// R2 path with small payloads.
+export const DEFAULT_R2_FALLBACK_THRESHOLD_BYTES = 20 * 1024 * 1024
+
+function r2FallbackThreshold(env: Env): number {
+    const raw = env.R2_FALLBACK_THRESHOLD_BYTES
+    if (raw === undefined || raw === '') return DEFAULT_R2_FALLBACK_THRESHOLD_BYTES
+    const n = parseInt(raw, 10)
+    if (!Number.isFinite(n) || n < 0) {
+        throw new Error(
+            `R2_FALLBACK_THRESHOLD_BYTES must be a non-negative integer; got ${raw}`,
+        )
+    }
+    return n
+}
 
 const PKG_KEY = (author: string, slug: string) => `pkg:${author}:${slug}`
 const VER_KEY = (author: string, slug: string, n: number) =>
@@ -110,7 +125,7 @@ export async function putVersion(
 ): Promise<void> {
     const serialized = JSON.stringify(version)
     const kvKey = VER_KEY(version.author, version.slug, version.version)
-    if (byteLengthUtf8(serialized) <= KV_VERSION_MAX_BYTES) {
+    if (byteLengthUtf8(serialized) <= r2FallbackThreshold(env)) {
         await env.METADATA.put(kvKey, serialized)
         return
     }
