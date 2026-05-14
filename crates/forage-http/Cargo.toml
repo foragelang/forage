@@ -8,19 +8,23 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["native"]
+# Live transport (reqwest + tokio synchronization primitives). Disabled
+# when building the engine for wasm32: only `ReplayTransport` compiles
+# unconditionally, and `LiveTransport` becomes a `#[cfg]`-gated
+# native-only path.
+native = ["dep:reqwest", "dep:tokio"]
+
 [dependencies]
 forage-core      = { workspace = true }
-forage-keychain  = { workspace = true }
 forage-replay    = { workspace = true }
 
-tokio       = { workspace = true }
 async-trait = { workspace = true }
 futures     = { workspace = true }
 
-reqwest     = { workspace = true }
-url         = { workspace = true }
-tower       = { workspace = true }
-tower-http  = { workspace = true }
+reqwest     = { workspace = true, optional = true }
+tokio       = { workspace = true, optional = true }
 
 serde       = { workspace = true }
 serde_json  = { workspace = true }
@@ -30,11 +34,8 @@ ts-rs       = { workspace = true }
 
 regex       = { workspace = true }
 indexmap    = { workspace = true }
-aes-gcm     = { workspace = true }
-sha2        = { workspace = true }
-rand        = { workspace = true }
-dirs        = { workspace = true }
 
 [dev-dependencies]
 wiremock    = { workspace = true }
 tempfile    = { workspace = true }
+tokio       = { workspace = true }
