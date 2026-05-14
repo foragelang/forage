@@ -1578,12 +1578,14 @@ name = "forage-wasm"
 version = "0.1.0"
 dependencies = [
  "forage-core",
- "js-sys",
+ "forage-http",
+ "indexmap 2.14.0",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "tokio",
  "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

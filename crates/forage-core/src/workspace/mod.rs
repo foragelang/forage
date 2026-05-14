@@ -123,7 +123,10 @@ impl TypeCatalog {
         cat
     }
 
-    fn merge_decls(&mut self, decls: &DeclarationsFile) {
+    /// Merge a parsed declarations file into the catalog. Last writer
+    /// wins per name; callers that need conflict detection should
+    /// route through `Workspace::catalog`, which tracks origins.
+    pub fn merge_decls(&mut self, decls: &DeclarationsFile) {
         for t in &decls.types {
             self.types.insert(t.name.clone(), t.clone());
         }

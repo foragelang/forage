@@ -27,7 +27,7 @@ authors = ["Dmitry Minkovsky <dminkovsky@gmail.com>"]
 [workspace.dependencies]
 # Local crates — depend on each other via workspace = true.
 forage-core     = { path = "crates/forage-core",     version = "0.1.0" }
-forage-http     = { path = "crates/forage-http",     version = "0.1.0" }
+forage-http     = { path = "crates/forage-http",     version = "0.1.0", default-features = false }
 forage-browser  = { path = "crates/forage-browser",  version = "0.1.0" }
 forage-daemon   = { path = "crates/forage-daemon",   version = "0.1.0" }
 forage-hub      = { path = "crates/forage-hub",      version = "0.1.0" }

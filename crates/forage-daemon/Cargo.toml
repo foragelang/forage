@@ -10,7 +10,7 @@ authors.workspace = true
 
 [dependencies]
 forage-core     = { workspace = true }
-forage-http     = { workspace = true }
+forage-http     = { workspace = true, features = ["native"] }
 
 tokio       = { workspace = true }
 serde       = { workspace = true }

@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 forage-core      = { workspace = true }
-forage-http      = { workspace = true }
+forage-http      = { workspace = true, features = ["native"] }
 forage-replay    = { workspace = true }
 forage-hub       = { workspace = true }
 forage-keychain  = { workspace = true }

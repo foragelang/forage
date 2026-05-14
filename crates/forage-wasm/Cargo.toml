@@ -18,11 +18,15 @@ wasm-opt = false
 
 [dependencies]
 forage-core         = { workspace = true }
+forage-http         = { workspace = true }
 
 wasm-bindgen        = { workspace = true }
+wasm-bindgen-futures = "0.4"
 serde-wasm-bindgen  = { workspace = true }
-js-sys              = { workspace = true }
-web-sys             = { workspace = true }
 
 serde               = { workspace = true }
 serde_json          = { workspace = true }
+indexmap            = { workspace = true }
+
+[dev-dependencies]
+tokio               = { workspace = true }
