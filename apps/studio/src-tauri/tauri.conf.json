@@ -35,5 +35,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["forage"],
+        "name": "Forage Studio",
+        "role": "Viewer"
+      }
+    }
   }
 }

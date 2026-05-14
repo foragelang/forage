@@ -3,12 +3,14 @@
 mod browser_driver;
 mod commands;
 mod daemon_browser;
+pub mod hub_sync;
 mod menu;
 mod state;
 mod workspace;
 
 use state::StudioState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +44,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             // Studio boots without a workspace. The Welcome screen is
             // the entry point; the user picks Open, New, or a recent
@@ -62,6 +65,48 @@ pub fn run() {
 
             app.manage(state);
             app.set_menu(menu)?;
+
+            // `forage://clone/<author>/<slug>` deeplinks. The hub IDE's
+            // "Open in Studio" button fires one of these; we validate
+            // the URL against the segment regex and emit a
+            // `forage:deeplink-clone` event the frontend listens for.
+            // The frontend then calls `sync_from_hub` against the
+            // active workspace (it needs to know which workspace the
+            // user is in, which only the JS side tracks).
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let url_str = url.to_string();
+                    match hub_sync::parse_clone_url(&url_str) {
+                        Ok((author, slug, version)) => {
+                            tracing::info!(
+                                author = %author,
+                                slug = %slug,
+                                version = ?version,
+                                "deeplink clone received"
+                            );
+                            let payload = serde_json::json!({
+                                "author": author,
+                                "slug": slug,
+                                "version": version,
+                            });
+                            if let Err(e) =
+                                app_handle.emit("forage:deeplink-clone", payload)
+                            {
+                                tracing::warn!(error = %e, "emit deeplink-clone failed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                url = %url_str,
+                                error = %e,
+                                "ignoring invalid forage:// URL"
+                            );
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -84,6 +129,9 @@ pub fn run() {
             commands::recipe_hover,
             commands::language_dictionary,
             commands::publish_recipe,
+            commands::sync_from_hub,
+            commands::fork_from_hub,
+            commands::preview_publish,
             commands::auth_whoami,
             commands::auth_start_device_flow,
             commands::auth_poll_device,
