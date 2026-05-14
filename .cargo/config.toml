@@ -4,7 +4,8 @@
 # emits broken cross-crate imports because it sees the targets as
 # different directories.
 #
-# This points all derives at <repo>/apps/studio/ui/src/bindings/
-# regardless of which crate the type lives in.
+# This points all derives at <repo>/packages/studio-ui/src/bindings/
+# regardless of which crate the type lives in. The Studio app and the
+# hub IDE both consume the same shared package.
 [env]
-TS_RS_EXPORT_DIR = { value = "apps/studio/ui/src/bindings", relative = true }
+TS_RS_EXPORT_DIR = { value = "packages/studio-ui/src/bindings", relative = true }

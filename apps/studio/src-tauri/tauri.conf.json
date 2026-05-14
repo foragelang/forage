@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.foragelang.studio",
   "build": {
-    "frontendDist": "../ui/dist",
+    "frontendDist": "../../../packages/studio-ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../ui run dev",
-    "beforeBuildCommand": "npm --prefix ../ui run build"
+    "beforeDevCommand": "npm --prefix ../../../packages/studio-ui run dev",
+    "beforeBuildCommand": "npm --prefix ../../../packages/studio-ui run build"
   },
   "app": {
     "windows": [
