@@ -1366,12 +1366,24 @@ pub fn deploy_recipe(
     state: State<'_, StudioState>,
     slug: String,
 ) -> Result<DeployedVersion, String> {
-    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
-    let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
-    let catalog = {
+    // Source path and catalog must come from the same workspace root.
+    // `workspace::read_source` reads through `workspace_root()` which
+    // resolves `FORAGE_WORKSPACE_ROOT` afresh each call — a mid-session
+    // env swap would have it disagree with the cached
+    // `state.workspace.root` used for catalog resolution. Anchoring
+    // both reads on `read_workspace(&state).root` keeps deploy
+    // self-consistent: the source we pin is the source the catalog
+    // resolves against.
+    let (source, catalog) = {
         let ws = read_workspace(&state);
-        ws.catalog(&recipe, |p| std::fs::read_to_string(p))
-            .map_err(|e| format!("catalog: {e}"))?
+        let recipe_path = ws.root.join(&slug).join("recipe.forage");
+        let source = std::fs::read_to_string(&recipe_path)
+            .map_err(|e| format!("read {}: {e}", recipe_path.display()))?;
+        let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
+        let catalog = ws
+            .catalog(&recipe, |p| std::fs::read_to_string(p))
+            .map_err(|e| format!("catalog: {e}"))?;
+        (source, catalog)
     };
     let wire = forage_core::workspace::SerializableCatalog::from(catalog);
     state
