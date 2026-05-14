@@ -42,8 +42,6 @@ vitest.config.ts      — wires the cloudflare:test pool
   - `idx:cat:<category>` — refs per category
   - `idx:user_packages:<author>` — refs per author
   - `idx:categories` — seen category names
-  - `idx:top_starred`, `idx:top_downloaded` — eventually-consistent
-    rankings, recomputed lazily
 - R2 (`BLOBS`)
   - `versions/<author>/<slug>/<n>.json` — atomic version artifacts
     that overflow KV's per-value ceiling
@@ -76,7 +74,7 @@ All responses set CORS headers (allowlisted origins only).
 
 ```
 npm install
-npm test            # 28 vitest tests against miniflare
+npm test            # vitest tests against miniflare
 npx wrangler dev    # boot the worker locally
 ```
 

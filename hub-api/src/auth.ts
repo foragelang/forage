@@ -61,14 +61,6 @@ export function callerCanWrite(caller: Caller, ownerLogin: string | undefined): 
     return caller.kind === 'user' && caller.login === owner
 }
 
-/// Back-compat: existing code calls `isAuthorized(...)` for the publish
-/// gate. Returns true iff the caller is admin OR any authenticated
-/// user. Routes that need ownership checks call `identifyCaller` +
-/// `callerCanWrite` directly.
-export async function isAuthorized(request: Request, env: Env): Promise<boolean> {
-    return (await identifyCaller(request, env)) !== null
-}
-
 function timingSafeEqual(a: string, b: string): boolean {
     if (a.length !== b.length) return false
     let diff = 0

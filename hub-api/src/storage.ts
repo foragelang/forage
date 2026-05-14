@@ -20,8 +20,6 @@ import type {
 //   idx:cat:<category>                   → JSON array of "<author>/<slug>"
 //   idx:user_packages:<author>           → JSON array of "<author>/<slug>"
 //   idx:categories                       → JSON array of category strings
-//   idx:top_starred                      → JSON array of "<author>/<slug>"
-//   idx:top_downloaded                   → JSON array of "<author>/<slug>"
 //
 // R2 (only when the version artifact is large):
 //   versions/<author>/<slug>/<n>.json    → PackageVersion JSON
@@ -29,6 +27,11 @@ import type {
 // All counters (stars, downloads, fork_count) live on the
 // PackageMetadata. They are bumped non-transactionally; a lost
 // increment under contention is fine pre-1.0.
+//
+// Sorting by stars / downloads is a full scan over `idx:packages`
+// in `listPackages`. Pre-1.0 volume is tiny; the cached top-N
+// indexes that used to live here were dead code (never read by any
+// surface) so they were dropped.
 
 // Versions over 20 MiB serialized go to R2. KV's hard ceiling is 25
 // MiB; this leaves headroom for the metadata pointer wrapper.
@@ -49,8 +52,6 @@ const IDX_PACKAGES = 'idx:packages'
 const IDX_CATEGORIES = 'idx:categories'
 const IDX_CATEGORY = (category: string) => `idx:cat:${category}`
 const IDX_USER_PACKAGES = (author: string) => `idx:user_packages:${author}`
-const IDX_TOP_STARRED = 'idx:top_starred'
-const IDX_TOP_DOWNLOADED = 'idx:top_downloaded'
 
 const R2_VERSION_KEY = (author: string, slug: string, n: number) =>
     `versions/${author}/${slug}/${n}.json`
@@ -348,43 +349,6 @@ export async function listUserPackagesIndex(
     author: string,
 ): Promise<string[]> {
     return listIndex(env, IDX_USER_PACKAGES(author))
-}
-
-export async function getTopStarred(env: Env): Promise<string[]> {
-    return listIndex(env, IDX_TOP_STARRED)
-}
-
-export async function getTopDownloaded(env: Env): Promise<string[]> {
-    return listIndex(env, IDX_TOP_DOWNLOADED)
-}
-
-// Recompute the top-N starred / top-N downloaded indexes from the
-// authoritative package metadata. Called lazily on read when the cache
-// is stale (more than `freshnessMs` old). Pre-1.0 volume — the scan is
-// cheap.
-export async function recomputeTopIndexes(
-    env: Env,
-    limit: number,
-): Promise<void> {
-    const refs = await listPackagesIndex(env)
-    const metas: PackageMetadata[] = []
-    for (const r of refs) {
-        const [a, s] = splitRef(r)
-        const meta = await getPackage(env, a, s)
-        if (meta !== null) metas.push(meta)
-    }
-    const byStars = [...metas].sort((a, b) => b.stars - a.stars).slice(0, limit)
-    const byDownloads = [...metas]
-        .sort((a, b) => b.downloads - a.downloads)
-        .slice(0, limit)
-    await env.METADATA.put(
-        IDX_TOP_STARRED,
-        JSON.stringify(byStars.map((m) => ref(m.author, m.slug))),
-    )
-    await env.METADATA.put(
-        IDX_TOP_DOWNLOADED,
-        JSON.stringify(byDownloads.map((m) => ref(m.author, m.slug))),
-    )
 }
 
 // --- Helpers -------------------------------------------------------------
