@@ -323,7 +323,7 @@ Build tooling:
 
 - **R6.7 — `forage auth whoami`.** Reads auth store, prints `<login>@<hub-host>` or "not signed in."
 
-- **R6.8 — `forage publish <recipe-dir>`.** Validates locally, builds payload (source + metadata + optional fixtures snapshot), POSTs to `/v1/recipes`. `FORAGE_HUB_TOKEN` env wins over auth-store JWT. `--dry-run` (default) prints would-send; `--publish` actually POSTs.
+- **R6.8 — `forage publish <recipe-dir>`.** Validates locally, builds payload (every `.forage` file in the workspace + metadata + optional fixtures snapshot), POSTs to `/v1/packages`. `FORAGE_HUB_TOKEN` env wins over auth-store JWT. `--dry-run` (default) prints would-send; `--publish` actually POSTs.
 
 - **R6.9 — Hub fetch in `forage run`.** When a recipe has `import hub://...` directives, `RecipeImporter` resolves them transparently before running.
 
@@ -503,7 +503,7 @@ Build tooling:
 **Acceptance:**
 - Every error response matches the envelope.
 - Sign in with GitHub from Studio Preferences → publish a recipe → recipe appears under your login on hub.foragelang.com.
-- Hammering `/v1/recipes` from one IP triggers 429 with `Retry-After`.
+- Hammering `/v1/packages` from one IP triggers 429 with `Retry-After`.
 - All smoke tests green.
 
 ---

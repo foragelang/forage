@@ -11,7 +11,9 @@ use forage_browser::run_browser_replay;
 use forage_core::ast::{EngineKind, JSONValue};
 use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
-use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta, device::run_device_flow};
+use forage_hub::{
+    AuthStore, AuthTokens, HubClient, PackageFile, device::run_device_flow, publish_package,
+};
 use forage_replay::Capture;
 
 #[derive(Parser)]
@@ -28,8 +30,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Parse and execute a .forage recipe; print the snapshot.
+    ///
+    /// Discovers the surrounding workspace (ancestor `forage.toml`) and
+    /// validates against the merged catalog. Without a workspace, runs
+    /// in lonely-recipe mode.
     Run {
-        recipe_dir: PathBuf,
+        /// Recipe path. Accepts either a recipe directory
+        /// (`<slug>/recipe.forage` is appended) or the recipe file itself.
+        recipe_path: PathBuf,
         /// Replay against `fixtures/captures.jsonl` instead of hitting the network.
         #[arg(long)]
         replay: bool,
@@ -55,10 +63,30 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Push a recipe to the Forage hub.
+    /// Drop a `forage.toml` skeleton at the current directory (or the
+    /// path supplied) so the surrounding tree becomes a workspace.
+    Init {
+        /// Directory to place `forage.toml` in. Defaults to cwd.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Resolve `[deps]` in `forage.toml` against the hub, fetch each
+    /// into the local cache, and write `forage.lock`.
+    Update {
+        /// Workspace root (defaults to cwd). Must contain `forage.toml`.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Hub URL override (default: $FORAGE_HUB_URL or https://api.foragelang.com).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+    /// Push the workspace to the Forage hub as a package. Requires
+    /// `name = "<slug>"` in `forage.toml`.
     Publish {
-        recipe_dir: PathBuf,
-        /// Hub URL (default: $FORAGE_HUB_URL or https://api.foragelang.com).
+        /// Workspace root (defaults to cwd).
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Hub URL override (default: $FORAGE_HUB_URL or https://api.foragelang.com).
         #[arg(long)]
         hub: Option<String>,
         /// Actually POST instead of dry-run.
@@ -116,10 +144,10 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     match cli.command {
         Command::Run {
-            recipe_dir,
+            recipe_path,
             replay,
             output,
-        } => rt.block_on(run(&recipe_dir, replay, output)),
+        } => rt.block_on(run(&recipe_path, replay, output)),
         Command::Test { recipe_dir, update } => rt.block_on(test(&recipe_dir, update)),
         Command::Capture => {
             println!(
@@ -129,12 +157,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Scaffold { captures, name } => do_scaffold(&captures, name),
+        Command::Init { dir } => do_init(&dir),
+        Command::Update { dir, hub } => rt.block_on(do_update(&dir, hub)),
         Command::Publish {
-            recipe_dir,
+            dir,
             hub,
             publish,
             token,
-        } => rt.block_on(do_publish(&recipe_dir, hub, publish, token)),
+        } => rt.block_on(do_publish(&dir, hub, publish, token)),
         Command::Auth { action } => rt.block_on(do_auth(action)),
         Command::Lsp => {
             rt.block_on(forage_lsp::server::run_stdio());
@@ -143,14 +173,15 @@ fn main() -> Result<()> {
     }
 }
 
-async fn run(recipe_dir: &Path, replay: bool, output: OutputFormat) -> Result<()> {
-    let recipe = load_recipe(recipe_dir)?;
-    let inputs = load_inputs(recipe_dir)?;
+async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<()> {
+    let (recipe_dir, recipe_file) = resolve_recipe_dir(recipe_path)?;
+    let recipe = load_recipe_at(&recipe_dir, &recipe_file)?;
+    let inputs = load_inputs(&recipe_dir)?;
     let secrets = load_secrets_from_env(&recipe);
 
     let snapshot = match (recipe.engine_kind, replay) {
         (EngineKind::Http, true) => {
-            let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
+            let captures = load_captures(&recipe_dir).context("loading fixtures/captures.jsonl")?;
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
@@ -167,7 +198,7 @@ async fn run(recipe_dir: &Path, replay: bool, output: OutputFormat) -> Result<()
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, true) => {
-            let captures = load_captures(recipe_dir).context("loading fixtures/captures.jsonl")?;
+            let captures = load_captures(&recipe_dir).context("loading fixtures/captures.jsonl")?;
             run_browser_replay(&recipe, &captures, inputs, secrets)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
@@ -238,11 +269,15 @@ async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
 }
 
 fn load_recipe(dir: &Path) -> Result<forage_core::Recipe> {
-    let path = dir.join("recipe.forage");
+    load_recipe_at(dir, &dir.join("recipe.forage"))
+}
+
+fn load_recipe_at(_dir: &Path, path: &Path) -> Result<forage_core::Recipe> {
     let source =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let recipe = parse(&source).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
-    let report = validate(&recipe);
+    let catalog = build_catalog_for(path, &recipe)?;
+    let report = validate(&recipe, &catalog);
     if report.has_errors() {
         for e in report.errors() {
             eprintln!("{} {}", "validate:".red(), e.message);
@@ -250,6 +285,22 @@ fn load_recipe(dir: &Path) -> Result<forage_core::Recipe> {
         bail!("recipe failed validation");
     }
     Ok(recipe)
+}
+
+/// Build the type catalog for a recipe at `recipe_path`. If the recipe
+/// sits inside a workspace (ancestor `forage.toml`), the catalog folds
+/// in workspace declarations files plus cached hub-dep declarations.
+/// Otherwise lonely-recipe mode — recipe-local types only.
+fn build_catalog_for(
+    recipe_path: &Path,
+    recipe: &forage_core::Recipe,
+) -> Result<forage_core::TypeCatalog> {
+    if let Some(ws) = forage_core::workspace::discover(recipe_path) {
+        return ws
+            .catalog(recipe, |p| std::fs::read_to_string(p))
+            .map_err(|e| anyhow::anyhow!("workspace catalog: {e}"));
+    }
+    Ok(forage_core::TypeCatalog::from_recipe(recipe))
 }
 
 fn load_inputs(dir: &Path) -> Result<IndexMap<String, EvalValue>> {
@@ -412,13 +463,114 @@ fn scaffold_pattern(url: &str) -> String {
     no_query.to_string()
 }
 
+/// Resolve `forage run <path>` to a (recipe-dir, recipe-file) pair.
+///
+/// - A directory: append `recipe.forage` to it.
+/// - A file named `recipe.forage`: use it directly; the recipe dir is
+///   its parent.
+/// - Any other file: surface a clear error. Silently rewriting
+///   `/path/to/foo.forage` into `/path/to/recipe.forage` hides whatever
+///   the user actually meant.
+fn resolve_recipe_dir(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    if path.is_dir() {
+        return Ok((path.to_path_buf(), path.join("recipe.forage")));
+    }
+    if path.is_file() {
+        let leaf = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if leaf == "recipe.forage" {
+            let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+            return Ok((dir, path.to_path_buf()));
+        }
+        bail!(
+            "forage run requires either a recipe.forage path or a directory containing one; got {}",
+            path.display()
+        );
+    }
+    bail!("recipe path not found: {}", path.display())
+}
+
+fn do_init(dir: &Path) -> Result<()> {
+    let path = dir.join(forage_core::workspace::MANIFEST_NAME);
+    if path.exists() {
+        println!(
+            "{} {} already exists; leaving untouched",
+            "note:".yellow(),
+            path.display()
+        );
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let manifest = forage_core::workspace::Manifest::default();
+    let body = forage_core::workspace::serialize_manifest(&manifest)
+        .map_err(|e| anyhow::anyhow!("serialize manifest: {e}"))?;
+    std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+    println!("{} {}", "wrote".green(), path.display());
+    Ok(())
+}
+
+async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
+    let ws = forage_core::workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
+    let hub = hub_override
+        .or_else(|| std::env::var("FORAGE_HUB_URL").ok())
+        .unwrap_or_else(|| "https://api.foragelang.com".into());
+    if ws.manifest.deps.is_empty() {
+        println!("{} [deps] is empty; nothing to do", "note:".dimmed());
+        return Ok(());
+    }
+    let host = host_of(&hub);
+    let token = AuthStore::new()
+        .read(&host)
+        .ok()
+        .flatten()
+        .map(|t| t.access_token);
+    let mut client = HubClient::new(&hub);
+    if let Some(t) = token {
+        client = client.with_token(t);
+    }
+
+    let mut lock = forage_core::workspace::Lockfile::default();
+    for (slug, &version) in &ws.manifest.deps {
+        let fetched = forage_hub::fetch_package(&client, slug, version)
+            .await
+            .with_context(|| format!("fetching {slug}@{version}"))?;
+        println!(
+            "{} {slug}@{version} → {}",
+            "fetched".green(),
+            fetched.dir.display()
+        );
+        lock.deps.insert(
+            slug.clone(),
+            forage_core::workspace::LockedDep {
+                version,
+                hash: fetched.sha256.unwrap_or_default(),
+            },
+        );
+    }
+
+    let lock_body = forage_core::workspace::serialize_lockfile(&lock)
+        .map_err(|e| anyhow::anyhow!("serialize lockfile: {e}"))?;
+    let lock_path = ws.root.join(forage_core::workspace::LOCKFILE_NAME);
+    std::fs::write(&lock_path, lock_body)?;
+    println!("{} {}", "wrote".green(), lock_path.display());
+    Ok(())
+}
+
 async fn do_publish(
-    recipe_dir: &Path,
+    dir: &Path,
     hub_override: Option<String>,
     really_publish: bool,
     token_override: Option<String>,
 ) -> Result<()> {
-    let recipe = load_recipe(recipe_dir)?;
+    let ws = forage_core::workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
+    let Some(name) = ws.manifest.name.clone() else {
+        bail!(
+            "{} requires `name = \"<author>/<slug>\"` in forage.toml",
+            ws.root.join(forage_core::workspace::MANIFEST_NAME).display()
+        );
+    };
     let hub = hub_override
         .or_else(|| std::env::var("FORAGE_HUB_URL").ok())
         .unwrap_or_else(|| "https://api.foragelang.com".into());
@@ -433,27 +585,35 @@ async fn do_publish(
             .map(|t| t.access_token)
     });
 
-    let meta = RecipeMeta {
-        slug: recipe.name.clone(),
-        version: 0,
-        owner_login: None,
-        display_name: Some(recipe.name.clone()),
-        summary: None,
-        tags: vec![],
-        license: None,
-        sha256: None,
-        published_at: None,
-    };
-    let source = std::fs::read_to_string(recipe_dir.join("recipe.forage"))?;
+    // Build the package: every `.forage` file in the workspace, named by
+    // its path relative to the workspace root. Recipes nested under
+    // `<slug>/recipe.forage` ship verbatim — importers know the layout.
+    let mut files = Vec::new();
+    for entry in &ws.files {
+        let rel = entry
+            .path
+            .strip_prefix(&ws.root)
+            .unwrap_or(&entry.path)
+            .to_string_lossy()
+            .into_owned();
+        let body = std::fs::read_to_string(&entry.path)
+            .with_context(|| format!("reading {}", entry.path.display()))?;
+        files.push(PackageFile { name: rel, body });
+    }
+    if files.is_empty() {
+        bail!("workspace has no .forage files to publish");
+    }
 
     if !really_publish {
         println!(
-            "{} would POST {} bytes to {}/v1/recipes/{}",
+            "{} would POST {} files ({} bytes total) to {hub}/v1/packages/{name}",
             "dry-run:".yellow(),
-            source.len(),
-            hub,
-            recipe.name
+            files.len(),
+            files.iter().map(|f| f.body.len()).sum::<usize>(),
         );
+        for f in &files {
+            println!("    · {} ({} bytes)", f.name, f.body.len());
+        }
         if let Some(t) = &token {
             println!("{} (token: {}…)", "auth:".dimmed(), &t[..t.len().min(8)]);
         } else {
@@ -467,8 +627,7 @@ async fn do_publish(
     if let Some(t) = token {
         client = client.with_token(t);
     }
-    let resp = client
-        .publish(&recipe.name, &source, &meta)
+    let resp = publish_package(&client, &name, files, Some(&name), None, vec![], None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(

@@ -1020,7 +1020,8 @@ mod tests {
             }
         "#;
         let recipe = parse(src).expect("recipe parses");
-        let validation = forage_core::validate(&recipe);
+        let catalog = forage_core::TypeCatalog::from_recipe(&recipe);
+        let validation = forage_core::validate(&recipe, &catalog);
         assert!(
             !validation.has_errors(),
             "validation errors: {validation:?}"

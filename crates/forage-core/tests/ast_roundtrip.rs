@@ -14,12 +14,51 @@ fn empty_recipe_serializes() {
         body: vec![],
         browser: None,
         expectations: vec![],
-        imports: vec![],
         secrets: vec![],
     };
     let json = serde_json::to_string(&r).unwrap();
     let back: Recipe = serde_json::from_str(&json).unwrap();
     assert_eq!(r, back);
+}
+
+#[test]
+fn workspace_file_recipe_variant_serializes() {
+    let r = Recipe {
+        name: "hello".into(),
+        engine_kind: EngineKind::Http,
+        types: vec![],
+        enums: vec![],
+        inputs: vec![],
+        auth: None,
+        body: vec![],
+        browser: None,
+        expectations: vec![],
+        secrets: vec![],
+    };
+    let wf = WorkspaceFile::Recipe(Box::new(r));
+    let json = serde_json::to_string(&wf).unwrap();
+    let back: WorkspaceFile = serde_json::from_str(&json).unwrap();
+    assert_eq!(wf, back);
+}
+
+#[test]
+fn workspace_file_declarations_variant_serializes() {
+    let d = DeclarationsFile {
+        types: vec![RecipeType {
+            name: "Dispensary".into(),
+            fields: vec![RecipeField {
+                name: "id".into(),
+                ty: FieldType::String,
+                optional: false,
+            }],
+            span: 0..0,
+        }],
+        enums: vec![],
+    };
+    let wf = WorkspaceFile::Declarations(d);
+    let json = serde_json::to_string(&wf).unwrap();
+    let back: WorkspaceFile = serde_json::from_str(&json).unwrap();
+    assert_eq!(wf, back);
 }
 
 #[test]

@@ -111,7 +111,7 @@ async function fetchRemoteRecipe() {
         publish.value.author = detail.author || ''
         // Try snapshot too.
         try {
-            const r = await fetch(`${props.apiBase}/v1/recipes/${encodeURIComponent(props.slug)}/snapshot`)
+            const r = await fetch(`${props.apiBase}/v1/packages/${encodeURIComponent(props.slug)}/snapshot`)
             if (r.ok) expectedSnapshot.value = await r.json()
         } catch {}
     } catch (e) {

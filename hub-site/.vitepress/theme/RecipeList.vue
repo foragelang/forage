@@ -11,7 +11,7 @@ const error = ref(null)
 
 onMounted(async () => {
     try {
-        const r = await fetch('https://api.foragelang.com/v1/recipes?limit=100')
+        const r = await fetch('https://api.foragelang.com/v1/packages?limit=100')
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const fresh = await r.json()
         if (Array.isArray(fresh.items)) items.value = fresh.items

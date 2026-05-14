@@ -15,7 +15,7 @@ use forage_http::{
     Debugger, Engine, IterationPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
     RunEvent, StepPause,
 };
-use forage_hub::{AuthStore, AuthTokens, HubClient, RecipeMeta};
+use forage_hub::{AuthStore, AuthTokens, HubClient, PackageFile, PackageMeta};
 
 /// Tauri event name for streaming engine progress to the frontend.
 pub const RUN_EVENT: &str = "forage:run-event";
@@ -36,8 +36,8 @@ pub enum PausePayload {
 }
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
-use crate::library::{self, RecipeEntry};
 use crate::state::StudioState;
+use crate::workspace::{self, RecipeEntry};
 
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -91,18 +91,18 @@ pub fn studio_version() -> String {
 
 #[tauri::command]
 pub fn list_recipes() -> Vec<RecipeEntry> {
-    library::list_entries()
+    workspace::list_entries()
 }
 
 #[tauri::command]
 pub fn load_recipe(slug: String) -> Result<String, String> {
-    library::read_source(&slug).map_err(|e| e.to_string())
+    workspace::read_source(&slug).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn save_recipe(slug: String, source: String) -> Result<ValidationOutcome, String> {
-    library::write_source(&slug, &source).map_err(|e| e.to_string())?;
-    Ok(validate_source(&source))
+    workspace::write_source(&slug, &source).map_err(|e| e.to_string())?;
+    Ok(validate_source_with_slug(&slug, &source))
 }
 
 /// Validate a source buffer without touching disk. Studio fires this on
@@ -116,12 +116,12 @@ pub fn validate_recipe(source: String) -> ValidationOutcome {
 
 #[tauri::command]
 pub fn create_recipe() -> Result<String, String> {
-    library::create_recipe(None).map_err(|e| e.to_string())
+    workspace::create_recipe(None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_recipe(slug: String) -> Result<(), String> {
-    library::delete_recipe(&slug).map_err(|e| e.to_string())
+    workspace::delete_recipe(&slug).map_err(|e| e.to_string())
 }
 
 /// Pop up a native context menu (NSMenu on macOS, etc.) at the cursor
@@ -262,7 +262,7 @@ pub async fn run_recipe(
     slug: String,
     replay: bool,
 ) -> Result<RunOutcome, String> {
-    let source = library::read_source(&slug).map_err(|e| e.to_string())?;
+    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
         Ok(r) => r,
         Err(e) => {
@@ -273,7 +273,17 @@ pub async fn run_recipe(
             });
         }
     };
-    let report = validate(&recipe);
+    let catalog = match build_catalog_for_slug(&slug, &recipe) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(RunOutcome {
+                ok: false,
+                snapshot: None,
+                error: Some(format!("{e}")),
+            });
+        }
+    };
+    let report = validate(&recipe, &catalog);
     if report.has_errors() {
         let msgs: Vec<String> = report.errors().map(|e| e.message.clone()).collect();
         return Ok(RunOutcome {
@@ -282,14 +292,14 @@ pub async fn run_recipe(
             error: Some(msgs.join("; ")),
         });
     }
-    let raw_inputs = library::read_inputs(&slug);
+    let raw_inputs = workspace::read_inputs(&slug);
     let mut inputs: IndexMap<String, EvalValue> = IndexMap::new();
     for (k, v) in raw_inputs {
         inputs.insert(k, EvalValue::from(&v));
     }
-    let secrets = library::read_secrets_from_env(&recipe);
+    let secrets = workspace::read_secrets_from_env(&recipe);
     let captures = if replay {
-        library::read_captures(&slug)
+        workspace::read_captures(&slug)
     } else {
         Vec::new()
     };
@@ -444,13 +454,13 @@ pub fn set_recipe_breakpoints(
     slug: String,
     steps: Vec<String>,
 ) -> Result<(), String> {
-    let mut all = library::read_breakpoints();
+    let mut all = workspace::read_breakpoints();
     if steps.is_empty() {
         all.remove(&slug);
     } else {
         all.insert(slug, steps.clone());
     }
-    library::write_breakpoints(&all).map_err(|e| e.to_string())?;
+    workspace::write_breakpoints(&all).map_err(|e| e.to_string())?;
     state
         .breakpoints
         .store(Arc::new(steps.into_iter().collect()));
@@ -462,7 +472,7 @@ pub fn set_recipe_breakpoints(
 /// default.
 #[tauri::command]
 pub fn load_recipe_breakpoints(slug: String) -> Vec<String> {
-    library::read_breakpoints()
+    workspace::read_breakpoints()
         .remove(&slug)
         .unwrap_or_default()
 }
@@ -501,9 +511,10 @@ pub async fn publish_recipe(
     hub_url: String,
     dry_run: bool,
 ) -> Result<RunOutcome, String> {
-    let source = library::read_source(&slug).map_err(|e| e.to_string())?;
+    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = parse(&source).map_err(|e| format!("{e}"))?;
-    if validate(&recipe).has_errors() {
+    let catalog = build_catalog_for_slug(&slug, &recipe).map_err(|e| format!("{e}"))?;
+    if validate(&recipe, &catalog).has_errors() {
         return Err("recipe failed validation".into());
     }
     let store = AuthStore::new();
@@ -515,7 +526,7 @@ pub async fn publish_recipe(
             ok: true,
             snapshot: None,
             error: Some(format!(
-                "would publish {} bytes to {hub_url}/v1/recipes/{}{}",
+                "would publish {} bytes to {hub_url}/v1/packages/{}{}",
                 source.len(),
                 recipe.name,
                 if token.is_none() {
@@ -530,7 +541,7 @@ pub async fn publish_recipe(
     if let Some(t) = token {
         client = client.with_token(t);
     }
-    let meta = RecipeMeta {
+    let meta = PackageMeta {
         slug: recipe.name.clone(),
         version: 0,
         owner_login: None,
@@ -541,7 +552,14 @@ pub async fn publish_recipe(
         sha256: None,
         published_at: None,
     };
-    match client.publish(&recipe.name, &source, &meta).await {
+    // Studio publishes single-recipe packages: one `recipe.forage` file
+    // in the payload. The full workspace publish path goes through
+    // `forage publish` from the CLI.
+    let files = vec![PackageFile {
+        name: "recipe.forage".into(),
+        body: source,
+    }];
+    match client.publish_package(&recipe.name, files, &meta).await {
         Ok(r) => Ok(RunOutcome {
             ok: true,
             snapshot: None,
@@ -708,6 +726,67 @@ fn collect_step_locations(
     }
 }
 
+/// Slug-aware validation: parses the source, builds the workspace
+/// catalog (via `build_catalog_for_slug`), and attaches workspace
+/// errors as document-level diagnostics. Used by `save_recipe`, which
+/// always has a slug context.
+fn validate_source_with_slug(slug: &str, source: &str) -> ValidationOutcome {
+    let line_map = LineMap::new(source);
+    let to_diag = |span: std::ops::Range<usize>,
+                   severity: &'static str,
+                   code: String,
+                   message: String|
+     -> Diagnostic {
+        let r = line_map.range(span);
+        Diagnostic {
+            severity,
+            code,
+            message,
+            start_line: r.start.line,
+            start_col: r.start.character,
+            end_line: r.end.line,
+            end_col: r.end.character,
+        }
+    };
+    match parse(source) {
+        Ok(r) => {
+            let catalog = match build_catalog_for_slug(slug, &r) {
+                Ok(c) => c,
+                Err(e) => {
+                    let diag = to_diag(0..0, "error", "WorkspaceError".into(), format!("{e}"));
+                    return ValidationOutcome {
+                        ok: false,
+                        diagnostics: vec![diag],
+                    };
+                }
+            };
+            let report = validate(&r, &catalog);
+            let mut diagnostics: Vec<Diagnostic> = report
+                .issues
+                .into_iter()
+                .map(|i| {
+                    let sev = match i.severity {
+                        forage_core::Severity::Error => "error",
+                        forage_core::Severity::Warning => "warning",
+                    };
+                    to_diag(i.span, sev, format!("{:?}", i.code), i.message)
+                })
+                .collect();
+            diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
+            let ok = !diagnostics.iter().any(|d| d.severity == "error");
+            ValidationOutcome { ok, diagnostics }
+        }
+        Err(e) => {
+            let (span, msg) = parse_error_span(&e);
+            let diag = to_diag(span, "error", "ParseError".into(), msg);
+            ValidationOutcome {
+                ok: false,
+                diagnostics: vec![diag],
+            }
+        }
+    }
+}
+
 fn validate_source(source: &str) -> ValidationOutcome {
     let line_map = LineMap::new(source);
     let to_diag = |span: std::ops::Range<usize>,
@@ -728,7 +807,10 @@ fn validate_source(source: &str) -> ValidationOutcome {
     };
     match parse(source) {
         Ok(r) => {
-            let report = validate(&r);
+            // No filesystem path available here (live-typed buffer);
+            // validate against the recipe-local catalog only.
+            let catalog = forage_core::TypeCatalog::from_recipe(&r);
+            let report = validate(&r, &catalog);
             let mut diagnostics: Vec<Diagnostic> = report
                 .issues
                 .into_iter()
@@ -772,6 +854,27 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
         PE::Generic { span, message } => (span.clone(), message.clone()),
         PE::Lex(le) => (0..0, format!("{le}")),
     }
+}
+
+/// Type catalog for a Studio recipe identified by slug. If the
+/// recipe's directory sits inside a workspace (ancestor
+/// `forage.toml`), the catalog folds in workspace declarations files
+/// plus cached hub-dep declarations. Otherwise lonely-recipe mode —
+/// the recipe's own types only.
+///
+/// Workspace errors (duplicate types across declarations files, parse
+/// failures in a sibling declarations file, etc.) are surfaced to the
+/// caller instead of being silently swallowed — the user has to see
+/// them to fix them.
+fn build_catalog_for_slug(
+    slug: &str,
+    recipe: &forage_core::Recipe,
+) -> Result<forage_core::TypeCatalog, forage_core::workspace::WorkspaceError> {
+    let path = workspace::recipe_path(slug);
+    if let Some(ws) = forage_core::workspace::discover(&path) {
+        return ws.catalog(recipe, |p| std::fs::read_to_string(p));
+    }
+    Ok(forage_core::TypeCatalog::from_recipe(recipe))
 }
 
 fn host_of(url: &str) -> String {

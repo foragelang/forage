@@ -1,11 +1,14 @@
 # Publish
 
-Recipes are flat text. Anyone with a hub publish token can `POST /v1/recipes`.
+The unit of publication is a **package**: every `.forage` file in a
+workspace plus its `forage.toml` manifest. Single-file recipes ship as
+one-file packages. Anyone with a hub publish token can `POST
+/v1/packages`.
 
 ## With the CLI
 
 ```sh
-# Author a recipe under recipes/<slug>/
+# Author a recipe under recipes/<slug>/ (workspace at recipes/)
 forage scaffold tests/fixtures/captures.jsonl --out recipes/<slug>/recipe.forage
 
 # Run against fixtures to make sure it produces the snapshot you expect.
@@ -26,7 +29,7 @@ caught client-side with full diagnostics.
 The endpoint:
 
 ```
-POST https://api.foragelang.com/v1/recipes
+POST https://api.foragelang.com/v1/packages
 Authorization: Bearer <HUB_PUBLISH_TOKEN>
 Content-Type: application/json
 ```
@@ -35,19 +38,25 @@ Body:
 
 ```json
 {
-    "slug": "my-recipe",
-    "author": "you",
+    "slug": "alice/my-recipe",
+    "author": "alice",
     "displayName": "My recipe",
     "summary": "Short description.",
     "tags": ["dispensary", "json-api"],
     "platform": "sweed",
-    "body": "recipe \"my-recipe\"\nengine http\n...\n"
+    "files": [
+        {"name": "recipe.forage", "body": "recipe \"my-recipe\"\nengine http\n…"},
+        {"name": "shared.forage", "body": "type Item { id: String }\n"}
+    ]
 }
 ```
 
-`slug` must match `^[a-z0-9][a-z0-9-]{1,63}$`. Returns `201 {slug, version, sha256}`.
-Each publish bumps the version; old versions are kept and queryable via
-`GET /v1/recipes/<slug>?version=N`.
+`slug` must match `^[a-z0-9][a-z0-9-]{1,63}\/[a-z0-9][a-z0-9-]{1,63}$`.
+`files` is the package — one entry per `.forage` file in the workspace.
+At least one must carry a `recipe "<name>"` header. Returns
+`201 {slug, version, sha256}`. Each publish bumps the version; old
+versions are kept and queryable via
+`GET /v1/packages/<slug>?version=N`.
 
 ## With Studio
 

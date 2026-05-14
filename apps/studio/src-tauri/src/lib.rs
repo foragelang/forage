@@ -2,9 +2,9 @@
 
 mod browser_driver;
 mod commands;
-mod library;
 mod menu;
 mod state;
+mod workspace;
 
 use state::StudioState;
 use tauri::Manager;
@@ -45,6 +45,20 @@ pub fn run() {
             // captures both `tracing::` events and (via its tracing-log
             // bridge) `log::` records from reqwest / cookie_store / tao.
             // Adding tauri-plugin-log on top panics with "logger already set."
+            //
+            // Drop an empty `forage.toml` at the workspace root on first
+            // launch so an existing user library quietly becomes a
+            // workspace. The check is idempotent — no overwrite if the
+            // manifest is already there. Failure surfaces as a real
+            // setup error: Studio can't operate without a writable
+            // workspace, so silent fallback isn't useful.
+            let ws_root = workspace::workspace_root();
+            workspace::ensure_workspace_manifest(&ws_root).map_err(|e| {
+                format!(
+                    "failed to initialize workspace manifest at {}: {e}",
+                    ws_root.display()
+                )
+            })?;
             app.manage(StudioState::default());
             let m = menu::build_menu(app.handle())?;
             app.set_menu(m)?;

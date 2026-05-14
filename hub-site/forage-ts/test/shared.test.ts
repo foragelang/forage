@@ -25,7 +25,6 @@ interface ExpectedRecipe {
     summary?: Summary
     types?: ExpectedType[]
     enums?: ExpectedEnum[]
-    imports?: ExpectedImport[]
     paginationModes?: string[]
     secrets?: string[]
     authSessionVariant?: string
@@ -43,7 +42,6 @@ interface Summary {
     topLevelEmits: number
     forLoopCount: number
     expectationCount: number
-    importCount: number
 }
 
 interface ExpectedType {
@@ -55,14 +53,6 @@ interface ExpectedType {
 interface ExpectedEnum {
     name: string
     variants: string[]
-}
-
-interface ExpectedImport {
-    raw: string
-    registry: string | null
-    namespace: string | null
-    name: string
-    version: number | null
 }
 
 interface ExpectedValidation {
@@ -97,7 +87,6 @@ describe('shared recipes', () => {
                 expect(recipe.inputs).toHaveLength(rec.summary.inputCount)
                 expect(recipe.body).toHaveLength(rec.summary.bodyStatementCount)
                 expect(recipe.expectations).toHaveLength(rec.summary.expectationCount)
-                expect(recipe.imports).toHaveLength(rec.summary.importCount)
                 expect(collectStepNames(recipe.body)).toEqual(rec.summary.stepNames)
                 expect(countTopLevelEmits(recipe.body)).toBe(rec.summary.topLevelEmits)
                 expect(countForLoops(recipe.body)).toBe(rec.summary.forLoopCount)
@@ -119,19 +108,6 @@ describe('shared recipes', () => {
                     expect(e, `${rec.file}: missing enum ${ee.name}`).toBeTruthy()
                     if (!e) continue
                     expect(e.variants).toEqual(ee.variants)
-                }
-            }
-
-            if (rec.imports) {
-                expect(recipe.imports).toHaveLength(rec.imports.length)
-                for (let i = 0; i < rec.imports.length; i++) {
-                    const actual = recipe.imports[i]
-                    const expected = rec.imports[i]
-                    expect(actual.raw).toBe(expected.raw)
-                    expect(actual.registry).toBe(expected.registry)
-                    expect(actual.namespace).toBe(expected.namespace)
-                    expect(actual.name).toBe(expected.name)
-                    expect(actual.version).toBe(expected.version)
                 }
             }
 

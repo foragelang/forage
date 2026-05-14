@@ -203,19 +203,6 @@ export interface Expectation {
     kind: { tag: 'recordCount'; typeName: string; op: ComparisonOp; value: number }
 }
 
-/// Docker-style recipe reference. `raw` is the textual form the user wrote
-/// after `import`; the other fields are the parsed shape.
-///   - `registry === null` means "default hub".
-///   - `namespace === null` means "default namespace" (only valid when
-///     `registry === null`).
-export interface HubRecipeRef {
-    raw: string
-    version: number | null
-    registry: string | null
-    namespace: string | null
-    name: string
-}
-
 // Browser config is parsed but not run in the TS port; we keep it as an
 // opaque field so detail/edit pages can still display/round-trip browser
 // recipes without the in-browser runner trying to execute them.
@@ -235,6 +222,18 @@ export interface Recipe {
     body: Statement[]
     browser: BrowserConfig | null
     expectations: Expectation[]
-    imports: HubRecipeRef[]
     secrets: string[]
 }
+
+/// A header-less `.forage` file: only `type` and `enum` declarations.
+/// Workspaces fold these into the shared catalog.
+export interface DeclarationsFile {
+    types: RecipeType[]
+    enums: RecipeEnum[]
+}
+
+/// One parsed `.forage` file. Either a full `Recipe` or a header-less
+/// `DeclarationsFile` — the two shapes are disjoint in the grammar.
+export type WorkspaceFile =
+    | { type: 'recipe'; recipe: Recipe }
+    | { type: 'declarations'; declarations: DeclarationsFile }

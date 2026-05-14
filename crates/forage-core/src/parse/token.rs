@@ -50,9 +50,6 @@ pub enum Token {
         day: u32,
     },
 
-    /// Docker-style recipe reference, scanned after `import`.
-    Ref(String),
-
     /// Lowercase-starting identifier.
     Ident(String),
     /// Uppercase-starting identifier.
@@ -95,7 +92,6 @@ impl Token {
             Token::Bool(_) => "boolean literal",
             Token::Null => "'null'",
             Token::Date { .. } => "date literal",
-            Token::Ref(_) => "recipe ref",
             Token::Ident(_) => "identifier",
             Token::TypeName(_) => "type name",
             Token::Keyword(_) => "keyword",
@@ -105,7 +101,6 @@ impl Token {
 
 /// All reserved words in Forage.
 pub const KEYWORDS: &[&str] = &[
-    "import",
     "recipe",
     "engine",
     "http",

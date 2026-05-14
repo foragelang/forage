@@ -8,7 +8,7 @@ use forage_core::validate::BUILTIN_TRANSFORMS;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-use crate::docstore::DocStore;
+use crate::docstore::{DocStore, workspace_root_for};
 use crate::offsets::lsp_range;
 
 pub struct ForageLsp {
@@ -56,6 +56,36 @@ impl LanguageServer for ForageLsp {
         self.client
             .log_message(MessageType::INFO, "forage-lsp ready")
             .await;
+        // Ask the client to watch every `.forage` file and `forage.toml`
+        // across the open workspaces so the catalog stays fresh when the
+        // user edits a sibling file outside the editor. The client
+        // routes change notifications to `did_change_watched_files`,
+        // which `refresh_workspace`s and republishes diagnostics.
+        let watchers = vec![
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.forage".into()),
+                kind: None,
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/forage.toml".into()),
+                kind: None,
+            },
+        ];
+        let registration = Registration {
+            id: "forage-lsp/workspace-watcher".into(),
+            method: "workspace/didChangeWatchedFiles".into(),
+            register_options: Some(
+                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions { watchers })
+                    .expect("serialize watcher options"),
+            ),
+        };
+        if let Err(e) = self
+            .client
+            .register_capability(vec![registration])
+            .await
+        {
+            tracing::warn!(error = %e, "client refused workspace file watch registration");
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -71,11 +101,50 @@ impl LanguageServer for ForageLsp {
             return;
         };
         let diags = self.store.upsert(uri.clone(), change.text);
-        self.client.publish_diagnostics(uri, diags, None).await;
+        self.client.publish_diagnostics(uri.clone(), diags, None).await;
+
+        // If the edited document is a declarations file, every open
+        // recipe in the same workspace needs to be re-validated against
+        // the new catalog. The recipe arm gets its own diagnostics from
+        // the upsert above and doesn't need fanout.
+        if matches!(
+            self.store.workspace_kind_for(&uri),
+            Some(forage_core::workspace::WorkspaceFileKind::Declarations)
+        ) {
+            if let Some(root) = workspace_root_for(&uri) {
+                let refreshed = self.store.refresh_workspace(&root);
+                for (other_uri, diags) in refreshed {
+                    if other_uri == uri {
+                        continue;
+                    }
+                    self.client.publish_diagnostics(other_uri, diags, None).await;
+                }
+            }
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.store.remove(&params.text_document.uri);
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        // External edits to a `forage.toml` or a `.forage` file inside
+        // a workspace can shift the catalog for every recipe in that
+        // workspace. Refresh every affected workspace once and republish
+        // diagnostics for the recipes that live in it.
+        use std::collections::HashSet;
+        let mut roots: HashSet<std::path::PathBuf> = HashSet::new();
+        for change in &params.changes {
+            if let Some(root) = workspace_root_for(&change.uri) {
+                roots.insert(root);
+            }
+        }
+        for root in roots {
+            let refreshed = self.store.refresh_workspace(&root);
+            for (uri, diags) in refreshed {
+                self.client.publish_diagnostics(uri, diags, None).await;
+            }
+        }
     }
 
     async fn completion(

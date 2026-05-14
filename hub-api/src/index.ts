@@ -76,12 +76,12 @@ async function route(
         return oauthRevoke(request, env, caller.login)
     }
 
-    if (path === '/v1/recipes' && request.method === 'GET') {
+    if (path === '/v1/packages' && request.method === 'GET') {
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
         if (limit) return limit
         return listRecipes(request, env)
     }
-    if (path === '/v1/recipes' && request.method === 'POST') {
+    if (path === '/v1/packages' && request.method === 'POST') {
         const caller = await identifyCaller(request, env)
         const key = caller?.kind === 'user' ? caller.login : callerKey(request, null)
         const limit = await rateLimit(env, 'publish', key, request)
@@ -89,10 +89,10 @@ async function route(
         return publishRecipe(request, env)
     }
 
-    // Versions / fixtures / snapshot live under `/v1/recipes/:ns/:name/:sub`.
+    // Versions / fixtures / snapshot live under `/v1/packages/:ns/:name/:sub`.
     // Match these *before* the bare detail route below, since the detail
     // route is also a two-segment match.
-    const subMatch = path.match(/^\/v1\/recipes\/([^/]+)\/([^/]+)\/(versions|fixtures|snapshot)$/)
+    const subMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)\/(versions|fixtures|snapshot)$/)
     if (subMatch) {
         const ns = decodeURIComponent(subMatch[1])
         const name = decodeURIComponent(subMatch[2])
@@ -108,8 +108,8 @@ async function route(
         if (subMatch[3] === 'snapshot') return getRecipeSnapshot(request, env, slug)
     }
 
-    // Detail / delete: `/v1/recipes/:namespace/:name`.
-    const detailMatch = path.match(/^\/v1\/recipes\/([^/]+)\/([^/]+)$/)
+    // Detail / delete: `/v1/packages/:namespace/:name`.
+    const detailMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)$/)
     if (detailMatch) {
         const ns = decodeURIComponent(detailMatch[1])
         const name = decodeURIComponent(detailMatch[2])

@@ -3,7 +3,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use forage_core::{parse as core_parse, validate as core_validate};
+use forage_core::{TypeCatalog, parse as core_parse, validate as core_validate};
 
 #[wasm_bindgen]
 pub fn forage_version() -> String {
@@ -74,7 +74,10 @@ pub fn validate_recipe(recipe_json: &str) -> JsValue {
             .unwrap_or(JsValue::NULL);
         }
     };
-    let report = core_validate(&recipe);
+    // The wasm IDE has no filesystem reach, so every recipe validates
+    // in lonely-recipe mode — the catalog is just its own local types.
+    let catalog = TypeCatalog::from_recipe(&recipe);
+    let report = core_validate(&recipe, &catalog);
     let errors: Vec<_> = report
         .issues
         .iter()
@@ -110,7 +113,8 @@ pub fn validate_recipe(recipe_json: &str) -> JsValue {
 pub fn parse_and_validate(source: &str) -> JsValue {
     match core_parse(source) {
         Ok(recipe) => {
-            let report = core_validate(&recipe);
+            let catalog = TypeCatalog::from_recipe(&recipe);
+            let report = core_validate(&recipe, &catalog);
             let issues: Vec<_> = report
                 .issues
                 .iter()

@@ -12,7 +12,7 @@ src/
   storage.ts        — KV + R2 helpers, key conventions, SHA-256
   types.ts          — request / response / storage schema types
   routes/
-    recipes.ts      — /v1/recipes endpoint handlers
+    recipes.ts      — /v1/packages endpoint handlers
 test/
   smoke.sh          — curl-based end-to-end test
   run.sh            — convenience wrapper
@@ -25,7 +25,7 @@ test/
   - `recipe:<slug>:versions` — `VersionRecord[]`
   - `index:list` — `string[]` of slugs (for paginated listing)
 - R2 (`BLOBS`)
-  - `recipes/<slug>/<version>/recipe.forage`
+  - `recipes/<slug>/<version>/<file>.forage` — one blob per `.forage` file
   - `recipes/<slug>/<version>/fixtures.jsonl` (optional)
   - `recipes/<slug>/<version>/snapshot.json` (optional)
   - `recipes/<slug>/<version>/meta.json`
@@ -33,13 +33,14 @@ test/
 ## Endpoints
 
 - `GET  /v1/health`
-- `GET  /v1/recipes` — `?author=&tag=&platform=&limit=&cursor=`
-- `GET  /v1/recipes/:slug` — `?version=N`
-- `GET  /v1/recipes/:slug/versions`
-- `GET  /v1/recipes/:slug/fixtures` — JSONL stream, `?version=N`
-- `GET  /v1/recipes/:slug/snapshot` — JSON stream, `?version=N`
-- `POST /v1/recipes` — auth required (`Authorization: Bearer $HUB_PUBLISH_TOKEN`)
-- `DELETE /v1/recipes/:slug` — auth required (soft-delete)
+- `GET  /v1/packages` — `?author=&tag=&platform=&limit=&cursor=`
+- `GET  /v1/packages/:slug` — `?version=N`. Returns metadata + every
+  file body in `files: [{name, body}, …]`.
+- `GET  /v1/packages/:slug/versions`
+- `GET  /v1/packages/:slug/fixtures` — JSONL stream, `?version=N`
+- `GET  /v1/packages/:slug/snapshot` — JSON stream, `?version=N`
+- `POST /v1/packages` — auth required (`Authorization: Bearer $HUB_PUBLISH_TOKEN`)
+- `DELETE /v1/packages/:slug` — auth required (soft-delete)
 
 All `GET` endpoints set `Access-Control-Allow-Origin: *`.
 

@@ -1,4 +1,8 @@
-//! Filesystem-backed recipe library at `~/Library/Forage/Recipes/<slug>/`.
+//! Studio's filesystem-backed workspace at `~/Library/Forage/Recipes/`.
+//!
+//! Each recipe lives in `<workspace>/<slug>/recipe.forage`; the
+//! workspace itself is marked by a `forage.toml` at the root and may
+//! include header-less declarations files shared across recipes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,13 +10,15 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use ts_rs::TS;
 
-/// On-disk location of the user's recipe library.
+use forage_core::workspace::{MANIFEST_NAME, Manifest, serialize_manifest};
+
+/// On-disk location of the user's recipe workspace.
 ///
-/// Honors the `FORAGE_LIBRARY_ROOT` env var first — useful for tests
-/// (sandbox into a tempdir) and for users who want to point Studio at a
-/// repo checkout instead of the OS-conventional library directory.
-pub fn library_root() -> PathBuf {
-    if let Ok(override_dir) = std::env::var("FORAGE_LIBRARY_ROOT") {
+/// Honors `FORAGE_WORKSPACE_ROOT` first — useful for tests (sandbox
+/// into a tempdir) and for users who want to point Studio at a repo
+/// checkout instead of the OS-conventional workspace directory.
+pub fn workspace_root() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("FORAGE_WORKSPACE_ROOT") {
         if !override_dir.is_empty() {
             return PathBuf::from(override_dir);
         }
@@ -28,6 +34,20 @@ pub fn library_root() -> PathBuf {
     PathBuf::from(".forage-recipes")
 }
 
+/// Drop an empty `forage.toml` at `<workspace_root>/forage.toml` if it
+/// doesn't exist. Studio calls this on app init so an existing library
+/// of recipes silently becomes a workspace on first launch.
+pub fn ensure_workspace_manifest(root: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(root)?;
+    let path = root.join(MANIFEST_NAME);
+    if path.exists() {
+        return Ok(());
+    }
+    let body = serialize_manifest(&Manifest::default())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    fs::write(&path, body)
+}
+
 #[derive(Debug, Serialize, Clone, TS)]
 #[ts(export)]
 pub struct RecipeEntry {
@@ -38,7 +58,7 @@ pub struct RecipeEntry {
 }
 
 pub fn list_entries() -> Vec<RecipeEntry> {
-    let root = library_root();
+    let root = workspace_root();
     let _ = fs::create_dir_all(&root);
     let mut out = Vec::new();
     let Ok(dir) = fs::read_dir(&root) else {
@@ -71,15 +91,15 @@ pub fn list_entries() -> Vec<RecipeEntry> {
 }
 
 pub fn recipe_path(slug: &str) -> PathBuf {
-    library_root().join(slug).join("recipe.forage")
+    workspace_root().join(slug).join("recipe.forage")
 }
 
 pub fn recipe_dir(slug: &str) -> PathBuf {
-    library_root().join(slug)
+    workspace_root().join(slug)
 }
 
 pub fn create_recipe(template_slug: Option<&str>) -> std::io::Result<String> {
-    let root = library_root();
+    let root = workspace_root();
     fs::create_dir_all(&root)?;
     // Find an `untitled-N` slug that doesn't exist yet.
     let base = template_slug.unwrap_or("untitled");
@@ -116,7 +136,7 @@ pub fn read_source(slug: &str) -> std::io::Result<String> {
 /// so a malicious slug can't escape the library root with `../etc/passwd`.
 /// The slug must already exist as a directory directly under the library.
 pub fn delete_recipe(slug: &str) -> std::io::Result<()> {
-    delete_recipe_in(&library_root(), slug)
+    delete_recipe_in(&workspace_root(), slug)
 }
 
 /// Test-friendly variant of `delete_recipe` that takes an explicit root.
@@ -191,11 +211,11 @@ pub fn read_captures(slug: &str) -> Vec<forage_replay::Capture> {
 }
 
 /// Per-recipe breakpoint persistence. One JSON sidecar at
-/// `<library_root>/breakpoints.json` keyed by recipe slug. The file is
+/// `<workspace_root>/breakpoints.json` keyed by recipe slug. The file is
 /// missing until the user sets a first breakpoint, so the empty-map
 /// case is the steady state for fresh libraries.
 pub fn breakpoints_path() -> PathBuf {
-    library_root().join("breakpoints.json")
+    workspace_root().join("breakpoints.json")
 }
 
 pub fn read_breakpoints() -> std::collections::HashMap<String, Vec<String>> {

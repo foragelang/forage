@@ -78,50 +78,22 @@ for $i in $s[*] {
         expect(recipe.body[1].tag).toBe('forLoop')
     })
 
-    it('parses imports', () => {
-        const src = `import alice/awesome v3
-recipe "x"
-engine http
-step s { method "GET"; url "https://x.test/s" }`
-        const recipe = Parser.parse(src)
-        expect(recipe.imports).toHaveLength(1)
-        const ref = recipe.imports[0]
-        expect(ref.raw).toBe('alice/awesome')
-        expect(ref.namespace).toBe('alice')
-        expect(ref.name).toBe('awesome')
-        expect(ref.registry).toBeNull()
-        expect(ref.version).toBe(3)
+    it('parses header-less files as declarations', () => {
+        const src = `type Item { id: String }
+enum Mode { A, B }`
+        const wf = Parser.parseWorkspaceFile(src)
+        expect(wf.type).toBe('declarations')
+        if (wf.type !== 'declarations') throw new Error('expected declarations')
+        expect(wf.declarations.types).toHaveLength(1)
+        expect(wf.declarations.types[0].name).toBe('Item')
+        expect(wf.declarations.enums).toHaveLength(1)
+        expect(wf.declarations.enums[0].name).toBe('Mode')
     })
 
-    it('parses bare-name imports (default namespace)', () => {
-        const src = `import sweed
-
-recipe "x"
-engine http
-step s { method "GET"; url "https://x.test/s" }`
-        const recipe = Parser.parse(src)
-        expect(recipe.imports).toHaveLength(1)
-        const ref = recipe.imports[0]
-        expect(ref.raw).toBe('sweed')
-        expect(ref.registry).toBeNull()
-        expect(ref.namespace).toBeNull()
-        expect(ref.name).toBe('sweed')
-        expect(ref.version).toBeNull()
-    })
-
-    it('parses custom-registry imports', () => {
-        const src = `import hub.example.com/team/scraper v2
-
-recipe "x"
-engine http
-step s { method "GET"; url "https://x.test/s" }`
-        const recipe = Parser.parse(src)
-        expect(recipe.imports).toHaveLength(1)
-        const ref = recipe.imports[0]
-        expect(ref.registry).toBe('hub.example.com')
-        expect(ref.namespace).toBe('team')
-        expect(ref.name).toBe('scraper')
-        expect(ref.version).toBe(2)
+    it('rejects non-declaration forms at top level of a header-less file', () => {
+        const src = `type Item { id: String }
+step orphan { method "GET"; url "https://x.test" }`
+        expect(() => Parser.parseWorkspaceFile(src)).toThrow(/declarations file/)
     })
 
     it('throws on broken syntax', () => {

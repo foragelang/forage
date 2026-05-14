@@ -1,6 +1,7 @@
-// Minimal hub-api client. Mirrors `hub-api/src/routes/recipes.ts` endpoints.
-// Slugs are always `<namespace>/<name>`; the URL path encodes them as two
-// segments so the Worker can route on `:namespace/:name`.
+// Minimal hub-api client. Mirrors `hub-api/src/routes/recipes.ts`
+// endpoints (now served under `/v1/packages`). Slugs are always
+// `<namespace>/<name>`; the URL path encodes them as two segments so
+// the Worker can route on `:namespace/:name`.
 
 export const DEFAULT_HUB_API = 'https://api.foragelang.com'
 
@@ -72,15 +73,15 @@ export class HubClient {
     }
 
     async list(): Promise<RecipeListItem[]> {
-        const r = await this.fetchImpl(`${this.base}/v1/recipes?limit=100`, this.fetchInit())
-        if (!r.ok) throw new Error(`HTTP ${r.status} on GET /v1/recipes`)
+        const r = await this.fetchImpl(`${this.base}/v1/packages?limit=100`, this.fetchInit())
+        if (!r.ok) throw new Error(`HTTP ${r.status} on GET /v1/packages`)
         const data = await r.json()
         return Array.isArray(data.items) ? data.items : []
     }
 
     async get(slug: string, version?: number): Promise<RecipeDetail> {
         const path = encodeSlugPath(slug)
-        const url = `${this.base}/v1/recipes/${path}${version ? `?version=${version}` : ''}`
+        const url = `${this.base}/v1/packages/${path}${version ? `?version=${version}` : ''}`
         const r = await this.fetchImpl(url, this.fetchInit())
         if (!r.ok) throw new Error(`HTTP ${r.status} on GET ${url}`)
         return await r.json()
@@ -94,14 +95,14 @@ export class HubClient {
         }
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
         if (this.token) headers['Authorization'] = `Bearer ${this.token}`
-        const r = await this.fetchImpl(`${this.base}/v1/recipes`, this.fetchInit({
+        const r = await this.fetchImpl(`${this.base}/v1/packages`, this.fetchInit({
             method: 'POST',
             headers,
             body: JSON.stringify(payload),
         }))
         if (!r.ok) {
             const text = await r.text()
-            throw new Error(`HTTP ${r.status} on POST /v1/recipes: ${text}`)
+            throw new Error(`HTTP ${r.status} on POST /v1/packages: ${text}`)
         }
         return await r.json()
     }
@@ -129,7 +130,7 @@ export class HubClient {
     /** Build the POST body without sending — used by the IDE to preview. */
     buildPublishRequest(payload: PublishPayload): { url: string; init: RequestInit } {
         return {
-            url: `${this.base}/v1/recipes`,
+            url: `${this.base}/v1/packages`,
             init: {
                 method: 'POST',
                 headers: {

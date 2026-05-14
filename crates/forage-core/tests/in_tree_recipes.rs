@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use forage_core::workspace::TypeCatalog;
 use forage_core::{parse, validate};
 
 fn recipes_root() -> PathBuf {
@@ -33,7 +34,8 @@ fn parses_every_in_tree_recipe() {
         match parse(&source) {
             Ok(r) => {
                 parsed += 1;
-                let rep = validate(&r);
+                let catalog = TypeCatalog::from_recipe(&r);
+                let rep = validate(&r, &catalog);
                 for e in rep.errors() {
                     failures.push((
                         slug.clone(),

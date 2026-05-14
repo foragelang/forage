@@ -24,28 +24,6 @@ describe('lexer', () => {
         expect(toks.some(t => t.kind.tag === 'nullLit')).toBe(true)
     })
 
-    it('handles docker-style import refs', () => {
-        const lex = new Lexer('import alice/awesome v3')
-        const toks = lex.tokenize()
-        const refTok = toks.find(t => t.kind.tag === 'refLit')
-        expect(refTok).toBeTruthy()
-        expect((refTok!.kind as { tag: 'refLit'; raw: string }).raw).toBe('alice/awesome')
-    })
-
-    it('handles custom-registry import refs', () => {
-        const lex = new Lexer('import hub.example.com/team/scraper')
-        const toks = lex.tokenize()
-        const refTok = toks.find(t => t.kind.tag === 'refLit')
-        expect((refTok!.kind as { tag: 'refLit'; raw: string }).raw).toBe('hub.example.com/team/scraper')
-    })
-
-    it('handles localhost-port import refs', () => {
-        const lex = new Lexer('import localhost:5000/me/test')
-        const toks = lex.tokenize()
-        const refTok = toks.find(t => t.kind.tag === 'refLit')
-        expect((refTok!.kind as { tag: 'refLit'; raw: string }).raw).toBe('localhost:5000/me/test')
-    })
-
     it('handles wildcards [*]', () => {
         const lex = new Lexer('$x[*]')
         const toks = lex.tokenize()

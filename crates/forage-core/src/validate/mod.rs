@@ -2,15 +2,21 @@
 //! severities. Validation is best-effort — even if some checks fail,
 //! others still run, so the user sees the full picture.
 //!
-//! Public entry: `validate(recipe: &Recipe) -> ValidationReport`.
+//! Public entry: `validate(recipe, catalog) -> ValidationReport`. The
+//! catalog folds in workspace-shared declarations files plus the
+//! recipe's local types; recipes outside a workspace pass
+//! `TypeCatalog::from_recipe(&recipe)` for lonely-recipe mode.
 
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
+use crate::workspace::TypeCatalog;
 
-/// Top-level entry point.
-pub fn validate(recipe: &Recipe) -> ValidationReport {
-    let mut v = Validator::new(recipe);
+/// Top-level entry point. `catalog` is the merged type namespace for
+/// this recipe — see `Workspace::catalog`. Lonely-recipe mode (no
+/// surrounding `forage.toml`) passes `TypeCatalog::from_recipe(recipe)`.
+pub fn validate(recipe: &Recipe, catalog: &TypeCatalog) -> ValidationReport {
+    let mut v = Validator::new(recipe, catalog);
     v.run();
     ValidationReport { issues: v.issues }
 }
@@ -111,6 +117,7 @@ pub const BUILTIN_TRANSFORMS: &[&str] = &[
 
 struct Validator<'a> {
     recipe: &'a Recipe,
+    catalog: &'a TypeCatalog,
     issues: Vec<ValidationIssue>,
     /// Variable bindings in scope at the current walking position. Includes
     /// step names (recipe-body-wide), for-loop variables (nested),
@@ -124,7 +131,7 @@ struct Validator<'a> {
 }
 
 impl<'a> Validator<'a> {
-    fn new(recipe: &'a Recipe) -> Self {
+    fn new(recipe: &'a Recipe, catalog: &'a TypeCatalog) -> Self {
         let mut known_vars = std::collections::HashSet::new();
         collect_bindings(&recipe.body, &mut known_vars);
         if let Some(b) = &recipe.browser {
@@ -149,6 +156,7 @@ impl<'a> Validator<'a> {
         known_vars.insert("page".into());
         Self {
             recipe,
+            catalog,
             issues: Vec::new(),
             known_vars,
             cur_span: 0..0,
@@ -363,14 +371,13 @@ impl<'a> Validator<'a> {
 
     fn check_emit(&mut self, em: &Emission) {
         self.with_span(em.span.clone(), |v| {
-            if v.recipe.ty(&em.type_name).is_none() {
+            let Some(ty) = v.catalog.ty(&em.type_name).cloned() else {
                 v.err_here(
                     ValidationCode::UnknownType,
                     format!("emit Type '{}' is not declared", em.type_name),
                 );
                 return;
-            }
-            let ty = v.recipe.ty(&em.type_name).unwrap().clone();
+            };
             let bound: std::collections::HashSet<&str> =
                 em.bindings.iter().map(|b| b.field_name.as_str()).collect();
             for f in &ty.fields {
@@ -447,7 +454,7 @@ impl<'a> Validator<'a> {
         // Detect enum scrutinees: walk the path; if the leaf is `$input.X`
         // where X has an EnumRef type, check label set against the enum.
         if let Some(enum_name) = self.enum_for_path(scrutinee) {
-            if let Some(en) = self.recipe.recipe_enum(&enum_name).cloned() {
+            if let Some(en) = self.catalog.recipe_enum(&enum_name).cloned() {
                 let known: std::collections::HashSet<&str> =
                     en.variants.iter().map(|s| s.as_str()).collect();
                 let used: Vec<String> = labels.map(|s| s.to_string()).collect();
@@ -598,7 +605,7 @@ impl<'a> Validator<'a> {
         match t {
             FieldType::Array(inner) => self.check_field_type(inner, where_),
             FieldType::Record(name) => {
-                if self.recipe.ty(name).is_none() && self.recipe.recipe_enum(name).is_none() {
+                if self.catalog.ty(name).is_none() && self.catalog.recipe_enum(name).is_none() {
                     self.err_here(
                         ValidationCode::UnknownType,
                         format!("{where_} references unknown type '{name}'"),
@@ -606,7 +613,7 @@ impl<'a> Validator<'a> {
                 }
             }
             FieldType::EnumRef(name) => {
-                if self.recipe.recipe_enum(name).is_none() {
+                if self.catalog.recipe_enum(name).is_none() {
                     self.err_here(
                         ValidationCode::UnknownEnum,
                         format!("{where_} references unknown enum '{name}'"),
@@ -661,7 +668,8 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -680,7 +688,8 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
         assert!(rep.has_errors());
         assert!(
             rep.errors()
@@ -703,7 +712,8 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::MissingRequiredField))
@@ -734,7 +744,8 @@ for $x in $list.items[*] {
 emit Item { }
 "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
 
         let dup = rep
             .issues
@@ -764,18 +775,18 @@ emit Item { }
             &src[unk.span.clone()],
         );
 
+        // The bare `emit Item { }` at the bottom should still be
+        // flagged — though there may be other MissingRequiredField
+        // issues earlier in the issues list (duplicate `type Item`
+        // declarations mean the catalog adopts the *last* declared
+        // shape, so `id ← …` no longer satisfies the schema).
         let missing = rep
             .issues
             .iter()
-            .find(|i| i.code == ValidationCode::MissingRequiredField)
-            .expect("MissingRequiredField");
-        // The bare `emit Item { }` at the bottom.
+            .filter(|i| i.code == ValidationCode::MissingRequiredField)
+            .find(|i| src[i.span.clone()].starts_with("emit Item { }"))
+            .expect("MissingRequiredField on the bare emit");
         assert!(missing.span.start < missing.span.end);
-        assert!(
-            src[missing.span.clone()].starts_with("emit Item { }"),
-            "got {:?}",
-            &src[missing.span.clone()],
-        );
     }
 
     #[test]
@@ -791,7 +802,8 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::UnexpectedBrowserConfig))
@@ -813,7 +825,8 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let rep = validate(&r);
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::UnknownSecret))

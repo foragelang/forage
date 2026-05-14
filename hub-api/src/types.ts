@@ -13,10 +13,14 @@ export interface Env {
 }
 
 // Metadata stored at `recipe:<namespace>/<name>` in KV. `slug` is the
-// `<namespace>/<name>` composite used as the path under `/v1/recipes/...`.
+// `<namespace>/<name>` composite used as the path under `/v1/packages/...`.
+//
+// `fileNames` is the on-disk manifest of every `.forage` file in this
+// version. Detail responses bundle the bodies alongside (see
+// `RecipeDetailResponse`); listings keep just the names.
 //
 // `ownerLogin` (M11) is the GitHub login of whoever first published the
-// recipe via the OAuth path. Recipes published before M11 (or via the
+// package via the OAuth path. Packages published before M11 (or via the
 // legacy `HUB_PUBLISH_TOKEN` admin path) carry `ownerLogin: "admin"`.
 // Publish + delete check this against the caller identity.
 export interface RecipeMetadata {
@@ -27,7 +31,10 @@ export interface RecipeMetadata {
     tags: string[]
     platform: string | null
     version: number
-    latestBlobKey: string
+    /// List of `.forage` file paths published in this version, relative
+    /// to the package root. Each name resolves to a blob under
+    /// `recipes/<slug>/<version>/<name>`.
+    fileNames: string[]
     sha256: string
     createdAt: string
     updatedAt: string
@@ -35,10 +42,12 @@ export interface RecipeMetadata {
     ownerLogin?: string  // M11 — undefined on legacy entries; treated as "admin"
 }
 
-// One entry in `recipe:<namespace>/<name>:versions`.
+// One entry in `recipe:<namespace>/<name>:versions`. `fileNames` is the
+// list of `.forage` file paths published in this version; resolves to
+// blob keys via `blobKeyForFile(slug, version, name)`.
 export interface VersionRecord {
     version: number
-    blobKey: string
+    fileNames: string[]
     publishedAt: string
     sha256: string
 }
@@ -47,7 +56,16 @@ export interface VersionRecord {
 // order. Re-written on every publish.
 export type SlugIndex = string[]
 
-// Request shape for POST /v1/recipes. The `slug` is `<namespace>/<name>`.
+// One .forage file in a publish payload (or detail response). `name`
+// is the path relative to the package root; `body` is the UTF-8 source.
+export interface PackageFile {
+    name: string
+    body: string
+}
+
+// Request shape for POST /v1/packages/:namespace/:name. `slug` is
+// `<namespace>/<name>`. A package is one or more `.forage` files; the
+// legacy single-recipe shape ships as a 1-file package.
 export interface PublishRequest {
     slug: string
     author?: string | null
@@ -55,19 +73,21 @@ export interface PublishRequest {
     summary: string
     tags?: string[]
     platform?: string | null
-    body: string
+    files: PackageFile[]
     fixtures?: string
     snapshot?: unknown
 }
 
-// Response shape for POST /v1/recipes.
+// Response shape for POST /v1/packages/:namespace/:name.
 export interface PublishResponse {
     slug: string
     version: number
     sha256: string
 }
 
-// Listing item — the same shape as RecipeMetadata sans `latestBlobKey`.
+// Listing item — flat metadata returned by `GET /v1/packages` and
+// reused by listing responses. Records the file *names* of the latest
+// version; full bodies come from `RecipeDetailResponse`.
 export interface ListingItem {
     slug: string
     author: string | null
@@ -76,6 +96,7 @@ export interface ListingItem {
     tags: string[]
     platform: string | null
     version: number
+    fileNames: string[]
     sha256: string
     createdAt: string
     updatedAt: string
@@ -86,7 +107,9 @@ export interface ListingResponse {
     nextCursor: string | null
 }
 
-// Recipe-detail response (GET /v1/recipes/:namespace/:name).
-export interface RecipeDetailResponse extends ListingItem {
-    body: string
+// Detail response (`GET /v1/packages/:namespace/:name`). One canonical
+// `files` field carries every `.forage` file's name *and* body — there
+// is no separate name-only manifest to deserialize against.
+export interface RecipeDetailResponse extends Omit<ListingItem, 'fileNames'> {
+    files: PackageFile[]
 }

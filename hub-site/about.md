@@ -1,29 +1,28 @@
 # About
 
-**Forage Hub** is a registry for [Forage](https://foragelang.com) recipes.
+**Forage Hub** is a registry for [Forage](https://foragelang.com) packages.
 
 Forage is a DSL for web scraping: a recipe describes *what* to fetch and *what*
 to extract, and the runtime handles the HTTP, pagination, browser automation,
-and type-directed extraction. Recipes are flat text files, replayable,
-diff-able, and tractable to share.
+and type-directed extraction. The unit of distribution is a **package** — a
+workspace's `.forage` files plus a `forage.toml` manifest. Single-file
+recipes ship as one-file packages.
 
 The hub lets you:
 
-- **Discover** recipes for sites and APIs other people have already mapped.
-- **Pull** them from your own recipes — `import alice/zen-leaf` and the
-  runtime fetches the body, caches it, and unions its declarations into
-  yours.
+- **Discover** packages other people have already mapped to a site or API.
+- **Depend** on them from your own workspace — add an entry to
+  `[deps]` in `forage.toml`, run `forage update`, and every recipe in
+  the workspace sees the package's shared declarations.
 - **Publish** your own with the CLI or Forage Studio.
 
-References are Docker-style: bare `name` resolves to the official `forage`
-namespace; `alice/name` is a personal namespace; `hub.example.com/team/name`
-or `localhost:5000/me/name` point to alternate registries.
+Slugs are `<namespace>/<name>`; the namespace is your GitHub login.
 
 This site (`hub.foragelang.com`) is a thin browser over the registry. The
 underlying data lives at `api.foragelang.com`:
 
-- `GET /v1/recipes` — list everything
-- `GET /v1/recipes/<namespace>/<name>` — fetch one
-- `GET /v1/recipes/<namespace>/<name>/versions` — version history
+- `GET /v1/packages` — list everything
+- `GET /v1/packages/<namespace>/<name>` — fetch one (metadata + every file body)
+- `GET /v1/packages/<namespace>/<name>/versions` — version history
 
 Source: [github.com/foragelang/forage](https://github.com/foragelang/forage).

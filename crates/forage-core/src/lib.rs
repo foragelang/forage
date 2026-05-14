@@ -11,11 +11,13 @@ pub mod parse;
 pub mod snapshot;
 pub mod source;
 pub mod validate;
+pub mod workspace;
 
-pub use ast::Recipe;
+pub use ast::{DeclarationsFile, Recipe, WorkspaceFile};
 pub use error::{ForageError, ForageResult};
 pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
-pub use parse::parse;
+pub use parse::{parse, parse_workspace_file};
 pub use snapshot::{DiagnosticReport, Record, Snapshot};
 pub use source::{LineMap, Position, Range};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
+pub use workspace::{TypeCatalog, Workspace, WorkspaceError, discover};

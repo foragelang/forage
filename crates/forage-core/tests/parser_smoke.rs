@@ -99,16 +99,16 @@ fn template_interpolation_renders_to_parts() {
 }
 
 #[test]
-fn import_directive_parses() {
+fn import_keyword_is_rejected() {
+    // `import` is no longer a keyword; deps live in `forage.toml`.
+    // The lexer treats it as an identifier now, which the parser
+    // refuses at the top level.
     let src = r#"
         import alice/zen-leaf
         recipe "uses-import"
         engine http
     "#;
-    let r = parse(src).expect("parse");
-    assert_eq!(r.imports.len(), 1);
-    assert_eq!(r.imports[0].author, "alice");
-    assert_eq!(r.imports[0].slug, "zen-leaf");
+    assert!(parse(src).is_err());
 }
 
 #[test]

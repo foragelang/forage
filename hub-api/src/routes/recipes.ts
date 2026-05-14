@@ -1,5 +1,6 @@
 import type {
     Env,
+    PackageFile,
     PublishRequest,
     PublishResponse,
     RecipeMetadata,
@@ -15,7 +16,7 @@ import {
     putRecipeVersions,
     getSlugIndex,
     ensureSlugInIndex,
-    blobKeyForBody,
+    blobKeyForFile,
     blobKeyForFixtures,
     blobKeyForSnapshot,
     blobKeyForMeta,
@@ -30,12 +31,13 @@ const SEGMENT_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}\/[a-z0-9][a-z0-9-]{1,63}$/
 const RECIPE_HEAD_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"/
 
-// Request body size limits (envelope JSON, not the raw recipe text).
-// Recipe source is bounded by `MAX_RECIPE_BODY` inside `validatePublish`;
-// fixtures + snapshot are larger but still capped here so a 50MB
-// publish never spins up a Worker.
+// Request body size limits (envelope JSON, not the raw .forage text).
+// Each `.forage` file in the payload is bounded by `MAX_FILE_BODY`
+// inside `validatePublish`; the overall envelope (sum of all files plus
+// fixtures plus snapshot plus JSON overhead) is capped by
+// `MAX_PUBLISH_PAYLOAD` so a 50MB publish never spins up a Worker.
 const MAX_PUBLISH_PAYLOAD = 16 * 1024 * 1024 // 16 MiB
-const MAX_RECIPE_BODY = 1 * 1024 * 1024 // 1 MiB
+const MAX_FILE_BODY = 1 * 1024 * 1024 // 1 MiB per file
 
 // --- Listing -------------------------------------------------------------
 
@@ -83,6 +85,7 @@ function metaToListing(meta: RecipeMetadata): ListingItem {
         tags: meta.tags,
         platform: meta.platform,
         version: meta.version,
+        fileNames: meta.fileNames,
         sha256: meta.sha256,
         createdAt: meta.createdAt,
         updatedAt: meta.updatedAt,
@@ -114,7 +117,7 @@ export async function getRecipe(
     if (meta.deleted) return jsonError(410, 'gone', `slug deleted: ${slug}`)
 
     let version = meta.version
-    let blobKey = meta.latestBlobKey
+    let fileNames = meta.fileNames
 
     if (versionParam) {
         const requested = parseInt(versionParam, 10)
@@ -126,15 +129,29 @@ export async function getRecipe(
             const v = versions.find((x) => x.version === requested)
             if (!v) return jsonError(404, 'not_found', `version ${requested} unknown`)
             version = v.version
-            blobKey = v.blobKey
+            fileNames = v.fileNames
         }
     }
 
-    const obj = await getBlob(env, blobKey)
-    if (!obj) return jsonError(500, 'blob_missing', 'recipe body missing from R2')
-    const body = await obj.text()
+    // Pull every .forage file for the requested version. Returning
+    // bodies inline is fine — packages are bounded by `MAX_FILE_BODY`
+    // per file and a small ceiling on file count, so the response stays
+    // a few MB at most.
+    const files: PackageFile[] = []
+    for (const name of fileNames) {
+        const obj = await getBlob(env, blobKeyForFile(slug, version, name))
+        if (!obj) {
+            return jsonError(500, 'blob_missing', `package file missing from R2: ${name}`)
+        }
+        files.push({ name, body: await obj.text() })
+    }
 
-    const detail: RecipeDetailResponse = { ...metaToListing(meta), version, body }
+    const { fileNames: _drop, ...listing } = metaToListing(meta)
+    const detail: RecipeDetailResponse = {
+        ...listing,
+        version,
+        files,
+    }
     return json(detail)
 }
 
@@ -152,6 +169,7 @@ export async function getRecipeVersionsHandler(
     return json(
         versions.map((v) => ({
             version: v.version,
+            fileNames: v.fileNames,
             publishedAt: v.publishedAt,
             sha256: v.sha256,
         })),
@@ -230,14 +248,6 @@ export async function publishRecipe(
         return jsonError(400, 'bad_json', 'request body is not valid JSON')
     }
 
-    if (payload.body && payload.body.length > MAX_RECIPE_BODY) {
-        return jsonError(
-            413,
-            'recipe_too_large',
-            `recipe source exceeds limit (${MAX_RECIPE_BODY} bytes)`,
-        )
-    }
-
     const validationError = validatePublish(payload)
     if (validationError) return jsonError(400, 'invalid', validationError)
 
@@ -246,16 +256,29 @@ export async function publishRecipe(
         return jsonError(
             403,
             'forbidden',
-            `recipe ${payload.slug} is owned by ${existing.ownerLogin ?? 'admin'}; sign in as that user to publish a new version`
+            `package ${payload.slug} is owned by ${existing.ownerLogin ?? 'admin'}; sign in as that user to publish a new version`
         )
     }
     const now = new Date().toISOString()
     const version = (existing?.version ?? 0) + 1
-    const sha256 = await sha256Hex(payload.body)
-    const blobKey = blobKeyForBody(payload.slug, version)
+    const fileNames = payload.files.map((f) => f.name)
+    // SHA over the concatenated package contents, in declared order.
+    // Stable wire-side hash so consumers can verify package integrity
+    // independent of R2's internal etags.
+    const concat = payload.files.map((f) => `${f.name}\n${f.body}\n`).join('')
+    const sha256 = await sha256Hex(concat)
 
-    // Write the body first; on failure we won't have updated metadata yet.
-    await putBlob(env, blobKey, payload.body, 'text/plain; charset=utf-8')
+    // Write each .forage file. On failure we won't have updated
+    // metadata yet, so a partial publish is a no-op from the catalog's
+    // point of view (orphan blobs only).
+    for (const f of payload.files) {
+        await putBlob(
+            env,
+            blobKeyForFile(payload.slug, version, f.name),
+            f.body,
+            'text/plain; charset=utf-8',
+        )
+    }
 
     if (payload.fixtures && payload.fixtures.length > 0) {
         await putBlob(
@@ -277,7 +300,7 @@ export async function publishRecipe(
     // M11: first-time publish via OAuth establishes ownership; subsequent
     // versions retain the existing owner. Admin publishes (legacy
     // HUB_PUBLISH_TOKEN) stamp `ownerLogin: "admin"` unless overriding
-    // an existing user-owned recipe (which the ownership check above
+    // an existing user-owned package (which the ownership check above
     // already permits for admin).
     const ownerLogin: string = existing?.ownerLogin
         ?? (caller.kind === 'user' ? caller.login : 'admin')
@@ -290,7 +313,7 @@ export async function publishRecipe(
         tags: payload.tags ?? [],
         platform: payload.platform ?? existing?.platform ?? null,
         version,
-        latestBlobKey: blobKey,
+        fileNames,
         sha256,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
@@ -306,7 +329,7 @@ export async function publishRecipe(
     )
 
     const versions = await getRecipeVersions(env, payload.slug)
-    versions.push({ version, blobKey, publishedAt: now, sha256 })
+    versions.push({ version, fileNames, publishedAt: now, sha256 })
     await putRecipeVersions(env, payload.slug, versions)
     await putRecipeMetadata(env, meta)
     await ensureSlugInIndex(env, payload.slug)
@@ -314,6 +337,15 @@ export async function publishRecipe(
     const response: PublishResponse = { slug: payload.slug, version, sha256 }
     return json(response, 201)
 }
+
+// `name` must be a `.forage` path made of one or more `/`-joined
+// segments. Each segment begins with `[a-z0-9]` and is built from
+// `[a-z0-9._-]+`; segments are joined by single `/` separators (no
+// `//`, no `/./`, no traversal). Total length is bounded separately
+// (`name.length <= 128`) so the regex doesn't need a `{0,N}` ceiling.
+const FILE_NAME_RE = /^[a-z0-9][a-z0-9._\-]*(?:\/[a-z0-9][a-z0-9._\-]*)*\.forage$/i
+const MAX_FILE_NAME_LEN = 128
+const MAX_FILES_PER_PACKAGE = 64
 
 function validatePublish(payload: PublishRequest): string | null {
     if (!payload || typeof payload !== 'object') return 'body must be an object'
@@ -326,11 +358,34 @@ function validatePublish(payload: PublishRequest): string | null {
     if (typeof payload.summary !== 'string') {
         return 'summary is required'
     }
-    if (typeof payload.body !== 'string' || !payload.body.trim()) {
-        return 'body is required'
+    if (!Array.isArray(payload.files) || payload.files.length === 0) {
+        return 'files must be a non-empty array of { name, body }'
     }
-    if (!RECIPE_HEAD_RE.test(payload.body)) {
-        return 'body does not look like a Forage recipe (expected `recipe "..."`)'
+    if (payload.files.length > MAX_FILES_PER_PACKAGE) {
+        return `packages may contain at most ${MAX_FILES_PER_PACKAGE} files`
+    }
+    let sawRecipe = false
+    const seen = new Set<string>()
+    for (const f of payload.files) {
+        if (!f || typeof f !== 'object') return 'each file must be an object'
+        if (
+            typeof f.name !== 'string'
+            || f.name.length > MAX_FILE_NAME_LEN
+            || !FILE_NAME_RE.test(f.name)
+            || f.name.includes('..')
+        ) {
+            return `invalid file name: ${JSON.stringify(f.name)} (expected a .forage path)`
+        }
+        if (seen.has(f.name)) return `duplicate file name in package: ${f.name}`
+        seen.add(f.name)
+        if (typeof f.body !== 'string') return `file ${f.name}: body must be a string`
+        if (f.body.length > MAX_FILE_BODY) {
+            return `file ${f.name}: source exceeds limit (${MAX_FILE_BODY} bytes)`
+        }
+        if (RECIPE_HEAD_RE.test(f.body)) sawRecipe = true
+    }
+    if (!sawRecipe) {
+        return 'package must contain at least one recipe file (starting with `recipe "..."`)'
     }
     if (payload.tags !== undefined && !Array.isArray(payload.tags)) {
         return 'tags must be an array if provided'

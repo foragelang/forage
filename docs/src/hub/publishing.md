@@ -1,19 +1,22 @@
 # Publishing
 
-Three paths to push a recipe to `hub.foragelang.com`:
+The unit of publication is a **package**: a workspace's
+`forage.toml` plus every `.forage` file (recipes and shared
+declarations) under it. Single-file recipes ship as one-file packages.
+Three paths to push to `hub.foragelang.com`:
 
 ## CLI
 
 ```sh
-forage auth login                                       # one-time
-forage publish recipes/hacker-news                      # dry-run
-forage publish recipes/hacker-news --publish            # actually POST
+forage auth login                       # one-time
+forage publish recipes/hacker-news      # dry-run
+forage publish recipes/hacker-news --publish  # actually POST
 ```
 
-The dry-run prints what would be sent (size, hub URL, auth status).
-The live publish reads the source + optional fixtures from the
-recipe directory, hashes the body, POSTs to
-`https://api.foragelang.com/v1/recipes/<slug>`.
+The dry-run prints what would be sent (file count, total size, hub
+URL, auth status). The live publish reads every `.forage` file in the
+workspace, hashes the concatenation, and POSTs to
+`https://api.foragelang.com/v1/packages/<slug>`.
 
 Other flags:
 
@@ -23,7 +26,7 @@ Other flags:
 
 ## Forage Studio
 
-Open the recipe, switch to the **Publish** tab:
+Open a recipe in the workspace, click **Publish**:
 
 1. **Hub URL** is `https://api.foragelang.com` by default; edit for
    self-hosted hubs.
@@ -40,7 +43,7 @@ Open the recipe, switch to the **Publish** tab:
 1. Click **Sign in with GitHub** in the Publish panel.
 2. Fill in metadata (display name, summary, tags, license).
 3. **Validate** — runs `parse_and_validate` against `forage-wasm` locally.
-4. **Publish** — POST against `/v1/recipes/<slug>`.
+4. **Publish** — POST against `/v1/packages/<slug>`.
 
 The web IDE uses the httpOnly cookie set by the OAuth callback; you
 don't see the JWT.

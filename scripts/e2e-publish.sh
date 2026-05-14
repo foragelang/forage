@@ -25,7 +25,15 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-cat > "$TMP/recipe.forage" <<'EOF'
+# Workspace manifest. Publishes need `name = "<author>/<slug>"`.
+cat > "$TMP/forage.toml" <<'EOF'
+name = "smoke/smoke-test"
+
+[deps]
+EOF
+
+mkdir -p "$TMP/smoke-test"
+cat > "$TMP/smoke-test/recipe.forage" <<'EOF'
 recipe "smoke-test"
 engine http
 
@@ -50,7 +58,7 @@ if [[ -n "${FORAGE_HUB_TOKEN:-}" && -n "${FORAGE_HUB_URL:-}" ]]; then
     echo "==> forage publish --publish (live POST)"
     "$FORAGE" publish "$TMP" --publish --hub "$FORAGE_HUB_URL"
     echo "==> verifying round-trip via GET"
-    curl -fsSL "$FORAGE_HUB_URL/v1/recipes/smoke-test" >/dev/null
+    curl -fsSL "$FORAGE_HUB_URL/v1/packages/smoke/smoke-test" >/dev/null
     echo "    OK"
 else
     echo "==> skipping live POST (FORAGE_HUB_TOKEN + FORAGE_HUB_URL not set)"

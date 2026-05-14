@@ -37,7 +37,7 @@ import {{ $params.slug }}
 
 ## Raw
 
-- [Source]({{ $params.apiBase }}/v1/recipes/{{ $params.slug }})
-- [Versions]({{ $params.apiBase }}/v1/recipes/{{ $params.slug }}/versions)
-- [Fixtures]({{ $params.apiBase }}/v1/recipes/{{ $params.slug }}/fixtures) (if present)
-- [Snapshot]({{ $params.apiBase }}/v1/recipes/{{ $params.slug }}/snapshot) (if present)
+- [Source]({{ $params.apiBase }}/v1/packages/{{ $params.slug }})
+- [Versions]({{ $params.apiBase }}/v1/packages/{{ $params.slug }}/versions)
+- [Fixtures]({{ $params.apiBase }}/v1/packages/{{ $params.slug }}/fixtures) (if present)
+- [Snapshot]({{ $params.apiBase }}/v1/packages/{{ $params.slug }}/snapshot) (if present)

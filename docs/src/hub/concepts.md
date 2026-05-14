@@ -61,10 +61,10 @@ their types/enums/inputs into the importing recipe's catalog. See
 
 ## Versions
 
-`/v1/recipes/<slug>/versions` lists every published version with
+`/v1/packages/<slug>/versions` lists every published version with
 timestamps. `?version=N` on a `GET` pins to a specific one. The hub
-doesn't garbage-collect old versions — recipes that import an older
-version of another recipe keep working.
+doesn't garbage-collect old versions — workspaces that depend on an
+older version of a package keep working.
 
 ## Cost
 

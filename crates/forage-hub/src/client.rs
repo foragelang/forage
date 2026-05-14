@@ -1,44 +1,49 @@
 //! `HubClient` — thin wrapper over the api.foragelang.com REST surface.
+//!
+//! The wire shape is package-oriented: publish takes a manifest plus a
+//! list of `.forage` files; get returns the same. Single-file recipes
+//! are 1-file packages. The cache layout mirrors the wire format
+//! exactly: `<cache>/<author>/<slug>/<version>/<name>.forage`. Names may
+//! include nested directories (`<dir>/recipe.forage`); the cache
+//! mirrors that layout verbatim after sanitising against directory
+//! traversal.
+
+use std::path::{Path, PathBuf};
 
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HubError, HubResult};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecipeMeta {
-    pub slug: String,
-    pub version: u32,
-    #[serde(default)]
-    pub owner_login: Option<String>,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub license: Option<String>,
-    #[serde(default)]
-    pub sha256: Option<String>,
-    #[serde(default)]
-    pub published_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecipeBlob {
-    pub slug: String,
-    pub version: u32,
-    pub source: String,
-    #[serde(default)]
-    pub metadata: Option<RecipeMeta>,
-}
+use crate::types::{Package, PackageFile, PackageMeta};
 
 #[derive(Debug, Clone)]
 pub struct HubClient {
     base_url: String,
     bearer_token: Option<String>,
     client: Client,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublishPayload<'a> {
+    slug: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license: Option<&'a str>,
+    files: Vec<PackageFile>,
+}
+
+/// Response from `POST /v1/packages/<slug>`.
+#[derive(Debug, Clone, Deserialize)]
+struct PublishResponse {
+    slug: String,
+    version: u32,
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 impl HubClient {
@@ -55,46 +60,57 @@ impl HubClient {
         self
     }
 
-    pub async fn list(&self, query: Option<&str>) -> HubResult<Vec<RecipeMeta>> {
-        let mut url = format!("{}/v1/recipes", self.base_url);
+    /// List published packages. Returns minimal metadata records.
+    pub async fn list(&self, query: Option<&str>) -> HubResult<Vec<PackageMeta>> {
+        let mut url = format!("{}/v1/packages", self.base_url);
         if let Some(q) = query {
             url.push_str(&format!("?q={}", urlencode(q)));
         }
         let resp = self.send(Method::GET, &url, None).await?;
-        let recipes: Vec<RecipeMeta> = serde_json::from_str(&resp)?;
+        let recipes: Vec<PackageMeta> = serde_json::from_str(&resp)?;
         Ok(recipes)
     }
 
-    pub async fn get(&self, slug: &str, version: Option<u32>) -> HubResult<RecipeBlob> {
-        let mut url = format!("{}/v1/recipes/{}", self.base_url, slug);
+    /// Fetch one package's full file list.
+    pub async fn get_package(&self, slug: &str, version: Option<u32>) -> HubResult<Package> {
+        let mut url = format!("{}/v1/packages/{}", self.base_url, slug);
         if let Some(v) = version {
             url.push_str(&format!("?version={v}"));
         }
         let resp = self.send(Method::GET, &url, None).await?;
-        let blob: RecipeBlob = serde_json::from_str(&resp)?;
-        Ok(blob)
+        let pkg: Package = serde_json::from_str(&resp)?;
+        Ok(pkg)
     }
 
-    pub async fn publish(
+    /// Push a package to the hub.
+    pub async fn publish_package(
         &self,
         slug: &str,
-        source: &str,
-        metadata: &RecipeMeta,
-    ) -> HubResult<RecipeMeta> {
-        let url = format!("{}/v1/recipes/{}", self.base_url, slug);
-        let body = serde_json::json!({
-            "source": source,
-            "metadata": metadata,
-        });
-        let resp = self
-            .send(Method::POST, &url, Some(serde_json::to_string(&body)?))
-            .await?;
-        let meta: RecipeMeta = serde_json::from_str(&resp)?;
-        Ok(meta)
+        files: Vec<PackageFile>,
+        metadata: &PackageMeta,
+    ) -> HubResult<PackageMeta> {
+        let url = format!("{}/v1/packages/{}", self.base_url, slug);
+        let payload = PublishPayload {
+            slug,
+            display_name: metadata.display_name.as_deref(),
+            summary: metadata.summary.as_deref(),
+            tags: metadata.tags.clone(),
+            license: metadata.license.as_deref(),
+            files,
+        };
+        let body = serde_json::to_string(&payload)?;
+        let resp = self.send(Method::POST, &url, Some(body)).await?;
+        let r: PublishResponse = serde_json::from_str(&resp)?;
+        Ok(PackageMeta {
+            slug: r.slug,
+            version: r.version,
+            sha256: r.sha256,
+            ..metadata.clone()
+        })
     }
 
     pub async fn delete(&self, slug: &str, version: Option<u32>) -> HubResult<()> {
-        let mut url = format!("{}/v1/recipes/{}", self.base_url, slug);
+        let mut url = format!("{}/v1/packages/{}", self.base_url, slug);
         if let Some(v) = version {
             url.push_str(&format!("?version={v}"));
         }
@@ -154,6 +170,172 @@ impl HubClient {
         }
         Ok(text)
     }
+}
+
+/// High-level: fetch a package from the hub and write its files into
+/// the local cache at `<cache>/<author>/<slug>/<version>/`. Returns the
+/// resulting directory path so callers can pass it through to the
+/// workspace catalog scan, along with the package digest (used to
+/// populate `forage.lock`).
+pub async fn fetch_package(
+    client: &HubClient,
+    slug: &str,
+    version: u32,
+) -> std::io::Result<FetchedPackage> {
+    let pkg = client.get_package(slug, Some(version)).await.map_err(|e| {
+        std::io::Error::other(format!("hub fetch failed for {slug}@{version}: {e}"))
+    })?;
+    let cache_dir = package_cache_dir(slug, version)
+        .ok_or_else(|| std::io::Error::other(format!("malformed slug: {slug}")))?;
+    std::fs::create_dir_all(&cache_dir)?;
+    let canonical_root = cache_dir.canonicalize()?;
+    for f in &pkg.files {
+        let target = sanitize_package_member(&canonical_root, &f.name)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, &f.body)?;
+    }
+    Ok(FetchedPackage {
+        dir: cache_dir,
+        sha256: pkg.sha256,
+    })
+}
+
+/// Result of a successful `fetch_package`: the on-disk cache directory
+/// plus the server-supplied package digest (when present). The digest
+/// is what `forage update` records in `forage.lock`.
+#[derive(Debug, Clone)]
+pub struct FetchedPackage {
+    pub dir: PathBuf,
+    pub sha256: Option<String>,
+}
+
+/// Validate a package-supplied file name and join it onto the cache
+/// directory. Rejects absolute paths, traversal segments, double slashes
+/// (the wire format expects single-segment separators), and any path
+/// that, once resolved, would escape the package cache root.
+fn sanitize_package_member(canonical_root: &Path, name: &str) -> std::io::Result<PathBuf> {
+    if name.is_empty()
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains('\\')
+        || name.contains("//")
+        || name.contains("/./")
+        || name.starts_with("./")
+        || name.ends_with("/.")
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid file name in package: {name}"),
+        ));
+    }
+    for segment in name.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid file name in package: {name}"),
+            ));
+        }
+    }
+    let target = canonical_root.join(name);
+    // The file does not exist yet, so we canonicalize the parent path
+    // and re-attach the leaf to confirm the resolved location stays
+    // inside the cache root. This catches symlinks under the cache
+    // pointing outside; an unconditional canonicalize would fail
+    // because the leaf doesn't exist on disk.
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid file name in package: {name}"),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let canonical_parent = parent.canonicalize()?;
+    if !canonical_parent.starts_with(canonical_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("package member {name} escapes the cache root"),
+        ));
+    }
+    let leaf = target.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid file name in package: {name}"),
+        )
+    })?;
+    Ok(canonical_parent.join(leaf))
+}
+
+/// High-level: publish a workspace as a package. Caller hands in the
+/// manifest plus the (name, body) pairs for every `.forage` file. The
+/// metadata is filled in with the manifest's display fields when
+/// available; the server stamps version + sha256.
+pub async fn publish_package(
+    client: &HubClient,
+    slug: &str,
+    files: Vec<PackageFile>,
+    display_name: Option<&str>,
+    summary: Option<&str>,
+    tags: Vec<String>,
+    license: Option<&str>,
+) -> std::io::Result<PackageMeta> {
+    let meta = PackageMeta {
+        slug: slug.into(),
+        version: 0,
+        owner_login: None,
+        display_name: display_name.map(str::to_string),
+        summary: summary.map(str::to_string),
+        tags,
+        license: license.map(str::to_string),
+        sha256: None,
+        published_at: None,
+    };
+    client
+        .publish_package(slug, files, &meta)
+        .await
+        .map_err(|e| std::io::Error::other(format!("hub publish failed for {slug}: {e}")))
+}
+
+/// On-disk location of a cached package, regardless of whether it's
+/// been fetched yet. Returns `None` when the slug isn't a
+/// `<author>/<name>` composite (single-segment slugs aren't routable
+/// through the cache hierarchy).
+pub fn package_cache_dir(slug: &str, version: u32) -> Option<PathBuf> {
+    let (author, name) = slug.split_once('/')?;
+    Some(
+        hub_cache_root()
+            .join(author)
+            .join(name)
+            .join(version.to_string()),
+    )
+}
+
+/// Same convention as `forage_core::workspace::hub_cache_root`. Kept
+/// here so hub-only crates don't need to depend on forage-core.
+pub fn hub_cache_root() -> PathBuf {
+    if let Ok(p) = std::env::var("FORAGE_HUB_CACHE") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join("Library").join("Forage").join("Cache").join("hub");
+        }
+    }
+    if let Some(data) = dirs::data_dir() {
+        return data.join("Forage").join("Cache").join("hub");
+    }
+    PathBuf::from(".forage-cache").join("hub")
+}
+
+/// Look up a package in the local cache; returns the directory if
+/// present. Used by the workspace loader to fold cached deps into the
+/// type catalog without hitting the network.
+pub fn resolve_dep(slug: &str, version: u32) -> Option<PathBuf> {
+    let dir = package_cache_dir(slug, version)?;
+    if dir.is_dir() { Some(dir) } else { None }
 }
 
 fn urlencode(s: &str) -> String {

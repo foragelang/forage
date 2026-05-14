@@ -10,6 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use forage_core::ast::*;
+use forage_core::workspace::TypeCatalog;
 use forage_core::{parse, validate};
 use serde::Deserialize;
 
@@ -56,8 +57,6 @@ struct Summary {
     step_names: Vec<String>,
     #[serde(rename = "expectationCount")]
     expectation_count: usize,
-    #[serde(rename = "importCount")]
-    import_count: usize,
 }
 
 #[derive(Deserialize)]
@@ -125,9 +124,13 @@ fn shared_recipes_match_expected() {
         if let Some(s) = &r.summary {
             check_summary(&r.file, &recipe, s, &mut failures);
         }
+        // Production goes through `TypeCatalog`, not direct lookup on
+        // the recipe. Mirror that here so the test exercises the same
+        // path as the runtime.
+        let catalog = TypeCatalog::from_recipe(&recipe);
         if let Some(types) = &r.types {
             for te in types {
-                let Some(ty) = recipe.ty(&te.name) else {
+                let Some(ty) = catalog.ty(&te.name) else {
                     failures.push(format!("{}: missing type {}", r.file, te.name));
                     continue;
                 };
@@ -150,7 +153,7 @@ fn shared_recipes_match_expected() {
         }
         if let Some(enums) = &r.enums {
             for ee in enums {
-                let Some(en) = recipe.recipe_enum(&ee.name) else {
+                let Some(en) = catalog.recipe_enum(&ee.name) else {
                     failures.push(format!("{}: missing enum {}", r.file, ee.name));
                     continue;
                 };
@@ -172,7 +175,7 @@ fn shared_recipes_match_expected() {
         }
 
         if let Some(v) = &r.validation {
-            let rep = validate(&recipe);
+            let rep = validate(&recipe, &catalog);
             let errs = rep.errors().count();
             if let Some(want) = v.error_count {
                 if errs != want {
@@ -262,14 +265,6 @@ fn check_summary(file: &str, recipe: &Recipe, expected: &Summary, failures: &mut
             file,
             recipe.expectations.len(),
             expected.expectation_count
-        ));
-    }
-    if recipe.imports.len() != expected.import_count {
-        failures.push(format!(
-            "{}: importCount {} != {}",
-            file,
-            recipe.imports.len(),
-            expected.import_count
         ));
     }
 }

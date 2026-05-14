@@ -9,6 +9,33 @@ use crate::ast::http::HTTPStep;
 use crate::ast::span::Span;
 use crate::ast::types::{InputDecl, RecipeEnum, RecipeType};
 
+/// One parsed `.forage` file. Either a full `Recipe` (file begins with
+/// `recipe "<name>"`) or a header-less `DeclarationsFile` (a sharable
+/// type/enum bundle that workspaces fold into the catalog). These two
+/// shapes are structurally disjoint: a `Recipe` carries the entire
+/// body (steps, for-loops, emits, auth/browser config, expectations),
+/// while `DeclarationsFile` carries only types and enums. Boxing the
+/// heavyweight variant keeps the discriminator compact without
+/// obscuring that asymmetry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkspaceFile {
+    Recipe(Box<Recipe>),
+    Declarations(DeclarationsFile),
+}
+
+/// A header-less `.forage` file: only `type` and `enum` declarations.
+/// Inside a workspace these contribute names to the shared
+/// `TypeCatalog`; outside one they're meaningless and the loader will
+/// reject the workspace if it discovers them in lonely-recipe mode.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DeclarationsFile {
+    #[serde(default)]
+    pub types: Vec<RecipeType>,
+    #[serde(default)]
+    pub enums: Vec<RecipeEnum>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
     pub name: String,
@@ -27,21 +54,12 @@ pub struct Recipe {
     pub browser: Option<BrowserConfig>,
     #[serde(default)]
     pub expectations: Vec<Expectation>,
-    /// Top-level `import <ref>` directives in source order.
-    #[serde(default)]
-    pub imports: Vec<HubRecipeRef>,
     /// Top-level `secret <name>` declarations, in source order.
     #[serde(default)]
     pub secrets: Vec<String>,
 }
 
 impl Recipe {
-    pub fn ty(&self, name: &str) -> Option<&RecipeType> {
-        self.types.iter().find(|t| t.name == name)
-    }
-    pub fn recipe_enum(&self, name: &str) -> Option<&RecipeEnum> {
-        self.enums.iter().find(|e| e.name == name)
-    }
     pub fn input(&self, name: &str) -> Option<&InputDecl> {
         self.inputs.iter().find(|i| i.name == name)
     }
@@ -111,14 +129,4 @@ pub enum ComparisonOp {
     Eq,
     #[serde(rename = "!=")]
     Ne,
-}
-
-/// Unresolved pointer to a recipe on the hub — `hub://author/slug` or
-/// `hub://author/slug@v3`. `forage-hub::importer` resolves these.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HubRecipeRef {
-    pub author: String,
-    pub slug: String,
-    #[serde(default)]
-    pub version: Option<u32>,
 }

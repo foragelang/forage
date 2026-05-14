@@ -14,8 +14,7 @@
                 "stepNames": ["list"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 0
+                "expectationCount": 0
             },
             "types": [
                 { "name": "Item", "fieldNames": ["id", "name"], "requiredFieldCount": 2 }
@@ -35,8 +34,7 @@
                 "stepNames": ["pwt", "ue", "cur"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 0
+                "expectationCount": 0
             },
             "paginationModes": ["pageWithTotal", "untilEmpty", "cursor"],
             "validation": { "errorCount": 0, "warningCount": 0 }
@@ -54,8 +52,7 @@
                 "stepNames": ["s"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 0
+                "expectationCount": 0
             },
             "enums": [
                 { "name": "Mode", "variants": ["A", "B", "C"] }
@@ -75,8 +72,7 @@
                 "stepNames": ["products"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 1,
-                "importCount": 0
+                "expectationCount": 1
             },
             "types": [
                 {
@@ -100,8 +96,7 @@
                 "stepNames": ["s"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 0
+                "expectationCount": 0
             },
             "validation": {
                 "errorCountMin": 3,
@@ -111,28 +106,6 @@
                     "unknown type 'Widget'"
                 ]
             }
-        },
-        {
-            "file": "06-imports.forage",
-            "parses": true,
-            "summary": {
-                "name": "imports-demo",
-                "engineKind": "http",
-                "typeCount": 1,
-                "enumCount": 0,
-                "inputCount": 0,
-                "bodyStatementCount": 2,
-                "stepNames": ["s"],
-                "topLevelEmits": 0,
-                "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 2
-            },
-            "imports": [
-                { "raw": "alice/awesome", "registry": null, "namespace": "alice", "name": "awesome", "version": 2 },
-                { "raw": "demo", "registry": null, "namespace": null, "name": "demo", "version": null }
-            ],
-            "validation": { "errorCount": 0, "warningCount": 0 }
         },
         {
             "file": "07-auth-session.forage",
@@ -147,8 +120,7 @@
                 "stepNames": ["items"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 0,
-                "importCount": 0
+                "expectationCount": 0
             },
             "types": [
                 { "name": "Item", "fieldNames": ["id", "name"], "requiredFieldCount": 2 }
@@ -170,8 +142,7 @@
                 "stepNames": ["fetch"],
                 "topLevelEmits": 0,
                 "forLoopCount": 1,
-                "expectationCount": 1,
-                "importCount": 0
+                "expectationCount": 1
             },
             "types": [
                 { "name": "Listing", "fieldNames": ["title", "url", "host"], "requiredFieldCount": 1 }

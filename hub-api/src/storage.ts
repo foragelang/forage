@@ -83,10 +83,14 @@ export async function ensureSlugInIndex(
     await putSlugIndex(env, slugs)
 }
 
-// --- R2: recipe blobs -----------------------------------------------------
+// --- R2: package blobs ----------------------------------------------------
 
-export function blobKeyForBody(slug: string, version: number): string {
-    return `${BLOB_PREFIX(slug, version)}/recipe.forage`
+/// On-disk key for one `.forage` file inside a published package. `name`
+/// is the file's path relative to the package root — `recipe.forage`
+/// for top-level recipes, `cannabis.forage` for shared declarations,
+/// etc.
+export function blobKeyForFile(slug: string, version: number, name: string): string {
+    return `${BLOB_PREFIX(slug, version)}/${name}`
 }
 
 export function blobKeyForFixtures(slug: string, version: number): string {

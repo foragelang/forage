@@ -134,7 +134,7 @@ The **Publish** tab carries the form for pushing a recipe to the hub:
 M3 ships the publish flow in stub mode. Studio prints "would POST
 to …" with the full payload and the API key (redacted), but doesn't
 hit the network. **M4 wires this live** — the same code path will then
-POST to `$hubURL/v1/recipes` with `Authorization: Bearer <key>`.
+POST to `$hubURL/v1/packages` with `Authorization: Bearer <key>`.
 :::
 
 ## Preferences

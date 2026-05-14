@@ -33,11 +33,32 @@ pub enum ParseError {
     },
 }
 
-/// Top-level entry: lex + parse a complete recipe.
-pub fn parse(source: &str) -> Result<Recipe, ParseError> {
+/// Top-level entry: lex + parse a `.forage` file. The shape depends on
+/// the first significant token:
+///
+/// - `recipe` → returns `WorkspaceFile::Recipe(Recipe)`.
+/// - `type` / `enum` (or empty file) → returns
+///   `WorkspaceFile::Declarations(DeclarationsFile)`. Any other top-level
+///   construct in a header-less file is a parse error.
+pub fn parse_workspace_file(source: &str) -> Result<WorkspaceFile, ParseError> {
     let toks = lex(source)?;
     let mut p = Parser::new(toks, source.len());
-    p.parse_recipe()
+    p.parse_workspace_file()
+}
+
+/// Lex + parse a recipe. Convenience for the many callers that operate
+/// only on recipe files (engines, CLI run, validator tests). Header-less
+/// declarations files are rejected with a parse error so the mismatch
+/// surfaces at the source instead of corrupting downstream state.
+pub fn parse(source: &str) -> Result<Recipe, ParseError> {
+    match parse_workspace_file(source)? {
+        WorkspaceFile::Recipe(r) => Ok(*r),
+        WorkspaceFile::Declarations(_) => Err(ParseError::Generic {
+            span: 0..source.len(),
+            message: "expected a recipe header ('recipe \"<name>\"') but found a header-less declarations file"
+                .into(),
+        }),
+    }
 }
 
 struct Parser {
@@ -190,7 +211,51 @@ impl Parser {
 
     // --- grammar -----------------------------------------------------------
 
-    /// recipe := imports? 'recipe' STRING 'engine' kind decl*
+    /// workspace_file := recipe | declarations_file
+    ///
+    /// If the first significant token is `recipe`, parse a full Recipe.
+    /// Otherwise parse a header-less DeclarationsFile (only `type` and
+    /// `enum` declarations).
+    fn parse_workspace_file(&mut self) -> Result<WorkspaceFile, ParseError> {
+        match self.peek() {
+            Some(Token::Keyword(k)) if k == "recipe" => {
+                Ok(WorkspaceFile::Recipe(Box::new(self.parse_recipe()?)))
+            }
+            _ => Ok(WorkspaceFile::Declarations(self.parse_declarations_file()?)),
+        }
+    }
+
+    /// declarations_file := (type_decl | enum_decl)*
+    ///
+    /// Anything else at top level is a parse error — the file's purpose
+    /// is to share type names with sibling recipes in a workspace.
+    fn parse_declarations_file(&mut self) -> Result<DeclarationsFile, ParseError> {
+        let mut types = Vec::new();
+        let mut enums = Vec::new();
+        while self.peek().is_some() {
+            match self.peek().cloned() {
+                Some(Token::Keyword(k)) => match k.as_str() {
+                    "type" => types.push(self.parse_type_decl()?),
+                    "enum" => enums.push(self.parse_enum_decl()?),
+                    other => {
+                        return Err(self.generic(&format!(
+                            "declarations file may only contain `type` and `enum` declarations; found '{other}'"
+                        )));
+                    }
+                },
+                Some(other) => {
+                    return Err(self.generic(&format!(
+                        "declarations file may only contain `type` and `enum` declarations; found {}",
+                        other.describe()
+                    )));
+                }
+                None => break,
+            }
+        }
+        Ok(DeclarationsFile { types, enums })
+    }
+
+    /// recipe := 'recipe' STRING 'engine' kind decl*
     ///
     /// The recipe header and body live flat at the top level — the file IS
     /// the recipe, so there is no surrounding `{ }` block. The first two
@@ -198,12 +263,6 @@ impl Parser {
     /// subsequent top-level form (type / enum / input / secret / auth /
     /// browser / step / for / emit / expect) belongs to this recipe.
     fn parse_recipe(&mut self) -> Result<Recipe, ParseError> {
-        let mut imports = Vec::new();
-        while self.eat_keyword("import") {
-            let r = self.parse_ref()?;
-            imports.push(r);
-        }
-
         self.expect_keyword("recipe")?;
         let name = self.expect_string()?;
 
@@ -274,7 +333,6 @@ impl Parser {
             body,
             browser,
             expectations,
-            imports,
             secrets,
         })
     }
@@ -291,44 +349,6 @@ impl Parser {
             }
             _ => Err(self.unexpected("'http' or 'browser'")),
         }
-    }
-
-    fn parse_ref(&mut self) -> Result<HubRecipeRef, ParseError> {
-        let raw = match self.peek().cloned() {
-            Some(Token::Ref(s)) => {
-                self.bump();
-                s
-            }
-            _ => return Err(self.unexpected("recipe reference")),
-        };
-        // Parse `author/slug` or `slug` or `author/slug@v3` or
-        // `author/slug v3` (space-separated version syntax).
-        let (refname, mut version) = if let Some((before, after)) = raw.split_once('@') {
-            let v: u32 = after.trim_start_matches('v').parse().unwrap_or(0);
-            (before.to_string(), Some(v))
-        } else {
-            (raw, None)
-        };
-        // Optional `v<N>` ident immediately following the ref.
-        if version.is_none() {
-            if let Some(Token::Ident(s)) = self.peek().cloned() {
-                if let Some(stripped) = s.strip_prefix('v') {
-                    if let Ok(n) = stripped.parse::<u32>() {
-                        self.bump();
-                        version = Some(n);
-                    }
-                }
-            }
-        }
-        let (author, slug) = match refname.split_once('/') {
-            Some((a, b)) => (a.to_string(), b.to_string()),
-            None => (String::new(), refname),
-        };
-        Ok(HubRecipeRef {
-            author,
-            slug,
-            version,
-        })
     }
 
     // --- type / enum / input ----------------------------------------------

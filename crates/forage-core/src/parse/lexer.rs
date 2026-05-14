@@ -34,8 +34,6 @@ struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
     out: Vec<(Token, Span)>,
-    /// After `import`, the next non-whitespace blob becomes a `Ref` token.
-    pending_ref_scan: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -45,7 +43,6 @@ impl<'a> Lexer<'a> {
             bytes: source.as_bytes(),
             pos: 0,
             out: Vec::new(),
-            pending_ref_scan: false,
         }
     }
 
@@ -54,12 +51,6 @@ impl<'a> Lexer<'a> {
             self.skip_ws_and_comments();
             if self.pos >= self.bytes.len() {
                 break;
-            }
-
-            if self.pending_ref_scan {
-                self.pending_ref_scan = false;
-                self.scan_ref()?;
-                continue;
             }
 
             let start = self.pos;
@@ -121,28 +112,6 @@ impl<'a> Lexer<'a> {
     fn multi(&mut self, tok: Token, start: usize, width: usize) {
         self.pos += width;
         self.out.push((tok, start..self.pos));
-    }
-
-    fn scan_ref(&mut self) -> Result<(), LexError> {
-        let start = self.pos;
-        let mut end = start;
-        while end < self.bytes.len() {
-            let c = self.bytes[end] as char;
-            if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ';' {
-                break;
-            }
-            end += 1;
-        }
-        if end == start {
-            return Err(LexError::UnexpectedCharacter {
-                ch: self.peek_char(),
-                offset: start,
-            });
-        }
-        let raw = self.src[start..end].to_string();
-        self.pos = end;
-        self.out.push((Token::Ref(raw), start..end));
-        Ok(())
     }
 
     fn scan_string(&mut self, start: usize) -> Result<(), LexError> {
@@ -280,9 +249,6 @@ impl<'a> Lexer<'a> {
         } else if name == "null" {
             Token::Null
         } else if is_keyword(&name) {
-            if name == "import" {
-                self.pending_ref_scan = true;
-            }
             Token::Keyword(name)
         } else if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             Token::TypeName(name)
@@ -452,20 +418,6 @@ mod tests {
     fn comments() {
         let t = tokens_only("// line comment\n42 /* block */ 7");
         assert_eq!(t, vec![Token::Int(42), Token::Int(7)]);
-    }
-
-    #[test]
-    fn import_ref_scan() {
-        let t = tokens_only("import alice/zen-leaf\nimport hub.example.com/team/foo");
-        assert_eq!(
-            t,
-            vec![
-                Token::Keyword("import".into()),
-                Token::Ref("alice/zen-leaf".into()),
-                Token::Keyword("import".into()),
-                Token::Ref("hub.example.com/team/foo".into()),
-            ]
-        );
     }
 
     #[test]
