@@ -102,6 +102,91 @@ fn user_fn_composes_with_another_user_fn() {
 }
 
 #[test]
+fn zero_param_fn_called_via_direct_call_returns_body() {
+    // A direct call `answer()` supplies no head and no args. The fn has
+    // zero params; arity matches and the body evaluates as a literal.
+    let v = eval_first_binding(
+        r#"
+            recipe "x"
+            engine http
+            fn answer() { 42 }
+            type T { id: Int }
+            emit T { id ← answer() }
+        "#,
+        Scope::new(),
+    );
+    assert_eq!(v, EvalValue::Int(42));
+}
+
+#[test]
+fn zero_param_fn_called_via_pipe_is_arity_mismatch() {
+    // A pipe call always carries the head as param 0; a zero-param fn
+    // has no slot to bind it to, so the runtime rejects with
+    // `FnArityMismatch { expected: 0, got: 1 }`. The validator should
+    // catch the same case at compile time (see `validate` tests);
+    // build the recipe by hand to exercise the runtime check directly.
+    use forage_core::ast::FnDecl;
+    use forage_core::eval::EvalError;
+    let decl = FnDecl {
+        name: "answer".into(),
+        params: vec![],
+        body: ExtractionExpr::Literal(JSONValue::Int(42)),
+        span: 0..0,
+    };
+    let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
+    let ev = Evaluator::new(&registry);
+    let call = ExtractionExpr::Pipe(
+        Box::new(ExtractionExpr::Literal(JSONValue::String("hi".into()))),
+        vec![TransformCall {
+            name: "answer".into(),
+            args: vec![],
+        }],
+    );
+    let err = ev
+        .eval_extraction(&call, &Scope::new())
+        .expect_err("zero-param fn must reject a pipe call");
+    assert_eq!(
+        err,
+        EvalError::FnArityMismatch {
+            name: "answer".into(),
+            expected: 0,
+            got: 1,
+        },
+    );
+}
+
+#[test]
+fn wrong_arity_direct_call_reports_typed_error() {
+    // `mark` expects 2 args; passing 1 must surface `FnArityMismatch`
+    // (not `EvalError::Generic`) so downstream tooling can pattern-match.
+    use forage_core::ast::FnDecl;
+    use forage_core::eval::EvalError;
+    let decl = FnDecl {
+        name: "mark".into(),
+        params: vec!["x".into(), "y".into()],
+        body: ExtractionExpr::Path(PathExpr::Variable("x".into())),
+        span: 0..0,
+    };
+    let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
+    let ev = Evaluator::new(&registry);
+    let call = ExtractionExpr::Call {
+        name: "mark".into(),
+        args: vec![ExtractionExpr::Literal(JSONValue::String("only".into()))],
+    };
+    let err = ev
+        .eval_extraction(&call, &Scope::new())
+        .expect_err("missing arg must be FnArityMismatch");
+    assert_eq!(
+        err,
+        EvalError::FnArityMismatch {
+            name: "mark".into(),
+            expected: 2,
+            got: 1,
+        },
+    );
+}
+
+#[test]
 fn for_loop_var_is_not_visible_in_fn_body_at_runtime() {
     // The validator catches this at compile time, but the runtime
     // should also fail cleanly if a fn body references a parent-scope

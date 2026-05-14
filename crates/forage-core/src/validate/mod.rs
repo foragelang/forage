@@ -1460,6 +1460,49 @@ emit Item { }
     }
 
     #[test]
+    fn zero_param_fn_called_via_pipe_flagged_as_wrong_arity() {
+        // A pipe always carries the head as param 0; a zero-parameter
+        // fn has nowhere to bind it. The validator must reject the call
+        // before the runtime arity check ever fires.
+        let src = r#"
+            recipe "bad"
+            engine http
+            fn answer() { 42 }
+            type T { id: Int }
+            step list { method "GET" url "https://x.test" }
+            for $x in $list[*] {
+                emit T { id ← $x.id | answer }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::WrongArity && i.message.contains("answer")),
+            "expected WrongArity mentioning 'answer'; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn zero_param_fn_called_via_direct_call_is_valid() {
+        // `answer()` is the canonical zero-arg form. Validator must
+        // accept it — the eval path handles the empty arg list.
+        let src = r#"
+            recipe "ok"
+            engine http
+            fn answer() { 42 }
+            type T { id: Int }
+            emit T { id ← answer() }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
     fn wrong_arity_call_flagged_via_direct_call() {
         let src = r#"
             recipe "bad"

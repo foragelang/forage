@@ -148,14 +148,13 @@ export class ExtractionEvaluator {
             }
             case 'call': {
                 const args = expr.args.map(a => this.evaluateToJSON(a, scope))
-                // Direct call: user fns consume every explicit arg as a
-                // parameter. Built-in transforms historically take
-                // `scope.current` as head + explicit args.
+                // Direct call: user fns bind explicit args 1:1 with their
+                // parameters; zero args fills a zero-param fn. Built-in
+                // transforms historically take `scope.current` as head
+                // + explicit args, so the legacy split still applies.
                 const userFn = this.transforms.getUserFunction(expr.name)
                 if (userFn) {
-                    const head = args.length > 0 ? args[0] : { tag: 'null' } as JSONValue
-                    const rest = args.slice(1)
-                    return this.applyUserFn(userFn, head, rest, scope)
+                    return this.applyUserFn(userFn, null, args, args.length, scope)
                 }
                 const value = args[0] ?? { tag: 'null' }
                 const rest = args.slice(1)
@@ -164,21 +163,33 @@ export class ExtractionEvaluator {
         }
     }
 
-    /// Pipe-style application: `<head> |> name(args...)`. User fns
-    /// resolve to the body's expression in a child scope; built-ins
-    /// go through the transform registry unchanged.
+    /// Pipe-style application: `<head> |> name(args...)`. User fns get
+    /// the head bound to param 0 plus `args` filling params 1..N. A
+    /// pipe call always carries the head, so a zero-parameter user fn
+    /// is uncallable here — the validator flags it as `WrongArity` and
+    /// the runtime check in `applyUserFn` catches anything that slips
+    /// through.
     private applyPipeCall(name: string, head: JSONValue, args: JSONValue[], scope: Scope): JSONValue {
         const userFn = this.transforms.getUserFunction(name)
-        if (userFn) return this.applyUserFn(userFn, head, args, scope)
+        if (userFn) return this.applyUserFn(userFn, head, args, 1 + args.length, scope)
         return this.transforms.apply(name, head, args)
     }
 
-    /// Evaluate a user-fn body with its parameters bound. The body sees
-    /// only its parameters plus the recipe-level `$secret.*` / `$input.*`
-    /// — for-loop and `as $v` bindings at the call site are invisible.
-    private applyUserFn(decl: FnDecl, head: JSONValue, rest: JSONValue[], scope: Scope): JSONValue {
+    /// Evaluate a user-fn body with its parameters bound. `head` is set
+    /// when called from `applyPipeCall` and feeds param 0; direct calls
+    /// pass `null` so `args` fill every parameter. `provided` is the
+    /// call site's count so each dispatch path keeps its own arity
+    /// convention. The body sees only its parameters plus the
+    /// recipe-level `$secret.*` / `$input.*` — for-loop and `as $v`
+    /// bindings at the call site are invisible.
+    private applyUserFn(
+        decl: FnDecl,
+        head: JSONValue | null,
+        args: JSONValue[],
+        provided: number,
+        scope: Scope,
+    ): JSONValue {
         const expected = decl.params.length
-        const provided = rest.length + 1
         if (provided !== expected) {
             throw new EvaluationError(
                 `function '${decl.name}' expects ${expected} argument${expected === 1 ? '' : 's'}, got ${provided}`,
@@ -187,11 +198,13 @@ export class ExtractionEvaluator {
         // Build a closed scope: only the recipe-level inputs + secrets
         // remain; the parent's frames (loop vars, refs) are excluded.
         let child = new Scope(scope.inputs, [{}], null, scope.secrets)
-        if (decl.params.length > 0) {
-            child = child.with(decl.params[0], head)
-            for (let i = 1; i < decl.params.length; i++) {
-                child = child.with(decl.params[i], rest[i - 1])
-            }
+        let argIdx = 0
+        let paramIdx = 0
+        if (head !== null && expected > 0) {
+            child = child.with(decl.params[paramIdx++], head)
+        }
+        while (paramIdx < expected) {
+            child = child.with(decl.params[paramIdx++], args[argIdx++])
         }
         return this.evaluateToJSON(decl.body, child)
     }

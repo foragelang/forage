@@ -171,6 +171,12 @@ impl<'r> Evaluator<'r> {
     /// Pipe-style application: `<head> |> name(args...)`. The pipe head
     /// is always passed in as the leading value; for user fns it
     /// becomes param 0, and `args` fill params 1..N.
+    ///
+    /// A pipe call always supplies a head, so the arity it presents to
+    /// a user fn is `1 + args.len()` — never zero. A zero-parameter user
+    /// fn is therefore uncallable via pipe; the validator flags it as
+    /// `WrongArity` and the runtime check below catches anything that
+    /// slips through.
     fn apply_pipe_call(
         &self,
         name: &str,
@@ -183,7 +189,8 @@ impl<'r> Evaluator<'r> {
             resolved.push(self.eval_extraction(a, scope)?);
         }
         if let Some(decl) = self.registry.get_user_fn(name) {
-            return self.apply_user_fn(decl, head, &resolved, scope);
+            let provided = 1 + resolved.len();
+            return self.apply_user_fn(decl, Some(head), &resolved, provided, scope);
         }
         let f = self
             .registry
@@ -194,9 +201,10 @@ impl<'r> Evaluator<'r> {
 
     /// Direct-call application: `name(args...)`. For user fns every
     /// argument is explicit — args[0] is param 0, args[1..] fill the
-    /// rest. For built-in transforms we preserve the historical
-    /// convention of passing `scope.current` as the head value because
-    /// the cannabis-domain transforms rely on it.
+    /// rest, and zero args is the valid zero-param call. For built-in
+    /// transforms we preserve the historical convention of passing
+    /// `scope.current` as the head value because the cannabis-domain
+    /// transforms rely on it.
     fn apply_direct_call(
         &self,
         name: &str,
@@ -208,12 +216,8 @@ impl<'r> Evaluator<'r> {
             resolved.push(self.eval_extraction(a, scope)?);
         }
         if let Some(decl) = self.registry.get_user_fn(name) {
-            // Pull out the head (param 0) from the explicit args.
-            let (head, rest) = match resolved.split_first() {
-                Some((h, r)) => (h.clone(), r.to_vec()),
-                None => (EvalValue::Null, Vec::new()),
-            };
-            return self.apply_user_fn(decl, head, &rest, scope);
+            let provided = resolved.len();
+            return self.apply_user_fn(decl, None, &resolved, provided, scope);
         }
         let f = self
             .registry
@@ -223,25 +227,29 @@ impl<'r> Evaluator<'r> {
         f(head, &resolved)
     }
 
-    /// Evaluate a user-fn body with parameters bound to (head, args...).
-    /// The body sees only the parameters plus the recipe-level
-    /// `$secret.*` / `$input.*` paths — for-loop variables and `as $v`
-    /// bindings at the call site are deliberately invisible.
+    /// Evaluate a user-fn body with parameters bound. `head` carries the
+    /// pipe head when called via `apply_pipe_call`; direct calls pass
+    /// `None` so the explicit `args` fill every parameter. `provided`
+    /// is the call site's count (head + args for pipe, args for direct)
+    /// — set by the caller so each dispatch path keeps its own arity
+    /// convention. The body sees only the parameters plus the
+    /// recipe-level `$secret.*` / `$input.*` paths — for-loop variables
+    /// and `as $v` bindings at the call site are deliberately invisible.
     fn apply_user_fn(
         &self,
         decl: &crate::ast::FnDecl,
-        head: EvalValue,
+        head: Option<EvalValue>,
         args: &[EvalValue],
+        provided: usize,
         scope: &Scope,
     ) -> Result<EvalValue, EvalError> {
         let expected = decl.params.len();
-        let provided = args.len() + 1; // head + explicit args
         if provided != expected {
-            return Err(EvalError::Generic(format!(
-                "function '{}' expects {expected} argument{}, got {provided}",
-                decl.name,
-                if expected == 1 { "" } else { "s" },
-            )));
+            return Err(EvalError::FnArityMismatch {
+                name: decl.name.clone(),
+                expected,
+                got: provided,
+            });
         }
         // Build a closed scope from the parent's inputs + secrets only.
         // The parent's frames (for-loop vars, `as $v` bindings) are
@@ -249,11 +257,14 @@ impl<'r> Evaluator<'r> {
         let mut child = Scope::new()
             .with_inputs(scope.inputs().clone())
             .with_secrets(scope.secrets_map().clone());
-        if let Some((first, rest)) = decl.params.split_first() {
-            child.bind(first, head);
-            for (p, v) in rest.iter().zip(args.iter()) {
-                child.bind(p, v.clone());
-            }
+        let mut params = decl.params.iter();
+        if let Some(h) = head
+            && let Some(first) = params.next()
+        {
+            child.bind(first, h);
+        }
+        for (p, v) in params.zip(args.iter()) {
+            child.bind(p, v.clone());
         }
         self.eval_extraction(&decl.body, &child)
     }

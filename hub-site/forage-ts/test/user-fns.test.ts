@@ -66,6 +66,45 @@ emit T { id ← "a" }`)
         ).toBe(true)
     })
 
+    it('runs a recipe that calls a zero-param fn directly', async () => {
+        // `answer()` carries no head and no args; the body evaluates as
+        // a literal. Regression for the eval bug that synthesized a
+        // bogus head and rejected with `expects 0 arguments, got 1`.
+        const fakeFetch: FetchLike = async () =>
+            new Response(JSON.stringify({ items: [{}] }), { status: 200 })
+        const src = `recipe "demo"
+engine http
+fn answer() { 42 }
+type T { value: Int }
+step list { method "GET"; url "https://x.test/items" }
+for $i in $list.items[*] {
+    emit T { value ← answer() }
+}`
+        const recipe = Parser.parse(src)
+        const result = await run(recipe, {}, { fetch: fakeFetch })
+        expect(result.diagnostic.stallReason).toBe('completed')
+        expect(result.records.map(r => r.fields.value)).toEqual([42])
+    })
+
+    it('rejects a pipe call into a zero-param fn at validation time', () => {
+        // A pipe always carries a head as param 0; a zero-param fn has
+        // nowhere to bind it. Validator must catch this before eval.
+        const recipe = Parser.parse(`recipe "bad"
+engine http
+fn answer() { 42 }
+type T { id: Int }
+step s { method "GET"; url "https://x.test" }
+for $x in $s[*] { emit T { id ← $x.id | answer } }`)
+        const issues = validate(recipe)
+        expect(
+            issues.some(
+                i => i.severity === 'error'
+                    && i.message.includes("'answer'")
+                    && i.message.includes('0 arguments'),
+            ),
+        ).toBe(true)
+    })
+
     it('runs a recipe that uses a user fn at a pipe site', async () => {
         const fakeFetch: FetchLike = async () =>
             new Response(JSON.stringify({ items: [{ id: 'abc' }, { id: 'def' }] }), { status: 200 })

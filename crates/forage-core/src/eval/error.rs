@@ -18,6 +18,12 @@ pub enum EvalError {
     UnknownTransform { name: String },
     #[error("transform '{name}': {msg}")]
     TransformError { name: String, msg: String },
+    #[error("function '{name}' expects {expected} argument{s_e}, got {got}", s_e = if *expected == 1 { "" } else { "s" })]
+    FnArityMismatch {
+        name: String,
+        expected: usize,
+        got: usize,
+    },
     #[error("case-of: no branch matched label '{label}'")]
     CaseNoMatch { label: String },
     #[error("type error: expected {expected}, got {actual}")]
