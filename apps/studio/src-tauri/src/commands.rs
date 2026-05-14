@@ -37,29 +37,31 @@ pub enum PausePayload {
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::daemon_browser::StudioLiveBrowserDriver;
-use crate::state::StudioState;
+use crate::state::{StudioState, WorkspaceSession};
 use crate::workspace;
 use forage_daemon::Daemon;
 
-/// Pull the live daemon out of state, or surface "no workspace open" to
-/// the frontend. Every workspace-scoped command goes through this so the
-/// commands can stay readable — `state.daemon.foo()` becomes
-/// `require_daemon(&state)?.foo()`.
-fn require_daemon(state: &State<'_, StudioState>) -> Result<Arc<Daemon>, String> {
+/// Pull the active workspace session out of state, or surface
+/// "no workspace open" to the frontend. The session pairs the daemon
+/// and workspace under one `ArcSwapOption`, so callers asking for one
+/// always see the matching half — no half-installed mid-swap state.
+fn require_session(state: &State<'_, StudioState>) -> Result<Arc<WorkspaceSession>, String> {
     state
-        .daemon
+        .session
         .load_full()
         .ok_or_else(|| "no workspace open".to_string())
 }
 
-/// Pull the live workspace out of state, or surface "no workspace open".
+/// Convenience wrapper for callers that only need the daemon.
+fn require_daemon(state: &State<'_, StudioState>) -> Result<Arc<Daemon>, String> {
+    require_session(state).map(|s| s.daemon.clone())
+}
+
+/// Convenience wrapper for callers that only need the workspace.
 fn require_workspace(
     state: &State<'_, StudioState>,
 ) -> Result<Arc<forage_core::workspace::Workspace>, String> {
-    state
-        .workspace
-        .load_full()
-        .ok_or_else(|| "no workspace open".to_string())
+    require_session(state).map(|s| s.workspace.clone())
 }
 
 /// Wire Studio's browser driver and run-completed callback into a newly
@@ -1060,10 +1062,10 @@ fn host_of(url: &str) -> String {
 // ---------------------------------------------------------------------
 // Workspace + filesystem + daemon commands.
 //
-// Studio owns the on-disk workspace via `state.workspace`. The daemon
-// holds only deployed versions; draft state, file-tree listings, and
-// catalog resolution against on-disk declarations all go through the
-// Studio-side cache.
+// Studio owns the on-disk workspace via the active `WorkspaceSession`.
+// The daemon holds only deployed versions; draft state, file-tree
+// listings, and catalog resolution against on-disk declarations all
+// go through the Studio-side cache.
 // ---------------------------------------------------------------------
 
 use std::path::{Path, PathBuf};
@@ -1084,9 +1086,9 @@ use crate::workspace::{
 #[tauri::command]
 pub fn current_workspace(state: State<'_, StudioState>) -> Option<WorkspaceInfo> {
     state
-        .workspace
+        .session
         .load_full()
-        .map(|ws| WorkspaceInfo::from_workspace(&ws))
+        .map(|s| WorkspaceInfo::from_workspace(&s.workspace))
 }
 
 /// Recursive directory tree rooted at the workspace root, with each
@@ -1105,9 +1107,12 @@ pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, S
 /// without restarting Studio.
 #[tauri::command]
 pub fn refresh_workspace(state: State<'_, StudioState>) -> Result<(), String> {
-    let ws = require_workspace(&state)?;
-    let fresh = forage_core::workspace::load(&ws.root).map_err(|e| e.to_string())?;
-    state.workspace.store(Some(Arc::new(fresh)));
+    let prior = require_session(&state)?;
+    let fresh = forage_core::workspace::load(&prior.workspace.root).map_err(|e| e.to_string())?;
+    state.session.store(Some(Arc::new(WorkspaceSession {
+        daemon: prior.daemon.clone(),
+        workspace: Arc::new(fresh),
+    })));
     Ok(())
 }
 
@@ -1619,9 +1624,10 @@ async fn open_workspace_inner(
     let info = WorkspaceInfo::from_workspace(&workspace);
     let display_name = workspace::derive_workspace_name(&workspace);
     let recipe_count = workspace.recipes().count() as u32;
-    let workspace_arc = Arc::new(workspace);
-    state.workspace.store(Some(workspace_arc));
-    state.daemon.store(Some(daemon));
+    state.session.store(Some(Arc::new(WorkspaceSession {
+        daemon,
+        workspace: Arc::new(workspace),
+    })));
 
     if let Err(e) = workspace::record_recent(&path, display_name, recipe_count) {
         tracing::warn!(error = %e, path = %path.display(), "record_recent failed");
@@ -1644,12 +1650,13 @@ fn close_workspace_inner(state: &State<'_, StudioState>, app: &AppHandle) {
     }
     state.debug_session.store(None);
 
-    let prior_daemon = state.daemon.swap(None);
-    let was_open = prior_daemon.is_some();
-    if let Some(d) = prior_daemon {
-        d.close();
+    let prior = state.session.swap(None);
+    let was_open = prior.is_some();
+    if let Some(session) = prior {
+        // `Daemon::close` consumes `Arc<Self>` — clone out so the
+        // session Arc itself can drop normally.
+        session.daemon.clone().close();
     }
-    state.workspace.store(None);
 
     if was_open {
         set_close_workspace_enabled(state, false);

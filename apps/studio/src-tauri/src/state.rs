@@ -23,11 +23,12 @@
 //! against the Studio-side catalog and hands the frozen pair to the
 //! daemon.
 //!
-//! Both `daemon` and `workspace` are optional. Studio boots into the
-//! no-workspace state and only constructs them when the user opens or
-//! creates a workspace. The `workspace_switch` mutex serializes
-//! open/close transitions so two concurrent commands can't half-install
-//! a daemon while the other is closing it.
+//! The active workspace is a paired (daemon, workspace) value
+//! installed under one `ArcSwapOption` so readers see them swap as a
+//! unit. Studio boots with that slot empty; the user picks Open or
+//! New to install a session. The `workspace_switch` mutex serializes
+//! open/close transitions so two concurrent commands can't interleave
+//! and leak a daemon scheduler.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -41,18 +42,28 @@ use tauri::Wry;
 use tauri::menu::MenuItem;
 use tokio::sync::{Notify, oneshot};
 
-pub struct StudioState {
+/// The paired daemon + workspace that together represent an open
+/// workspace. Stored as one `ArcSwapOption<WorkspaceSession>` so
+/// readers see them install or clear together — never one without
+/// the other.
+pub struct WorkspaceSession {
     /// In-process daemon for scheduling, run history, and output stores.
-    /// Empty until the user opens a workspace; closed and replaced when
-    /// the user closes or switches workspaces.
-    pub daemon: ArcSwapOption<Daemon>,
+    pub daemon: Arc<Daemon>,
     /// Cached on-disk workspace view: recipes, declarations files,
-    /// manifest. Empty until the user opens a workspace; loaded via
-    /// `forage_core::workspace::load` at open time and refreshed by
-    /// the `refresh_workspace` command on filesystem changes. Reads
-    /// are lock-free `ArcSwap` loads; writes happen on
-    /// open/close/refresh.
-    pub workspace: ArcSwapOption<Workspace>,
+    /// manifest. Loaded via `forage_core::workspace::load` at open
+    /// time and replaced by `refresh_workspace` on filesystem
+    /// changes (which swaps in a new session with the same daemon).
+    pub workspace: Arc<Workspace>,
+}
+
+pub struct StudioState {
+    /// The active workspace, daemon-and-all. Empty until the user opens
+    /// a workspace; replaced atomically on open / close / switch /
+    /// refresh so readers via `require_session` see either the prior
+    /// pair or the next pair, never a half-installed mix. Reads are
+    /// lock-free `ArcSwap` loads; writes serialize through
+    /// `workspace_switch`.
+    pub session: ArcSwapOption<WorkspaceSession>,
     /// Cancellation signal for the in-flight `run_recipe` call. The
     /// frontend `cancel_run` command notifies through this; `run_recipe`
     /// selects against it so the engine future drops mid-fetch. Lifecycle:
@@ -92,8 +103,7 @@ impl StudioState {
     /// installs one when the user picks a folder.
     pub fn new_empty() -> Self {
         Self {
-            daemon: ArcSwapOption::empty(),
-            workspace: ArcSwapOption::empty(),
+            session: ArcSwapOption::empty(),
             run_cancel: ArcSwapOption::empty(),
             last_context_menu: Mutex::new(None),
             menu_close_workspace: Mutex::new(None),
