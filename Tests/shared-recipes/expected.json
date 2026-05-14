@@ -81,6 +81,7 @@
                     "requiredFieldCount": 3
                 }
             ],
+            "functionCount": 7,
             "validation": { "errorCount": 0, "warningCount": 0 }
         },
         {
@@ -182,6 +183,47 @@
                 "records": [
                     { "typeName": "Variant", "fields": { "externalId": "v1", "label": "CALM" } },
                     { "typeName": "Variant", "fields": { "externalId": "v2", "label": "VIVID" } }
+                ]
+            }
+        },
+        {
+            "file": "10-cannabis-transforms.forage",
+            "parses": true,
+            "summary": {
+                "name": "cannabis-transforms",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 2,
+                "stepNames": ["variants"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 1
+            },
+            "types": [
+                {
+                    "name": "Variant",
+                    "fieldNames": ["label", "sizeValue", "sizeUnit"],
+                    "requiredFieldCount": 1
+                }
+            ],
+            "functionCount": 3,
+            "validation": { "errorCount": 0, "warningCount": 0 },
+            "runSnapshot": {
+                "inputs": { "baseUrl": "https://x.test" },
+                "httpFixtures": [
+                    {
+                        "url": "https://x.test/variants",
+                        "method": "GET",
+                        "status": 200,
+                        "body": "{\"items\":[{\"label\":\"3.5 g\"},{\"label\":\"1 oz\"},{\"label\":\"unknown\"}]}"
+                    }
+                ],
+                "records": [
+                    { "typeName": "Variant", "fields": { "label": "3.5 g", "sizeValue": 3.5, "sizeUnit": "g" } },
+                    { "typeName": "Variant", "fields": { "label": "1 oz", "sizeValue": 1.0, "sizeUnit": "oz" } },
+                    { "typeName": "Variant", "fields": { "label": "unknown", "sizeValue": null, "sizeUnit": null } }
                 ]
             }
         }

@@ -16,6 +16,60 @@
 recipe "jane"
 engine browser
 
+/* ---------- User-defined weight + prevalence transforms ---------- */
+//
+// Migrated from the engine's pre-1.0 cannabis-domain built-ins. Jane's
+// menu speaks weight in product-marketing terms ("eighth ounce", "half
+// gram"), not grams + unit; the lookup tables here keep the mapping
+// next to the recipe that needs it.
+
+fn parseJaneWeight($s) {
+    case $s of {
+        "half gram" → 0.5
+        "gram" → 1.0
+        "two gram" → 2.0
+        "eighth ounce" → 3.5
+        "quarter ounce" → 7.0
+        "half ounce" → 14.0
+        "ounce" → 28.0
+        _ → null
+    }
+}
+
+fn janeWeightUnit($s) {
+    case $s of {
+        "each" → "EA"
+        _ → "g"
+    }
+}
+
+fn janeWeightKey($s) {
+    let $lc = $s | lowercase
+    $lc | replace(" ", "_")
+}
+
+fn prevalenceNormalize($s) {
+    case $s of {
+        null → null
+        _ → prevalenceNormalizeInner($s)
+    }
+}
+
+fn prevalenceNormalizeInner($s) {
+    let $lc = $s | lowercase
+    case $lc of {
+        "indica" → "INDICA"
+        "indica-dominant" → "INDICA"
+        "indica dominant" → "INDICA"
+        "sativa" → "SATIVA"
+        "sativa-dominant" → "SATIVA"
+        "sativa dominant" → "SATIVA"
+        "hybrid" → "HYBRID"
+        "cbd" → "CBD"
+        _ → $lc
+    }
+}
+
 /* ---------- Recipe-declared types ---------- */
 
 type Dispensary {

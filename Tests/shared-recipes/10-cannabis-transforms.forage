@@ -1,0 +1,51 @@
+recipe "cannabis-transforms"
+engine http
+
+// The migrated `parseSize` exercises regex literals, let-bindings,
+// struct literals, array indexing, and case-of with a default arm — the
+// full surface added in the cannabis-migration push.
+
+fn parseSize($s) {
+    let $m = $s | match(/([0-9.]+)\s*([a-zA-Z]*)/)
+    case $m.matched of {
+        true → { value: $m.captures[1] | parseFloat, unit: $m.captures[2] | lowercase }
+        false → null
+    }
+}
+
+fn sizeValue($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.value
+    }
+}
+
+fn sizeUnit($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.unit
+    }
+}
+
+type Variant {
+    label: String
+    sizeValue: Double?
+    sizeUnit: String?
+}
+
+input baseUrl: String
+
+step variants {
+    method "GET"
+    url    "{$input.baseUrl}/variants"
+}
+
+for $v in $variants.items[*] {
+    emit Variant {
+        label     ← $v.label
+        sizeValue ← $v.label | parseSize | sizeValue
+        sizeUnit  ← $v.label | parseSize | sizeUnit
+    }
+}
+
+expect { records.where(typeName == "Variant").count >= 1 }

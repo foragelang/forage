@@ -10,6 +10,81 @@
 recipe "sweed"
 engine http
 
+/* ---------- User-defined unit + prevalence transforms ---------- */
+//
+// Migrated from the engine's pre-1.0 cannabis-domain built-ins; Sweed's
+// `unitSize` is split across two fields (`value` + `unitAbbr`), so the
+// two-arg `normalizeOzToGrams($value, $unit)` form fits the API shape.
+
+fn normalizeOzToGrams($value, $unit) {
+    case $value of {
+        null → null
+        _ → normalizeOzToGramsInner($value, $unit)
+    }
+}
+
+fn normalizeOzToGramsInner($value, $unit) {
+    case $unit of {
+        null → $value
+        _ → normalizeOzToGramsKnown($value, $unit)
+    }
+}
+
+fn normalizeOzToGramsKnown($value, $unit) {
+    let $u = $unit | lowercase
+    let $oz = $u | matches(/^(oz|ounce|ounces)$/)
+    let $lb = $u | matches(/^(lb|lbs|pound|pounds)$/)
+    let $mg = $u | matches(/^(mg|milligram|milligrams)$/)
+    case $oz of {
+        true → $value * 28.0
+        false → case $lb of {
+            true → $value * 453.592
+            false → case $mg of {
+                true → $value / 1000.0
+                false → $value
+            }
+        }
+    }
+}
+
+fn normalizeUnitToGrams($u) {
+    case $u of {
+        null → null
+        _ → normalizeUnitToGramsInner($u)
+    }
+}
+
+fn normalizeUnitToGramsInner($u) {
+    let $lc = $u | lowercase
+    let $known = $lc | matches(/^(oz|ounce|ounces|g|gram|grams|mg|milligram|milligrams)$/)
+    case $known of {
+        true → "g"
+        false → $lc
+    }
+}
+
+fn prevalenceNormalize($s) {
+    case $s of {
+        null → null
+        _ → prevalenceNormalizeInner($s)
+    }
+}
+
+fn prevalenceNormalizeInner($s) {
+    let $lc = $s | lowercase
+    case $lc of {
+        "indica" → "INDICA"
+        "indica-dominant" → "INDICA"
+        "indica dominant" → "INDICA"
+        "sativa" → "SATIVA"
+        "sativa-dominant" → "SATIVA"
+        "sativa dominant" → "SATIVA"
+        "hybrid" → "HYBRID"
+        "cbd" → "CBD"
+        _ → $lc
+    }
+}
+
 /* ---------- Recipe-declared types ---------- */
 
 type Dispensary {

@@ -1,6 +1,72 @@
 recipe "pipelines"
 engine http
 
+// The cannabis size + prevalence helpers used to be engine built-ins; the
+// pipelines fixture now exercises them as user-defined fns so the contract
+// stays end-to-end.
+
+fn parseSize($s) {
+    let $m = $s | match(/([0-9.]+)\s*([a-zA-Z]*)/)
+    case $m.matched of {
+        true → { value: $m.captures[1] | parseFloat, unit: $m.captures[2] | lowercase }
+        false → null
+    }
+}
+
+fn sizeValue($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.value
+    }
+}
+
+fn sizeUnit($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.unit
+    }
+}
+
+fn normalizeOzToGrams($parsed) {
+    case $parsed of {
+        null → null
+        _ → {
+            value: ozToGrams($parsed.value, $parsed.unit),
+            unit: case $parsed.unit of {
+                "oz" → "g"
+                "ounce" → "g"
+                "ounces" → "g"
+                _ → $parsed.unit
+            },
+        }
+    }
+}
+
+fn ozToGrams($value, $unit) {
+    let $oz = $unit | matches(/^(oz|ounce|ounces)$/)
+    case $oz of {
+        true → $value * 28.0
+        false → $value
+    }
+}
+
+fn prevalenceNormalize($s) {
+    case $s of {
+        null → null
+        _ → prevalenceInner($s)
+    }
+}
+
+fn prevalenceInner($s) {
+    let $lc = $s | lowercase
+    case $lc of {
+        "indica" → "INDICA"
+        "sativa" → "SATIVA"
+        "hybrid" → "HYBRID"
+        _ → $lc
+    }
+}
+
 type Product {
     externalId: String
     name: String

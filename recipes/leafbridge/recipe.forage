@@ -12,6 +12,95 @@
 recipe "leafbridge"
 engine http
 
+/* ---------- User-defined size + prevalence transforms ---------- */
+//
+// Migrated from the engine's pre-1.0 cannabis-domain built-ins; expressed
+// here in the recipe language so authors who don't sell flower don't pay
+// for them. Regex literals and let-bindings keep the chain readable.
+
+fn parseSize($s) {
+    let $m = $s | match(/([0-9.]+)\s*([a-zA-Z]*)/)
+    case $m.matched of {
+        true → { value: $m.captures[1] | parseFloat, unit: $m.captures[2] | lowercase }
+        false → null
+    }
+}
+
+fn sizeValue($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.value
+    }
+}
+
+fn sizeUnit($parsed) {
+    case $parsed of {
+        null → null
+        _ → $parsed.unit
+    }
+}
+
+fn normalizeOzToGrams($parsed) {
+    case $parsed of {
+        null → null
+        _ → {
+            value: normalizeUnitValueToGrams($parsed.value, $parsed.unit),
+            unit: case $parsed.unit of {
+                "oz" → "g"
+                "ounce" → "g"
+                "ounces" → "g"
+                _ → $parsed.unit
+            },
+        }
+    }
+}
+
+fn normalizeUnitValueToGrams($value, $unit) {
+    let $oz = $unit | matches(/^(oz|ounce|ounces)$/)
+    let $lb = $unit | matches(/^(lb|lbs|pound|pounds)$/)
+    let $mg = $unit | matches(/^(mg|milligram|milligrams)$/)
+    case $oz of {
+        true → $value * 28.0
+        false → case $lb of {
+            true → $value * 453.592
+            false → case $mg of {
+                true → $value / 1000.0
+                false → $value
+            }
+        }
+    }
+}
+
+fn normalizeUnitToGrams($u) {
+    let $known = $u | matches(/^(oz|ounce|ounces|g|gram|grams|mg|milligram|milligrams)$/)
+    case $known of {
+        true → "g"
+        false → $u
+    }
+}
+
+fn prevalenceNormalize($s) {
+    case $s of {
+        null → null
+        _ → prevalenceNormalizeInner($s)
+    }
+}
+
+fn prevalenceNormalizeInner($s) {
+    let $lc = $s | lowercase
+    case $lc of {
+        "indica" → "INDICA"
+        "indica-dominant" → "INDICA"
+        "indica dominant" → "INDICA"
+        "sativa" → "SATIVA"
+        "sativa-dominant" → "SATIVA"
+        "sativa dominant" → "SATIVA"
+        "hybrid" → "HYBRID"
+        "cbd" → "CBD"
+        _ → $lc
+    }
+}
+
 /* ---------- Recipe-declared types ---------- */
 
 type Dispensary {
