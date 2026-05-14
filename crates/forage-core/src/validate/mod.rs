@@ -78,6 +78,26 @@ pub enum ValidationCode {
     UnexpectedBrowserConfig,
     AuthOnBrowserEngine,
     MissingAuthStep,
+    /// Two `fn` declarations share a name. Calls would be ambiguous —
+    /// only the first one would resolve.
+    DuplicateFn,
+    /// A `fn` declaration lists the same `$param` name twice.
+    DuplicateParam,
+    /// A `fn` parameter is named after a reserved engine binding
+    /// (`page`, currently the only one). The lexer already rejects
+    /// `$input` and `$secret` as parameter names (they're distinct
+    /// token kinds), so this code only fires for engine-injected vars.
+    ReservedParam,
+    /// A user-fn declaration shares a name with a built-in transform.
+    /// The call site resolves the user-fn first, masking the built-in;
+    /// useful for testing, dangerous in production.
+    ShadowsBuiltin,
+    /// A call site passes the wrong number of arguments to a user-fn.
+    WrongArity,
+    /// A `fn` body references itself by name. Direct recursion compiles
+    /// but the runtime will not terminate; emitted as a warning so the
+    /// recipe still builds.
+    RecursiveFunction,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -133,6 +153,12 @@ struct Validator<'a> {
     /// binding inside an `emit Variant {…}` is valid only when `$p` is
     /// in this map and points at `Product`.
     ref_bindings: std::collections::HashMap<String, String>,
+    /// User-fn name → declared arity, collected before any body
+    /// validation runs. Forward references resolve through this map.
+    user_fn_arity: std::collections::HashMap<String, usize>,
+    /// When validating a user-fn body, the enclosing fn's name. Body
+    /// expressions reference it to surface direct-recursion warnings.
+    enclosing_fn: Option<String>,
     /// Source range of the enclosing AST node being checked. Set by the
     /// callers as they descend (`with_span` / `Statement::span`) and read
     /// by `err_here` / `warn_here` so diagnostics inherit the smallest
@@ -164,12 +190,24 @@ impl<'a> Validator<'a> {
         // every step so recipes can template page numbers into bodies or
         // URLs (Leafbridge's `prods_pageNumber`, Sweed's `page`).
         known_vars.insert("page".into());
+        // Collect user-fn arities up front so forward references and
+        // mutual lookups resolve. Duplicates surface in
+        // `check_user_fns` — the map only keeps the first arity since
+        // a duplicate emits an error anyway.
+        let mut user_fn_arity = std::collections::HashMap::new();
+        for f in &recipe.functions {
+            user_fn_arity
+                .entry(f.name.clone())
+                .or_insert(f.params.len());
+        }
         Self {
             recipe,
             catalog,
             issues: Vec::new(),
             known_vars,
             ref_bindings: std::collections::HashMap::new(),
+            user_fn_arity,
+            enclosing_fn: None,
             cur_span: 0..0,
         }
     }
@@ -223,8 +261,75 @@ impl<'a> Validator<'a> {
     fn run(&mut self) {
         self.check_duplicates();
         self.check_engine_consistency();
+        self.check_user_fns();
         self.check_references();
         self.check_emit_records();
+    }
+
+    /// Walk every `fn` declaration: duplicate detection, parameter rules,
+    /// shadow-of-builtin warning, body validation in a fresh scope, and
+    /// direct-recursion warning.
+    fn check_user_fns(&mut self) {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for f in &self.recipe.functions.clone() {
+            self.with_span(f.span.clone(), |v| {
+                if !seen.insert(f.name.as_str()) {
+                    v.err_here(
+                        ValidationCode::DuplicateFn,
+                        format!("function '{}' declared more than once", f.name),
+                    );
+                }
+                if BUILTIN_TRANSFORMS.contains(&f.name.as_str()) {
+                    v.warn_here(
+                        ValidationCode::ShadowsBuiltin,
+                        format!(
+                            "function '{}' shadows a built-in transform of the same name",
+                            f.name,
+                        ),
+                    );
+                }
+                let mut param_seen: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
+                for p in &f.params {
+                    if !param_seen.insert(p.as_str()) {
+                        v.err_here(
+                            ValidationCode::DuplicateParam,
+                            format!(
+                                "function '{}' declares parameter '${}' more than once",
+                                f.name, p,
+                            ),
+                        );
+                    }
+                    if p == "page" {
+                        v.err_here(
+                            ValidationCode::ReservedParam,
+                            format!(
+                                "function '{}' parameter '${}' shadows the engine-injected '$page' binding",
+                                f.name, p,
+                            ),
+                        );
+                    }
+                }
+
+                // Validate the body in a closed scope: only the params
+                // are visible. The recipe-level `$secret.*` / `$input.*`
+                // remain accessible through their dedicated path heads
+                // (not `known_vars`), so we don't need to inject them here.
+                let saved_vars = std::mem::take(&mut v.known_vars);
+                let saved_refs = std::mem::take(&mut v.ref_bindings);
+                let mut body_vars: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for p in &f.params {
+                    body_vars.insert(p.clone());
+                }
+                v.known_vars = body_vars;
+                let saved_fn = v.enclosing_fn.replace(f.name.clone());
+                v.check_extraction(&f.body);
+                v.enclosing_fn = saved_fn;
+                v.known_vars = saved_vars;
+                v.ref_bindings = saved_refs;
+            });
+        }
     }
 
     // --- duplicates --------------------------------------------------------
@@ -536,7 +641,8 @@ impl<'a> Validator<'a> {
             ExtractionExpr::Pipe(inner, calls) => {
                 self.check_extraction(inner);
                 for c in calls {
-                    self.check_transform_name(&c.name);
+                    // Pipe call: head is param 0, explicit args fill the rest.
+                    self.check_call_site(&c.name, c.args.len() + 1);
                     for a in &c.args {
                         self.check_extraction(a);
                     }
@@ -558,7 +664,8 @@ impl<'a> Validator<'a> {
             }
             ExtractionExpr::Template(t) => self.check_template(t),
             ExtractionExpr::Call { name, args } => {
-                self.check_transform_name(name);
+                // Direct call: every arg is explicit.
+                self.check_call_site(name, args.len());
                 for a in args {
                     self.check_extraction(a);
                 }
@@ -567,7 +674,32 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn check_transform_name(&mut self, name: &str) {
+    /// Resolve a transform-name reference against user fns first, then
+    /// the built-in registry. `call_arity` is the total number of values
+    /// the call site supplies (head + explicit args at a pipe site,
+    /// explicit args at a direct-call site).
+    fn check_call_site(&mut self, name: &str, call_arity: usize) {
+        if let Some(declared) = self.user_fn_arity.get(name).copied() {
+            if declared != call_arity {
+                self.err_here(
+                    ValidationCode::WrongArity,
+                    format!(
+                        "function '{name}' expects {declared} argument{}, got {call_arity}",
+                        if declared == 1 { "" } else { "s" },
+                    ),
+                );
+            }
+            // Direct recursion: the body of `enclosing_fn` references
+            // itself by name. The runtime won't terminate; surface it
+            // as a warning so the recipe still builds.
+            if Some(name) == self.enclosing_fn.as_deref() {
+                self.warn_here(
+                    ValidationCode::RecursiveFunction,
+                    format!("function '{name}' calls itself; the runtime has no recursion guard",),
+                );
+            }
+            return;
+        }
         if !BUILTIN_TRANSFORMS.contains(&name) {
             self.err_here(
                 ValidationCode::UnknownTransform,
@@ -1209,6 +1341,272 @@ emit Item { }
             rep.errors()
                 .any(|i| i.code == ValidationCode::RefTypeMismatch),
             "expected RefTypeMismatch when $prod leaks out of the loop; got {:?}",
+            rep.issues,
+        );
+    }
+
+    // ---- user-defined functions --------------------------------------
+
+    fn fn_recipe(extra: &str) -> Recipe {
+        let src = format!(
+            r#"
+                recipe "ok"
+                engine http
+                {extra}
+                type Item {{ id: String }}
+                step list {{ method "GET" url "https://x.test" }}
+                for $x in $list[*] {{
+                    emit Item {{ id ← $x.id }}
+                }}
+            "#
+        );
+        parse(&src).expect("parse")
+    }
+
+    #[test]
+    fn valid_user_fn_validates() {
+        let r = fn_recipe("fn shout($x) { $x | upper }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn unknown_fn_call_flagged() {
+        let src = r#"
+            recipe "bad"
+            engine http
+            type T { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $x in $list[*] {
+                emit T { id ← $x.id | mysteryFn }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::UnknownTransform),
+            "expected UnknownTransform; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn duplicate_fn_name_flagged() {
+        let r = fn_recipe("fn dup($x) { $x }\nfn dup($x) { $x }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::DuplicateFn),
+            "expected DuplicateFn; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn duplicate_param_name_flagged() {
+        let r = fn_recipe("fn dupParams($x, $x) { $x }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::DuplicateParam),
+            "expected DuplicateParam; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn reserved_param_name_flagged() {
+        // `$page` is engine-injected (HTTP step pagination); it must
+        // not be reusable as a fn parameter. `$input` / `$secret` are
+        // already excluded at the lexer level (distinct token kinds).
+        let r = fn_recipe("fn nope($page) { $page }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::ReservedParam),
+            "expected ReservedParam; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn wrong_arity_call_flagged_via_pipe() {
+        // `fn two($a, $b) { $a }` expects 2 args. Calling `$x |> two`
+        // passes only the head — 1 of 2 → WrongArity.
+        let src = r#"
+            recipe "bad"
+            engine http
+            fn two($a, $b) { $a }
+            type T { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $x in $list[*] {
+                emit T { id ← $x.id | two }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::WrongArity && i.message.contains("two")),
+            "expected WrongArity mentioning the fn name; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn wrong_arity_call_flagged_via_direct_call() {
+        let src = r#"
+            recipe "bad"
+            engine http
+            fn two($a, $b) { $a }
+            type T { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $x in $list[*] {
+                emit T { id ← two($x.id) }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::WrongArity),
+            "expected WrongArity; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn user_fn_can_call_built_in_transform() {
+        let r = fn_recipe("fn shouty($x) { $x | upper }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn user_fn_can_call_other_user_fn_declared_later() {
+        // Forward reference: `a` calls `b` declared below it.
+        let r = fn_recipe("fn a($x) { $x | b }\nfn b($y) { $y | upper }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn direct_recursion_emits_warning() {
+        let r = fn_recipe("fn loopy($x) { $x | loopy }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            !rep.has_errors(),
+            "recursion must compile (warning only); got errors: {:?}",
+            rep.issues,
+        );
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::RecursiveFunction
+                    && i.severity == Severity::Warning),
+            "expected RecursiveFunction warning; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn user_fn_shadowing_built_in_emits_warning() {
+        // `lower` exists as a built-in; redefining it warns but doesn't error.
+        let r = fn_recipe("fn lower($x) { $x }");
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            !rep.has_errors(),
+            "shadowing must not error; got: {:?}",
+            rep.issues,
+        );
+        assert!(
+            rep.issues.iter().any(
+                |i| i.code == ValidationCode::ShadowsBuiltin && i.severity == Severity::Warning
+            ),
+            "expected ShadowsBuiltin warning; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn for_loop_var_not_visible_in_fn_body() {
+        // `$item` is bound only inside the for-loop. A `fn` defined
+        // anywhere can't see it.
+        let src = r#"
+            recipe "scoped"
+            engine http
+            fn leaky($x) { $item }
+            type T { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $item in $list[*] {
+                emit T { id ← $item.id | leaky }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::UnknownVariable && i.message.contains("item")),
+            "expected UnknownVariable for $item inside fn body; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn secret_and_input_visible_in_fn_body() {
+        // `$input.X` and `$secret.X` are reachable through their path
+        // heads, not `known_vars`; the closed fn scope keeps them.
+        let src = r#"
+            recipe "ok"
+            engine http
+            secret token
+            input mode: String
+            fn tag($x) { "{$secret.token}:{$input.mode}:{$x}" }
+            type T { id: String }
+            step list { method "GET" url "https://x.test/{$secret.token}" }
+            for $i in $list[*] {
+                emit T { id ← $i.id | tag }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn as_binding_not_visible_in_fn_body() {
+        // `$prod` is introduced via `emit … as $prod` at a call site.
+        // The fn body must not see it — functions are closed units.
+        let src = r#"
+            recipe "scoped"
+            engine http
+            fn leaky($x) { $prod }
+            type Product { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+                emit Product { id ← $p.id | leaky }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::UnknownVariable && i.message.contains("prod")),
+            "expected UnknownVariable for $prod inside fn body; got {:?}",
             rep.issues,
         );
     }
