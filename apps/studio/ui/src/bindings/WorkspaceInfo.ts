@@ -16,4 +16,10 @@ name: string | null,
  * sorted iteration on the wire so consumers see deterministic
  * ordering.
  */
-deps: { [key in string]?: number }, };
+deps: { [key in string]?: number }, 
+/**
+ * User home directory, if discoverable. The UI uses this prefix
+ * to render `~`-shortened paths in the workspace header. `None`
+ * when no home directory exists (test sandboxes, some CI hosts).
+ */
+home: string | null, };

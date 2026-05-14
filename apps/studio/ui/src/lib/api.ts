@@ -14,6 +14,7 @@ import type { DebugScope } from "../bindings/DebugScope";
 import type { Diagnostic } from "../bindings/Diagnostic";
 import type { DiagnosticReport } from "../bindings/DiagnosticReport";
 import type { FileNode } from "../bindings/FileNode";
+import type { Health } from "../bindings/Health";
 import type { HoverInfo } from "../bindings/HoverInfo";
 import type { IterationPause } from "../bindings/IterationPause";
 import type { LanguageDictionary } from "../bindings/LanguageDictionary";
@@ -41,6 +42,7 @@ export type {
     Diagnostic,
     DiagnosticReport,
     FileNode,
+    Health,
     HoverInfo,
     IterationPause,
     LanguageDictionary,

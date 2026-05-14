@@ -3,11 +3,11 @@ import type * as MonacoNs from "monaco-editor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, CircleX } from "lucide-react";
 
-import { DebuggerPanel } from "@/components/DebuggerPanel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api, type Diagnostic, type StepLocation } from "@/lib/api";
 import { FORAGE_LANG_ID, registerForageLanguage } from "@/lib/monaco-forage";
+import { slugOf } from "@/lib/path";
 import { useStudio } from "@/lib/store";
 
 type Editor = MonacoNs.editor.IStandaloneCodeEditor;
@@ -58,20 +58,19 @@ function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
 }
 
 export function SourceTab() {
-    const {
-        activeSlug,
-        source,
-        setSource,
-        validation,
-        breakpoints,
-        paused,
-        toggleBreakpoint,
-    } = useStudio();
+    const activeFilePath = useStudio((s) => s.activeFilePath);
+    const source = useStudio((s) => s.source);
+    const setSource = useStudio((s) => s.setSource);
+    const validation = useStudio((s) => s.validation);
+    const breakpoints = useStudio((s) => s.breakpoints);
+    const paused = useStudio((s) => s.paused);
+    const toggleBreakpoint = useStudio((s) => s.toggleBreakpoint);
+    const slug = activeFilePath ? slugOf(activeFilePath) : null;
     const monacoRef = useRef<Monaco | null>(null);
     const editorRef = useRef<Editor | null>(null);
     const decorationsRef = useRef<string[]>([]);
 
-    useLiveValidation(source, activeSlug);
+    useLiveValidation(source, slug);
     const stepLocations = useRecipeOutline(source);
 
     // Map for the gutter click handler: clicked line → step name (if any).
@@ -218,11 +217,7 @@ export function SourceTab() {
                     }}
                 />
             </div>
-            {paused ? (
-                <DebuggerPanel />
-            ) : (
-                validation && <ValidationBar diagnostics={validation.diagnostics} />
-            )}
+            {validation && <ValidationBar diagnostics={validation.diagnostics} />}
         </div>
     );
 }

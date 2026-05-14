@@ -10,6 +10,7 @@ import {
     CardTitle,
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { slugOf } from "@/lib/path";
 import { useStudio } from "@/lib/store";
 
 type FixtureInfo = {
@@ -19,10 +20,11 @@ type FixtureInfo = {
 };
 
 export function FixturesTab() {
-    const { activeSlug } = useStudio();
+    const activeFilePath = useStudio((s) => s.activeFilePath);
+    const slug = activeFilePath ? slugOf(activeFilePath) : null;
     const query = useQuery<FixtureInfo>({
-        queryKey: ["fixtures", activeSlug],
-        enabled: !!activeSlug,
+        queryKey: ["fixtures", slug],
+        enabled: !!slug,
         queryFn: async () => {
             // No dedicated Tauri command yet — surface what we can.
             return { inputs: null, captureCount: 0, expectedSnapshot: false };
@@ -37,7 +39,7 @@ export function FixturesTab() {
                     <p className="text-sm text-muted-foreground select-text">
                         Fixtures live in{" "}
                         <code className="text-foreground font-mono text-xs px-1 py-0.5 rounded bg-muted">
-                            ~/Library/Forage/Recipes/{activeSlug ?? "<slug>"}/fixtures/
+                            ~/Library/Forage/Recipes/{slug ?? "<slug>"}/fixtures/
                         </code>
                         .
                     </p>

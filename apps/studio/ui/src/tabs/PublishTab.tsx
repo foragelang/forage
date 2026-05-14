@@ -33,10 +33,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
+import { slugOf } from "@/lib/path";
 import { useStudio } from "@/lib/store";
 
 export function PublishTab() {
-    const { activeSlug } = useStudio();
+    const activeFilePath = useStudio((s) => s.activeFilePath);
+    const activeSlug = activeFilePath ? slugOf(activeFilePath) : null;
     const [hubUrl, setHubUrl] = useState("https://api.foragelang.com");
     const [showSignIn, setShowSignIn] = useState(false);
 

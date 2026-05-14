@@ -229,6 +229,11 @@ pub struct WorkspaceInfo {
     /// sorted iteration on the wire so consumers see deterministic
     /// ordering.
     pub deps: BTreeMap<String, u32>,
+    /// User home directory, if discoverable. The UI uses this prefix
+    /// to render `~`-shortened paths in the workspace header. `None`
+    /// when no home directory exists (test sandboxes, some CI hosts).
+    #[ts(type = "string | null")]
+    pub home: Option<PathBuf>,
 }
 
 impl WorkspaceInfo {
@@ -241,6 +246,7 @@ impl WorkspaceInfo {
             root,
             name: manifest.name.clone(),
             deps: manifest.deps.clone(),
+            home: dirs::home_dir(),
         }
     }
 }
