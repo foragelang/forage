@@ -27,6 +27,40 @@ pub(crate) fn deployment_dir(deployments_root: &Path, slug: &str, version: u32) 
     deployments_root.join(slug).join(format!("v{version}"))
 }
 
+/// Highest `v<n>` directory present on disk for `slug`, regardless of
+/// whether a matching `deployed_versions` row exists. The deploy path
+/// uses this to pick a version that bumps past stray directories — a
+/// stray dir on disk with no DB row is the documented failure mode
+/// when an FS write succeeded but the SQLite txn rolled back. Without
+/// this scan the next deploy would pick the stray dir's number and
+/// `fs::rename` would fail with `ENOTEMPTY`.
+pub(crate) fn max_version_on_disk(deployments_root: &Path, slug: &str) -> io::Result<Option<u32>> {
+    let slug_dir = deployments_root.join(slug);
+    let read = match fs::read_dir(&slug_dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut highest: Option<u32> = None;
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        // Skip `.tmp-…` work directories. Only finalized `v<n>` dirs
+        // contribute to the max.
+        let Some(rest) = s.strip_prefix('v') else {
+            continue;
+        };
+        let Ok(n) = rest.parse::<u32>() else {
+            continue;
+        };
+        highest = Some(match highest {
+            Some(prev) if prev >= n => prev,
+            _ => n,
+        });
+    }
+    Ok(highest)
+}
+
 /// Materialize a version directory atomically. Writes the source +
 /// catalog to a temp dir, then renames into place. Caller is
 /// responsible for ensuring `version` hasn't been used yet (the DB

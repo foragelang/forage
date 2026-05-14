@@ -180,6 +180,18 @@ pub struct Daemon {
     /// Time source. Production uses `SystemClock`; tests inject a
     /// stub so they can drive scheduler ticks without wall-clock waits.
     pub(crate) clock: Arc<dyn Clock>,
+    /// Serializes the version-pick + FS write + DB insert sequence in
+    /// `deploy()`. Two concurrent `deploy(same_slug, ...)` calls would
+    /// otherwise both read the same `latest_deployed_version` outside
+    /// the txn, both try to write `v<n+1>/` on disk, and the second
+    /// would either trip the `(slug, version)` PRIMARY KEY or hit
+    /// `ENOTEMPTY` on `fs::rename`. A process-wide Mutex around the
+    /// whole sequence is enough — the daemon serves one Studio, so
+    /// concurrent deploys are a test-shape concern more than a
+    /// production throughput one. The MutexGuard is dropped before the
+    /// `schedule_changed.notify_one()` so notify ordering isn't
+    /// affected.
+    deploy_lock: Mutex<()>,
 }
 
 impl Daemon {
@@ -214,6 +226,7 @@ impl Daemon {
             scheduler_started_at: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
             clock,
+            deploy_lock: Mutex::new(()),
         }))
     }
 
@@ -470,14 +483,32 @@ impl Daemon {
         }
 
         let now_ms = self.now_ms();
-        // Pick the next version under the DB-derived ordering so two
-        // racing deploys can't pick the same number; the SQLite
-        // primary key catches any leftover collision.
-        let next_version = {
+        // Serialize the version-pick + FS write + DB insert. Without
+        // this lock two concurrent `deploy(slug, ...)` calls both read
+        // the same max version outside the txn and race on writing
+        // `v<n+1>/` on disk; the second hits the PRIMARY KEY or an
+        // `ENOTEMPTY` from `fs::rename`. The lock is process-local —
+        // the daemon serves one Studio process, so we don't need DB-
+        // level serialization across processes.
+        let _deploy_guard = self.deploy_lock.lock().expect("deploy lock poisoned");
+
+        // Pick a version that beats both the DB and the filesystem.
+        // A stray `v<n>/` dir with no DB row is the recovery state the
+        // plan describes ("filesystem write succeeded but SQLite txn
+        // rolled back leaves a stray v<next> dir on disk … the next
+        // deploy will use a higher version"). Without the FS scan,
+        // the next deploy picks the stray's number and `fs::rename`
+        // trips `ENOTEMPTY`.
+        let db_max = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
-            db::latest_deployed_version(&conn, slug)?
-                .map(|dv| dv.version + 1)
-                .unwrap_or(1)
+            db::latest_deployed_version(&conn, slug)?.map(|dv| dv.version)
+        };
+        let fs_max = deployments::max_version_on_disk(&self.deployments_dir, slug)?;
+        let next_version = match (db_max, fs_max) {
+            (Some(a), Some(b)) => a.max(b) + 1,
+            (Some(a), None) => a + 1,
+            (None, Some(b)) => b + 1,
+            (None, None) => 1,
         };
 
         deployments::write_atomic(&self.deployments_dir, slug, next_version, &source, &catalog)?;
@@ -504,6 +535,7 @@ impl Daemon {
             }
             tx.commit().map_err(DaemonError::Sqlite)?;
         }
+        drop(_deploy_guard);
         self.schedule_changed.notify_one();
         Ok(dv)
     }

@@ -252,7 +252,88 @@ async fn run_once_uses_deployed_source() {
     assert_eq!(sr.recipe_version, Some(1));
 }
 
-/// Round-trip every `ScheduledRun.recipe_version` shape we persist
+/// A stray `v<n>/` directory on disk with no matching `deployed_versions`
+/// row is the documented recovery state when an FS write succeeded but
+/// the SQLite txn rolled back. The next `deploy()` must bump past the
+/// stray dir rather than overwriting it — the on-disk source from the
+/// failed attempt stays visible to the user, and the new deploy lands
+/// at the next version.
+#[test]
+fn deploy_skips_past_stray_version_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws_root = tmp.path().to_path_buf();
+    let slug = "fixture-ok";
+    init_workspace(&ws_root, slug, RECIPE);
+    let daemon = Daemon::open(ws_root.clone()).unwrap();
+
+    // Plant a stray v1 directory before any real deploy lands. The
+    // deployments dir lives at <ws_root>/.forage/deployments/<slug>/.
+    let stray = ws_root
+        .join(".forage")
+        .join("deployments")
+        .join(slug)
+        .join("v1");
+    std::fs::create_dir_all(&stray).unwrap();
+    std::fs::write(stray.join("recipe.forage"), "STRAY").unwrap();
+
+    let catalog = catalog_for(RECIPE, &ws_root);
+    let dv = daemon
+        .deploy(slug, RECIPE.to_string(), catalog)
+        .expect("deploy must succeed past the stray dir");
+    assert_eq!(dv.version, 2, "must bump past stray v1, not overwrite it");
+
+    // Stray dir is untouched — that's the whole point of the bump.
+    assert_eq!(std::fs::read_to_string(stray.join("recipe.forage")).unwrap(), "STRAY");
+
+    // The new deploy materialized at v2 with the real content.
+    let v2 = ws_root
+        .join(".forage")
+        .join("deployments")
+        .join(slug)
+        .join("v2")
+        .join("recipe.forage");
+    assert_eq!(std::fs::read_to_string(&v2).unwrap(), RECIPE);
+}
+
+/// Two concurrent `deploy(slug, ...)` calls must land at distinct
+/// versions. Without the deploy lock, both would read the same
+/// `latest_deployed_version` outside the txn and race on `fs::rename`
+/// — one would land at v1, the other would either trip the
+/// `(slug, version)` PRIMARY KEY or hit `ENOTEMPTY` on rename.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_deploys_land_at_distinct_versions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws_root = tmp.path().to_path_buf();
+    let slug = "fixture-ok";
+    init_workspace(&ws_root, slug, RECIPE);
+    let daemon = Daemon::open(ws_root.clone()).unwrap();
+    let catalog = catalog_for(RECIPE, &ws_root);
+
+    let d1 = daemon.clone();
+    let d2 = daemon.clone();
+    let cat1 = catalog.clone();
+    let cat2 = catalog.clone();
+    let slug1 = slug.to_string();
+    let slug2 = slug.to_string();
+    let src1 = RECIPE.to_string();
+    let src2 = RECIPE.to_string();
+
+    let (r1, r2) = tokio::join!(
+        tokio::task::spawn_blocking(move || d1.deploy(&slug1, src1, cat1)),
+        tokio::task::spawn_blocking(move || d2.deploy(&slug2, src2, cat2)),
+    );
+    let dv1 = r1.expect("join 1").expect("deploy 1");
+    let dv2 = r2.expect("join 2").expect("deploy 2");
+
+    let mut versions = [dv1.version, dv2.version];
+    versions.sort();
+    assert_eq!(versions, [1, 2], "two concurrent deploys must produce v1 and v2");
+
+    let listed = daemon.deployed_versions(slug).unwrap();
+    assert_eq!(listed.len(), 2);
+}
+
+
 /// — `None` for the no-deployment short-circuit, `Some(v)` for runs
 /// where the engine resolved a deployed version. Without this, the
 /// column drops on the SELECT projection silently turn every row's
