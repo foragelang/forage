@@ -57,6 +57,14 @@ pub enum WorkspaceFileKind {
     /// A header-less declarations file. Contributes to the catalog but
     /// is never run on its own.
     Declarations,
+    /// A `.forage` file that exists on disk but failed to parse. The
+    /// entry is retained (rather than silently dropped) so the daemon
+    /// can surface a broken-recipe status — a single bad file shouldn't
+    /// take down the whole workspace, but it also shouldn't disappear
+    /// from the user's view. `slug` is best-effort from path layout;
+    /// the parser couldn't tell us whether the file was *meant* to be
+    /// a recipe or a declarations file.
+    Broken { slug: Option<String>, error: String },
 }
 
 /// Merged type/enum namespace for a recipe-validation pass. Built by
@@ -128,8 +136,6 @@ pub enum WorkspaceError {
     },
     #[error("expected a recipe at {path} but found a header-less declarations file")]
     ExpectedRecipe { path: PathBuf },
-    #[error("recipe path {path} has no recoverable file stem")]
-    InvalidRecipePath { path: PathBuf },
     #[error(
         "type '{name}' is declared in multiple workspace declarations files: {}",
         paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
@@ -215,18 +221,37 @@ fn scan_dir(
         }
         if ft.is_file() && path.extension().is_some_and(|e| e == "forage") {
             let source = fs::read_to_string(&path)?;
-            let parsed = parse_workspace_file(&source).map_err(|source| WorkspaceError::Parse {
-                path: path.clone(),
-                source,
-            })?;
-            let kind = match parsed {
-                WorkspaceFile::Recipe(_) => {
-                    let slug =
-                        derive_slug(root, &path).ok_or_else(|| {
-                            WorkspaceError::InvalidRecipePath { path: path.clone() }
-                        })?;
-                    WorkspaceFileKind::Recipe { slug }
+            // A single broken recipe used to abort the entire workspace
+            // load, which cascaded into "Studio won't even start" when
+            // the daemon library held an unparseable file. Capture the
+            // failure as a `Broken` entry instead — the engine won't
+            // try to run it, but the daemon surfaces it through the
+            // recipe-status API so the user can find and fix it. Slug
+            // is derived from path layout where possible since the
+            // parser can't tell us whether the file was *meant* to be
+            // a recipe or a declarations file.
+            let parsed = match parse_workspace_file(&source) {
+                Ok(p) => p,
+                Err(err) => {
+                    let slug = derive_slug(root, &path);
+                    out.push(WorkspaceFileEntry {
+                        path,
+                        kind: WorkspaceFileKind::Broken {
+                            slug,
+                            error: err.to_string(),
+                        },
+                    });
+                    continue;
                 }
+            };
+            let kind = match parsed {
+                WorkspaceFile::Recipe(_) => match derive_slug(root, &path) {
+                    Some(slug) => WorkspaceFileKind::Recipe { slug },
+                    None => WorkspaceFileKind::Broken {
+                        slug: None,
+                        error: "recipe path has no recoverable file stem".into(),
+                    },
+                },
                 WorkspaceFile::Declarations(_) => WorkspaceFileKind::Declarations,
             };
             out.push(WorkspaceFileEntry { path, kind });
@@ -271,6 +296,15 @@ impl Workspace {
         self.files
             .iter()
             .filter(|f| matches!(f.kind, WorkspaceFileKind::Declarations))
+    }
+
+    /// All `.forage` files that failed to parse, in path order. Used by
+    /// the daemon's recipe-status surface to flag unparseable files in
+    /// the editor without aborting workspace load.
+    pub fn broken(&self) -> impl Iterator<Item = &WorkspaceFileEntry> {
+        self.files
+            .iter()
+            .filter(|f| matches!(f.kind, WorkspaceFileKind::Broken { .. }))
     }
 
     /// Build a merged `TypeCatalog` for validating one recipe in this
@@ -531,6 +565,70 @@ mod tests {
         // Recipe-local override wins.
         assert_eq!(product.fields.len(), 2);
         assert!(product.fields.iter().any(|f| f.name == "terpenes"));
+    }
+
+    #[test]
+    fn broken_recipe_is_captured_not_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), "");
+        // One good recipe plus one syntactically-broken one. The
+        // workspace must still load — the broken one becomes a
+        // Broken entry so the daemon can surface it.
+        write(
+            &root.join("good").join("recipe.forage"),
+            "recipe \"good\"\nengine http\n",
+        );
+        write(
+            &root.join("bad").join("recipe.forage"),
+            // Missing `engine` line + dangling `for` makes the parser
+            // bail out. Exact error text is the parser's concern; we
+            // just need *some* parse failure.
+            "recipe \"bad\"\nfor in {{ }}\n",
+        );
+
+        let ws = load(root).expect("load must succeed despite broken file");
+        let recipes: Vec<_> = ws.recipes().collect();
+        let broken: Vec<_> = ws.broken().collect();
+
+        assert_eq!(recipes.len(), 1);
+        assert!(
+            matches!(&recipes[0].kind, WorkspaceFileKind::Recipe { slug } if slug == "good"),
+            "got {:?}",
+            recipes[0].kind,
+        );
+        assert_eq!(broken.len(), 1);
+        match &broken[0].kind {
+            WorkspaceFileKind::Broken { slug, error } => {
+                assert_eq!(slug.as_deref(), Some("bad"));
+                assert!(!error.is_empty(), "error message should not be empty");
+            }
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declarations_parse_failure_is_captured_too() {
+        // A header-less `.forage` file with a syntax error also lands
+        // in the Broken bucket — slug derived from filename stem since
+        // it isn't under a `<slug>/recipe.forage` layout.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), "");
+        write(
+            &root.join("shared.forage"),
+            // `type` without a name is a parse error.
+            "type { id: String }\n",
+        );
+        let ws = load(root).unwrap();
+        let broken: Vec<_> = ws.broken().collect();
+        assert_eq!(broken.len(), 1);
+        match &broken[0].kind {
+            WorkspaceFileKind::Broken { slug, .. } => {
+                assert_eq!(slug.as_deref(), Some("shared"));
+            }
+            other => panic!("expected Broken, got {other:?}"),
+        }
     }
 
     #[test]
