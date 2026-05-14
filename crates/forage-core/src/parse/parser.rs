@@ -229,14 +229,42 @@ impl Parser {
     ///
     /// Anything else at top level is a parse error — the file's purpose
     /// is to share type names with sibling recipes in a workspace.
+    /// Names must be unique across both `type` and `enum` decls in the
+    /// same file; the recipe validator doesn't run on declarations
+    /// files, so the duplicate has to surface here or it never will.
     fn parse_declarations_file(&mut self) -> Result<DeclarationsFile, ParseError> {
         let mut types = Vec::new();
         let mut enums = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         while self.peek().is_some() {
             match self.peek().cloned() {
                 Some(Token::Keyword(k)) => match k.as_str() {
-                    "type" => types.push(self.parse_type_decl()?),
-                    "enum" => enums.push(self.parse_enum_decl()?),
+                    "type" => {
+                        let t = self.parse_type_decl()?;
+                        if !seen.insert(t.name.clone()) {
+                            return Err(ParseError::Generic {
+                                span: t.span,
+                                message: format!(
+                                    "duplicate declaration '{}' in declarations file",
+                                    t.name
+                                ),
+                            });
+                        }
+                        types.push(t);
+                    }
+                    "enum" => {
+                        let e = self.parse_enum_decl()?;
+                        if !seen.insert(e.name.clone()) {
+                            return Err(ParseError::Generic {
+                                span: e.span,
+                                message: format!(
+                                    "duplicate declaration '{}' in declarations file",
+                                    e.name
+                                ),
+                            });
+                        }
+                        enums.push(e);
+                    }
                     other => {
                         return Err(self.generic(&format!(
                             "declarations file may only contain `type` and `enum` declarations; found '{other}'"

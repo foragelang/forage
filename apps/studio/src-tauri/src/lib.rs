@@ -2,12 +2,16 @@
 
 mod browser_driver;
 mod commands;
+mod daemon_browser;
 mod menu;
 mod state;
 mod workspace;
 
+use std::sync::Arc;
+
+use daemon_browser::StudioLiveBrowserDriver;
 use state::StudioState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -47,9 +51,9 @@ pub fn run() {
             // Adding tauri-plugin-log on top panics with "logger already set."
             //
             // Drop an empty `forage.toml` at the workspace root on first
-            // launch so an existing user library quietly becomes a
-            // workspace. The check is idempotent — no overwrite if the
-            // manifest is already there. Failure surfaces as a real
+            // launch so an existing user workspace quietly becomes
+            // discoverable. The check is idempotent — no overwrite if
+            // the manifest is already there. Failure surfaces as a real
             // setup error: Studio can't operate without a writable
             // workspace, so silent fallback isn't useful.
             let ws_root = workspace::workspace_root();
@@ -59,7 +63,37 @@ pub fn run() {
                     ws_root.display()
                 )
             })?;
-            app.manage(StudioState::default());
+
+            // Open the daemon; it loads the workspace once at
+            // construction and serves it through `Daemon::workspace()`
+            // for both its own scheduler and Studio's command paths.
+            let daemon = forage_daemon::Daemon::open(ws_root.clone()).map_err(|e| {
+                format!("failed to open daemon at {}: {e}", ws_root.display())
+            })?;
+
+            // Plug Studio's live browser driver into the daemon so
+            // scheduled `engine browser` recipes can run. Without
+            // this, the daemon fails those runs with
+            // `NoBrowserDriver` at `run_once` time.
+            let handle = app.handle().clone();
+            daemon.set_browser_driver(Arc::new(StudioLiveBrowserDriver::new(handle.clone())));
+
+            // Forward daemon run completions to the frontend as a
+            // single Tauri event. The store-keeping (refresh runs
+            // sidebar, refetch scheduled-runs) happens entirely in
+            // the UI's event listener.
+            let cb_handle = handle.clone();
+            daemon.on_run_completed(Box::new(move |sr| {
+                if let Err(e) = cb_handle.emit("forage:daemon-run-completed", sr) {
+                    tracing::warn!(error = %e, "emit daemon-run-completed failed");
+                }
+            }));
+
+            // Spawn the scheduler last so it doesn't tick before the
+            // browser driver / callback are in place.
+            daemon.start_scheduler();
+
+            app.manage(StudioState::new(daemon));
             let m = menu::build_menu(app.handle())?;
             app.set_menu(m)?;
             Ok(())
@@ -68,9 +102,6 @@ pub fn run() {
             menu::on_menu_event(app, event);
         })
         .invoke_handler(tauri::generate_handler![
-            commands::list_recipes,
-            commands::load_recipe,
-            commands::save_recipe,
             commands::validate_recipe,
             commands::create_recipe,
             commands::delete_recipe,
@@ -91,6 +122,19 @@ pub fn run() {
             commands::auth_poll_device,
             commands::auth_logout,
             commands::studio_version,
+            // Workspace + files + daemon.
+            commands::current_workspace,
+            commands::list_workspace_files,
+            commands::load_file,
+            commands::save_file,
+            commands::daemon_status,
+            commands::list_runs,
+            commands::get_run,
+            commands::configure_run,
+            commands::remove_run,
+            commands::trigger_run,
+            commands::list_scheduled_runs,
+            commands::load_run_records,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forage Studio");

@@ -12,27 +12,29 @@
 //!   stale state from a previous run is dropped when the new session
 //!   replaces it.
 //! - **Mutexes** remain only where genuine mutation through `&self`
-//!   would otherwise need `RwLock`: the dirty-buffer cache, and the
-//!   muda `Menu` handle (only accessed from the Tauri main thread, but
-//!   the type isn't easy to wrap in `ArcSwap`).
+//!   would otherwise need `RwLock`: the muda `Menu` handle (only
+//!   accessed from the Tauri main thread, but the type isn't easy to
+//!   wrap in `ArcSwap`).
+//!
+//! Studio doesn't keep its own `Workspace`. The daemon already loads
+//! one at `Daemon::open` and exposes it via `Daemon::workspace()`;
+//! every Studio command path reads through that single source so the
+//! two views can't drift.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use forage_daemon::Daemon;
 use forage_http::ResumeAction;
-use forage_hub::AuthStore;
 use tauri::Wry;
 use tokio::sync::{Notify, oneshot};
 
-#[derive(Default)]
-#[allow(dead_code)] // wired in when autosave + cached auth lookups land.
 pub struct StudioState {
-    /// Open-recipe scratch state — slug → unsaved buffer.
-    pub dirty_buffers: Mutex<std::collections::HashMap<String, String>>,
-    /// Auth store wrapper.
-    pub auth_store: AuthStore,
+    /// In-process daemon for scheduling, run history, and output stores.
+    /// Owned for the life of the Studio process; closed during teardown.
+    pub daemon: Arc<Daemon>,
     /// Cancellation signal for the in-flight `run_recipe` call. The
     /// frontend `cancel_run` command notifies through this; `run_recipe`
     /// selects against it so the engine future drops mid-fetch. Lifecycle:
@@ -53,6 +55,22 @@ pub struct StudioState {
     /// `debug_resume` command and the engine-side `StudioDebugger` pull
     /// it out of here. `None` means no run is in flight.
     pub debug_session: ArcSwapOption<DebugSession>,
+}
+
+impl StudioState {
+    /// Build a `StudioState` around an already-opened daemon.
+    /// `lib.rs::run` does the construction at app boot so the daemon's
+    /// scheduler is alive before any command fires; tests construct
+    /// one through here too.
+    pub fn new(daemon: Arc<Daemon>) -> Self {
+        Self {
+            daemon,
+            run_cancel: ArcSwapOption::empty(),
+            last_context_menu: Mutex::new(None),
+            breakpoints: ArcSwap::new(Arc::new(HashSet::new())),
+            debug_session: ArcSwapOption::empty(),
+        }
+    }
 }
 
 /// Per-run debug coordination. Holds the pending oneshot the engine task

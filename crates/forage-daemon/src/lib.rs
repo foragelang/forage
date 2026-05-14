@@ -213,6 +213,15 @@ impl Daemon {
         &self.workspace_root
     }
 
+    /// Read-lock guard on the daemon's loaded `Workspace`. Studio's
+    /// Tauri commands read this when serving `current_workspace` and
+    /// `list_workspace_files` instead of holding their own copy —
+    /// dual ownership was the bug. Held briefly and never across
+    /// `.await`; `refresh_workspace()` takes the write side.
+    pub fn workspace(&self) -> std::sync::RwLockReadGuard<'_, Workspace> {
+        self.workspace.read().expect("workspace lock poisoned")
+    }
+
     /// "Now" through the configured clock. Production = wall clock;
     /// tests = stubbed timeline.
     pub fn now_ms(&self) -> i64 {

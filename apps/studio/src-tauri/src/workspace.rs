@@ -4,13 +4,15 @@
 //! workspace itself is marked by a `forage.toml` at the root and may
 //! include header-less declarations files shared across recipes.
 
+use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use ts_rs::TS;
 
-use forage_core::workspace::{MANIFEST_NAME, Manifest, serialize_manifest};
+use forage_core::workspace::{MANIFEST_NAME, Manifest, Workspace, serialize_manifest};
 
 /// On-disk location of the user's recipe workspace.
 ///
@@ -35,7 +37,7 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Drop an empty `forage.toml` at `<workspace_root>/forage.toml` if it
-/// doesn't exist. Studio calls this on app init so an existing library
+/// doesn't exist. Studio calls this on app init so an existing folder
 /// of recipes silently becomes a workspace on first launch.
 pub fn ensure_workspace_manifest(root: &Path) -> std::io::Result<()> {
     fs::create_dir_all(root)?;
@@ -46,48 +48,6 @@ pub fn ensure_workspace_manifest(root: &Path) -> std::io::Result<()> {
     let body = serialize_manifest(&Manifest::default())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     fs::write(&path, body)
-}
-
-#[derive(Debug, Serialize, Clone, TS)]
-#[ts(export)]
-pub struct RecipeEntry {
-    pub slug: String,
-    #[ts(type = "string")]
-    pub path: PathBuf,
-    pub has_fixtures: bool,
-}
-
-pub fn list_entries() -> Vec<RecipeEntry> {
-    let root = workspace_root();
-    let _ = fs::create_dir_all(&root);
-    let mut out = Vec::new();
-    let Ok(dir) = fs::read_dir(&root) else {
-        return out;
-    };
-    for entry in dir.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let recipe_path = path.join("recipe.forage");
-        if !recipe_path.exists() {
-            continue;
-        }
-        let slug = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(String::from)
-            .unwrap_or_default();
-        let has_fixtures = path.join("fixtures").join("captures.jsonl").exists()
-            || path.join("fixtures").join("inputs.json").exists();
-        out.push(RecipeEntry {
-            slug,
-            path,
-            has_fixtures,
-        });
-    }
-    out.sort_by(|a, b| a.slug.cmp(&b.slug));
-    out
 }
 
 pub fn recipe_path(slug: &str) -> PathBuf {
@@ -130,11 +90,11 @@ pub fn read_source(slug: &str) -> std::io::Result<String> {
     fs::read_to_string(recipe_path(slug))
 }
 
-/// Delete a recipe directory under the library root.
+/// Delete a recipe directory under the workspace root.
 ///
 /// Refuses anything that isn't a single path segment (no slashes, no `..`),
-/// so a malicious slug can't escape the library root with `../etc/passwd`.
-/// The slug must already exist as a directory directly under the library.
+/// so a malicious slug can't escape the workspace root with `../etc/passwd`.
+/// The slug must already exist as a directory directly under the workspace.
 pub fn delete_recipe(slug: &str) -> std::io::Result<()> {
     delete_recipe_in(&workspace_root(), slug)
 }
@@ -148,25 +108,17 @@ fn delete_recipe_in(root: &Path, slug: &str) -> std::io::Result<()> {
         ));
     }
     let dir = root.join(slug);
-    // Confirm the target sits inside the library root before deleting — a
+    // Confirm the target sits inside the workspace root before deleting — a
     // hardlink or symlink would otherwise let us nuke unrelated content.
     let canonical = dir.canonicalize()?;
     let root_canonical = root.canonicalize()?;
     if !canonical.starts_with(&root_canonical) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("recipe path {canonical:?} escapes library root {root_canonical:?}"),
+            format!("recipe path {canonical:?} escapes workspace root {root_canonical:?}"),
         ));
     }
     fs::remove_dir_all(&dir)
-}
-
-pub fn write_source(slug: &str, source: &str) -> std::io::Result<()> {
-    let path = recipe_path(slug);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, source)
 }
 
 pub fn read_inputs(slug: &str) -> indexmap::IndexMap<String, serde_json::Value> {
@@ -213,7 +165,7 @@ pub fn read_captures(slug: &str) -> Vec<forage_replay::Capture> {
 /// Per-recipe breakpoint persistence. One JSON sidecar at
 /// `<workspace_root>/breakpoints.json` keyed by recipe slug. The file is
 /// missing until the user sets a first breakpoint, so the empty-map
-/// case is the steady state for fresh libraries.
+/// case is the steady state for fresh workspaces.
 pub fn breakpoints_path() -> PathBuf {
     workspace_root().join("breakpoints.json")
 }
@@ -256,6 +208,216 @@ pub fn ensure_path<P: AsRef<Path>>(p: P) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Workspace info + file tree wire types.
+// ---------------------------------------------------------------------
+
+/// Wire view of the loaded `Workspace`. Carries the manifest summary
+/// and the root path — the file list is served separately by
+/// `list_workspace_files` so the UI can refetch the tree without
+/// re-shipping the manifest on every poll.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct WorkspaceInfo {
+    #[ts(type = "string")]
+    pub root: PathBuf,
+    /// Publish slug from `forage.toml`, e.g. `"dima/cannabis"`.
+    pub name: Option<String>,
+    /// `"author/slug"` → integer hub version. BTreeMap preserves
+    /// sorted iteration on the wire so consumers see deterministic
+    /// ordering.
+    pub deps: BTreeMap<String, u32>,
+}
+
+impl WorkspaceInfo {
+    pub fn from_workspace(ws: &Workspace) -> Self {
+        Self::from_manifest(ws.root.clone(), &ws.manifest)
+    }
+
+    pub fn from_manifest(root: PathBuf, manifest: &Manifest) -> Self {
+        Self {
+            root,
+            name: manifest.name.clone(),
+            deps: manifest.deps.clone(),
+        }
+    }
+}
+
+/// Recursive file-tree node returned by `list_workspace_files`. The
+/// tree is rooted at the workspace root; each `File` carries a precise
+/// `FileKind` classification so the UI can render the right affordance
+/// (recipe -> open in editor, fixture -> open as JSON, etc.).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum FileNode {
+    File {
+        name: String,
+        #[ts(type = "string")]
+        path: PathBuf,
+        file_kind: FileKind,
+    },
+    Folder {
+        name: String,
+        #[ts(type = "string")]
+        path: PathBuf,
+        children: Vec<FileNode>,
+    },
+}
+
+/// File classification rules (DESIGN_HANDOFF.md):
+///   `forage.toml`               → `Manifest`
+///   `<slug>/recipe.forage`      → `Recipe`
+///   `*.forage` at workspace root → `Declarations`
+///   `<slug>/fixtures/*.json`    → `Fixture`
+///   `<slug>/snapshot.json`      → `Snapshot`
+///   everything else             → `Other`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum FileKind {
+    Recipe,
+    Declarations,
+    Fixture,
+    Snapshot,
+    Manifest,
+    Other,
+}
+
+/// Walk `root` recursively and return a single `Folder` node with
+/// classified `File` children. Hidden entries (`.*`) — including the
+/// daemon's working dir `.forage/` — are skipped so the file tree
+/// reflects what the user authored, not what the runtime cached.
+pub fn build_file_tree(root: &Path) -> io::Result<FileNode> {
+    let name = root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.display().to_string());
+    let children = read_children(root, root)?;
+    Ok(FileNode::Folder {
+        name,
+        path: root.to_path_buf(),
+        children,
+    })
+}
+
+fn read_children(root: &Path, dir: &Path) -> io::Result<Vec<FileNode>> {
+    let raw = match fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    // Capture `(is_dir, name, path)` once per entry. Without this,
+    // the comparator below ends up calling `entry.file_type()` —
+    // an `lstat` syscall — twice per pairwise compare, so a sort
+    // of N entries is ~2N log N syscalls. With the upcoming 4s
+    // refetch loop in the sidebar, that's needless work.
+    struct Item {
+        is_dir: bool,
+        name: std::ffi::OsString,
+        path: PathBuf,
+        is_regular_file: bool,
+    }
+
+    let mut items: Vec<Item> = Vec::new();
+    for entry in raw.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let ft = entry.file_type()?;
+        items.push(Item {
+            is_dir: ft.is_dir(),
+            is_regular_file: ft.is_file(),
+            name,
+            path: entry.path(),
+        });
+    }
+
+    // Stable, predictable ordering: directories first, then files,
+    // each sorted by name (case-sensitive). The UI doesn't need to
+    // sort, and the tree diffs cleanly across refetches.
+    items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
+    });
+
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let name = item.name.to_string_lossy().into_owned();
+        if item.is_dir {
+            let children = read_children(root, &item.path)?;
+            out.push(FileNode::Folder {
+                name,
+                path: item.path,
+                children,
+            });
+        } else if item.is_regular_file {
+            let file_kind = classify_file(root, &item.path);
+            out.push(FileNode::File {
+                name,
+                path: item.path,
+                file_kind,
+            });
+        }
+        // Symlinks / other entries are skipped — a workspace is a
+        // plain tree of files and folders.
+    }
+    Ok(out)
+}
+
+fn classify_file(root: &Path, path: &Path) -> FileKind {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let components: Vec<_> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let last = match components.last() {
+        Some(s) => s.as_str(),
+        None => return FileKind::Other,
+    };
+
+    // Manifest sits at the workspace root.
+    if components.len() == 1 && last == MANIFEST_NAME {
+        return FileKind::Manifest;
+    }
+
+    let extension = path
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // `.forage` files: recipes live under a folder, declarations sit
+    // at the workspace root.
+    if extension == "forage" {
+        if components.len() == 1 {
+            return FileKind::Declarations;
+        }
+        if components.len() == 2 && last == "recipe.forage" {
+            return FileKind::Recipe;
+        }
+        // A `.forage` file two-deep that isn't `recipe.forage` is
+        // unclassified — the workspace layout doesn't reserve that
+        // slot. Better to surface it as Other than to silently
+        // mis-tag it as a recipe.
+        return FileKind::Other;
+    }
+
+    // `<slug>/fixtures/<name>.json` — captures / inputs / etc.
+    if extension == "json" {
+        if components.len() == 3 && components[1] == "fixtures" {
+            return FileKind::Fixture;
+        }
+        if components.len() == 2 && last == "snapshot.json" {
+            return FileKind::Snapshot;
+        }
+    }
+
+    FileKind::Other
 }
 
 #[cfg(test)]
@@ -307,5 +469,172 @@ mod tests {
         let err = delete_recipe_in(tmp.path(), "evil").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(outside.path().join("important.txt").exists());
+    }
+
+    /// Lay out a synthetic workspace and verify the tree shape and
+    /// per-file classifications match the rules in DESIGN_HANDOFF.md.
+    #[test]
+    fn build_file_tree_classifies_and_shapes_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Files at the root.
+        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(
+            root.join("cannabis.forage"),
+            "type Dispensary { id: String }\n",
+        )
+        .unwrap();
+        // Hidden entries — the daemon's working dir and a dotfile —
+        // must be skipped.
+        fs::create_dir_all(root.join(".forage").join("data")).unwrap();
+        fs::write(root.join(".forage").join("daemon.sqlite"), "").unwrap();
+        fs::write(root.join(".DS_Store"), "").unwrap();
+
+        // One recipe with fixtures + snapshot.
+        let recipe_dir = root.join("trilogy-rec");
+        fs::create_dir_all(recipe_dir.join("fixtures")).unwrap();
+        fs::write(
+            recipe_dir.join("recipe.forage"),
+            "recipe \"trilogy-rec\"\nengine http\n",
+        )
+        .unwrap();
+        fs::write(recipe_dir.join("fixtures").join("inputs.json"), "{}").unwrap();
+        fs::write(recipe_dir.join("snapshot.json"), "{}").unwrap();
+        // Random non-tracked file under the recipe dir.
+        fs::write(recipe_dir.join("README.md"), "").unwrap();
+
+        let tree = build_file_tree(root).unwrap();
+        let FileNode::Folder { children, .. } = tree else {
+            panic!("expected Folder at root");
+        };
+
+        // Hidden entries are gone.
+        for child in &children {
+            match child {
+                FileNode::File { name, .. } | FileNode::Folder { name, .. } => {
+                    assert!(
+                        !name.starts_with('.'),
+                        "expected hidden entry to be skipped, got {name}"
+                    );
+                }
+            }
+        }
+
+        // Collect (relative-name, file_kind) pairs for assertions.
+        let mut by_name: BTreeMap<String, FileKind> = BTreeMap::new();
+        let mut folders: BTreeMap<String, Vec<FileNode>> = BTreeMap::new();
+        for child in children {
+            match child {
+                FileNode::File {
+                    name, file_kind, ..
+                } => {
+                    by_name.insert(name, file_kind);
+                }
+                FileNode::Folder {
+                    name, children, ..
+                } => {
+                    folders.insert(name, children);
+                }
+            }
+        }
+
+        // Root-level classification.
+        assert_eq!(by_name.get("forage.toml").copied(), Some(FileKind::Manifest));
+        assert_eq!(
+            by_name.get("cannabis.forage").copied(),
+            Some(FileKind::Declarations)
+        );
+        // Recipe folder is present.
+        let recipe_children = folders.get("trilogy-rec").expect("recipe folder");
+
+        let mut recipe_files: BTreeMap<String, FileKind> = BTreeMap::new();
+        let mut recipe_subfolders: BTreeMap<String, Vec<FileNode>> = BTreeMap::new();
+        for child in recipe_children {
+            match child {
+                FileNode::File {
+                    name, file_kind, ..
+                } => {
+                    recipe_files.insert(name.clone(), *file_kind);
+                }
+                FileNode::Folder {
+                    name, children, ..
+                } => {
+                    recipe_subfolders.insert(name.clone(), children.clone());
+                }
+            }
+        }
+        assert_eq!(
+            recipe_files.get("recipe.forage").copied(),
+            Some(FileKind::Recipe)
+        );
+        assert_eq!(
+            recipe_files.get("snapshot.json").copied(),
+            Some(FileKind::Snapshot)
+        );
+        // Random file is classified as Other, not silently dropped.
+        assert_eq!(recipe_files.get("README.md").copied(), Some(FileKind::Other));
+
+        // Fixtures subfolder contains a fixture file.
+        let fixtures = recipe_subfolders.get("fixtures").expect("fixtures folder");
+        let inputs = fixtures
+            .iter()
+            .find_map(|n| match n {
+                FileNode::File {
+                    name, file_kind, ..
+                } if name == "inputs.json" => Some(*file_kind),
+                _ => None,
+            })
+            .expect("inputs.json");
+        assert_eq!(inputs, FileKind::Fixture);
+    }
+
+    /// Folders come before files in a deterministic order. Stable
+    /// ordering matters for diffing the tree across refetches in the
+    /// UI — a churn-y order would force needless re-renders.
+    #[test]
+    fn build_file_tree_orders_folders_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(root.join("z.forage"), "").unwrap();
+        fs::create_dir_all(root.join("a-folder")).unwrap();
+        fs::write(root.join("a-folder").join("recipe.forage"), "").unwrap();
+
+        let tree = build_file_tree(root).unwrap();
+        let FileNode::Folder { children, .. } = tree else {
+            panic!("expected Folder at root");
+        };
+        let names: Vec<_> = children
+            .iter()
+            .map(|c| match c {
+                FileNode::File { name, .. } | FileNode::Folder { name, .. } => name.clone(),
+            })
+            .collect();
+        // a-folder is a directory; both .forage and forage.toml are
+        // files. The directory must come first.
+        let folder_idx = names.iter().position(|n| n == "a-folder").unwrap();
+        let toml_idx = names.iter().position(|n| n == "forage.toml").unwrap();
+        let z_idx = names.iter().position(|n| n == "z.forage").unwrap();
+        assert!(folder_idx < toml_idx);
+        assert!(folder_idx < z_idx);
+    }
+
+    #[test]
+    fn workspace_info_carries_manifest_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("forage.toml"),
+            r#"name = "dima/cannabis"
+            [deps]
+            "dima/shared-types" = 3
+            "#,
+        )
+        .unwrap();
+        let ws = forage_core::workspace::load(root).unwrap();
+        let info = WorkspaceInfo::from_workspace(&ws);
+        assert_eq!(info.name.as_deref(), Some("dima/cannabis"));
+        assert_eq!(info.deps.get("dima/shared-types"), Some(&3));
     }
 }

@@ -8,46 +8,56 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { DaemonStatus } from "../bindings/DaemonStatus";
 import type { DebugFrame } from "../bindings/DebugFrame";
 import type { DebugScope } from "../bindings/DebugScope";
 import type { Diagnostic } from "../bindings/Diagnostic";
 import type { DiagnosticReport } from "../bindings/DiagnosticReport";
+import type { FileNode } from "../bindings/FileNode";
 import type { HoverInfo } from "../bindings/HoverInfo";
 import type { IterationPause } from "../bindings/IterationPause";
 import type { LanguageDictionary } from "../bindings/LanguageDictionary";
 import type { PausePayload } from "../bindings/PausePayload";
 import type { RecipeRecord } from "../bindings/RecipeRecord";
-import type { RecipeEntry } from "../bindings/RecipeEntry";
 import type { RecipeOutline } from "../bindings/RecipeOutline";
 import type { ResumeAction } from "../bindings/ResumeAction";
+import type { Run } from "../bindings/Run";
+import type { RunConfig } from "../bindings/RunConfig";
 import type { RunEvent } from "../bindings/RunEvent";
 import type { RunOutcome } from "../bindings/RunOutcome";
+import type { ScheduledRun } from "../bindings/ScheduledRun";
 import type { Snapshot } from "../bindings/Snapshot";
 import type { StepLocation } from "../bindings/StepLocation";
 import type { StepPause } from "../bindings/StepPause";
 import type { ValidationOutcome } from "../bindings/ValidationOutcome";
+import type { WorkspaceInfo } from "../bindings/WorkspaceInfo";
 
 // Re-export for the rest of the UI. Importing from "lib/api" rather than
 // directly from "bindings/…" keeps the call sites stable if bindings move.
 export type {
+    DaemonStatus,
     DebugFrame,
     DebugScope,
     Diagnostic,
     DiagnosticReport,
+    FileNode,
     HoverInfo,
     IterationPause,
     LanguageDictionary,
     PausePayload,
-    RecipeEntry,
     RecipeOutline,
     RecipeRecord,
     ResumeAction,
+    Run,
+    RunConfig,
     RunEvent,
     RunOutcome,
+    ScheduledRun,
     Snapshot,
     StepLocation,
     StepPause,
     ValidationOutcome,
+    WorkspaceInfo,
 };
 
 // `DebugAction` is a Studio-only TS alias for the resume verbs sent
@@ -80,10 +90,11 @@ export const DEBUG_PAUSED_EVENT = "forage:debug-paused";
 
 export const api = {
     version: () => invoke<string>("studio_version"),
-    listRecipes: () => invoke<RecipeEntry[]>("list_recipes"),
-    loadRecipe: (slug: string) => invoke<string>("load_recipe", { slug }),
-    saveRecipe: (slug: string, source: string) =>
-        invoke<ValidationOutcome>("save_recipe", { slug, source }),
+    currentWorkspace: () => invoke<WorkspaceInfo>("current_workspace"),
+    listWorkspaceFiles: () => invoke<FileNode>("list_workspace_files"),
+    loadFile: (path: string) => invoke<string>("load_file", { path }),
+    saveFile: (path: string, source: string) =>
+        invoke<ValidationOutcome>("save_file", { path, source }),
     validateRecipe: (source: string) =>
         invoke<ValidationOutcome>("validate_recipe", { source }),
     createRecipe: () => invoke<string>("create_recipe"),
@@ -116,4 +127,29 @@ export const api = {
     authPollDevice: (hubUrl: string = HUB, deviceCode: string) =>
         invoke<PollOutcome>("auth_poll_device", { hubUrl, deviceCode }),
     authLogout: (hubUrl: string = HUB) => invoke<void>("auth_logout", { hubUrl }),
+
+    // Daemon — Run scheduling + history.
+    daemonStatus: () => invoke<DaemonStatus>("daemon_status"),
+    listRuns: () => invoke<Run[]>("list_runs"),
+    getRun: (runId: string) => invoke<Run | null>("get_run", { runId }),
+    configureRun: (slug: string, cfg: RunConfig) =>
+        invoke<Run>("configure_run", { slug, cfg }),
+    removeRun: (runId: string) => invoke<void>("remove_run", { runId }),
+    triggerRun: (runId: string) =>
+        invoke<ScheduledRun>("trigger_run", { runId }),
+    listScheduledRuns: (
+        runId: string,
+        opts?: { limit?: number; before?: number | null },
+    ) =>
+        invoke<ScheduledRun[]>("list_scheduled_runs", {
+            runId,
+            limit: opts?.limit ?? 80,
+            before: opts?.before ?? null,
+        }),
+    loadRunRecords: (scheduledRunId: string, typeName: string, limit: number) =>
+        invoke<unknown[]>("load_run_records", {
+            scheduledRunId,
+            typeName,
+            limit,
+        }),
 };

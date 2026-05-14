@@ -1507,6 +1507,7 @@ dependencies = [
  "dirs 5.0.1",
  "forage-browser",
  "forage-core",
+ "forage-daemon",
  "forage-http",
  "forage-hub",
  "forage-keychain",
@@ -1525,6 +1526,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "wiremock",
 ]
 
 [[package]]

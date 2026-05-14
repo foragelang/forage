@@ -214,8 +214,9 @@ for $x in $list.items[*] {
 }
 
 /// A declarations file with a duplicated type name surfaces a
-/// diagnostic on *its own buffer*, not on a sibling recipe. The LSP
-/// now parses header-less files instead of rejecting them up front.
+/// diagnostic on *its own buffer*, not on a sibling recipe.
+/// Duplicate detection lives in the parser, so the diagnostic
+/// arrives via the parse-error path.
 #[test]
 fn declarations_file_validates_its_own_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
@@ -239,9 +240,10 @@ fn declarations_file_validates_its_own_duplicates() {
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         .collect();
     assert!(
-        errors.iter().any(|d| d.message.contains("Item")
-            && d.message.to_lowercase().contains("more than once")),
-        "expected duplicate-type error on declarations file; got: {diags:?}"
+        errors
+            .iter()
+            .any(|d| d.message.contains("Item") && d.message.contains("duplicate declaration")),
+        "expected duplicate-declaration error on declarations file; got: {diags:?}"
     );
 }
 

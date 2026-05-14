@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -18,8 +18,32 @@ import {
     SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
+import { api, type FileNode } from "@/lib/api";
 import { useStudio } from "@/lib/store";
+
+/// Flatten the workspace file tree into a slug list. Phase 4 will
+/// replace this with a fully path-keyed selection model; for now
+/// the sidebar still renders a flat slug list with the same row
+/// affordances.
+type RecipeRow = { slug: string; recipePath: string };
+
+function collectRecipes(node: FileNode): RecipeRow[] {
+    const out: RecipeRow[] = [];
+    const walk = (n: FileNode, parentName: string | null) => {
+        if (n.kind === "file") {
+            if (n.file_kind === "recipe" && parentName) {
+                out.push({ slug: parentName, recipePath: n.path });
+            }
+            return;
+        }
+        for (const child of n.children) {
+            walk(child, n.name);
+        }
+    };
+    walk(node, null);
+    out.sort((a, b) => a.slug.localeCompare(b.slug));
+    return out;
+}
 
 // Module-level listener registration. React StrictMode + Vite HMR
 // double-mount the Sidebar, and `tauri::listen` registers its callback
@@ -65,7 +89,7 @@ async function performDelete(slug: string, qc: QueryClient) {
     }
     try {
         await api.deleteRecipe(slug);
-        await qc.invalidateQueries({ queryKey: ["recipes"] });
+        await qc.invalidateQueries({ queryKey: ["files"] });
         if (useStudio.getState().activeSlug === slug) {
             useStudio.getState().setActive(null);
         }
@@ -77,16 +101,20 @@ async function performDelete(slug: string, qc: QueryClient) {
 
 export function Sidebar() {
     const qc = useQueryClient();
-    const recipes = useQuery({
-        queryKey: ["recipes"],
-        queryFn: api.listRecipes,
+    const files = useQuery({
+        queryKey: ["files"],
+        queryFn: api.listWorkspaceFiles,
         staleTime: 3_000,
     });
     const { activeSlug, setActive } = useStudio();
+    const items = useMemo<RecipeRow[]>(
+        () => (files.data ? collectRecipes(files.data) : []),
+        [files.data],
+    );
 
     const newRecipe = async () => {
         const slug = await api.createRecipe();
-        await qc.invalidateQueries({ queryKey: ["recipes"] });
+        await qc.invalidateQueries({ queryKey: ["files"] });
         setActive(slug);
     };
 
@@ -105,8 +133,6 @@ export function Sidebar() {
             pendingHandler = null;
         };
     }, [qc]);
-
-    const items = recipes.data ?? [];
 
     return (
         <SidebarRoot collapsible="icon">
@@ -133,7 +159,7 @@ export function Sidebar() {
             <SidebarContent>
                 <SidebarGroup className="p-0">
                     <SidebarMenu className="gap-0">
-                        {recipes.isLoading && (
+                        {files.isLoading && (
                             <>
                                 <SidebarMenuItem>
                                     <SidebarMenuSkeleton />
@@ -146,7 +172,7 @@ export function Sidebar() {
                                 </SidebarMenuItem>
                             </>
                         )}
-                        {!recipes.isLoading &&
+                        {!files.isLoading &&
                             items.map((r) => (
                                 <SidebarMenuItem
                                     key={r.slug}
@@ -172,7 +198,7 @@ export function Sidebar() {
                                     </SidebarMenuButton>
                                 </SidebarMenuItem>
                             ))}
-                        {!recipes.isLoading && items.length === 0 && (
+                        {!files.isLoading && items.length === 0 && (
                             <div className="px-4 py-6 text-xs text-muted-foreground space-y-2 group-data-[collapsible=icon]:hidden">
                                 <p>No recipes yet.</p>
                                 <p>

@@ -289,40 +289,15 @@ fn validate_declarations(
     diagnostics: &mut Vec<Diagnostic>,
     line_map: &LineMap,
 ) {
-    use std::collections::HashMap as Map;
-    // Duplicate type/enum names inside this single declarations file
-    // are unambiguous user errors.
-    let mut seen_types: Map<&str, ()> = Map::new();
-    for t in &decls.types {
-        if seen_types.contains_key(t.name.as_str()) {
-            diagnostics.push(Diagnostic {
-                range: lsp_range(line_map, t.span.clone()),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("forage".into()),
-                message: format!("type '{}' is declared more than once in this file", t.name),
-                ..Default::default()
-            });
-        } else {
-            seen_types.insert(t.name.as_str(), ());
-        }
-    }
-    let mut seen_enums: Map<&str, ()> = Map::new();
-    for e in &decls.enums {
-        if seen_enums.contains_key(e.name.as_str()) {
-            diagnostics.push(Diagnostic {
-                range: lsp_range(line_map, e.span.clone()),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("forage".into()),
-                message: format!("enum '{}' is declared more than once in this file", e.name),
-                ..Default::default()
-            });
-        } else {
-            seen_enums.insert(e.name.as_str(), ());
-        }
-    }
-    // Field references to user-defined types must resolve against the
-    // *workspace* catalog (the union of every declarations file plus
-    // cached hub deps). Skip lonely-recipe-mode buffers (no workspace).
+    // Duplicate type/enum names are caught at parse time by
+    // `parse_declarations_file`, so a parsed `DeclarationsFile`
+    // already has unique names. This function only handles checks
+    // that need the cross-file workspace context.
+    //
+    // Field references to user-defined types must resolve against
+    // the *workspace* catalog (the union of every declarations file
+    // plus cached hub deps). Skip lonely-recipe-mode buffers
+    // (no workspace).
     if let Some(ws) = workspace {
         // For known names we walk every declarations file + cached
         // hub-dep declarations; we don't need the recipe-local override

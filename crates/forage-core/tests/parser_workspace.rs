@@ -102,6 +102,48 @@ fn import_keyword_is_no_longer_recognized() {
 }
 
 #[test]
+fn duplicate_type_in_declarations_file_is_parse_error() {
+    let src = r#"
+        type Foo { id: String }
+        type Foo { name: String }
+    "#;
+    let err = parse_workspace_file(src).expect_err("duplicate type must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("duplicate declaration") && msg.contains("Foo"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn duplicate_enum_in_declarations_file_is_parse_error() {
+    let src = r#"
+        enum Mode { A, B }
+        enum Mode { X, Y }
+    "#;
+    let err = parse_workspace_file(src).expect_err("duplicate enum must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("duplicate declaration") && msg.contains("Mode"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn type_and_enum_share_name_in_declarations_file_is_parse_error() {
+    let src = r#"
+        type Foo { id: String }
+        enum Foo { A, B }
+    "#;
+    let err = parse_workspace_file(src).expect_err("type/enum name collision must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("duplicate declaration"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
 fn convenience_parse_rejects_declarations_file() {
     // The `parse` convenience demands a full recipe; a declarations
     // file passed to it surfaces a clear parse error rather than

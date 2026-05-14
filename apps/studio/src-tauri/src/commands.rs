@@ -37,9 +37,9 @@ pub enum PausePayload {
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
 use crate::state::StudioState;
-use crate::workspace::{self, RecipeEntry};
+use crate::workspace;
 
-#[derive(Serialize, TS)]
+#[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct ValidationOutcome {
     pub ok: bool,
@@ -70,7 +70,7 @@ pub struct StepLocation {
 /// One validation issue with a precise source location. Maps onto
 /// Monaco's `IMarkerData` shape on the frontend so squigglies land
 /// under the offending token instead of at line 1.
-#[derive(Serialize, TS)]
+#[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct Diagnostic {
     pub severity: &'static str,
@@ -89,24 +89,8 @@ pub fn studio_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-#[tauri::command]
-pub fn list_recipes() -> Vec<RecipeEntry> {
-    workspace::list_entries()
-}
-
-#[tauri::command]
-pub fn load_recipe(slug: String) -> Result<String, String> {
-    workspace::read_source(&slug).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_recipe(slug: String, source: String) -> Result<ValidationOutcome, String> {
-    workspace::write_source(&slug, &source).map_err(|e| e.to_string())?;
-    Ok(validate_source_with_slug(&slug, &source))
-}
-
 /// Validate a source buffer without touching disk. Studio fires this on
-/// every keystroke (debounced) to keep diagnostics live. `save_recipe`
+/// every keystroke (debounced) to keep diagnostics live. `save_file`
 /// still re-validates after writing so editor markers remain accurate
 /// even if the user only saves without typing.
 #[tauri::command]
@@ -167,6 +151,11 @@ pub struct RunOutcome {
     pub ok: bool,
     pub snapshot: Option<Snapshot>,
     pub error: Option<String>,
+    /// Non-fatal post-run daemon bookkeeping failure. The engine
+    /// succeeded but the Run row didn't make it into the daemon
+    /// sidebar — the UI surfaces this as a soft banner so the user
+    /// isn't left wondering why their recipe didn't show up.
+    pub daemon_warning: Option<String>,
 }
 
 /// Bridges the engine's `ProgressSink` to a Tauri global event so the
@@ -270,6 +259,7 @@ pub async fn run_recipe(
                 ok: false,
                 snapshot: None,
                 error: Some(format!("{e}")),
+                daemon_warning: None,
             });
         }
     };
@@ -280,6 +270,7 @@ pub async fn run_recipe(
                 ok: false,
                 snapshot: None,
                 error: Some(format!("{e}")),
+                daemon_warning: None,
             });
         }
     };
@@ -290,6 +281,7 @@ pub async fn run_recipe(
             ok: false,
             snapshot: None,
             error: Some(msgs.join("; ")),
+            daemon_warning: None,
         });
     }
     let raw_inputs = workspace::read_inputs(&slug);
@@ -371,15 +363,34 @@ pub async fn run_recipe(
     state.debug_session.store(None);
 
     match snapshot {
-        Ok(s) => Ok(RunOutcome {
-            ok: true,
-            snapshot: Some(s),
-            error: None,
-        }),
+        Ok(s) => {
+            // Make sure the recipe shows up in the daemon's Runs
+            // sidebar after its first dev-run. `ensure_run` is
+            // idempotent — repeated dev-runs of the same recipe don't
+            // create new rows. A failure here doesn't sink the dev-run
+            // (the engine succeeded), but it does ride back on the
+            // outcome as a soft warning so the UI can banner it. A
+            // silent log line was the old failure mode — the user
+            // would see no Run row and have no idea why.
+            let daemon_warning = match state.daemon.ensure_run(&slug) {
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!(slug = %slug, error = %e, "ensure_run after dev-run failed");
+                    Some(format!("daemon bookkeeping failed: {e}"))
+                }
+            };
+            Ok(RunOutcome {
+                ok: true,
+                snapshot: Some(s),
+                error: None,
+                daemon_warning,
+            })
+        }
         Err(e) => Ok(RunOutcome {
             ok: false,
             snapshot: None,
             error: Some(e),
+            daemon_warning: None,
         }),
     }
 }
@@ -445,7 +456,7 @@ pub fn set_breakpoints(
     Ok(())
 }
 
-/// Persist a recipe's breakpoint set to the library sidecar and push it
+/// Persist a recipe's breakpoint set to the workspace sidecar and push it
 /// to the in-memory cache the engine reads on pause. Empty set deletes
 /// the slug's entry so the sidecar doesn't grow stale.
 #[tauri::command]
@@ -535,6 +546,7 @@ pub async fn publish_recipe(
                     ""
                 }
             )),
+            daemon_warning: None,
         });
     }
     let mut client = HubClient::new(&hub_url);
@@ -564,6 +576,7 @@ pub async fn publish_recipe(
             ok: true,
             snapshot: None,
             error: Some(format!("published {} v{}", r.slug, r.version)),
+            daemon_warning: None,
         }),
         Err(e) => Err(format!("{e}")),
     }
@@ -886,7 +899,552 @@ fn host_of(url: &str) -> String {
         .to_string()
 }
 
-// Quiet `dead_code` on the unused state for now — the dirty buffer cache
-// is wired in when we add background autosave.
-#[allow(dead_code)]
-fn _state_typecheck(_s: State<'_, StudioState>) {}
+// ---------------------------------------------------------------------
+// Workspace + filesystem + daemon commands.
+//
+// These read the workspace through `state.daemon.workspace()` — the
+// daemon owns the single cached `Workspace` and refreshes it on
+// filesystem events. Studio doesn't duplicate that state.
+// ---------------------------------------------------------------------
+
+use std::path::{Path, PathBuf};
+
+use forage_daemon::{DaemonStatus, Run, RunConfig, ScheduledRun};
+
+use crate::workspace::{FileNode, WorkspaceInfo, build_file_tree};
+
+/// Snapshot of the loaded workspace: root path, manifest's `name`,
+/// and `[deps]`. The file list is fetched separately via
+/// `list_workspace_files` so polling the tree doesn't redundantly
+/// reship the manifest.
+#[tauri::command]
+pub fn current_workspace(state: State<'_, StudioState>) -> WorkspaceInfo {
+    WorkspaceInfo::from_workspace(&state.daemon.workspace())
+}
+
+/// Recursive directory tree rooted at the workspace root, with each
+/// file classified by [`crate::workspace::FileKind`]. Hidden entries
+/// (`.forage/`, dotfiles) are skipped so the tree reflects the user's
+/// authored content, not runtime state.
+#[tauri::command]
+pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, String> {
+    let root = state.daemon.workspace().root.clone();
+    build_file_tree(&root).map_err(|e| e.to_string())
+}
+
+/// Read an arbitrary file under the workspace by absolute or
+/// relative path. Rejects anything that — after `..` collapse and
+/// symlink resolution — points outside the workspace root.
+#[tauri::command]
+pub fn load_file(state: State<'_, StudioState>, path: PathBuf) -> Result<String, String> {
+    let target = resolve_existing_in_workspace(&state, &path)?;
+    std::fs::read_to_string(&target).map_err(|e| e.to_string())
+}
+
+/// Write a file in the workspace and validate it if it's a recipe or
+/// declarations file. Path-traversal and symlink-escape guards run
+/// against the target's parent directory (which `create_dir_all`
+/// just ensured exists), not the target itself — the target may be
+/// a brand-new file.
+#[tauri::command]
+pub fn save_file(
+    state: State<'_, StudioState>,
+    path: PathBuf,
+    source: String,
+) -> Result<ValidationOutcome, String> {
+    let target = resolve_new_in_workspace(&state, &path)?;
+    let root = workspace_root_canonical(&state)?;
+    std::fs::write(&target, &source).map_err(|e| e.to_string())?;
+    Ok(validate_path(&root, &target, &source))
+}
+
+/// Resolve a path that must already exist inside the workspace.
+/// Used by `load_file`. `canonicalize` follows symlinks, so a
+/// `<workspace>/evil -> /etc/passwd` symlink is caught here
+/// rather than being silently dereferenced by `read_to_string`.
+fn resolve_existing_in_workspace(
+    state: &State<'_, StudioState>,
+    path: &Path,
+) -> Result<PathBuf, String> {
+    let root = state.daemon.workspace().root.clone();
+    resolve_existing(&root, path)
+}
+
+/// Resolve a path that may not exist yet (e.g. `save_file` creating
+/// a new recipe). Creates the parent directory, then canonicalizes
+/// it — that's enough to defeat symlink escapes, since the only
+/// way `target` could land outside the root is via a symlinked
+/// ancestor.
+fn resolve_new_in_workspace(
+    state: &State<'_, StudioState>,
+    path: &Path,
+) -> Result<PathBuf, String> {
+    let root = state.daemon.workspace().root.clone();
+    resolve_new(&root, path)
+}
+
+fn workspace_root_canonical(state: &State<'_, StudioState>) -> Result<PathBuf, String> {
+    let root = state.daemon.workspace().root.clone();
+    canonicalize_root(&root)
+}
+
+/// Inner helper for `resolve_existing_in_workspace` that takes the
+/// workspace root explicitly. Factored out so tests don't need a
+/// `State<'_, StudioState>` — they can call this directly.
+fn resolve_existing(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let candidate = join_against(root, path)?;
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", candidate.display()))?;
+    let root_canonical = canonicalize_root(root)?;
+    if !canonical.starts_with(&root_canonical) {
+        return Err(format!(
+            "path {} escapes workspace root {}",
+            canonical.display(),
+            root_canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Inner helper for `resolve_new_in_workspace`. Same factoring as
+/// `resolve_existing`.
+fn resolve_new(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let candidate = join_against(root, path)?;
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| format!("path {} has no parent directory", candidate.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let parent_canonical = parent
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", parent.display()))?;
+    let root_canonical = canonicalize_root(root)?;
+    if !parent_canonical.starts_with(&root_canonical) {
+        return Err(format!(
+            "path {} escapes workspace root {}",
+            parent_canonical.display(),
+            root_canonical.display()
+        ));
+    }
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| format!("path {} has no file name", candidate.display()))?;
+    Ok(parent_canonical.join(file_name))
+}
+
+fn join_against(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    if path.as_os_str().is_empty() {
+        return Err("empty path".into());
+    }
+    Ok(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    })
+}
+
+fn canonicalize_root(root: &Path) -> Result<PathBuf, String> {
+    root.canonicalize()
+        .map_err(|e| format!("cannot canonicalize workspace root {}: {e}", root.display()))
+}
+
+/// Validate a file saved under the workspace at `path` (canonical,
+/// inside `root`). The decision tree:
+///   * non-`.forage` — clean outcome (no diagnostics).
+///   * `<root>/<name>.forage` — declarations file, parse-only.
+///   * `<root>/<slug>/recipe.forage` — full recipe validation.
+///   * any other `.forage` location — unrecognized; surface as a
+///     diagnostic so the UI doesn't silently treat sidecars as
+///     declarations.
+fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
+    let extension = path
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if extension != "forage" {
+        return ValidationOutcome {
+            ok: true,
+            diagnostics: Vec::new(),
+        };
+    }
+    let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        return ValidationOutcome {
+            ok: false,
+            diagnostics: vec![Diagnostic {
+                severity: "error",
+                code: "InvalidPath".into(),
+                message: format!("path {} has no file name", path.display()),
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 0,
+            }],
+        };
+    };
+
+    // Depth relative to the workspace root: 1 = root-level file
+    // (declarations), 2 = `<slug>/<file>.forage` (recipe slot).
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let depth = rel.components().count();
+
+    if depth == 1 {
+        return validate_declarations_source(source);
+    }
+    if depth == 2 && file_name == "recipe.forage" {
+        // Use the slug-aware validator so workspace-level catalog
+        // errors surface. The slug is the recipe's parent directory.
+        let slug = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        return validate_source_with_slug(&slug, source);
+    }
+
+    // Any other `.forage` location is a sidecar — neither a
+    // declarations file nor a recipe. classify_file tags it
+    // `Other`; validate_path must agree.
+    let r = LineMap::new(source).range(0..0);
+    ValidationOutcome {
+        ok: false,
+        diagnostics: vec![Diagnostic {
+            severity: "error",
+            code: "UnrecognizedForageFile".into(),
+            message: format!(
+                "unrecognized .forage file location: {} — .forage files belong at the workspace root (declarations) or as <slug>/recipe.forage",
+                path.display()
+            ),
+            start_line: r.start.line,
+            start_col: r.start.character,
+            end_line: r.end.line,
+            end_col: r.end.character,
+        }],
+    }
+}
+
+/// Parse-only validation for header-less declarations files. If
+/// the source parses, it contributes its types via the workspace
+/// catalog; semantic validation against sibling recipes lands
+/// when the LSP runs cross-file validation on every edit.
+fn validate_declarations_source(source: &str) -> ValidationOutcome {
+    match forage_core::parse::parse_workspace_file(source) {
+        Ok(_) => ValidationOutcome {
+            ok: true,
+            diagnostics: Vec::new(),
+        },
+        Err(e) => {
+            let line_map = LineMap::new(source);
+            let (span, msg) = parse_error_span(&e);
+            let r = line_map.range(span);
+            ValidationOutcome {
+                ok: false,
+                diagnostics: vec![Diagnostic {
+                    severity: "error",
+                    code: "ParseError".into(),
+                    message: msg,
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                }],
+            }
+        }
+    }
+}
+
+// --- Daemon commands -------------------------------------------------
+
+#[tauri::command]
+pub fn daemon_status(state: State<'_, StudioState>) -> Result<DaemonStatus, String> {
+    state.daemon.status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_runs(state: State<'_, StudioState>) -> Result<Vec<Run>, String> {
+    state.daemon.list_runs().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_run(state: State<'_, StudioState>, run_id: String) -> Result<Option<Run>, String> {
+    state.daemon.get_run(&run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn configure_run(
+    state: State<'_, StudioState>,
+    slug: String,
+    cfg: RunConfig,
+) -> Result<Run, String> {
+    state
+        .daemon
+        .configure_run(&slug, cfg)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_run(state: State<'_, StudioState>, run_id: String) -> Result<(), String> {
+    state.daemon.remove_run(&run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn trigger_run(
+    state: State<'_, StudioState>,
+    run_id: String,
+) -> Result<ScheduledRun, String> {
+    // Clone the Arc — `trigger_run` takes `&Arc<Self>` so we need an
+    // owned handle to call across the await.
+    let daemon = state.daemon.clone();
+    daemon.trigger_run(&run_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_scheduled_runs(
+    state: State<'_, StudioState>,
+    run_id: String,
+    limit: u32,
+    before: Option<i64>,
+) -> Result<Vec<ScheduledRun>, String> {
+    state
+        .daemon
+        .list_scheduled_runs(&run_id, limit, before)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_run_records(
+    state: State<'_, StudioState>,
+    scheduled_run_id: String,
+    type_name: String,
+    limit: u32,
+) -> Result<Vec<serde_json::Value>, String> {
+    state
+        .daemon
+        .load_records(&scheduled_run_id, &type_name, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Studio-side smoke tests for the daemon wiring. The commands
+    //! themselves take `State<'_, StudioState>` which can't be
+    //! constructed without a running Tauri app — they're thin
+    //! delegations to `Daemon`, so we exercise the same daemon API
+    //! the command bodies call and assert the round-trips that
+    //! Studio depends on.
+    //!
+    //! Coverage:
+    //!   * `configure_run` → `list_runs` round-trip surfaces the new Run.
+    //!   * `trigger_run` produces a `ScheduledRun` that
+    //!     `list_scheduled_runs` returns.
+    //!
+    //! The browser-driver path is verified at the trait level only —
+    //! a Tauri webview can't be opened from `cargo test`, so the
+    //! daemon's `LiveBrowserDriver` slot is left empty; HTTP recipes
+    //! cover the rest of the surface.
+    use std::path::Path;
+
+    use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, Trigger};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const RECIPE: &str = r#"recipe "items"
+engine http
+
+type Item {
+    id: String
+}
+
+step list {
+    method "GET"
+    url    "https://example.test/items"
+}
+
+for $i in $list.items[*] {
+    emit Item {
+        id ← $i.id
+    }
+}
+"#;
+
+    fn write_workspace(root: &Path, slug: &str, recipe_source: &str) {
+        std::fs::create_dir_all(root.join(slug)).unwrap();
+        std::fs::write(root.join("forage.toml"), "").unwrap();
+        std::fs::write(root.join(slug).join("recipe.forage"), recipe_source).unwrap();
+    }
+
+    fn rewrite_url(path: &Path, url: &str) {
+        let src = std::fs::read_to_string(path).unwrap();
+        std::fs::write(path, src.replace("https://example.test/items", url)).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn configure_run_then_list_runs_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        let slug = "items";
+        write_workspace(&ws_root, slug, RECIPE);
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+
+        let cfg = RunConfig {
+            cadence: Cadence::Manual,
+            output: ws_root.join(".forage").join("data").join("items.sqlite"),
+            enabled: true,
+        };
+        let created = daemon.configure_run(slug, cfg.clone()).expect("configure_run");
+
+        let listed = daemon.list_runs().expect("list_runs");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+        assert_eq!(listed[0].recipe_slug, slug);
+        assert!(listed[0].enabled);
+
+        // Repeated configure on the same slug is an update, not an
+        // insert — list_runs should still return one row, and the id
+        // should be stable.
+        let updated_cfg = RunConfig {
+            enabled: false,
+            ..cfg
+        };
+        let updated = daemon.configure_run(slug, updated_cfg).expect("configure_run update");
+        assert_eq!(updated.id, created.id);
+        let after = daemon.list_runs().expect("list_runs after update");
+        assert_eq!(after.len(), 1);
+        assert!(!after[0].enabled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trigger_run_produces_listable_scheduled_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        let slug = "items";
+        write_workspace(&ws_root, slug, RECIPE);
+
+        // Point the recipe at a wiremock server that emits two
+        // `items` so we can assert the `Item` count downstream.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "a"}, {"id": "b"}],
+            })))
+            .mount(&mock)
+            .await;
+        let recipe_path = ws_root.join(slug).join("recipe.forage");
+        rewrite_url(&recipe_path, &format!("{}/items", mock.uri()));
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        let cfg = RunConfig {
+            cadence: Cadence::Manual,
+            output: ws_root.join(".forage").join("data").join("items.sqlite"),
+            enabled: true,
+        };
+        let run = daemon.configure_run(slug, cfg).expect("configure_run");
+
+        let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+        assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
+        assert_eq!(sr.trigger, Trigger::Manual);
+        assert_eq!(sr.counts.get("Item").copied(), Some(2));
+
+        let listed = daemon
+            .list_scheduled_runs(&run.id, 10, None)
+            .expect("list_scheduled_runs");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, sr.id);
+
+        // `load_records` round-trips the actual emitted rows back
+        // from the output store.
+        let records = daemon
+            .load_records(&sr.id, "Item", 10)
+            .expect("load_records");
+        assert_eq!(records.len(), 2);
+    }
+
+    use super::{resolve_existing, resolve_new, validate_path};
+
+    /// A symlink inside the workspace pointing outside it must be
+    /// rejected by `resolve_existing` — otherwise `load_file` would
+    /// happily read `/etc/passwd` through it.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_existing_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "🤫").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("evil")).unwrap();
+
+        let err = resolve_existing(tmp.path(), Path::new("evil/secret.txt"))
+            .expect_err("symlink escape must be rejected");
+        assert!(
+            err.contains("escapes workspace root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `resolve_new` is the `save_file` path. A symlink to outside
+    /// the workspace as the *parent* must be rejected so writes
+    /// can't reach `/tmp/whatever/x` via `<ws>/evil/x`.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_new_rejects_symlinked_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("evil")).unwrap();
+
+        let err = resolve_new(tmp.path(), Path::new("evil/new.txt"))
+            .expect_err("symlinked parent must be rejected");
+        assert!(
+            err.contains("escapes workspace root"),
+            "unexpected error: {err}"
+        );
+        // The write must not have landed in the outside dir either.
+        assert!(!outside.path().join("new.txt").exists());
+    }
+
+    /// Empty / file-name-less paths are rejected before they ever
+    /// hit the filesystem, so `path == "" => root` doesn't fall
+    /// through and confuse the rest of the pipeline.
+    #[test]
+    fn resolve_rejects_empty_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err =
+            resolve_existing(tmp.path(), Path::new("")).expect_err("empty path must be rejected");
+        assert!(err.contains("empty path"), "unexpected error: {err}");
+        let err =
+            resolve_new(tmp.path(), Path::new("")).expect_err("empty path must be rejected");
+        assert!(err.contains("empty path"), "unexpected error: {err}");
+    }
+
+    /// A sidecar `.forage` file two-deep that isn't named
+    /// `recipe.forage` is unclassified — validate_path must surface
+    /// that as a diagnostic instead of silently treating it as a
+    /// declarations file (which is what would happen if it slipped
+    /// through to `parse_workspace_file`).
+    #[test]
+    fn validate_path_rejects_sidecar_forage_in_recipe_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("trilogy")).unwrap();
+        let sidecar = root.join("trilogy").join("sidecar.forage");
+        std::fs::write(&sidecar, "type X { id: String }\n").unwrap();
+
+        let outcome = validate_path(root, &sidecar, "type X { id: String }\n");
+        assert!(!outcome.ok, "sidecar must not validate clean");
+        assert_eq!(outcome.diagnostics.len(), 1);
+        assert_eq!(outcome.diagnostics[0].code, "UnrecognizedForageFile");
+    }
+
+    /// Root-level header-less `.forage` files validate as
+    /// declarations — only their parse errors are surfaced.
+    #[test]
+    fn validate_path_treats_root_forage_as_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let decl = root.join("cannabis.forage");
+        std::fs::write(&decl, "type Dispensary { id: String }\n").unwrap();
+
+        let outcome = validate_path(root, &decl, "type Dispensary { id: String }\n");
+        assert!(outcome.ok, "declarations file should validate clean: {outcome:?}");
+        assert!(outcome.diagnostics.is_empty());
+    }
+}

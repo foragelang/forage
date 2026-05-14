@@ -62,7 +62,7 @@ export function App() {
     useEffect(() => {
         let cancelled = false;
         if (!activeSlug) return;
-        api.loadRecipe(activeSlug)
+        api.loadFile(`${activeSlug}/recipe.forage`)
             .then((s) => {
                 if (!cancelled) {
                     setSource(s);
@@ -80,7 +80,7 @@ export function App() {
 
     const save = async () => {
         if (!activeSlug) return;
-        const v = await api.saveRecipe(activeSlug, source);
+        const v = await api.saveFile(`${activeSlug}/recipe.forage`, source);
         setValidation(v);
         markClean();
     };
@@ -178,7 +178,7 @@ export function App() {
             } else if (e.key === "n") {
                 e.preventDefault();
                 api.createRecipe().then((slug) => {
-                    qc.invalidateQueries({ queryKey: ["recipes"] });
+                    qc.invalidateQueries({ queryKey: ["files"] });
                     useStudio.getState().setActive(slug);
                 });
             }
