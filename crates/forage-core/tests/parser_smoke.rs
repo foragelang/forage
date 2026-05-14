@@ -323,3 +323,99 @@ fn as_without_dollar_fails_parse() {
     "#;
     assert!(parse(src).is_err());
 }
+
+#[test]
+fn fn_decl_parses_with_one_param() {
+    let src = r#"
+        recipe "ok"
+        engine http
+        fn double($x) { $x }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    assert_eq!(r.functions.len(), 1);
+    assert_eq!(r.functions[0].name, "double");
+    assert_eq!(r.functions[0].params, vec!["x".to_string()]);
+    assert!(matches!(r.functions[0].body, ExtractionExpr::Path(_)));
+}
+
+#[test]
+fn fn_decl_parses_with_multiple_params() {
+    let src = r#"
+        recipe "ok"
+        engine http
+        fn pair($a, $b) { $a }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    assert_eq!(r.functions.len(), 1);
+    assert_eq!(
+        r.functions[0].params,
+        vec!["a".to_string(), "b".to_string()]
+    );
+}
+
+#[test]
+fn fn_decl_zero_params_parses() {
+    let src = r#"
+        recipe "ok"
+        engine http
+        fn answer() { 42 }
+        type T { id: Int }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← 1 }
+    "#;
+    let r = parse(src).expect("parse");
+    assert_eq!(r.functions.len(), 1);
+    assert!(r.functions[0].params.is_empty());
+}
+
+#[test]
+fn fn_decl_rejects_missing_brace() {
+    let src = r#"
+        recipe "bad"
+        engine http
+        fn broken($x) $x
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn fn_decl_rejects_non_dollar_param() {
+    let src = r#"
+        recipe "bad"
+        engine http
+        fn nope(x) { $x }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn fn_with_pipe_body_round_trips_through_ast() {
+    let src = r#"
+        recipe "ok"
+        engine http
+        fn shouty($x) { $x | upper | trim }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    let body = &r.functions[0].body;
+    let ExtractionExpr::Pipe(_, calls) = body else {
+        panic!("expected pipe, got {body:?}");
+    };
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].name, "upper");
+    assert_eq!(calls[1].name, "trim");
+}

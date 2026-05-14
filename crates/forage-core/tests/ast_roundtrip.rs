@@ -15,6 +15,7 @@ fn empty_recipe_serializes() {
         browser: None,
         expectations: vec![],
         secrets: vec![],
+        functions: vec![],
     };
     let json = serde_json::to_string(&r).unwrap();
     let back: Recipe = serde_json::from_str(&json).unwrap();
@@ -34,6 +35,7 @@ fn workspace_file_recipe_variant_serializes() {
         browser: None,
         expectations: vec![],
         secrets: vec![],
+        functions: vec![],
     };
     let wf = WorkspaceFile::Recipe(Box::new(r));
     let json = serde_json::to_string(&wf).unwrap();

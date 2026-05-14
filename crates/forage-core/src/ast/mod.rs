@@ -30,8 +30,8 @@ pub use http::{BodyValue, HTTPBody, HTTPBodyKV, HTTPRequest, HTTPStep, RegexExtr
 pub use json::JSONValue;
 pub use pagination::Pagination;
 pub use recipe::{
-    ComparisonOp, DeclarationsFile, EngineKind, Expectation, ExpectationKind, Recipe, Statement,
-    WorkspaceFile,
+    ComparisonOp, DeclarationsFile, EngineKind, Expectation, ExpectationKind, FnDecl, Recipe,
+    Statement, WorkspaceFile,
 };
 pub use span::Span;
 pub use types::{FieldType, InputDecl, RecipeEnum, RecipeField, RecipeType};

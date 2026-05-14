@@ -306,6 +306,7 @@ impl Parser {
         let mut body: Vec<Statement> = Vec::new();
         let mut browser: Option<BrowserConfig> = None;
         let mut expectations: Vec<Expectation> = Vec::new();
+        let mut functions: Vec<FnDecl> = Vec::new();
 
         while self.peek().is_some() {
             match self.peek().cloned() {
@@ -331,6 +332,7 @@ impl Parser {
                         browser = Some(self.parse_browser_block()?);
                     }
                     "expect" => expectations.push(self.parse_expect_block()?),
+                    "fn" => functions.push(self.parse_fn_decl()?),
                     "step" | "for" | "emit" => {
                         body.push(self.parse_statement()?);
                     }
@@ -362,6 +364,44 @@ impl Parser {
             browser,
             expectations,
             secrets,
+            functions,
+        })
+    }
+
+    /// fn_decl := 'fn' ident '(' ($ident (',' $ident)*)? ')' '{' extraction '}'
+    ///
+    /// Single-expression body — branching via `case … of`, mapping via
+    /// pipe-into-transform. No statement sequencing or let-bindings; see
+    /// `plans/user-defined-functions.md`.
+    fn parse_fn_decl(&mut self) -> Result<FnDecl, ParseError> {
+        let start = self.current_span().start;
+        self.expect_keyword("fn")?;
+        let name = self.expect_ident()?;
+        self.expect_punct(&Token::LParen)?;
+        let mut params: Vec<String> = Vec::new();
+        if !self.eat_punct(&Token::RParen) {
+            loop {
+                match self.peek().cloned() {
+                    Some(Token::DollarVar(s)) => {
+                        self.bump();
+                        params.push(s);
+                    }
+                    _ => return Err(self.unexpected("parameter ($name)")),
+                }
+                if !self.eat_punct(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect_punct(&Token::RParen)?;
+        }
+        self.expect_punct(&Token::LBrace)?;
+        let body = self.parse_extraction()?;
+        self.expect_punct(&Token::RBrace)?;
+        Ok(FnDecl {
+            name,
+            params,
+            body,
+            span: self.span_to_here(start),
         })
     }
 

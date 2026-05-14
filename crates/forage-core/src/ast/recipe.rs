@@ -57,12 +57,35 @@ pub struct Recipe {
     /// Top-level `secret <name>` declarations, in source order.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Top-level `fn <name>(...)` declarations, in source order. These
+    /// are user-defined transforms; the validator and evaluator look
+    /// them up before falling back to the built-in registry.
+    pub functions: Vec<FnDecl>,
 }
 
 impl Recipe {
     pub fn input(&self, name: &str) -> Option<&InputDecl> {
         self.inputs.iter().find(|i| i.name == name)
     }
+
+    pub fn function(&self, name: &str) -> Option<&FnDecl> {
+        self.functions.iter().find(|f| f.name == name)
+    }
+}
+
+/// A user-defined transform — `fn <name>(<$p1>, <$p2>) { <body> }`. The
+/// body is a single `ExtractionExpr` from the existing grammar; call
+/// sites look identical to built-in transforms.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FnDecl {
+    pub name: String,
+    /// Parameter names without the leading `$`, in declaration order.
+    /// First param is bound to the pipe head at call sites
+    /// (`x |> myFn(a)` binds `$p1 = x`, `$p2 = a`).
+    pub params: Vec<String>,
+    pub body: crate::ast::expr::ExtractionExpr,
+    #[serde(default)]
+    pub span: crate::ast::span::Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

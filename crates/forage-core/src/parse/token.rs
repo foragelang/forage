@@ -107,6 +107,7 @@ pub const KEYWORDS: &[&str] = &[
     "browser",
     "type",
     "enum",
+    "fn",
     "input",
     "step",
     "method",
