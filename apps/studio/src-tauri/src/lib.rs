@@ -91,8 +91,13 @@ pub fn run() {
             }));
 
             // Spawn the scheduler last so it doesn't tick before the
-            // browser driver / callback are in place.
-            daemon.start_scheduler();
+            // browser driver / callback are in place. `start_scheduler`
+            // calls `tokio::spawn` internally; the Tauri setup closure
+            // runs on the main thread outside the runtime, so enter it
+            // via `block_on` before the spawn.
+            tauri::async_runtime::block_on(async {
+                daemon.start_scheduler();
+            });
 
             app.manage(StudioState::new(daemon));
             let m = menu::build_menu(app.handle())?;
