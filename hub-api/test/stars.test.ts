@@ -9,7 +9,9 @@ import {
     authedDelete,
     get,
     resetStorage,
+    testEnv,
 } from './_helpers'
+import { BUCKETS } from '../src/http'
 
 beforeEach(resetStorage)
 
@@ -120,6 +122,29 @@ describe('stars', () => {
             authedPostJson('https://hub/v1/packages/alice/p/stars', null, {}),
         )
         expect(denied.status).toBe(401)
+    })
+
+    it('rate-limits POST /stars under the social bucket (429)', async () => {
+        const a = await userToken('alice')
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/p/versions',
+                a,
+                publishRequest(),
+            ),
+        )
+        // Pin the social-bucket counter for bob at the cap; the next
+        // request from bob must come back with 429.
+        const b = await userToken('bob')
+        await testEnv.METADATA.put(
+            `rl:social:bob`,
+            JSON.stringify({ count: BUCKETS.social.max, startedAt: Date.now() }),
+        )
+        const limited = await fetchJson(
+            authedPostJson('https://hub/v1/packages/alice/p/stars', b, {}),
+        )
+        expect(limited.status).toBe(429)
+        expect(limited.body.error.code).toBe('rate_limited')
     })
 
     it('surfaces a user\'s starred packages on their profile', async () => {

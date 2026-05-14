@@ -93,6 +93,10 @@ export const BUCKETS = {
     devicePoll: { max: 120, windowSec: 60 } satisfies Bucket,
     oauthStart: { max: 20, windowSec: 60 } satisfies Bucket,
     read: { max: 300, windowSec: 60 } satisfies Bucket,
+    // Star / unstar / fork from an authenticated caller, plus the
+    // anonymous download counter bump. Cheaper to hit than publish,
+    // but we want a brake on token-fueled or IP-fueled abuse.
+    social: { max: 120, windowSec: 60 } satisfies Bucket,
 }
 
 export async function rateLimit(

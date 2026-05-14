@@ -169,18 +169,37 @@ async function route(
                 if (limit !== null) return limit
                 return getStars(request, env, author, slug)
             }
-            if (request.method === 'POST') return addStar(request, env, author, slug)
-            if (request.method === 'DELETE') return removeStar(request, env, author, slug)
+            if (request.method === 'POST' || request.method === 'DELETE') {
+                const caller = await identifyCaller(request, env)
+                const key = caller !== null && caller.kind === 'user'
+                    ? caller.login
+                    : callerKey(request, null)
+                const limit = await rateLimit(env, 'social', key, request)
+                if (limit !== null) return limit
+                return request.method === 'POST'
+                    ? addStar(request, env, author, slug)
+                    : removeStar(request, env, author, slug)
+            }
             return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
         }
 
-        // /downloads
+        // /downloads — anonymous; rate-limited per-IP under the
+        // shared `social` bucket so a single host can't spin the
+        // counter unboundedly.
         if (sub === 'downloads' && subArg === null && request.method === 'POST') {
+            const limit = await rateLimit(env, 'social', callerKey(request, null), request)
+            if (limit !== null) return limit
             return recordDownload(request, env, author, slug)
         }
 
-        // /fork
+        // /fork — authenticated; rate-limited per login.
         if (sub === 'fork' && subArg === null && request.method === 'POST') {
+            const caller = await identifyCaller(request, env)
+            const key = caller !== null && caller.kind === 'user'
+                ? caller.login
+                : callerKey(request, null)
+            const limit = await rateLimit(env, 'social', key, request)
+            if (limit !== null) return limit
             return createFork(request, env, author, slug)
         }
     }
