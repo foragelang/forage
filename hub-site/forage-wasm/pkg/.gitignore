@@ -1,5 +1,0 @@
-# Allow committed wasm artifacts; wasm-pack's default ignores everything.
-!*.js
-!*.wasm
-!*.d.ts
-!*.json

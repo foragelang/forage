@@ -77,9 +77,6 @@ Before tagging:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# wasm-pack output stays in sync:
-( cd crates/forage-wasm && wasm-pack build --target web --out-dir ../../hub-site/forage-wasm/pkg )
-git diff --exit-code hub-site/forage-wasm/pkg
 ```
 
 The Rust CI workflow runs the same checks on every push.

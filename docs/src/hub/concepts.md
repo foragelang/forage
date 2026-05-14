@@ -1,45 +1,69 @@
 # Concepts
 
-`hub.foragelang.com` is the public registry for Forage recipes.
-`api.foragelang.com` is the API the CLI / Studio / web IDE talk to.
+`hub.foragelang.com` is the public registry for Forage packages.
+`api.foragelang.com` is the API the CLI / Studio / hub IDE talk to.
 
-## Recipe identity
+## Package identity
 
-A recipe on the hub has:
+A package on the hub has:
 
-- A **slug** in `<namespace>/<name>` form, e.g. `alice/zen-leaf` or
-  `forage/hacker-news`. Both segments match `^[a-z0-9][a-z0-9-]{1,63}$`.
-- A **version** — a monotonic integer the hub assigns on each publish.
-  Publishing the same slug bumps the version; old versions stay
-  queryable via `?version=N`.
-- An **ownerLogin** — the GitHub login of the publisher. Set lazily on
-  the first OAuth-authenticated publish. Legacy recipes published via
-  the shared admin token carry `ownerLogin: "admin"` and are
-  admin-only writable.
+- An **author** — your GitHub login. Matches `^[a-z0-9][a-z0-9-]{0,38}$`.
+- A **slug** — the package name in your namespace, e.g. `zen-leaf`.
+  Same shape as the author.
+- A linear list of **versions** (1, 2, 3, …). Publishing a new version
+  requires a matching `base_version` against the current
+  `latest_version`; mismatches return `409 stale_base`.
+- An **owner_login** — set on first publish (the caller's GitHub
+  login). All future writes require the same login.
+- A one-shot **forked_from** pointer on the v1 metadata of a fork.
+  Points at the upstream `(author, slug, version)` the fork was cut
+  from. Never updated thereafter; pulls from upstream are explicit
+  re-publishes.
 
-## Storage
+## Atomic version artifact
 
-Each recipe ships with:
+The unit of fetch is a **package version** — one indivisible JSON
+artifact carrying:
 
-- **`recipe.forage`** — the source text. Cached in R2 under
-  `blobs/<slug>/<version>/recipe.forage`.
-- **`captures.jsonl`** (optional) — recorded fixtures.
-- **`expected.snapshot.json`** (optional) — the golden snapshot the
-  recipe produces against the bundled fixtures.
-- **Metadata** — display name, summary, tags, license, SHA-256 of the
-  body. Stored in KV under `recipe:<slug>` for fast list/index.
+- `recipe` — the main `.forage` source.
+- `decls` — additional `.forage` files in the package (shared types,
+  enums, helpers).
+- `fixtures` — captured replay data (typically JSONL).
+- `snapshot` — the runtime's output against the fixtures, in
+  `{records, counts}` shape.
+- `base_version`, `published_at`, `published_by`.
 
-`hub.foragelang.com` browses these; the IDE renders source with Forage
-syntax highlighting; the CLI / Studio fetch them through `forage-hub`.
+The hub stores each artifact under `ver:<author>:<slug>:<n>` in KV.
+Artifacts that serialize past 20 MiB are written to R2 instead and the
+KV slot holds a `{r2_key}` pointer; the wire shape is identical
+either way.
+
+## Social surfaces
+
+- **Stars** — `POST /v1/packages/<author>/<slug>/stars` toggles a
+  star and bumps the counter on the package metadata. Each star also
+  goes into a reverse `stars_by:<user>` index so a profile can list
+  what its owner has starred.
+- **Downloads** — `POST /v1/packages/<author>/<slug>/downloads`
+  increments the counter. Called by Studio's `sync_from_hub` and by
+  the fork endpoint.
+- **Forks** — `POST /v1/packages/<upstream>/<slug>/fork` creates
+  `@me/<slug>` with v1 carrying the upstream's full content +
+  `forked_from`. Bumps the upstream's `fork_count` + `downloads`.
+- **Categories** — `GET /v1/categories` lists every category that has
+  at least one package; `?category=` filters listings.
+- **Profiles** — `GET /v1/users/<author>` returns the public profile;
+  `…/packages` and `…/stars` list what they've shipped and what
+  they've starred.
 
 ## Imports
 
-Recipes reference each other via `import <slug>` directives at the top
-of the file:
+Recipes reference each other via `import <author>/<slug>` directives
+at the top of the file:
 
 ```forage
-import forage/cannabis     // shared schema
-import alice/zen-leaf v2   // a specific dispensary recipe
+import alice/cannabis        // shared schema
+import alice/zen-leaf v2     // a specific dispensary recipe
 ```
 
 The resolver pulls them from the hub, caches them locally, and unions
@@ -52,23 +76,15 @@ their types/enums/inputs into the importing recipe's catalog. See
   process. The engine reads the recipe and drives HTTP / browser; the
   recipe can't shell out, hit the filesystem, or escape the engine's
   sandbox.
-- **Owner-checked writes.** Only the recipe's owner (or an admin) can
-  publish a new version or delete a recipe. The Worker enforces this
-  via `callerCanWrite` on every mutating endpoint.
+- **Owner-checked writes.** Only the package's `owner_login` (or an
+  admin) can publish a new version. The Worker enforces this on every
+  mutating endpoint.
 - **Honest UA on the runtime.** The runtime hits target sites as
   `Forage/x.y.z (+https://foragelang.com)`; no IP rotation, no
   googlebot impersonation.
-
-## Versions
-
-`/v1/packages/<slug>/versions` lists every published version with
-timestamps. `?version=N` on a `GET` pins to a specific one. The hub
-doesn't garbage-collect old versions — workspaces that depend on an
-older version of a package keep working.
 
 ## Cost
 
 The hub runs entirely on Cloudflare Workers + KV + R2. Hosting is
 ~free for read-heavy traffic; publishes are throttled by the rate
-limiter (30/min per user). The whole thing should fit inside
-Cloudflare's free tier for the foreseeable future.
+limiter (30/min per user).

@@ -31,7 +31,6 @@
 # Tooling
 - [`forage` CLI](./cli.md)
 - [Forage Studio (Tauri)](./studio.md)
-- [Web IDE](./web-ide.md)
 - [Language server](./lsp.md)
 
 # Hub

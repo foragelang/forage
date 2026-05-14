@@ -51,6 +51,13 @@ export default defineConfig({
 
         nav: [
             { text: 'Browse', link: '/' },
+            {
+                text: 'Discover',
+                items: [
+                    { text: 'Top starred', link: '/discover/top-starred' },
+                    { text: 'Most downloaded', link: '/discover/top-downloaded' },
+                ],
+            },
             { text: 'Publish', link: '/publish' },
             { text: 'About', link: '/about' },
             { text: 'foragelang.com', link: 'https://foragelang.com' },

@@ -72,10 +72,6 @@ reference picks it up.
 - **CLI** (`cargo run --bin forage -- run …`) — uses the in-process
   registry built by `forage-core::eval::default_registry`.
 - **Forage Studio** — same registry, embedded in the Tauri backend.
-- **Web IDE** — same registry, compiled to WebAssembly via
-  `forage-wasm`. Run `wasm-pack build --target web --out-dir
-  ../../hub-site/forage-wasm/pkg` from `crates/forage-wasm` after
-  adding a transform.
 - **LSP** — pulls names from the static `BUILTIN_TRANSFORMS` list.
 
 ## Beyond builtins

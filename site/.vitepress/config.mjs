@@ -82,7 +82,6 @@ export default defineConfig({
                         { text: 'CLI reference', link: '/docs/cli' },
                         { text: 'Studio (macOS app)', link: '/docs/studio' },
                         { text: 'Hub (publish & import)', link: '/docs/hub' },
-                        { text: 'Web IDE', link: '/docs/web-ide' },
                     ],
                 },
             ],

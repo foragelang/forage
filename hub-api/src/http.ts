@@ -1,5 +1,4 @@
 import type { Env } from './types'
-import { getBlob } from './storage'
 
 // CORS allowlist. The Worker only ever responds to known origins;
 // `*` would expose the hub to any third-party site, which is fine for
@@ -67,24 +66,6 @@ export function jsonError(
 ): Response {
     const body: Record<string, unknown> = { error: { code, message, ...extra } }
     return json(body, status, req)
-}
-
-export async function streamFromR2(
-    env: Env,
-    key: string,
-    contentType: string,
-    req: Request | null = null,
-): Promise<Response> {
-    const obj = await getBlob(env, key)
-    if (!obj) return jsonError(404, 'not_found', `blob not found: ${key}`, {}, req)
-    return new Response(obj.body, {
-        status: 200,
-        headers: {
-            'Content-Type': contentType,
-            'Cache-Control': 'public, max-age=300',
-            ...corsHeaders(req),
-        },
-    })
 }
 
 // ---------------------------------------------------------------------------

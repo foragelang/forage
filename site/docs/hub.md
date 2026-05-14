@@ -1,139 +1,118 @@
 # Hub: publish & import
 
 The Forage hub is a registry at `hub.foragelang.com` (UI) and
-`api.foragelang.com` (API). It hosts community recipes — `recipe.forage`
-source plus optional fixtures and a snapshot — and serves them to:
+`api.foragelang.com` (API). It hosts community packages — recipe
+sources plus their shared declarations, replay fixtures, and the
+snapshot the recipe produced against them — and serves them to:
 
-- the `forage` CLI's `forage publish` command;
-- Studio's Publish tab;
-- recipes that declare `import <ref>` at the top of their source.
+- the `forage` CLI's `publish` / `sync` / `fork` commands;
+- Studio's Publish tab and "Clone from hub" workspace sidebar;
+- recipes that declare `import <author>/<slug>` at the top.
 
 ## Authoring a recipe
 
-A recipe directory is the unit of work — one `.forage` file plus optional
-sibling assets.
+A recipe directory is the unit of work — one `.forage` file plus
+optional sibling assets.
 
 ```
 my-recipe/
 ├── recipe.forage         # required
-├── recipe.json           # optional: namespace / name / displayName / summary / tags / author
+├── shared.forage         # optional: shared types / helpers
 ├── fixtures/
 │   └── captures.jsonl    # optional: replayable fixtures
 └── expected.snapshot.json # optional: golden snapshot
 ```
 
-`recipe.json` lets you keep publish metadata out of the CLI invocation:
-
-```json
-{
-    "namespace": "alice",
-    "name": "my-recipe",
-    "displayName": "My recipe",
-    "summary": "What this recipe does",
-    "tags": ["dispensary", "sweed"],
-    "author": "alice"
-}
-```
-
-Shape rules:
-
-- **`name`**: `^[a-z0-9][a-z0-9-]{1,63}$`. Lowercase letters, digits, and
-  hyphens; 2–64 chars; must start with a letter or digit.
-- **`namespace`**: same regex as `name`. Defaults to `forage` (the official
-  namespace) if you omit it. Pick your own handle for personal recipes.
-
-The published slug is always `<namespace>/<name>`.
+`forage.toml` at the workspace root declares the package's
+description, category, and tags.
 
 ## Publishing
 
-Set an API key in your environment:
+Sign in once via GitHub:
 
 ```bash
-export FORAGE_HUB_TOKEN="your-api-key"
+forage auth login
 ```
 
-Dry-run is the default — it prints the JSON the CLI *would* POST without
-hitting the network:
+Dry-run is the default — it prints the JSON envelope the CLI *would*
+POST without hitting the network:
 
 ```bash
 forage publish path/to/my-recipe
-# {
-#   "slug": "forage/my-recipe",
-#   "displayName": "My recipe",
-#   …
-# }
-# dry-run — pass --publish to POST
 ```
 
-Pass `--publish` to actually POST. Use it once you're happy with the
-payload:
+Pass `--publish` to actually POST. The hub stamps the next available
+version:
 
 ```bash
 forage publish path/to/my-recipe --publish
-# published forage/my-recipe v1
-# sha256: deadbeef…
-# curl -fsSL https://api.foragelang.com/v1/packages/forage/my-recipe
-```
-
-Override metadata from the command line when there's no `recipe.json` (or
-when you want to tweak just one field for one run):
-
-```bash
-forage publish path/to/my-recipe \
-    --namespace alice \
-    --name my-recipe \
-    --display-name "My recipe" \
-    --summary "What this recipe does" \
-    --tags cannabis,sweed \
-    --author alice \
-    --publish
+# published alice/my-recipe v1
+# curl -fsSL https://api.foragelang.com/v1/packages/alice/my-recipe
 ```
 
 By default the CLI talks to `https://api.foragelang.com`. Override via
-`FORAGE_HUB_URL` (useful for staging or `wrangler dev`):
+`FORAGE_HUB_URL` (useful for staging or `wrangler dev`).
 
-```bash
-export FORAGE_HUB_URL="http://127.0.0.1:8787"
-```
+## Stale-base detection
+
+The CLI tags every publish with the `base_version` you rebased from.
+If a teammate landed a later version while you were drafting, the hub
+returns `409 stale_base` with the current `latest_version`; the CLI
+re-pulls, replays your delta, and retries.
 
 ## Sharing declarations across recipes
 
-The unit of distribution is a **package**: every `.forage` file in a
-workspace, plus the `forage.toml` manifest. Sharing types is a
-workspace-level concern — recipes never write `import` directives.
+Recipes reference each other via `import <author>/<slug>` directives
+at the top:
 
-To use types published by someone else:
+```forage
+import alice/cannabis           // shared schema
+import alice/zen-leaf v2        // a specific dispensary recipe
+```
 
-1. Add the dependency to `forage.toml`:
-   ```toml
-   [deps]
-   "alice/awesome-utils" = 3
-   ```
-2. `forage update` resolves the dep, downloads the package into
-   `~/Library/Forage/Cache/hub/alice/awesome-utils/3/`, and writes the
-   resolved version + digest to `forage.lock`.
-3. Every recipe in the workspace now sees the package's shared types
-   in its merged catalog — no per-recipe declaration needed.
+The resolver pulls them from the hub, caches them locally, and unions
+their types / enums / inputs into the importing recipe's catalog.
 
-A recipe can redeclare a type with the same name to shadow the
-shared one locally (per-platform extension pattern).
+## Forks
+
+Fork any public package into your own namespace:
+
+```bash
+forage fork alice/zen-leaf            # → @me/zen-leaf
+forage fork alice/zen-leaf my-leaf    # → @me/my-leaf
+```
+
+The fork carries `forked_from: {author: "alice", slug: "zen-leaf",
+version: N}` on its v1 metadata, where N is the upstream version you
+forked. After that the fork is independent — there is no auto-tracking.
+Pulls from upstream are explicit re-publishes through the regular
+publish path.
 
 ## API endpoints (reference)
 
-| Method | Path                                              | Auth     | Returns                                                |
-|--------|---------------------------------------------------|----------|--------------------------------------------------------|
-| GET    | `/v1/health`                                      | —        | `{"status":"ok"}`                                      |
-| GET    | `/v1/packages`                                    | —        | `{items, nextCursor}` — paginated listing              |
-| GET    | `/v1/packages/:namespace/:name`                   | —        | full package (metadata + every file body). `?version=N`|
-| GET    | `/v1/packages/:namespace/:name/versions`          | —        | version history                                        |
-| GET    | `/v1/packages/:namespace/:name/fixtures`          | —        | fixtures.jsonl (if uploaded)                           |
-| GET    | `/v1/packages/:namespace/:name/snapshot`          | —        | snapshot.json (if uploaded)                            |
-| POST   | `/v1/packages`                                    | Bearer   | publish — returns `{slug, version, sha256}`            |
+| Method | Path                                              | Auth     | Returns                                          |
+|--------|---------------------------------------------------|----------|--------------------------------------------------|
+| GET    | `/v1/health`                                      | —        | `{"status":"ok"}`                                |
+| GET    | `/v1/packages`                                    | —        | `{items, next_cursor}` — paginated listing       |
+| GET    | `/v1/packages?sort=&category=&q=&cursor=&limit=`  | —        | filtered + sorted listing                        |
+| GET    | `/v1/packages/:author/:slug`                      | —        | package metadata                                 |
+| GET    | `/v1/packages/:author/:slug/versions`             | —        | version history                                  |
+| GET    | `/v1/packages/:author/:slug/versions/:n`          | —        | atomic version artifact (`n` or `latest`)        |
+| POST   | `/v1/packages/:author/:slug/versions`             | Bearer   | publish next version (`base_version` required)   |
+| POST   | `/v1/packages/:author/:slug/stars`                | Bearer   | star the package                                 |
+| DELETE | `/v1/packages/:author/:slug/stars`                | Bearer   | unstar                                           |
+| GET    | `/v1/packages/:author/:slug/stars`                | —        | who starred it                                   |
+| POST   | `/v1/packages/:author/:slug/downloads`            | —        | bump the download counter                        |
+| POST   | `/v1/packages/:author/:slug/fork`                 | Bearer   | fork into the caller's namespace                 |
+| GET    | `/v1/users/:author`                               | —        | public profile                                   |
+| GET    | `/v1/users/:author/packages`                      | —        | packages owned by the user                       |
+| GET    | `/v1/users/:author/stars`                         | —        | packages the user has starred                    |
+| GET    | `/v1/categories`                                  | —        | list of categories with at least one package     |
 
-Hand-roll a publish if you don't want to use the CLI:
+Hand-roll a publish:
 
 ```bash
-curl -fsSL -X POST https://api.foragelang.com/v1/packages \
+curl -fsSL -X POST https://api.foragelang.com/v1/packages/alice/my-recipe/versions \
     -H "Authorization: Bearer $FORAGE_HUB_TOKEN" \
     -H "Content-Type: application/json" \
     -d @payload.json
@@ -143,22 +122,22 @@ Where `payload.json` matches:
 
 ```json
 {
-    "slug": "alice/my-recipe",
-    "displayName": "My recipe",
-    "summary": "What this recipe does",
-    "tags": ["dispensary"],
-    "files": [
-        {"name": "recipe.forage", "body": "recipe \"my-recipe\"\nengine http\n…"},
-        {"name": "shared.forage", "body": "type Item { id: String }\n"}
+    "description": "What this recipe does",
+    "category": "dispensary",
+    "tags": ["sweed", "cannabis"],
+    "recipe": "recipe \"my-recipe\"\nengine http\n…",
+    "decls": [
+        {"name": "shared.forage", "source": "type Item { id: String }\n"}
     ],
-    "fixtures": "{\"…jsonl content…\"}",
-    "snapshot": "{\"…snapshot json…\"}"
+    "fixtures": [
+        {"name": "captures.jsonl", "content": "…jsonl content…"}
+    ],
+    "snapshot": {"records": {/* … */}, "counts": {/* … */}},
+    "base_version": null,
+    "forked_from": null
 }
 ```
 
-The `slug` is `<namespace>/<name>`. `files` is the package — one entry
-per `.forage` file in the workspace; at least one must carry a
-`recipe "<name>"` header. Names may include a single `/` separator
-(e.g. `<dir>/recipe.forage`). `fixtures` and `snapshot` are optional;
-both are stored verbatim in R2 under
-`recipes/<namespace>/<name>/<version>/`.
+`base_version` is `null` on the first publish, the current
+`latest_version` on subsequent ones. `forked_from` is `null` on
+regular publishes (the fork endpoint sets it on the v1 of a fork).

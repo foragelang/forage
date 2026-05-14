@@ -1,15 +1,18 @@
 import type { Env } from './types'
 import { BUCKETS, callerKey, corsPreflight, json, jsonError, rateLimit } from './http'
 import {
-    listRecipes,
-    getRecipe,
-    getRecipeVersionsHandler,
-    getRecipeFixtures,
-    getRecipeSnapshot,
-    publishRecipe,
-    deleteRecipe,
-    validateSlugSegments,
-} from './routes/recipes'
+    listPackages,
+    getPackageDetail,
+    listVersions,
+    getVersionArtifact,
+    publishVersion,
+    validateSegments,
+} from './routes/packages'
+import { addStar, removeStar, getStars } from './routes/stars'
+import { recordDownload } from './routes/downloads'
+import { createFork } from './routes/forks'
+import { getProfile, getProfilePackages, getProfileStars } from './routes/users'
+import { listCategories } from './routes/categories'
 import {
     oauthStart,
     oauthCallback,
@@ -24,10 +27,8 @@ import { identifyCaller } from './auth'
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
         if (request.method === 'OPTIONS') return corsPreflight(request)
-
         const url = new URL(request.url)
         const path = url.pathname.replace(/\/+$/, '') || '/'
-
         try {
             return await route(request, env, path)
         } catch (err) {
@@ -47,91 +48,137 @@ async function route(
         return json({ status: 'ok', time: new Date().toISOString() }, 200, request)
     }
 
-    // M11 OAuth endpoints — most have their own rate limits.
+    // ----- OAuth ---------------------------------------------------------
     if (path === '/v1/oauth/start' && request.method === 'POST') {
         const limit = await rateLimit(env, 'oauthStart', callerKey(request, null), request)
-        if (limit) return limit
+        if (limit !== null) return limit
         return oauthStart(request, env)
     }
-    if (path === '/v1/oauth/callback' && request.method === 'GET') return oauthCallback(request, env)
+    if (path === '/v1/oauth/callback' && request.method === 'GET') {
+        return oauthCallback(request, env)
+    }
     if (path === '/v1/oauth/device' && request.method === 'POST') {
         const limit = await rateLimit(env, 'deviceStart', callerKey(request, null), request)
-        if (limit) return limit
+        if (limit !== null) return limit
         return oauthDevice(request, env)
     }
     if (path === '/v1/oauth/device/poll' && request.method === 'POST') {
         const limit = await rateLimit(env, 'devicePoll', callerKey(request, null), request)
-        if (limit) return limit
+        if (limit !== null) return limit
         return oauthDevicePoll(request, env)
     }
-    if (path === '/v1/oauth/refresh' && request.method === 'POST') return oauthRefresh(request, env)
+    if (path === '/v1/oauth/refresh' && request.method === 'POST') {
+        return oauthRefresh(request, env)
+    }
     if (path === '/v1/oauth/whoami' && request.method === 'GET') {
         const caller = await identifyCaller(request, env)
-        const login = caller?.kind === 'user' ? caller.login : null
+        const login = caller !== null && caller.kind === 'user' ? caller.login : null
         return oauthWhoami(request, env, login)
     }
     if (path === '/v1/oauth/revoke' && request.method === 'POST') {
         const caller = await identifyCaller(request, env)
-        if (caller?.kind !== 'user') return jsonError(401, 'unauthorized', 'sign-in required', {}, request)
+        if (caller === null || caller.kind !== 'user') {
+            return jsonError(401, 'unauthorized', 'sign-in required', {}, request)
+        }
         return oauthRevoke(request, env, caller.login)
     }
 
+    // ----- Top-level lists ----------------------------------------------
     if (path === '/v1/packages' && request.method === 'GET') {
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
-        if (limit) return limit
-        return listRecipes(request, env)
+        if (limit !== null) return limit
+        return listPackages(request, env)
     }
-    if (path === '/v1/packages' && request.method === 'POST') {
-        const caller = await identifyCaller(request, env)
-        const key = caller?.kind === 'user' ? caller.login : callerKey(request, null)
-        const limit = await rateLimit(env, 'publish', key, request)
-        if (limit) return limit
-        return publishRecipe(request, env)
+    if (path === '/v1/categories' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return listCategories(request, env)
     }
 
-    // Versions / fixtures / snapshot live under `/v1/packages/:ns/:name/:sub`.
-    // Match these *before* the bare detail route below, since the detail
-    // route is also a two-segment match.
-    const subMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)\/(versions|fixtures|snapshot)$/)
-    if (subMatch) {
-        const ns = decodeURIComponent(subMatch[1])
-        const name = decodeURIComponent(subMatch[2])
-        const slug = validateSlugSegments(ns, name)
-        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`, {}, request)
+    // ----- /v1/users/:author* -------------------------------------------
+    const userMatch = path.match(/^\/v1\/users\/([^/]+)(?:\/(packages|stars))?$/)
+    if (userMatch !== null) {
         if (request.method !== 'GET') {
             return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
         }
+        const author = decodeURIComponent(userMatch[1])
+        const sub = userMatch[2] ?? null
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
-        if (limit) return limit
-        if (subMatch[3] === 'versions') return getRecipeVersionsHandler(request, env, slug)
-        if (subMatch[3] === 'fixtures') return getRecipeFixtures(request, env, slug)
-        if (subMatch[3] === 'snapshot') return getRecipeSnapshot(request, env, slug)
+        if (limit !== null) return limit
+        if (sub === null) return getProfile(request, env, author)
+        if (sub === 'packages') return getProfilePackages(request, env, author)
+        if (sub === 'stars') return getProfileStars(request, env, author)
     }
 
-    // Detail / delete: `/v1/packages/:namespace/:name`.
-    const detailMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)$/)
-    if (detailMatch) {
-        const ns = decodeURIComponent(detailMatch[1])
-        const name = decodeURIComponent(detailMatch[2])
-        const slug = validateSlugSegments(ns, name)
-        if (!slug) return jsonError(400, 'bad_slug', `invalid namespace/name: ${ns}/${name}`, {}, request)
-        if (request.method === 'GET') {
-            const limit = await rateLimit(env, 'read', callerKey(request, null), request)
-            if (limit) return limit
-            const url = new URL(request.url)
-            return getRecipe(request, env, slug, url.searchParams.get('version'))
+    // ----- /v1/packages/:author/:slug[/...] ------------------------------
+    const pkgMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)(?:\/(versions|stars|downloads|fork)(?:\/([^/]+))?)?$/)
+    if (pkgMatch !== null) {
+        const author = decodeURIComponent(pkgMatch[1])
+        const slug = decodeURIComponent(pkgMatch[2])
+        if (!validateSegments(author, slug)) {
+            return jsonError(400, 'bad_slug', `invalid author/slug: ${author}/${slug}`, {}, request)
         }
-        if (request.method === 'DELETE') {
-            const caller = await identifyCaller(request, env)
-            const key = caller?.kind === 'user' ? caller.login : callerKey(request, null)
-            const limit = await rateLimit(env, 'publish', key, request)
-            if (limit) return limit
-            return deleteRecipe(request, env, slug)
+        const sub = pkgMatch[3] ?? null
+        const subArg = pkgMatch[4] ?? null
+
+        // Bare /:author/:slug — detail
+        if (sub === null) {
+            if (request.method !== 'GET') {
+                return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
+            }
+            const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+            if (limit !== null) return limit
+            return getPackageDetail(request, env, author, slug)
+        }
+
+        // /versions[/:n|latest]
+        if (sub === 'versions') {
+            if (subArg === null && request.method === 'GET') {
+                const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+                if (limit !== null) return limit
+                return listVersions(request, env, author, slug)
+            }
+            if (subArg === null && request.method === 'POST') {
+                const caller = await identifyCaller(request, env)
+                const key = caller !== null && caller.kind === 'user'
+                    ? caller.login
+                    : callerKey(request, null)
+                const limit = await rateLimit(env, 'publish', key, request)
+                if (limit !== null) return limit
+                return publishVersion(request, env, author, slug)
+            }
+            if (subArg !== null && request.method === 'GET') {
+                const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+                if (limit !== null) return limit
+                return getVersionArtifact(request, env, author, slug, subArg)
+            }
+            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
+        }
+
+        // /stars
+        if (sub === 'stars' && subArg === null) {
+            if (request.method === 'GET') {
+                const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+                if (limit !== null) return limit
+                return getStars(request, env, author, slug)
+            }
+            if (request.method === 'POST') return addStar(request, env, author, slug)
+            if (request.method === 'DELETE') return removeStar(request, env, author, slug)
+            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
+        }
+
+        // /downloads
+        if (sub === 'downloads' && subArg === null && request.method === 'POST') {
+            return recordDownload(request, env, author, slug)
+        }
+
+        // /fork
+        if (sub === 'fork' && subArg === null && request.method === 'POST') {
+            return createFork(request, env, author, slug)
         }
     }
 
     return jsonError(404, 'no_route', `no route for ${request.method} ${path}`, {}, request)
 }
 
-// Re-export bucket configuration for test fixtures.
 export { BUCKETS }

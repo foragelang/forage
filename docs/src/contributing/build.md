@@ -4,8 +4,6 @@
 
 - Rust 1.85 or newer (`rustup default stable`).
 - Node 20 or newer + `npm` (for the Studio frontend and the hub-site).
-- `wasm-pack` (for `forage-wasm`):
-  `curl -fsSL https://rustwasm.github.io/wasm-pack/installer/init.sh | sh`.
 - `cargo-tauri` (for building Studio bundles):
   `cargo install tauri-cli@2.8 --locked`.
 - macOS: Xcode Command Line Tools.
@@ -28,9 +26,6 @@ cargo fmt --all --check
 # Run the CLI:
 ./target/debug/forage run recipes/hacker-news
 
-# Build forage-wasm and refresh hub-site:
-( cd crates/forage-wasm && wasm-pack build --target web --out-dir ../../hub-site/forage-wasm/pkg )
-
 # Studio dev loop:
 ( cd apps/studio/ui && npm install )
 ( cd apps/studio && cargo tauri dev )
@@ -47,7 +42,7 @@ crates/
 ├── forage-keychain/    # keyring wrapper
 ├── forage-replay/      # capture types + replayer
 ├── forage-lsp/         # tower-lsp server
-├── forage-wasm/        # wasm-bindgen exports for the web IDE
+├── forage-wasm/        # wasm-bindgen exports (consumed by the hub IDE)
 └── forage-test/        # shared-recipes harness
 apps/
 ├── cli/                # `forage` binary
