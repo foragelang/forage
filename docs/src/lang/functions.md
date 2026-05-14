@@ -20,16 +20,30 @@ fn variantKey($name) {
 ## Syntax
 
 ```text
-fn <name>( <$param>, ... ) { <expression> }
+fn <name>( <$param>, ... ) {
+    (let <$name> = <expression>)*
+    <trailing_expression>
+}
 ```
 
 - `<name>` follows the same lexical rules as a built-in transform —
   lowercase identifier, camelCase by convention.
 - Each parameter is a `$<ident>` token. The leading `$` is required.
   Zero parameters is allowed: `fn now() { … }`.
-- The body is a single `ExtractionExpr` — the same grammar used at any
-  call site. Branching uses `case … of`; composition uses pipes;
-  templates and literals follow the standard rules.
+- The body is a sequence of `let <$name> = <expression>` bindings
+  followed by exactly one trailing expression. The trailing expression
+  is the function's return value. Let-bindings are fn-body-only — not
+  legal in step bodies, emit fields, or top-level expressions.
+
+```forage
+fn parseSize($s) {
+    let $m = $s | match(/([0-9.]+)\s*([a-zA-Z]*)/)
+    case $m.matched of {
+        true → { value: $m.captures[1] | parseFloat, unit: $m.captures[2] | lowercase }
+        false → null
+    }
+}
+```
 
 ## Calling
 
@@ -37,7 +51,7 @@ fn <name>( <$param>, ... ) { <expression> }
 // Pipe call — the pipe head becomes param 0.
 $name | shout
 
-// Pipe call with extra args — head + arg1 + arg2.
+// Pipe call with extra args — head + arg1.
 $variant.size | normalizeOzToGrams($variant.unit)
 
 // Direct call — every arg is explicit.
@@ -92,11 +106,23 @@ runtime has no recursion guard, so a self-call without a base case
 will not terminate. Mutual recursion across two functions compiles
 silently for now.
 
+## Let-bindings
+
+Each `let $name = <expression>` adds `$name` to the function-local
+scope. Later bindings see earlier ones; the trailing expression sees
+them all. Single-assignment — declaring the same name twice is
+`DuplicateLetBinding`; shadowing a parameter is `LetShadowsParam`.
+
+```forage
+fn normalize($variant) {
+    let $size = $variant.label | parseSize
+    let $grams = $size.value | normalizeOzToGrams($size.unit)
+    { value: $grams, unit: "g" }
+}
+```
+
 ## Limits
 
-- Bodies are single expressions. No statement sequencing, no
-  `let`-bindings, no early return. Use `case … of`, pipes, and
-  templates for control flow.
 - Parameters are dynamically typed (no annotations). The validator
   catches arity mismatches but not type mismatches.
 - Functions cannot capture for-loop or `as` bindings.

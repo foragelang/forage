@@ -10,11 +10,26 @@ the CLI and the wasm core, so the same names work in every host.
 | Transform | Behavior |
 |---|---|
 | `toString` | coerce anything to its string form |
-| `lower` | lowercase |
-| `upper` | uppercase |
+| `lower` / `lowercase` | lowercase |
+| `upper` / `uppercase` | uppercase |
 | `trim` | strip leading + trailing whitespace |
 | `capitalize` | uppercase the first character |
 | `titleCase` | uppercase the first character of each whitespace-separated word |
+| `replace(from, to)` | replace every occurrence of literal `from` with `to` |
+| `split(sep)` | split into an array on the literal separator |
+
+## Regex
+
+Regex literals are `/pattern/flags` in expression position. Flags: `i`
+(case-insensitive), `m` (multi-line), `s` (dot matches newline), `u`
+(Unicode-aware). The pattern is the [`regex`
+crate](https://docs.rs/regex) dialect.
+
+| Transform | Behavior |
+|---|---|
+| `match(/p/)` | `{matched: Bool, captures: [String?]}` — `captures[0]` is the full match |
+| `matches(/p/)` | predicate — does the string contain a match? |
+| `replaceAll(/p/, rep)` | replace every match; `$1`, `$2`, `$&` work inside `rep` |
 
 ## Parsing scalars
 
@@ -35,23 +50,6 @@ the CLI and the wasm core, so the same names work in every host.
 | `coalesce(a, b, …)` | the first non-null value among the args (input itself counts) |
 | `default(v)` | replace null with `v` |
 | `getField(name)` | dynamic field access — `getField($obj, "x")` |
-
-## Size / weight normalization (cannabis-domain helpers)
-
-These are domain-specific but pulled out as transforms because every
-dispensary site uses them.
-
-| Transform | Behavior |
-|---|---|
-| `parseSize` | `"2.5g"` → `{value: 2.5, unit: "g"}` |
-| `normalizeOzToGrams` | convert oz to grams; pass through if already grams |
-| `sizeValue` | unwrap `value` from a `parseSize` output |
-| `sizeUnit` | unwrap `unit` from a `parseSize` output |
-| `normalizeUnitToGrams` | normalize the unit label (`oz` → `g`) |
-| `prevalenceNormalize` | normalize "indica-dominant"/"sativa" → INDICA/SATIVA/HYBRID/CBD |
-| `parseJaneWeight` | Jane's textual weight (`"eighth ounce"`) → numeric grams |
-| `janeWeightUnit` | Jane's weight label → unit (`"g"` or `"EA"`) |
-| `janeWeightKey` | Jane's weight label → snake_case key for `getField` |
 
 ## HTML
 

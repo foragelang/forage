@@ -67,5 +67,5 @@ round-trip cleanly through `forage test`.
 - [HTTP engine](./http.md) and [Browser engine](./browser.md).
 - [Expressions and templates](./expressions.md) — path syntax,
   pipelines, case-of, interpolation.
-- [Transforms](./transforms.md) — the 30+ built-ins (`lower`, `dedup`,
-  `parseHtml`, `select`, `prevalenceNormalize`, …).
+- [Transforms](./transforms.md) — the built-ins (`lower`, `dedup`,
+  `parseHtml`, `select`, `match`, `replaceAll`, …).

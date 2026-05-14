@@ -60,12 +60,58 @@ call-shape syntax, use the call form:
 
 ```forage
 coalesce($variant.priceSale, $variant.priceList)
-normalizeOzToGrams($variant.unitSize?.value, $variant.unitSize?.unitAbbr)
 getField($product.attrs, "size")
 ```
 
 These are the same transforms — just bound by call instead of
 pipe-feed.
+
+## Arithmetic
+
+Binary `+`, `-`, `*`, `/`, `%` and unary `-`. Precedence (low → high):
+pipe `|` → additive `+`/`-` → multiplicative `*`/`/`/`%` → unary `-` →
+postfix `[…]` → primary. `Int op Int` stays `Int` for `+`/`-`/`*`;
+`/` and `%` promote to `Double` (so `1/2` is `0.5`). Any `Double` on
+either side promotes the result. `String + String` concatenates.
+`null` and mixed-type operations are `TypeMismatch`. Division by zero
+is `ArithmeticDomain`.
+
+```forage
+$variant.unitSize.value * 28.0         // ounces → grams
+$product.priceCents / 100              // cents → dollars (always Double)
+"price=" + ($variant.price | toString) // string concat
+```
+
+## Regex literals
+
+`/pattern/flags` parses to a compiled regex. Flags: `i`, `m`, `s`, `u`
+(see [Transforms — Regex](./transforms.md#regex)). The literal is
+intermediate — it only flows into `match` / `matches` / `replaceAll`
+and never lands on a record field.
+
+```forage
+$variant.label | matches(/^(oz|ounce)$/i)
+$variant.label | replaceAll(/[^a-z0-9]+/i, "-")
+```
+
+## Struct literals
+
+An inline object value. Same field-binding shape as `emit`, used as
+an expression:
+
+```forage
+{ value: $weight | parseFloat, unit: $abbr | lowercase }
+```
+
+Duplicate field names are a validator error
+(`DuplicateStructField`).
+
+## Array indexing in expressions
+
+Bracket notation on any expression result. The path-level form
+(`$x.range[0]`) stays null-tolerant for missing-record-field
+ergonomics; expression-level indexing (e.g. on the output of a
+function call or struct literal) raises `IndexOutOfBounds` instead.
 
 ## Case-of
 
@@ -97,7 +143,7 @@ scope:
 ```forage
 url "https://example.com/items?store={$input.storeId}&page={$page}"
 externalId ← "{$product.id}:{$weight}"
-text       ← "price_{$weight | janeWeightKey}"
+text       ← "price_{$weight | lowercase | replace(" ", "_")}"
 ```
 
 Stringification rules: strings unchanged; numbers / bools to their

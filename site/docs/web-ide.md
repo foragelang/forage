@@ -40,15 +40,10 @@ The IDE uses bearer-token auth, matching the CLI's `FORAGE_HUB_TOKEN`. Get a
 token from the hub admin, paste it into the IDE's Publish tab, and check
 "remember me" to persist it in `localStorage`.
 
-## Sources of drift
+## Single source of truth
 
-The web IDE's parser+validator is a TypeScript port at
-[`hub-site/forage-ts/`](https://github.com/foragelang/forage/tree/main/hub-site/forage-ts).
-Both implementations share `tests/shared-recipes/` and assert against a single
-`expected.json`. If a grammar or rule change in one implementation isn't
-mirrored in the other, the corresponding test fails first.
-
-If you're working on the runtime: any change that adds a new parser
-production, validator rule, or transform should also land in the TS port.
-If the work is large and the port can wait, leave a TODO referencing the
-relevant test vector and a feature flag in the IDE.
+The web IDE consumes the Rust core compiled to WebAssembly through
+`hub-site/forage-wasm/adapter.ts`. There is no parallel TypeScript
+implementation. `Tests/shared-recipes/` is still the contract for any
+future implementation (a reborn TS port, a Python port, etc.); today
+the only consumer is the Rust core that powers the wasm bundle.

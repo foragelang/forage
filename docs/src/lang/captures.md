@@ -8,6 +8,10 @@ recipe emits." Two flavors, declared inside `browser { … }`:
 Fires per fetch/XHR response whose URL matches a regex.
 
 ```forage
+// `prevalenceNormalize`, `parseJaneWeight`, `janeWeightUnit` are
+// user-defined in the recipe (see recipes/jane/recipe.forage); the
+// engine itself ships no cannabis-domain transforms.
+
 captures.match {
     urlPattern: "iheartjane.com/v2/smartpage"
     for $product in $.products[*] {

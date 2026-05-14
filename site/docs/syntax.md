@@ -161,14 +161,14 @@ headers {
 }
 
 body.json {
-    key: "price_{$weight | janeWeightKey}"   // dynamic key built from a transform
+    key: "price_{$weight | lowercase | replace(" ", "_")}"   // dynamic key built from a pipeline
 }
 ```
 
 Inside `{...}`, you can use the same forms an extraction supports:
 
 - bare paths — `{$input.x}`, `{$step.list[0].id}`
-- pipe transforms — `{$weight | janeWeightKey}`, `{$count | toString}`
+- pipe transforms — `{$count | toString}`, `{$label | lowercase}`
 - function-call transforms — `{coalesce($a, $b, "fallback")}`
 - `case … of { … }` branches
 
@@ -189,7 +189,7 @@ Transforms are named, engine-implemented functions chained with `|`. The vocabul
 | `dedup`                                             | Remove duplicates from a list, preserving order.                      |
 | `getField(name)`                                    | Look up a field on an object whose name is computed at runtime.       |
 
-Forage also ships a small set of cannabis-domain transforms used by the bundled platform recipes — `parseSize`, `normalizeOzToGrams`, `normalizeUnitToGrams`, `prevalenceNormalize`, `parseJaneWeight`, `janeWeightUnit`, `janeWeightKey`. The last is a generic snake-caser (`"Half Ounce" → "half_ounce"`), useful for building dynamic-key getField lookups. These will move out of the engine and into consumer-supplied registrations once the type catalog is lifted.
+Domain-specific transforms (cannabis weight/prevalence parsers, etc.) live as user-defined functions inside the recipe that needs them — see `recipes/leafbridge/`, `recipes/jane/`, `recipes/sweed/` for end-to-end examples. The engine registry stays generic.
 
 ## case expressions
 

@@ -56,8 +56,7 @@ match client.publish(slug, body, meta).await {
 
 ## On the TS client side
 
-`hub-site/forage-ts/src/hub-client.ts` (and the forthcoming
-`forage-wasm`-backed replacement) presents:
+`hub-site/forage-wasm/adapter.ts` presents:
 
 ```ts
 catch (e) {

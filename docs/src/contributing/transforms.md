@@ -60,8 +60,10 @@ reference picks it up.
 - `camelCase`. Consistent with the rest of the catalog and with how
   recipe authors will reference it: `$x | shoutingCase`.
 - Avoid overloading existing names. `parse*` is for type coercion;
-  `normalize*` is for cleanup; domain-specific helpers are namespaced
-  (`janeWeightUnit`, not `weightUnit`).
+  `normalize*` is for cleanup. Domain-specific helpers belong in
+  user-defined fns inside the recipe, not the engine registry —
+  cannabis-specific transforms used to live here and were migrated
+  out for that reason.
 - Don't take optional args unless they're genuinely optional. Prefer
   separate transforms or an explicit `default(v)` upstream.
 

@@ -24,8 +24,10 @@ Every milestone listed there has either a complete landing or a
 documented first cut shipped to `main`. The remaining work tends to
 be polish:
 
-- The web IDE's `RecipeIDE.vue` still imports `forage-ts` instead of
-  `forage-wasm`; flipping the import + benchmarking is a small PR.
+- The hub IDE's "Run" button no longer executes recipes in-browser;
+  the Rust HTTP engine doesn't compile to WASM in the current build,
+  so execution lives in Studio. Either move the engine to a
+  WASM-friendly transport or accept the split.
 - The LSP advertises `definition` but doesn't yet resolve — depends
   on threading spans through the validator.
 - The Studio Capture sheet (live recording from the embedded WebView)
