@@ -19,9 +19,17 @@ export function EditorView() {
         maxVwFraction: 0.75,
     });
     return (
-        <div className="flex flex-1 min-h-0 flex-col">
+        // `min-w-0 overflow-hidden` on the outer column is the
+        // load-bearing fix: without them, the inspector's explicit
+        // width (set inline) can make the inner row wider than the
+        // column itself, the column grows to fit, and the toolbar —
+        // sitting above the row in the same column — gets dragged
+        // along, sliding its right-aligned buttons off the visible
+        // edge. Clip at the column, propagate via flex shrinking
+        // below.
+        <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
             <EditorToolbar />
-            <div className="flex flex-1 min-h-0">
+            <div className="flex flex-1 min-h-0 min-w-0">
                 <div className="flex flex-1 min-w-0 flex-col">
                     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                         <EditorPane />
