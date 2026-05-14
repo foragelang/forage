@@ -1,0 +1,31 @@
+[package]
+name = "forage-daemon"
+description = "Forage scheduling + persistence runtime. Drives recipes on a cadence, writes records to per-run SQLite stores, and tracks per-record-type drift across history."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forage-core     = { workspace = true }
+forage-http     = { workspace = true }
+
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+indexmap    = { workspace = true }
+ts-rs       = { workspace = true }
+async-trait = { workspace = true }
+
+rusqlite    = { workspace = true }
+cron        = { workspace = true }
+chrono      = { workspace = true }
+ulid        = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+wiremock    = { workspace = true }

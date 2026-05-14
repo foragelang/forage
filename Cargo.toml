@@ -4,6 +4,7 @@ members = [
     "crates/forage-core",
     "crates/forage-http",
     "crates/forage-browser",
+    "crates/forage-daemon",
     "crates/forage-hub",
     "crates/forage-keychain",
     "crates/forage-replay",
@@ -28,6 +29,7 @@ authors = ["Dmitry Minkovsky <dminkovsky@gmail.com>"]
 forage-core     = { path = "crates/forage-core",     version = "0.1.0" }
 forage-http     = { path = "crates/forage-http",     version = "0.1.0" }
 forage-browser  = { path = "crates/forage-browser",  version = "0.1.0" }
+forage-daemon   = { path = "crates/forage-daemon",   version = "0.1.0" }
 forage-hub      = { path = "crates/forage-hub",      version = "0.1.0" }
 forage-keychain = { path = "crates/forage-keychain", version = "0.1.0" }
 forage-replay   = { path = "crates/forage-replay",   version = "0.1.0" }
@@ -104,6 +106,12 @@ tracing-subscriber       = { version = "0.3", features = ["env-filter", "fmt"] }
 once_cell    = "1"
 indexmap     = { version = "2", features = ["serde"] }
 toml         = "1"
+
+# Daemon: scheduling, persistence, time, IDs.
+rusqlite     = { version = "0.39", features = ["bundled", "serde_json", "chrono"] }
+cron         = "0.16"
+chrono       = { version = "0.4", features = ["serde"] }
+ulid         = "1.2"
 
 # Test-only.
 wiremock     = "0.6"
