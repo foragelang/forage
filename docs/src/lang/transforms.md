@@ -71,8 +71,26 @@ Selectors are standard CSS3 — anything `scraper`/`cssselect` recognizes.
 Selection on a node-list flat-maps: `nodes | select(".inner")` returns
 all `.inner` descendants of any item in the list.
 
-## Adding a transform
+## User-defined transforms
+
+Recipes can declare their own transforms via the top-level `fn` form.
+A user-defined transform is a name, a parameter list, and a single
+expression body. Call sites are identical to built-ins — either piped
+(`$x |> myFn`) or directly invoked (`myFn($x, $y)`).
+
+```forage
+fn shouty($x) { $x | upper | trim }
+
+for $i in $list.items[*] {
+    emit Item { id ← $i.name | shouty }
+}
+```
+
+See [User-defined functions](./functions.md) for the full reference,
+including scope rules, namespace resolution, and recursion behavior.
+
+## Adding a built-in transform
 
 See [Contributing → Adding a transform](../contributing/transforms.md).
-Each transform is a `fn(EvalValue, &[EvalValue]) -> Result<EvalValue>`
-registered by name; new transforms ship as a small PR.
+Each built-in is a `fn(EvalValue, &[EvalValue]) -> Result<EvalValue>`
+registered by name; new built-ins ship as a small PR.

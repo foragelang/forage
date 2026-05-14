@@ -17,6 +17,7 @@
 - [Captures](./lang/captures.md)
 - [Expressions and templates](./lang/expressions.md)
 - [Transforms](./lang/transforms.md)
+- [Functions](./lang/functions.md)
 - [Expectations](./lang/expectations.md)
 - [Progress](./lang/progress.md)
 - [Imports](./lang/imports.md)
