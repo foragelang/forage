@@ -10,26 +10,34 @@ import { Inspector } from "@/components/Inspector/index";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 import { useStudio } from "@/lib/store";
 
+const GUTTER_WIDTH = 4;
+/// How much horizontal space the editor column on the left of the
+/// gutter needs to stay usable. The hook subtracts this from the
+/// observed container width to derive the inspector's maximum, so the
+/// inspector can never grow large enough to push the editor (and the
+/// toolbar that lives above it) into clipping or off-screen territory.
+const EDITOR_MIN_WIDTH = 320;
+
 export function EditorView() {
     const paused = useStudio((s) => s.paused);
-    const [inspectorWidth, dragHandlers] = useResizableWidth({
-        storageKey: "studio.inspector.width",
-        initial: 420,
-        min: 280,
-        maxVwFraction: 0.75,
-    });
+    const { width: inspectorWidth, containerRef, dragHandlers } =
+        useResizableWidth({
+            storageKey: "studio.inspector.width",
+            initial: 420,
+            min: 280,
+            reserveOther: EDITOR_MIN_WIDTH,
+            gutterWidth: GUTTER_WIDTH,
+        });
     return (
-        // `min-w-0 overflow-hidden` on the outer column is the
-        // load-bearing fix: without them, the inspector's explicit
-        // width (set inline) can make the inner row wider than the
-        // column itself, the column grows to fit, and the toolbar —
-        // sitting above the row in the same column — gets dragged
-        // along, sliding its right-aligned buttons off the visible
-        // edge. Clip at the column, propagate via flex shrinking
-        // below.
+        // `min-w-0 overflow-hidden` on the outer column keeps the
+        // toolbar pinned to the column's allotted width — the column
+        // can't grow with its content and drag the toolbar's
+        // right-aligned buttons off the visible edge. The clamp in the
+        // hook prevents the inspector from overflowing in the first
+        // place; this is the belt to its braces.
         <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
             <EditorToolbar />
-            <div className="flex flex-1 min-h-0 min-w-0">
+            <div ref={containerRef} className="flex flex-1 min-h-0 min-w-0">
                 <div className="flex flex-1 min-w-0 flex-col">
                     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                         <EditorPane />
