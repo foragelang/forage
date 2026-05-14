@@ -18,7 +18,7 @@ use crate::progress::{NoopSink, ProgressSink, RunEvent};
 use crate::transport::{HttpRequest, HttpResponse, Transport};
 
 use forage_core::ast::*;
-use forage_core::eval::default_registry;
+use forage_core::eval::{TransformRegistry, default_registry};
 use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot};
 
 /// Engine knobs.
@@ -127,8 +127,9 @@ impl<'t> Engine<'t> {
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
-        let registry = default_registry();
-        let evaluator = Evaluator::new(registry);
+        let registry =
+            TransformRegistry::with_user_fns(default_registry(), recipe.functions.clone());
+        let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
         // Default `$page` so recipes that use `{$page}` outside a paginated

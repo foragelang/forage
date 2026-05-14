@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use regex::Regex;
 
 use forage_core::ast::*;
-use forage_core::eval::default_registry;
+use forage_core::eval::{TransformRegistry, default_registry};
 use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot};
 use forage_replay::{BrowserCapture, Capture};
 
@@ -35,8 +35,9 @@ impl<'r> ReplayEngine<'r> {
             .browser
             .as_ref()
             .ok_or(BrowserError::MissingBrowserConfig)?;
-        let registry = default_registry();
-        let evaluator = Evaluator::new(registry);
+        let registry =
+            TransformRegistry::with_user_fns(default_registry(), self.recipe.functions.clone());
+        let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
 
