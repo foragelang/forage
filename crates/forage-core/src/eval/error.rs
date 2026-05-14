@@ -31,6 +31,32 @@ pub enum EvalError {
         expected: &'static str,
         actual: &'static str,
     },
+    /// Arithmetic operation reached a domain edge — division by zero,
+    /// modulo by zero. Surfaced as a typed error rather than silently
+    /// returning `Infinity` / `NaN`; recipes routinely run unattended
+    /// and a silent inf would propagate through downstream computations
+    /// undetected.
+    #[error("arithmetic: {0}")]
+    ArithmeticDomain(String),
+    /// Bracket indexing went out of range. Distinct from path-level
+    /// `[N]` on a `PathExpr`, which is null-tolerant by design
+    /// (scraping records routinely access fields like `$x.range[0]`
+    /// against possibly-empty arrays); the expression-level form is
+    /// strict so authors who reach for `$captures[5]` after a regex
+    /// `match` see a real diagnostic when the group doesn't exist.
+    #[error("index {index} out of bounds (length {len})")]
+    IndexOutOfBounds { index: i64, len: usize },
+    /// Bracket indexing against a non-array value. The path-level form
+    /// returns `Null` for null bases; the expression-level form errors
+    /// for anything but `Array`.
+    #[error("indexing not supported on value of kind {kind}")]
+    InvalidIndexBase { kind: &'static str },
+    /// Struct literal declared the same field twice — `{ x: 1, x: 2 }`
+    /// would silently keep one and drop the other. Surfacing it at
+    /// runtime guarantees a diagnostic even when the validator hasn't
+    /// run (REPL, ad-hoc eval).
+    #[error("duplicate field '{0}' in struct literal")]
+    DuplicateStructField(String),
     #[error("{0}")]
     Generic(String),
 }

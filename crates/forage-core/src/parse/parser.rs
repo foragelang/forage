@@ -31,6 +31,16 @@ pub enum ParseError {
         span: std::ops::Range<usize>,
         message: String,
     },
+    #[error("invalid regex at {span:?}: {message}")]
+    InvalidRegex {
+        span: std::ops::Range<usize>,
+        message: String,
+    },
+    #[error("invalid regex flag '{flag}' at {span:?}")]
+    InvalidRegexFlag {
+        span: std::ops::Range<usize>,
+        flag: char,
+    },
 }
 
 /// Top-level entry: lex + parse a `.forage` file. The shape depends on
@@ -187,10 +197,16 @@ impl Parser {
     }
 
     fn expect_int(&mut self) -> Result<i64, ParseError> {
+        // Accept `-N` as a single integer here. The lexer always emits
+        // `Dash` for `-`, but configuration fields (`pageSize: -1`,
+        // `[-1]` for tail indexing) want a signed literal in one shot;
+        // wedging an `Unary` AST node in for these would propagate the
+        // type through every config struct that holds an `i64`.
+        let neg = self.eat_punct(&Token::Dash);
         match self.peek().cloned() {
             Some(Token::Int(n)) => {
                 self.pos += 1;
-                Ok(n)
+                Ok(if neg { -n } else { n })
             }
             _ => Err(self.unexpected("integer literal")),
         }
@@ -368,11 +384,15 @@ impl Parser {
         })
     }
 
-    /// fn_decl := 'fn' ident '(' ($ident (',' $ident)*)? ')' '{' extraction '}'
+    /// fn_decl := 'fn' ident '(' ($ident (',' $ident)*)? ')'
+    ///            '{' (let_binding)* trailing_expr '}'
+    /// let_binding := 'let' '$' ident '=' extraction
     ///
-    /// Single-expression body — branching via `case … of`, mapping via
-    /// pipe-into-transform. No statement sequencing or let-bindings; see
-    /// `plans/user-defined-functions.md`.
+    /// The body is a sequence of let-bindings followed by exactly one
+    /// trailing expression — the return value. Let-bindings are
+    /// fn-body-only (not legal in step bodies, emit bindings, or
+    /// top-level expressions); the rest of the language stays
+    /// declarative.
     ///
     /// `$input` / `$secret` are reserved roots — the lexer emits them as
     /// distinct tokens (not `DollarVar`), so they're rejected here with
@@ -411,7 +431,7 @@ impl Parser {
             self.expect_punct(&Token::RParen)?;
         }
         self.expect_punct(&Token::LBrace)?;
-        let body = self.parse_extraction()?;
+        let body = self.parse_fn_body()?;
         self.expect_punct(&Token::RBrace)?;
         Ok(FnDecl {
             name,
@@ -419,6 +439,47 @@ impl Parser {
             body,
             span: self.span_to_here(start),
         })
+    }
+
+    /// `(let_binding)* trailing_expr` — the inside of a fn body. The
+    /// trailing expression isn't a separate non-terminal; we keep
+    /// parsing let-bindings while the next token is `let`, then read
+    /// one final extraction. Authors who write zero `let`s get a
+    /// single-expression body, identical to the pre-let shape.
+    fn parse_fn_body(&mut self) -> Result<FnBody, ParseError> {
+        let mut bindings: Vec<LetBinding> = Vec::new();
+        while self.peek_is_let() {
+            self.bump(); // `let` keyword
+            let name = match self.peek().cloned() {
+                Some(Token::DollarVar(s)) => {
+                    self.bump();
+                    s
+                }
+                Some(Token::DollarInput) | Some(Token::DollarSecret) => {
+                    let span = self.current_span();
+                    let found = self.peek().unwrap().describe();
+                    return Err(ParseError::Generic {
+                        span,
+                        message: format!(
+                            "{found} is a reserved root and cannot be a let-binding name",
+                        ),
+                    });
+                }
+                _ => return Err(self.unexpected("let binding name ($name)")),
+            };
+            self.expect_punct(&Token::Equal)?;
+            let value = self.parse_extraction()?;
+            bindings.push(LetBinding { name, value });
+            // Optional separator — recipe authors often write a `;` or
+            // newline after a binding; allow both, neither is required.
+            let _ = self.eat_punct(&Token::Semicolon);
+        }
+        let result = self.parse_extraction()?;
+        Ok(FnBody { bindings, result })
+    }
+
+    fn peek_is_let(&self) -> bool {
+        matches!(self.peek(), Some(Token::Keyword(k)) if k == "let")
     }
 
     fn parse_engine_kind(&mut self) -> Result<EngineKind, ParseError> {
@@ -586,9 +647,20 @@ impl Parser {
 
     // --- expressions -------------------------------------------------------
 
-    /// extraction := primary ('|' transform_call)*
+    /// Top-level expression. Pipes sit at the lowest precedence so the
+    /// arithmetic ladder collapses into the pipe head; reading
+    /// `$oz * 28 |> normalizeUnit` as `($oz * 28) |> normalizeUnit` is
+    /// the right shape — pipes operate on whole computed values.
+    ///
+    /// Precedence (low → high):
+    ///   pipe  `|`
+    ///   add   `+`, `-`
+    ///   mul   `*`, `/`, `%`
+    ///   unary `-`
+    ///   postfix `[expr]`
+    ///   primary
     fn parse_extraction(&mut self) -> Result<ExtractionExpr, ParseError> {
-        let head = self.parse_primary_expr()?;
+        let head = self.parse_additive()?;
         if self.peek() == Some(&Token::Pipe) {
             let mut calls = Vec::new();
             while self.eat_punct(&Token::Pipe) {
@@ -600,8 +672,100 @@ impl Parser {
         }
     }
 
+    fn parse_additive(&mut self) -> Result<ExtractionExpr, ParseError> {
+        let mut lhs = self.parse_multiplicative()?;
+        loop {
+            let op = match self.peek() {
+                Some(Token::Plus) => BinOp::Add,
+                Some(Token::Dash) => BinOp::Sub,
+                _ => break,
+            };
+            self.bump();
+            let rhs = self.parse_multiplicative()?;
+            lhs = ExtractionExpr::BinaryOp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<ExtractionExpr, ParseError> {
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let op = match self.peek() {
+                Some(Token::Star) => BinOp::Mul,
+                Some(Token::Slash) => BinOp::Div,
+                Some(Token::Percent) => BinOp::Mod,
+                _ => break,
+            };
+            self.bump();
+            let rhs = self.parse_unary()?;
+            lhs = ExtractionExpr::BinaryOp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_unary(&mut self) -> Result<ExtractionExpr, ParseError> {
+        if self.eat_punct(&Token::Dash) {
+            let operand = self.parse_unary()?;
+            return Ok(ExtractionExpr::Unary {
+                op: UnOp::Neg,
+                operand: Box::new(operand),
+            });
+        }
+        self.parse_postfix()
+    }
+
+    /// Bracket postfix on an arbitrary expression: `$captures[2]`,
+    /// `$xs[$i + 1]`. The path-level `[N]` (literal integer on a
+    /// `PathExpr`) is still handled in `parse_path`; that form is
+    /// null-tolerant by design (scraping records routinely access
+    /// `$x.range[0]` on possibly-empty arrays). The expression-level
+    /// `Index` here is strict: out-of-bounds raises `IndexOutOfBounds`.
+    fn parse_postfix(&mut self) -> Result<ExtractionExpr, ParseError> {
+        let mut base = self.parse_primary_expr()?;
+        // Bracket postfix only attaches to values that don't already
+        // carry a path. A bare `$xs[0]` is a path expression with a
+        // literal index baked in — handled inside `parse_path`. Once we
+        // leave path territory (e.g. a `Call` or `StructLiteral` result),
+        // `[expr]` is the only way to index into the value at runtime.
+        while matches!(base, ExtractionExpr::Call { .. } | ExtractionExpr::StructLiteral { .. })
+            && self.peek() == Some(&Token::LBracket)
+        {
+            self.bump();
+            let index = self.parse_extraction()?;
+            self.expect_punct(&Token::RBracket)?;
+            base = ExtractionExpr::Index {
+                base: Box::new(base),
+                index: Box::new(index),
+            };
+        }
+        Ok(base)
+    }
+
     fn parse_transform_call(&mut self) -> Result<TransformCall, ParseError> {
-        let name = self.expect_ident()?;
+        // Transform names are identifiers, but a few are also reserved
+        // keywords elsewhere in the grammar (`match` in
+        // `captures.match`, `name`/`value` as struct fields). Accept
+        // those keywords here too — a transform name slot after `|`
+        // is unambiguous.
+        let name = match self.peek().cloned() {
+            Some(Token::Ident(s)) => {
+                self.bump();
+                s
+            }
+            Some(Token::Keyword(s)) => {
+                self.bump();
+                s
+            }
+            _ => return Err(self.unexpected("transform name")),
+        };
         let mut args = Vec::new();
         if self.eat_punct(&Token::LParen) && !self.eat_punct(&Token::RParen) {
             loop {
@@ -634,6 +798,41 @@ impl Parser {
                 scrutinee,
                 branches,
             });
+        }
+
+        // Struct literal `{ field: expr, ... }`. Distinguished from a
+        // case-of by the leading `{` — struct literals never start with
+        // a keyword.
+        if self.peek() == Some(&Token::LBrace) {
+            return self.parse_struct_literal();
+        }
+
+        // Regex literal `/pattern/flags` — compile at parse time so
+        // malformed regexes surface here, not at runtime.
+        if let Some(Token::RegexLit { pattern, flags }) = self.peek().cloned() {
+            let span = self.current_span();
+            self.bump();
+            validate_regex_flags(&flags, &span)?;
+            // Compile to verify the pattern; the AST keeps source text
+            // only since `regex::Regex` doesn't implement `Serialize`.
+            // The evaluator re-compiles (and caches per-recipe).
+            if let Err(e) = build_regex(&pattern, &flags) {
+                return Err(ParseError::InvalidRegex {
+                    span,
+                    message: e.to_string(),
+                });
+            }
+            return Ok(ExtractionExpr::RegexLiteral(RegexLiteral {
+                pattern,
+                flags,
+            }));
+        }
+
+        // Parenthesized sub-expression.
+        if self.eat_punct(&Token::LParen) {
+            let inner = self.parse_extraction()?;
+            self.expect_punct(&Token::RParen)?;
+            return Ok(inner);
         }
 
         // function call form `coalesce(a, b)` — Ident '(' …
@@ -695,6 +894,30 @@ impl Parser {
             }
             _ => Err(self.unexpected("expression")),
         }
+    }
+
+    /// Struct literal — `{ field: expr, field2: expr2 }`. Reuses the
+    /// `FieldBinding` shape so duplicate-field detection and downstream
+    /// validation share the path with `emit` bindings. Field bindings
+    /// use `:` here (not `←`) to match JSON-like syntax authors expect
+    /// for a literal object value; `←` belongs to `emit` blocks.
+    fn parse_struct_literal(&mut self) -> Result<ExtractionExpr, ParseError> {
+        self.expect_punct(&Token::LBrace)?;
+        let mut fields: Vec<FieldBinding> = Vec::new();
+        while !matches!(self.peek(), Some(Token::RBrace) | None) {
+            let field_name = match self.peek().cloned() {
+                Some(Token::Ident(s)) => s,
+                Some(Token::Keyword(s)) => s,
+                _ => return Err(self.unexpected("field name")),
+            };
+            self.bump();
+            self.expect_punct(&Token::Colon)?;
+            let expr = self.parse_extraction()?;
+            fields.push(FieldBinding { field_name, expr });
+            let _ = self.eat_punct(&Token::Comma) || self.eat_punct(&Token::Semicolon);
+        }
+        self.expect_punct(&Token::RBrace)?;
+        Ok(ExtractionExpr::StructLiteral { fields })
     }
 
     /// path := head ('.' ident | '?.' ident | '[' Int ']' | '[*]')*
@@ -1951,4 +2174,47 @@ pub fn compile_template(raw: &str) -> Template {
         parts.push(TemplatePart::Literal(buf));
     }
     Template { parts }
+}
+
+/// Allowed regex flags: `i` (case-insensitive), `m` (multi-line), `s`
+/// (dot matches newline), `u` (Unicode-aware). JS-style `g` (global)
+/// and `y` (sticky) aren't supported — the match/matches/replaceAll
+/// transforms apply the regex once per call, so a global flag has no
+/// runtime meaning.
+fn validate_regex_flags(flags: &str, span: &std::ops::Range<usize>) -> Result<(), ParseError> {
+    for ch in flags.chars() {
+        if !matches!(ch, 'i' | 'm' | 's' | 'u') {
+            return Err(ParseError::InvalidRegexFlag {
+                span: span.clone(),
+                flag: ch,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Build a `regex::Regex` from pattern + flags. Exposed at module-level
+/// because the evaluator wants the same compilation path; keeping it
+/// next to `validate_regex_flags` so the supported-flag set lives in
+/// one place.
+pub(crate) fn build_regex(pattern: &str, flags: &str) -> Result<regex::Regex, regex::Error> {
+    let mut builder = regex::RegexBuilder::new(pattern);
+    for ch in flags.chars() {
+        match ch {
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'u' => {
+                builder.unicode(true);
+            }
+            _ => unreachable!("validate_regex_flags rejects everything else"),
+        }
+    }
+    builder.build()
 }

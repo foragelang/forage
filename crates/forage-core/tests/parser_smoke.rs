@@ -338,7 +338,8 @@ fn fn_decl_parses_with_one_param() {
     assert_eq!(r.functions.len(), 1);
     assert_eq!(r.functions[0].name, "double");
     assert_eq!(r.functions[0].params, vec!["x".to_string()]);
-    assert!(matches!(r.functions[0].body, ExtractionExpr::Path(_)));
+    assert!(r.functions[0].body.bindings.is_empty());
+    assert!(matches!(r.functions[0].body.result, ExtractionExpr::Path(_)));
 }
 
 #[test]
@@ -453,8 +454,9 @@ fn fn_with_pipe_body_round_trips_through_ast() {
     "#;
     let r = parse(src).expect("parse");
     let body = &r.functions[0].body;
-    let ExtractionExpr::Pipe(_, calls) = body else {
-        panic!("expected pipe, got {body:?}");
+    assert!(body.bindings.is_empty(), "expected no let-bindings");
+    let ExtractionExpr::Pipe(_, calls) = &body.result else {
+        panic!("expected pipe, got {:?}", body.result);
     };
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].name, "upper");

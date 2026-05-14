@@ -12,7 +12,9 @@ pub mod value;
 pub use error::EvalError;
 pub use scope::Scope;
 pub use transforms::{TransformFn, TransformRegistry, default_registry};
-pub use value::EvalValue;
+pub use value::{EvalValue, RegexValue};
+
+use indexmap::IndexMap;
 
 use crate::ast::*;
 
@@ -54,10 +56,18 @@ impl<'r> Evaluator<'r> {
                     EvalValue::Null => "null".into(),
                     other => format!("{other:?}"),
                 };
+                let mut default_arm: Option<&ExtractionExpr> = None;
                 for (l, arm) in branches {
+                    if l == "_" {
+                        default_arm = Some(arm);
+                        continue;
+                    }
                     if l == &label {
                         return self.eval_extraction(arm, scope);
                     }
+                }
+                if let Some(arm) = default_arm {
+                    return self.eval_extraction(arm, scope);
                 }
                 Err(EvalError::CaseNoMatch { label })
             }
@@ -65,6 +75,41 @@ impl<'r> Evaluator<'r> {
                 // Emission inside MapTo is handled by the snapshot/engine layer;
                 // here we just resolve the path and return.
                 self.eval_path(path, scope)
+            }
+            ExtractionExpr::BinaryOp { op, lhs, rhs } => {
+                let l = self.eval_extraction(lhs, scope)?;
+                let r = self.eval_extraction(rhs, scope)?;
+                apply_binary(*op, l, r)
+            }
+            ExtractionExpr::Unary { op, operand } => {
+                let v = self.eval_extraction(operand, scope)?;
+                apply_unary(*op, v)
+            }
+            ExtractionExpr::StructLiteral { fields } => {
+                let mut out: IndexMap<String, EvalValue> = IndexMap::new();
+                for f in fields {
+                    if out.contains_key(&f.field_name) {
+                        return Err(EvalError::DuplicateStructField(f.field_name.clone()));
+                    }
+                    let v = self.eval_extraction(&f.expr, scope)?;
+                    out.insert(f.field_name.clone(), v);
+                }
+                Ok(EvalValue::Object(out))
+            }
+            ExtractionExpr::Index { base, index } => {
+                let b = self.eval_extraction(base, scope)?;
+                let i = self.eval_extraction(index, scope)?;
+                apply_index(b, i)
+            }
+            ExtractionExpr::RegexLiteral(lit) => {
+                let re = crate::parse::parser::build_regex(&lit.pattern, &lit.flags).map_err(
+                    |e| EvalError::Generic(format!("regex /{}/{}: {e}", lit.pattern, lit.flags)),
+                )?;
+                Ok(EvalValue::Regex(crate::eval::value::RegexValue {
+                    pattern: lit.pattern.clone(),
+                    flags: lit.flags.clone(),
+                    re,
+                }))
             }
         }
     }
@@ -266,7 +311,173 @@ impl<'r> Evaluator<'r> {
         for (p, v) in params.zip(args.iter()) {
             child.bind(p, v.clone());
         }
-        self.eval_extraction(&decl.body, &child)
+        // Evaluate let-bindings in declaration order, each visible to
+        // the next and to the trailing expression. Validator already
+        // rejected duplicates and parameter shadowing, so a clean
+        // recipe binds linearly.
+        for b in &decl.body.bindings {
+            let v = self.eval_extraction(&b.value, &child)?;
+            child.bind(&b.name, v);
+        }
+        self.eval_extraction(&decl.body.result, &child)
+    }
+}
+
+/// Apply `lhs op rhs` with the language's numeric-coercion rule:
+///   * `Int op Int`:  `+`, `-`, `*` stay `Int`; `/` and `%` always
+///                     promote to `Double` (no integer division — `1/2`
+///                     is `0.5`, not `0`). Division by zero
+///                     (numerator+denominator both zero or just
+///                     denominator) is a domain error.
+///   * Any `Double` operand promotes the other side to `Double`.
+///   * `String + String` concatenates.
+///   * Everything else (`1 + "x"`, etc.) is `TypeMismatch`.
+/// Null on either side is `TypeMismatch` — we deliberately don't fold
+/// null into the numeric rules, because `null + 1 → 1` is exactly the
+/// kind of silent coercion that produces broken records downstream.
+fn apply_binary(op: BinOp, lhs: EvalValue, rhs: EvalValue) -> Result<EvalValue, EvalError> {
+    // String concat is the only non-numeric path.
+    if let (BinOp::Add, EvalValue::String(a), EvalValue::String(b)) = (op, &lhs, &rhs) {
+        return Ok(EvalValue::String(format!("{a}{b}")));
+    }
+    let (l, r) = (as_number(&lhs)?, as_number(&rhs)?);
+    let promote = matches!((&l, &r), (Numeric::Double(_), _) | (_, Numeric::Double(_)));
+    match op {
+        BinOp::Add => Ok(combine_numeric(l, r, false, promote, |a, b| a + b, i64::checked_add)),
+        BinOp::Sub => Ok(combine_numeric(l, r, false, promote, |a, b| a - b, i64::checked_sub)),
+        BinOp::Mul => Ok(combine_numeric(l, r, false, promote, |a, b| a * b, i64::checked_mul)),
+        BinOp::Div => {
+            let (a, b) = (l.to_double(), r.to_double());
+            if b == 0.0 {
+                return Err(EvalError::ArithmeticDomain("division by zero".into()));
+            }
+            Ok(EvalValue::Double(a / b))
+        }
+        BinOp::Mod => {
+            // Always promote to Double when either side is fractional;
+            // pure Int % Int stays Int but a zero divisor is a domain
+            // error rather than a panic.
+            match (l, r) {
+                (Numeric::Int(_), Numeric::Int(b)) if b == 0 => Err(EvalError::ArithmeticDomain(
+                    "modulo by zero".into(),
+                )),
+                (Numeric::Int(a), Numeric::Int(b)) => Ok(EvalValue::Int(a % b)),
+                (a, b) => {
+                    let (af, bf) = (a.to_double(), b.to_double());
+                    if bf == 0.0 {
+                        return Err(EvalError::ArithmeticDomain("modulo by zero".into()));
+                    }
+                    Ok(EvalValue::Double(af % bf))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Numeric {
+    Int(i64),
+    Double(f64),
+}
+
+impl Numeric {
+    fn to_double(self) -> f64 {
+        match self {
+            Numeric::Int(n) => n as f64,
+            Numeric::Double(n) => n,
+        }
+    }
+}
+
+/// Pull a numeric view out of an `EvalValue`. `TypeMismatch` for
+/// anything else — including `Null`. Surfacing null-as-zero coercion
+/// would silently soak up missing data.
+fn as_number(v: &EvalValue) -> Result<Numeric, EvalError> {
+    match v {
+        EvalValue::Int(n) => Ok(Numeric::Int(*n)),
+        EvalValue::Double(n) => Ok(Numeric::Double(*n)),
+        other => Err(EvalError::TypeMismatch {
+            expected: "number",
+            actual: kind_of(other),
+        }),
+    }
+}
+
+/// `+`, `-`, `*` with checked-int fast path and Double fallback when
+/// either side is fractional or the int op would overflow. The boolean
+/// `_unused` reserves a slot for future "must-promote" flags (e.g. `/`
+/// at this site) without rewriting every caller.
+fn combine_numeric(
+    a: Numeric,
+    b: Numeric,
+    _unused: bool,
+    promote_to_double: bool,
+    f_d: fn(f64, f64) -> f64,
+    f_i: fn(i64, i64) -> Option<i64>,
+) -> EvalValue {
+    if promote_to_double {
+        return EvalValue::Double(f_d(a.to_double(), b.to_double()));
+    }
+    match (a, b) {
+        (Numeric::Int(x), Numeric::Int(y)) => match f_i(x, y) {
+            Some(n) => EvalValue::Int(n),
+            None => EvalValue::Double(f_d(x as f64, y as f64)),
+        },
+        (x, y) => EvalValue::Double(f_d(x.to_double(), y.to_double())),
+    }
+}
+
+fn apply_unary(op: UnOp, v: EvalValue) -> Result<EvalValue, EvalError> {
+    match op {
+        UnOp::Neg => match v {
+            EvalValue::Int(n) => match n.checked_neg() {
+                Some(n) => Ok(EvalValue::Int(n)),
+                None => Ok(EvalValue::Double(-(n as f64))),
+            },
+            EvalValue::Double(n) => Ok(EvalValue::Double(-n)),
+            other => Err(EvalError::TypeMismatch {
+                expected: "number",
+                actual: kind_of(&other),
+            }),
+        },
+    }
+}
+
+/// Expression-level `base[index]`. Strict (vs. the null-tolerant
+/// path-level `[N]`): a non-Array base or out-of-bounds index is an
+/// error, not `Null`. Authors write this form after `match`, where the
+/// captures array always exists but a missing group is `Null` *inside*
+/// the array; reaching past the array's length is a real bug.
+fn apply_index(base: EvalValue, index: EvalValue) -> Result<EvalValue, EvalError> {
+    let i = match index {
+        EvalValue::Int(n) => n,
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "integer",
+                actual: kind_of(&other),
+            });
+        }
+    };
+    match base {
+        EvalValue::Array(mut xs) => {
+            let len = xs.len();
+            let idx = resolve_index(i, len);
+            match idx {
+                Some(k) => Ok(xs.swap_remove(k)),
+                None => Err(EvalError::IndexOutOfBounds { index: i, len }),
+            }
+        }
+        EvalValue::NodeList(mut xs) => {
+            let len = xs.len();
+            let idx = resolve_index(i, len);
+            match idx {
+                Some(k) => Ok(EvalValue::Node(xs.swap_remove(k))),
+                None => Err(EvalError::IndexOutOfBounds { index: i, len }),
+            }
+        }
+        other => Err(EvalError::InvalidIndexBase {
+            kind: kind_of(&other),
+        }),
     }
 }
 
@@ -309,6 +520,7 @@ fn kind_of(v: &EvalValue) -> &'static str {
         EvalValue::Node(_) => "node",
         EvalValue::NodeList(_) => "nodelist",
         EvalValue::Ref { .. } => "ref",
+        EvalValue::Regex(_) => "regex",
     }
 }
 
@@ -334,6 +546,9 @@ fn stringify(v: &EvalValue) -> String {
         // structured `{_ref, _type}` shape only appears in JSON-bound
         // contexts via `into_json`.
         EvalValue::Ref { id, .. } => id.clone(),
+        // Regex stringifies to its source form. Useful for diagnostic
+        // messages; shouldn't appear in production templates.
+        EvalValue::Regex(r) => format!("/{}/{}", r.pattern, r.flags),
     }
 }
 
@@ -580,5 +795,188 @@ mod tests {
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
         assert_eq!(v, EvalValue::Int(1));
+    }
+
+    fn eval_first_emit(src: &str) -> EvalValue {
+        let r = parse(src).expect("parse");
+        let registry =
+            TransformRegistry::with_user_fns(default_registry(), r.functions.clone());
+        let ev = Evaluator::new(&registry);
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!("expected emit, got {:?}", r.body);
+        };
+        ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap()
+    }
+
+    #[test]
+    fn arithmetic_precedence_and_coercion() {
+        // `a + b * c` reads as `a + (b * c)`; mixing Int and Double
+        // promotes the result to Double; `/` always promotes.
+        assert_eq!(
+            eval_first_emit(
+                r#"
+                recipe "x"
+                engine http
+                type T { v: Double }
+                emit T { v ← 1 + 2 * 3.0 }
+                "#,
+            ),
+            EvalValue::Double(7.0),
+        );
+        assert_eq!(
+            eval_first_emit(
+                r#"
+                recipe "x"
+                engine http
+                type T { v: Double }
+                emit T { v ← 6 / 4 }
+                "#,
+            ),
+            EvalValue::Double(1.5),
+        );
+        // Unary minus binds tighter than multiplication.
+        assert_eq!(
+            eval_first_emit(
+                r#"
+                recipe "x"
+                engine http
+                type T { v: Int }
+                emit T { v ← -3 * 2 }
+                "#,
+            ),
+            EvalValue::Int(-6),
+        );
+    }
+
+    #[test]
+    fn division_by_zero_surfaces_arithmetic_domain() {
+        let r = parse(
+            r#"
+            recipe "x"
+            engine http
+            type T { v: Double }
+            emit T { v ← 1 / 0 }
+            "#,
+        )
+        .unwrap();
+        let registry = default_registry();
+        let ev = Evaluator::new(registry);
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!()
+        };
+        let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();
+        assert!(matches!(err, EvalError::ArithmeticDomain(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn string_concat_is_only_string_op() {
+        assert_eq!(
+            eval_first_emit(
+                r#"
+                recipe "x"
+                engine http
+                type T { v: String }
+                emit T { v ← "hi-" + "world" }
+                "#,
+            ),
+            EvalValue::String("hi-world".into()),
+        );
+        // Mixed string + int is a type error — no silent coercion.
+        let r = parse(
+            r#"
+            recipe "x"
+            engine http
+            type T { v: String }
+            emit T { v ← "n=" + 7 }
+            "#,
+        )
+        .unwrap();
+        let registry = default_registry();
+        let ev = Evaluator::new(registry);
+        let Statement::Emit(em) = &r.body[0] else {
+            panic!()
+        };
+        let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();
+        assert!(matches!(err, EvalError::TypeMismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn regex_match_captures_through_pipe() {
+        // `$s | match(/.../) | <pull-field>` — the canonical shape for
+        // the migrated `parseSize`-style transforms.
+        let v = eval_first_emit(
+            r#"
+            recipe "x"
+            engine http
+            fn parseSize($s) {
+                let $m = $s | match(/([0-9.]+)\s*([a-z]+)/)
+                case $m.matched of {
+                    true → { value: $m.captures[1] | parseFloat, unit: $m.captures[2] }
+                    false → null
+                }
+            }
+            type T { v: Double? }
+            emit T { v ← "3.5 g" | parseSize | sizeJustValue }
+            fn sizeJustValue($p) { $p.value }
+            "#,
+        );
+        assert_eq!(v, EvalValue::Double(3.5));
+    }
+
+    #[test]
+    fn struct_literal_evaluates_to_object() {
+        let v = eval_first_emit(
+            r#"
+            recipe "x"
+            engine http
+            type T { v: Double? }
+            emit T { v ← obj() | pickValue }
+            fn obj() { { value: 7.0, unit: "g" } }
+            fn pickValue($o) { $o.value }
+            "#,
+        );
+        assert_eq!(v, EvalValue::Double(7.0));
+    }
+
+    #[test]
+    fn let_bindings_visible_in_trailing_expression() {
+        // Each let-binding shadows nothing previously bound; the trailing
+        // expression sees them all.
+        let v = eval_first_emit(
+            r#"
+            recipe "x"
+            engine http
+            fn compute($s) {
+                let $a = $s * 2
+                let $b = $a + 1
+                $b
+            }
+            type T { v: Int }
+            emit T { v ← 5 | compute }
+            "#,
+        );
+        assert_eq!(v, EvalValue::Int(11));
+    }
+
+    #[test]
+    fn case_of_with_default_arm() {
+        // `_ → expr` matches anything no labelled arm caught; needed
+        // for prevalenceNormalize-style fall-through.
+        let v = eval_first_emit(
+            r#"
+            recipe "x"
+            engine http
+            fn classify($s) {
+                case $s of {
+                    "indica" → "INDICA"
+                    "sativa" → "SATIVA"
+                    _ → "OTHER"
+                }
+            }
+            type T { v: String }
+            emit T { v ← "hybrid" | classify }
+            "#,
+        );
+        assert_eq!(v, EvalValue::String("OTHER".into()));
     }
 }

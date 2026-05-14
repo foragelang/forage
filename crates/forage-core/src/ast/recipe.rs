@@ -73,9 +73,10 @@ impl Recipe {
     }
 }
 
-/// A user-defined transform — `fn <name>(<$p1>, <$p2>) { <body> }`. The
-/// body is a single `ExtractionExpr` from the existing grammar; call
-/// sites look identical to built-in transforms.
+/// A user-defined transform — `fn <name>(<$p1>, <$p2>) { <body> }`.
+/// The body is a sequence of `let $name = expr` bindings followed by
+/// exactly one trailing expression that is the function's return
+/// value. Call sites look identical to built-in transforms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
     pub name: String,
@@ -83,9 +84,27 @@ pub struct FnDecl {
     /// First param is bound to the pipe head at call sites
     /// (`x |> myFn(a)` binds `$p1 = x`, `$p2 = a`).
     pub params: Vec<String>,
-    pub body: crate::ast::expr::ExtractionExpr,
+    pub body: FnBody,
     #[serde(default)]
     pub span: crate::ast::span::Span,
+}
+
+/// A `fn` body: zero or more `let` bindings followed by a single
+/// trailing expression. Each binding adds to the function-local scope;
+/// later bindings see earlier ones; the trailing expression sees them
+/// all. The shape is greenfield — no `#[serde(default)]` softener —
+/// because the structural break catches recipes that ride a stale AST
+/// rather than silently re-interpreting an old single-expression body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FnBody {
+    pub bindings: Vec<LetBinding>,
+    pub result: crate::ast::expr::ExtractionExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LetBinding {
+    pub name: String,
+    pub value: crate::ast::expr::ExtractionExpr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

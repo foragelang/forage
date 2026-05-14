@@ -8,6 +8,25 @@ use indexmap::IndexMap;
 
 use crate::ast::JSONValue;
 
+/// Compiled regex carrier — wraps `regex::Regex` so equality and
+/// debug-printing fall back to the source pattern + flags. Regex
+/// values flow through `match` / `matches` / `replaceAll` and never
+/// escape into snapshot output, so the wrapper doesn't need
+/// `Serialize` — and *must not* gain it, or the schema-derivation
+/// pass would attempt to write a regex into a record.
+#[derive(Debug, Clone)]
+pub struct RegexValue {
+    pub pattern: String,
+    pub flags: String,
+    pub re: regex::Regex,
+}
+
+impl PartialEq for RegexValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern && self.flags == other.flags
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalValue {
     Null,
@@ -29,6 +48,11 @@ pub enum EvalValue {
         target_type: String,
         id: String,
     },
+    /// Pre-compiled regex value, intermediate-only. Produced by a
+    /// regex literal `/pattern/flags`; consumed by `match`, `matches`,
+    /// `replaceAll`. If one ever lands on an emit field, `into_json`
+    /// loudly fails — a regex isn't a snapshot value.
+    Regex(RegexValue),
 }
 
 impl EvalValue {
@@ -49,6 +73,10 @@ impl EvalValue {
             EvalValue::NodeList(xs) => !xs.is_empty(),
             // A ref always points at a real emitted record.
             EvalValue::Ref { .. } => true,
+            // A compiled regex is always a meaningful value at the
+            // point it's evaluated; truthiness only matters because the
+            // language uses it for case-of and conditional branches.
+            EvalValue::Regex(_) => true,
         }
     }
 
@@ -83,6 +111,15 @@ impl EvalValue {
                 out.insert("_type".into(), JSONValue::String(target_type));
                 JSONValue::Object(out)
             }
+            // A regex landing on a snapshot boundary means the recipe
+            // bound a regex literal directly into an emit field. That's
+            // a bug (regex values are intermediate); panic with a
+            // diagnostic so it surfaces in tests rather than silently
+            // becoming garbled JSON.
+            EvalValue::Regex(r) => panic!(
+                "regex literal /{}/{} reached snapshot serialization — regex values are intermediate only",
+                r.pattern, r.flags,
+            ),
         }
     }
 }
@@ -145,6 +182,21 @@ impl From<serde_json::Value> for EvalValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "intermediate only")]
+    fn regex_into_json_panics() {
+        // Regex values must never reach the snapshot. If one does, the
+        // recipe wired a regex literal into an emit field, which is a
+        // bug — panic so the test surfacing the misuse is loud rather
+        // than emitting opaque JSON.
+        let r = EvalValue::Regex(RegexValue {
+            pattern: "abc".into(),
+            flags: String::new(),
+            re: regex::Regex::new("abc").unwrap(),
+        });
+        let _ = r.into_json();
+    }
 
     #[test]
     fn ref_serializes_to_self_describing_object() {

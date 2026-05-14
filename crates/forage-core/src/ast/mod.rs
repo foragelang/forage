@@ -24,14 +24,15 @@ pub use browser::{
     BrowserPaginationMode, CaptureRule, DismissalConfig, DocumentCaptureRule, InteractiveConfig,
 };
 pub use expr::{
-    Emission, ExtractionExpr, FieldBinding, PathExpr, Template, TemplatePart, TransformCall,
+    BinOp, Emission, ExtractionExpr, FieldBinding, PathExpr, RegexLiteral, Template, TemplatePart,
+    TransformCall, UnOp,
 };
 pub use http::{BodyValue, HTTPBody, HTTPBodyKV, HTTPRequest, HTTPStep, RegexExtract};
 pub use json::JSONValue;
 pub use pagination::Pagination;
 pub use recipe::{
-    ComparisonOp, DeclarationsFile, EngineKind, Expectation, ExpectationKind, FnDecl, Recipe,
-    Statement, WorkspaceFile,
+    ComparisonOp, DeclarationsFile, EngineKind, Expectation, ExpectationKind, FnBody, FnDecl,
+    LetBinding, Recipe, Statement, WorkspaceFile,
 };
 pub use span::Span;
 pub use types::{FieldType, InputDecl, RecipeEnum, RecipeField, RecipeType};

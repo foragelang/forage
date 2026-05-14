@@ -130,7 +130,10 @@ fn zero_param_fn_called_via_pipe_is_arity_mismatch() {
     let decl = FnDecl {
         name: "answer".into(),
         params: vec![],
-        body: ExtractionExpr::Literal(JSONValue::Int(42)),
+        body: forage_core::ast::FnBody {
+            bindings: vec![],
+            result: ExtractionExpr::Literal(JSONValue::Int(42)),
+        },
         span: 0..0,
     };
     let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
@@ -164,7 +167,10 @@ fn wrong_arity_direct_call_reports_typed_error() {
     let decl = FnDecl {
         name: "mark".into(),
         params: vec!["x".into(), "y".into()],
-        body: ExtractionExpr::Path(PathExpr::Variable("x".into())),
+        body: forage_core::ast::FnBody {
+            bindings: vec![],
+            result: ExtractionExpr::Path(PathExpr::Variable("x".into())),
+        },
         span: 0..0,
     };
     let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
@@ -192,7 +198,10 @@ fn for_loop_var_is_not_visible_in_fn_body_at_runtime() {
     // should also fail cleanly if a fn body references a parent-scope
     // variable. Build the recipe by hand to bypass validation.
     use forage_core::ast::FnDecl;
-    let body = ExtractionExpr::Path(PathExpr::Variable("leak".into()));
+    let body = forage_core::ast::FnBody {
+        bindings: vec![],
+        result: ExtractionExpr::Path(PathExpr::Variable("leak".into())),
+    };
     let decl = FnDecl {
         name: "leaky".into(),
         params: vec!["x".into()],

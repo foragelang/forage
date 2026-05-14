@@ -27,6 +27,8 @@ pub enum LexError {
     UnterminatedString { offset: usize },
     #[error("invalid number '{raw}' at byte offset {offset}")]
     InvalidNumber { raw: String, offset: usize },
+    #[error("unterminated regex literal starting at byte offset {offset}")]
+    UnterminatedRegex { offset: usize },
 }
 
 struct Lexer<'a> {
@@ -86,12 +88,34 @@ impl<'a> Lexer<'a> {
                 '>' => self.single(Token::Gt, start),
                 '<' => self.single(Token::Lt, start),
                 '!' => self.single(Token::Bang, start),
+                '+' => self.single(Token::Plus, start),
+                '-' => self.single(Token::Dash, start),
+                '*' => self.single(Token::Star, start),
+                // `/` may begin a comment (`//`, `/*`) or a regex literal
+                // `/pattern/flags`. Comments are already eaten by
+                // `skip_ws_and_comments`, so reaching this arm with a
+                // bare `/` means it's the start of either division (a
+                // single `/`) or a regex literal. Disambiguation is
+                // context-sensitive: a regex literal only appears in
+                // expression position. The lexer can't see syntactic
+                // context, so we scan a tentative regex and let the
+                // parser interpret it: when the previous token is one
+                // that introduces a fresh expression (operator, opener,
+                // comma, arrow, `|`, etc.) we emit `RegexLit`; otherwise
+                // we emit `Slash` and let the parser handle division.
+                '/' => {
+                    if self.regex_allowed_here() {
+                        self.scan_regex(start)?
+                    } else {
+                        self.single(Token::Slash, start);
+                    }
+                }
+                '%' => self.single(Token::Percent, start),
                 '←' => self.multi(Token::Arrow, start, '←'.len_utf8()),
                 '→' => self.multi(Token::CaseArrow, start, '→'.len_utf8()),
                 '"' => self.scan_string(start)?,
                 '$' => self.scan_dollar(start),
                 c if c.is_ascii_digit() => self.scan_number_or_date(start)?,
-                '-' if self.peek_char_at(1).is_ascii_digit() => self.scan_number_or_date(start)?,
                 c if c.is_ascii_alphabetic() || c == '_' => self.scan_ident_or_keyword(start),
                 c => {
                     return Err(LexError::UnexpectedCharacter {
@@ -166,12 +190,99 @@ impl<'a> Lexer<'a> {
         self.out.push((Token::DollarRoot, start..self.pos));
     }
 
-    fn scan_number_or_date(&mut self, start: usize) -> Result<(), LexError> {
-        let mut end = self.pos;
-        let negative = self.bytes[end] == b'-';
-        if negative {
-            end += 1;
+    /// Decide whether a bare `/` should start a regex literal vs. a
+    /// division operator. Regex literals live in expression position
+    /// only — they're meaningful right after an operator, an opener
+    /// (`{`, `(`, `[`, `,`), a `←` / `→` / `|`, or at the start of input.
+    /// After a value-producing token (identifier, number, `]`, `)`, `}`)
+    /// a `/` is binary division.
+    fn regex_allowed_here(&self) -> bool {
+        let Some((prev, _)) = self.out.last() else {
+            return true;
+        };
+        match prev {
+            // Value-producing tokens — `/` is division.
+            Token::Ident(_)
+            | Token::TypeName(_)
+            | Token::Str(_)
+            | Token::Int(_)
+            | Token::Float(_)
+            | Token::Bool(_)
+            | Token::Null
+            | Token::Date { .. }
+            | Token::RegexLit { .. }
+            | Token::DollarRoot
+            | Token::DollarInput
+            | Token::DollarSecret
+            | Token::DollarVar(_)
+            | Token::RParen
+            | Token::RBracket
+            | Token::RBrace
+            | Token::Wildcard => false,
+            // Everything else — operators, openers, punctuation — opens
+            // a fresh expression slot.
+            _ => true,
         }
+    }
+
+    /// `/pattern/flags` — scan until the next unescaped `/` and trailing
+    /// ASCII flag letters. `\` escapes any following character (including
+    /// `/`) so authors can match `/`, newlines (`\n`), digits (`\d`), etc.
+    /// The pattern itself is not interpreted here; the parser hands it
+    /// to the `regex` crate.
+    fn scan_regex(&mut self, start: usize) -> Result<(), LexError> {
+        self.pos += 1; // opening `/`
+        let mut pattern = String::new();
+        let mut closed = false;
+        while self.pos < self.bytes.len() {
+            let c = self.peek_char();
+            if c == '\n' {
+                break;
+            }
+            if c == '\\' {
+                self.pos += 1;
+                if self.pos >= self.bytes.len() {
+                    break;
+                }
+                let esc = self.peek_char();
+                pattern.push('\\');
+                pattern.push(esc);
+                self.pos += esc.len_utf8();
+                continue;
+            }
+            if c == '/' {
+                self.pos += 1;
+                closed = true;
+                break;
+            }
+            pattern.push(c);
+            self.pos += c.len_utf8();
+        }
+        if !closed {
+            return Err(LexError::UnterminatedRegex { offset: start });
+        }
+        let mut flags = String::new();
+        while self.pos < self.bytes.len() {
+            let c = self.bytes[self.pos];
+            if c.is_ascii_alphabetic() {
+                flags.push(c as char);
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        self.out
+            .push((Token::RegexLit { pattern, flags }, start..self.pos));
+        Ok(())
+    }
+
+    fn scan_number_or_date(&mut self, start: usize) -> Result<(), LexError> {
+        // `-N` no longer enters here — `-` always lexes as `Dash` so that
+        // `x - 7` reads as `Variable($x) - Int(7)`. Unary minus is the
+        // parser's job; folding `-7` back into a single `Int(-7)` token
+        // would re-introduce the binary/unary ambiguity at every binary
+        // call site.
+        let mut end = self.pos;
         let int_start = end;
         while end < self.bytes.len() && self.bytes[end].is_ascii_digit() {
             end += 1;
@@ -179,7 +290,7 @@ impl<'a> Lexer<'a> {
         let int_str = &self.src[int_start..end];
 
         // YYYY-MM-DD?
-        if !negative && end < self.bytes.len() && self.bytes[end] == b'-' && int_str.len() == 4 {
+        if end < self.bytes.len() && self.bytes[end] == b'-' && int_str.len() == 4 {
             let mid = end + 1;
             let mut m_end = mid;
             while m_end < self.bytes.len() && self.bytes[m_end].is_ascii_digit() {
@@ -370,12 +481,16 @@ mod tests {
 
     #[test]
     fn numbers_and_dates() {
+        // Bare `-` is always its own token; folding `-7` into a single
+        // `Int(-7)` would re-introduce binary/unary ambiguity (`x - 7`
+        // is subtraction, not `x` followed by `-7`).
         let t = tokens_only("42 -7 2.5 1990-01-01");
         assert_eq!(
             t,
             vec![
                 Token::Int(42),
-                Token::Int(-7),
+                Token::Dash,
+                Token::Int(7),
                 Token::Float(2.5),
                 Token::Date {
                     year: 1990,
@@ -383,6 +498,53 @@ mod tests {
                     day: 1
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn arithmetic_operators_tokenize() {
+        let t = tokens_only("1 + 2 - 3 * 4 / 5 % 6");
+        assert_eq!(
+            t,
+            vec![
+                Token::Int(1),
+                Token::Plus,
+                Token::Int(2),
+                Token::Dash,
+                Token::Int(3),
+                Token::Star,
+                Token::Int(4),
+                Token::Slash,
+                Token::Int(5),
+                Token::Percent,
+                Token::Int(6),
+            ],
+        );
+    }
+
+    #[test]
+    fn regex_literal_in_expression_position() {
+        // After `|`, `/` opens a regex literal (the consumer transform
+        // takes a regex value); the trailing flags are preserved.
+        let t = tokens_only("$s | match(/(\\d+)\\s*(oz|g)/i)");
+        assert!(
+            matches!(
+                t.iter().find(|tok| matches!(tok, Token::RegexLit { .. })),
+                Some(Token::RegexLit { pattern, flags })
+                    if pattern == "(\\d+)\\s*(oz|g)" && flags == "i",
+            ),
+            "got {t:?}",
+        );
+    }
+
+    #[test]
+    fn slash_after_value_is_division() {
+        // After an identifier or `)`, `/` reads as division — not a
+        // regex literal.
+        let t = tokens_only("$a / 2");
+        assert_eq!(
+            t,
+            vec![Token::DollarVar("a".into()), Token::Slash, Token::Int(2)],
         );
     }
 

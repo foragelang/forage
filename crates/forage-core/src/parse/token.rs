@@ -27,6 +27,11 @@ pub enum Token {
     Gt,
     Lt,
     Bang,
+    Plus,
+    Dash,
+    Star,
+    Slash,
+    Percent,
 
     // Path-expression heads.
     /// Bare `$` (followed by `.` for current-value paths).
@@ -48,6 +53,14 @@ pub enum Token {
         year: i32,
         month: u32,
         day: u32,
+    },
+    /// `/pattern/flags` — pre-compiled regex literal. The lexer carries
+    /// the raw pattern + flag string through; the parser compiles them
+    /// into a `regex::Regex` so malformed patterns surface as parse
+    /// errors with a location, not as runtime failures.
+    RegexLit {
+        pattern: String,
+        flags: String,
     },
 
     /// Lowercase-starting identifier.
@@ -82,6 +95,11 @@ impl Token {
             Token::Gt => "'>'",
             Token::Lt => "'<'",
             Token::Bang => "'!'",
+            Token::Plus => "'+'",
+            Token::Dash => "'-'",
+            Token::Star => "'*'",
+            Token::Slash => "'/'",
+            Token::Percent => "'%'",
             Token::DollarRoot => "'$'",
             Token::DollarInput => "'$input'",
             Token::DollarSecret => "'$secret'",
@@ -92,6 +110,7 @@ impl Token {
             Token::Bool(_) => "boolean literal",
             Token::Null => "'null'",
             Token::Date { .. } => "date literal",
+            Token::RegexLit { .. } => "regex literal",
             Token::Ident(_) => "identifier",
             Token::TypeName(_) => "type name",
             Token::Keyword(_) => "keyword",

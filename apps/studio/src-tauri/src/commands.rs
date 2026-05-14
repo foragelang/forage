@@ -1024,6 +1024,12 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
             format!("unexpected end of input, expected {expected}"),
         ),
         PE::Generic { span, message } => (span.clone(), message.clone()),
+        PE::InvalidRegex { span, message } => {
+            (span.clone(), format!("invalid regex: {message}"))
+        }
+        PE::InvalidRegexFlag { span, flag } => {
+            (span.clone(), format!("unknown regex flag '{flag}'"))
+        }
         PE::Lex(le) => (0..0, format!("{le}")),
     }
 }

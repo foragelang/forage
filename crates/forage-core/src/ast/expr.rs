@@ -97,6 +97,65 @@ pub enum ExtractionExpr {
         name: String,
         args: Vec<ExtractionExpr>,
     },
+    /// `lhs op rhs` — binary arithmetic / string concat.
+    BinaryOp {
+        op: BinOp,
+        lhs: Box<ExtractionExpr>,
+        rhs: Box<ExtractionExpr>,
+    },
+    /// `-operand` — only unary form the language supports.
+    Unary {
+        op: UnOp,
+        operand: Box<ExtractionExpr>,
+    },
+    /// `{ value: $foo, unit: $bar |> uppercase }` — inline object value,
+    /// same field-binding shape as `emit`. Stored as a vector to
+    /// preserve declaration order in record snapshots; field-name
+    /// collisions are a validator error (`DuplicateStructField`).
+    StructLiteral { fields: Vec<FieldBinding> },
+    /// `<base>[<index>]` — array element access at an arbitrary
+    /// expression index. Out-of-bounds is `EvalError::IndexOutOfBounds`;
+    /// the existing path-level `Index` (literal `[N]` on a `PathExpr`)
+    /// stays null-tolerant since it sits behind `?.` chains. The two
+    /// forms coexist by position: the `PathExpr::Index` path was
+    /// already pre-1.0 contract for "missing record field" semantics.
+    Index {
+        base: Box<ExtractionExpr>,
+        index: Box<ExtractionExpr>,
+    },
+    /// `/pattern/flags` — a compiled regex value. The literal is
+    /// resolved at parse time so malformed patterns surface as parse
+    /// errors with a location; the serialized form keeps the source
+    /// text only.
+    RegexLiteral(RegexLiteral),
+}
+
+/// Binary operators. Comparison ops would land here too if the
+/// language gains them; today the only consumer is arithmetic + string
+/// concatenation (`+` on two strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnOp {
+    Neg,
+}
+
+/// Parse-compiled regex literal. The source `pattern` + `flags` are
+/// preserved so the AST round-trips through JSON, but evaluation looks
+/// up the compiled form in the evaluator's per-recipe cache (keyed on
+/// the source text) — there's no `regex::Regex` field here because that
+/// type doesn't implement `Serialize`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegexLiteral {
+    pub pattern: String,
+    pub flags: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

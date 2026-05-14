@@ -43,6 +43,14 @@ pub fn parse_recipe(source: &str) -> JsValue {
                 forage_core::parse::ParseError::Generic { span, message } => {
                     (message.clone(), Some((span.start, span.end)))
                 }
+                forage_core::parse::ParseError::InvalidRegex { span, message } => (
+                    format!("invalid regex: {message}"),
+                    Some((span.start, span.end)),
+                ),
+                forage_core::parse::ParseError::InvalidRegexFlag { span, flag } => (
+                    format!("unknown regex flag '{flag}'"),
+                    Some((span.start, span.end)),
+                ),
                 forage_core::parse::ParseError::Lex(le) => (format!("{le}"), None),
             };
             let body = serde_json::json!({
@@ -140,7 +148,10 @@ pub fn parse_and_validate(source: &str) -> JsValue {
             let span = match &e {
                 forage_core::parse::ParseError::UnexpectedToken { span, .. } => Some(span.clone()),
                 forage_core::parse::ParseError::Generic { span, .. } => Some(span.clone()),
-                _ => None,
+                forage_core::parse::ParseError::InvalidRegex { span, .. } => Some(span.clone()),
+                forage_core::parse::ParseError::InvalidRegexFlag { span, .. } => Some(span.clone()),
+                forage_core::parse::ParseError::Lex(_)
+                | forage_core::parse::ParseError::UnexpectedEof { .. } => None,
             };
             serde_wasm_bindgen::to_value(&serde_json::json!({
                 "ok": false,

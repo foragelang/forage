@@ -411,6 +411,14 @@ fn parse_error_diagnostic(e: &ParseError, _source: &str, line_map: &LineMap) -> 
         ParseError::Generic { span, message } => {
             (lsp_range(line_map, span.clone()), message.clone())
         }
+        ParseError::InvalidRegex { span, message } => (
+            lsp_range(line_map, span.clone()),
+            format!("invalid regex: {message}"),
+        ),
+        ParseError::InvalidRegexFlag { span, flag } => (
+            lsp_range(line_map, span.clone()),
+            format!("unknown regex flag '{flag}'"),
+        ),
         ParseError::Lex(le) => (lsp_range(line_map, 0..0), format!("{le}")),
     };
     Diagnostic {

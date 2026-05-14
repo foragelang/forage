@@ -179,7 +179,26 @@ fn collect_emit_types_in_expr(expr: &ExtractionExpr, out: &mut BTreeSet<String>)
                 collect_emit_types_in_expr(a, out);
             }
         }
-        ExtractionExpr::Path(_) | ExtractionExpr::Template(_) | ExtractionExpr::Literal(_) => {}
+        ExtractionExpr::BinaryOp { lhs, rhs, .. } => {
+            collect_emit_types_in_expr(lhs, out);
+            collect_emit_types_in_expr(rhs, out);
+        }
+        ExtractionExpr::Unary { operand, .. } => {
+            collect_emit_types_in_expr(operand, out);
+        }
+        ExtractionExpr::StructLiteral { fields } => {
+            for f in fields {
+                collect_emit_types_in_expr(&f.expr, out);
+            }
+        }
+        ExtractionExpr::Index { base, index } => {
+            collect_emit_types_in_expr(base, out);
+            collect_emit_types_in_expr(index, out);
+        }
+        ExtractionExpr::Path(_)
+        | ExtractionExpr::Template(_)
+        | ExtractionExpr::Literal(_)
+        | ExtractionExpr::RegexLiteral(_) => {}
     }
 }
 

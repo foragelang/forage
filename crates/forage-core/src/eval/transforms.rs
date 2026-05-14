@@ -71,6 +71,15 @@ fn build_default() -> TransformRegistry {
     r.register("trim", trim);
     r.register("capitalize", capitalize);
     r.register("titleCase", title_case);
+    r.register("lowercase", lower);
+    r.register("uppercase", upper);
+    r.register("replace", replace);
+    r.register("split", split);
+
+    // --- regex ---
+    r.register("match", regex_match);
+    r.register("matches", regex_matches);
+    r.register("replaceAll", regex_replace_all);
 
     // --- parsing scalars ---
     r.register("parseInt", parse_int);
@@ -83,17 +92,6 @@ fn build_default() -> TransformRegistry {
     r.register("first", first);
     r.register("coalesce", coalesce);
     r.register("default", default_v);
-
-    // --- weight / size normalization (cannabis-domain helpers) ---
-    r.register("parseSize", parse_size);
-    r.register("normalizeOzToGrams", normalize_oz_to_grams);
-    r.register("sizeValue", size_value);
-    r.register("sizeUnit", size_unit);
-    r.register("normalizeUnitToGrams", normalize_unit_to_grams);
-    r.register("prevalenceNormalize", prevalence_normalize);
-    r.register("parseJaneWeight", parse_jane_weight);
-    r.register("janeWeightUnit", jane_weight_unit);
-    r.register("janeWeightKey", jane_weight_key);
 
     // --- field access (dynamic) ---
     r.register("getField", get_field);
@@ -124,6 +122,7 @@ fn type_name(v: &EvalValue) -> &'static str {
         EvalValue::Node(_) => "node",
         EvalValue::NodeList(_) => "nodelist",
         EvalValue::Ref { .. } => "ref",
+        EvalValue::Regex(_) => "regex",
     }
 }
 
@@ -325,161 +324,93 @@ fn default_v(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
     }
 }
 
-// --- size / weight helpers --------------------------------------------------
+// --- regex consumers -------------------------------------------------------
 
-fn parse_size_pair(s: &str) -> Option<(f64, String)> {
-    let s = s.trim();
-    let mut value_str = String::new();
-    let mut rest = s;
-    for (i, c) in s.char_indices() {
-        if c.is_ascii_digit() || c == '.' {
-            value_str.push(c);
-        } else {
-            rest = s[i..].trim();
-            break;
+fn require_regex<'a>(name: &str, v: &'a EvalValue) -> Result<&'a regex::Regex, EvalError> {
+    match v {
+        EvalValue::Regex(r) => Ok(&r.re),
+        other => Err(err(
+            name,
+            format!("expected regex literal, got {}", type_name(other)),
+        )),
+    }
+}
+
+fn regex_match(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
+    let s = require_string("match", &v)?;
+    let pat = args
+        .first()
+        .ok_or_else(|| err("match", "missing regex argument"))?;
+    let re = require_regex("match", pat)?;
+    let mut out = indexmap::IndexMap::new();
+    match re.captures(&s) {
+        Some(caps) => {
+            let mut groups: Vec<EvalValue> = Vec::with_capacity(caps.len());
+            for i in 0..caps.len() {
+                match caps.get(i) {
+                    Some(m) => groups.push(EvalValue::String(m.as_str().into())),
+                    None => groups.push(EvalValue::Null),
+                }
+            }
+            out.insert("matched".into(), EvalValue::Bool(true));
+            out.insert("captures".into(), EvalValue::Array(groups));
+        }
+        None => {
+            out.insert("matched".into(), EvalValue::Bool(false));
+            out.insert("captures".into(), EvalValue::Array(Vec::new()));
         }
     }
-    if value_str.is_empty() {
-        return None;
-    }
-    let v: f64 = value_str.parse().ok()?;
-    let unit = rest.to_lowercase();
-    Some((v, unit))
+    Ok(EvalValue::Object(out))
 }
 
-fn parse_size(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = require_string("parseSize", &v)?;
-    let Some((val, unit)) = parse_size_pair(&s) else {
-        return Ok(EvalValue::Null);
-    };
-    let mut o = indexmap::IndexMap::new();
-    o.insert("value".into(), EvalValue::Double(val));
-    o.insert("unit".into(), EvalValue::String(unit));
-    Ok(EvalValue::Object(o))
+fn regex_matches(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
+    let s = require_string("matches", &v)?;
+    let pat = args
+        .first()
+        .ok_or_else(|| err("matches", "missing regex argument"))?;
+    let re = require_regex("matches", pat)?;
+    Ok(EvalValue::Bool(re.is_match(&s)))
 }
 
-fn normalize_oz_to_grams(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    // Called as `parseSize | normalizeOzToGrams` (no args) OR
-    // `$.value | normalizeOzToGrams($variant.unit)` (value + unit arg).
-    match (&v, args.first()) {
-        // Single-arg form: object with {value, unit}.
-        (EvalValue::Object(o), None) => {
-            let val = o.get("value").cloned().unwrap_or(EvalValue::Null);
-            let unit = o.get("unit").cloned().unwrap_or(EvalValue::Null);
-            let new_val = to_grams(&val, &unit);
-            let new_unit = match unit {
-                EvalValue::String(u) if u == "oz" || u == "ounce" => EvalValue::String("g".into()),
-                u => u,
-            };
-            let mut out = indexmap::IndexMap::new();
-            out.insert("value".into(), new_val);
-            out.insert("unit".into(), new_unit);
-            Ok(EvalValue::Object(out))
-        }
-        // Two-arg form: (value, unit).
-        (val, Some(unit)) => Ok(to_grams(val, unit)),
-        _ => Ok(EvalValue::Null),
-    }
+fn regex_replace_all(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
+    let s = require_string("replaceAll", &v)?;
+    let pat = args
+        .first()
+        .ok_or_else(|| err("replaceAll", "missing regex argument"))?;
+    let re = require_regex("replaceAll", pat)?;
+    let replacement = args
+        .get(1)
+        .ok_or_else(|| err("replaceAll", "missing replacement string"))?;
+    let rep = require_string("replaceAll", replacement)?;
+    Ok(EvalValue::String(re.replace_all(&s, rep.as_str()).into_owned()))
 }
 
-fn to_grams(val: &EvalValue, unit: &EvalValue) -> EvalValue {
-    let n = match val {
-        EvalValue::Int(n) => *n as f64,
-        EvalValue::Double(n) => *n,
-        EvalValue::Null => return EvalValue::Null,
-        _ => return EvalValue::Null,
-    };
-    let u = match unit {
-        EvalValue::String(s) => s.to_lowercase(),
-        _ => return EvalValue::Double(n),
-    };
-    let grams = match u.as_str() {
-        "oz" | "ounce" | "ounces" => n * 28.0,
-        "g" | "gram" | "grams" => n,
-        "lb" | "lbs" | "pound" | "pounds" => n * 453.592,
-        "mg" | "milligram" | "milligrams" => n / 1000.0,
-        _ => return EvalValue::Double(n),
-    };
-    EvalValue::Double(grams)
+// --- string built-ins ------------------------------------------------------
+
+fn replace(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
+    let s = require_string("replace", &v)?;
+    let from = args
+        .first()
+        .ok_or_else(|| err("replace", "missing 'from' argument"))?;
+    let from = require_string("replace", from)?;
+    let to = args
+        .get(1)
+        .ok_or_else(|| err("replace", "missing 'to' argument"))?;
+    let to = require_string("replace", to)?;
+    Ok(EvalValue::String(s.replace(from.as_str(), to.as_str())))
 }
 
-fn size_value(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    if let EvalValue::Object(o) = &v {
-        if let Some(val) = o.get("value") {
-            return Ok(val.clone());
-        }
-    }
-    Ok(EvalValue::Null)
-}
-
-fn size_unit(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    if let EvalValue::Object(o) = &v {
-        if let Some(u) = o.get("unit") {
-            return Ok(u.clone());
-        }
-    }
-    Ok(EvalValue::Null)
-}
-
-fn normalize_unit_to_grams(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = match &v {
-        EvalValue::String(s) => s.to_lowercase(),
-        EvalValue::Null => return Ok(EvalValue::Null),
-        _ => return Ok(v),
-    };
-    let out = match s.as_str() {
-        "oz" | "ounce" | "ounces" => "g",
-        "g" | "gram" | "grams" => "g",
-        "mg" | "milligram" | "milligrams" => "g",
-        other => other,
-    };
-    Ok(EvalValue::String(out.into()))
-}
-
-fn prevalence_normalize(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = match &v {
-        EvalValue::String(s) => s.to_lowercase(),
-        EvalValue::Null => return Ok(EvalValue::Null),
-        _ => return Ok(v),
-    };
-    let out = match s.as_str() {
-        "indica" | "indica-dominant" | "indica dominant" => "INDICA",
-        "sativa" | "sativa-dominant" | "sativa dominant" => "SATIVA",
-        "hybrid" => "HYBRID",
-        "cbd" => "CBD",
-        _ => return Ok(EvalValue::String(s)),
-    };
-    Ok(EvalValue::String(out.into()))
-}
-
-fn parse_jane_weight(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = require_string("parseJaneWeight", &v)?.to_lowercase();
-    let val = match s.as_str() {
-        "half gram" => 0.5,
-        "gram" => 1.0,
-        "two gram" => 2.0,
-        "eighth ounce" => 3.5,
-        "quarter ounce" => 7.0,
-        "half ounce" => 14.0,
-        "ounce" => 28.0,
-        "each" => return Ok(EvalValue::Null),
-        _ => return Ok(EvalValue::Null),
-    };
-    Ok(EvalValue::Double(val))
-}
-
-fn jane_weight_unit(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = require_string("janeWeightUnit", &v)?.to_lowercase();
-    let unit = match s.as_str() {
-        "each" => "EA",
-        _ => "g",
-    };
-    Ok(EvalValue::String(unit.into()))
-}
-
-fn jane_weight_key(v: EvalValue, _: &[EvalValue]) -> Result<EvalValue, EvalError> {
-    let s = require_string("janeWeightKey", &v)?.to_lowercase();
-    Ok(EvalValue::String(s.replace(' ', "_")))
+fn split(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
+    let s = require_string("split", &v)?;
+    let sep = args
+        .first()
+        .ok_or_else(|| err("split", "missing separator"))?;
+    let sep = require_string("split", sep)?;
+    let parts: Vec<EvalValue> = s
+        .split(sep.as_str())
+        .map(|p| EvalValue::String(p.into()))
+        .collect();
+    Ok(EvalValue::Array(parts))
 }
 
 fn get_field(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError> {
@@ -635,16 +566,78 @@ mod tests {
     }
 
     #[test]
-    fn jane_weight_parses() {
-        let f = default_registry().get("parseJaneWeight").unwrap();
+    fn string_built_ins_round_trip() {
+        // The five string transforms cover the substitution & casing
+        // surface the cannabis transforms used to wrap; pinning their
+        // shape here so a recipe author can mix them with user-defined
+        // fns without surprises.
+        let r = default_registry();
+        let lc = r.get("lowercase").unwrap();
+        let uc = r.get("uppercase").unwrap();
+        let tr = r.get("trim").unwrap();
+        let rp = r.get("replace").unwrap();
+        let sp = r.get("split").unwrap();
         assert_eq!(
-            f(EvalValue::String("eighth ounce".into()), &[]).unwrap(),
-            EvalValue::Double(3.5)
+            lc(EvalValue::String("HiYa".into()), &[]).unwrap(),
+            EvalValue::String("hiya".into()),
         );
         assert_eq!(
-            f(EvalValue::String("ounce".into()), &[]).unwrap(),
-            EvalValue::Double(28.0)
+            uc(EvalValue::String("HiYa".into()), &[]).unwrap(),
+            EvalValue::String("HIYA".into()),
         );
+        assert_eq!(
+            tr(EvalValue::String("  hello  ".into()), &[]).unwrap(),
+            EvalValue::String("hello".into()),
+        );
+        assert_eq!(
+            rp(
+                EvalValue::String("a-b-c".into()),
+                &[
+                    EvalValue::String("-".into()),
+                    EvalValue::String(":".into()),
+                ],
+            )
+            .unwrap(),
+            EvalValue::String("a:b:c".into()),
+        );
+        assert_eq!(
+            sp(
+                EvalValue::String("a,b,c".into()),
+                &[EvalValue::String(",".into())]
+            )
+            .unwrap(),
+            EvalValue::Array(vec![
+                EvalValue::String("a".into()),
+                EvalValue::String("b".into()),
+                EvalValue::String("c".into()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn regex_match_extracts_groups() {
+        let r = default_registry();
+        let m = r.get("match").unwrap();
+        let pat = crate::eval::value::RegexValue {
+            pattern: r"(\d+)\s*(oz|g)".into(),
+            flags: String::new(),
+            re: regex::Regex::new(r"(\d+)\s*(oz|g)").unwrap(),
+        };
+        let res = m(
+            EvalValue::String("1 oz".into()),
+            &[EvalValue::Regex(pat)],
+        )
+        .unwrap();
+        let EvalValue::Object(o) = res else {
+            panic!("expected object");
+        };
+        assert_eq!(o.get("matched"), Some(&EvalValue::Bool(true)));
+        let EvalValue::Array(caps) = o.get("captures").unwrap() else {
+            panic!("captures should be array");
+        };
+        assert_eq!(caps[0], EvalValue::String("1 oz".into()));
+        assert_eq!(caps[1], EvalValue::String("1".into()));
+        assert_eq!(caps[2], EvalValue::String("oz".into()));
     }
 
     #[test]

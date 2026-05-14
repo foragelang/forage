@@ -98,6 +98,18 @@ pub enum ValidationCode {
     /// but the runtime will not terminate; emitted as a warning so the
     /// recipe still builds.
     RecursiveFunction,
+    /// A struct literal declares the same field name twice. The
+    /// runtime would silently keep one and drop the other; surfacing
+    /// the duplicate at validate time forces the author to pick.
+    DuplicateStructField,
+    /// A `let $name = expr` binding inside a fn body shares its name
+    /// with one of the fn's parameters. The body would silently shadow
+    /// the parameter — almost always a typo.
+    LetShadowsParam,
+    /// Two `let` bindings in the same fn body use the same name. The
+    /// language is single-assignment; rebinding is a recipe-author
+    /// error, not a feature.
+    DuplicateLetBinding,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -105,30 +117,34 @@ pub enum ValidationCode {
 /// at construction time. If a recipe references a transform not in here,
 /// it's flagged as Unknown.
 pub const BUILTIN_TRANSFORMS: &[&str] = &[
+    // --- string ---
     "toString",
     "lower",
     "upper",
     "trim",
     "capitalize",
     "titleCase",
+    "lowercase",
+    "uppercase",
+    "replace",
+    "split",
+    // --- regex ---
+    "match",
+    "matches",
+    "replaceAll",
+    // --- parsing scalars ---
     "parseInt",
     "parseFloat",
     "parseBool",
+    // --- list / object ---
     "length",
     "dedup",
     "first",
     "coalesce",
     "default",
-    "parseSize",
-    "normalizeOzToGrams",
-    "sizeValue",
-    "sizeUnit",
-    "normalizeUnitToGrams",
-    "prevalenceNormalize",
-    "parseJaneWeight",
-    "janeWeightUnit",
-    "janeWeightKey",
+    // --- field access (dynamic) ---
     "getField",
+    // --- HTML / JSON parsing ---
     "parseHtml",
     "parseJson",
     "select",
@@ -319,12 +335,44 @@ impl<'a> Validator<'a> {
                 let saved_refs = std::mem::take(&mut v.ref_bindings);
                 let mut body_vars: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
+                let params: std::collections::HashSet<&str> =
+                    f.params.iter().map(|s| s.as_str()).collect();
                 for p in &f.params {
                     body_vars.insert(p.clone());
                 }
                 v.known_vars = body_vars;
                 let saved_fn = v.enclosing_fn.replace(f.name.clone());
-                v.check_extraction(&f.body);
+
+                // Let-bindings: each adds to scope after its value is
+                // validated. Catches `LetShadowsParam` and
+                // `DuplicateLetBinding`; the runtime never sees a
+                // shadowed name because the validator refuses the
+                // recipe before eval boots.
+                let mut let_names: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for b in &f.body.bindings {
+                    v.check_extraction(&b.value);
+                    if params.contains(b.name.as_str()) {
+                        v.err_here(
+                            ValidationCode::LetShadowsParam,
+                            format!(
+                                "let binding '${name}' shadows the function parameter '${name}'",
+                                name = b.name,
+                            ),
+                        );
+                    }
+                    if !let_names.insert(b.name.clone()) {
+                        v.err_here(
+                            ValidationCode::DuplicateLetBinding,
+                            format!(
+                                "let binding '${name}' is declared more than once in this fn body",
+                                name = b.name,
+                            ),
+                        );
+                    }
+                    v.known_vars.insert(b.name.clone());
+                }
+                v.check_extraction(&f.body.result);
                 v.enclosing_fn = saved_fn;
                 v.known_vars = saved_vars;
                 v.ref_bindings = saved_refs;
@@ -671,6 +719,37 @@ impl<'a> Validator<'a> {
                 }
             }
             ExtractionExpr::Literal(_) => {}
+            ExtractionExpr::BinaryOp { lhs, rhs, .. } => {
+                self.check_extraction(lhs);
+                self.check_extraction(rhs);
+            }
+            ExtractionExpr::Unary { operand, .. } => {
+                self.check_extraction(operand);
+            }
+            ExtractionExpr::StructLiteral { fields } => {
+                let mut seen: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
+                for f in fields {
+                    if !seen.insert(f.field_name.as_str()) {
+                        self.err_here(
+                            ValidationCode::DuplicateStructField,
+                            format!(
+                                "struct literal declares field '{}' more than once",
+                                f.field_name,
+                            ),
+                        );
+                    }
+                    self.check_extraction(&f.expr);
+                }
+            }
+            ExtractionExpr::Index { base, index } => {
+                self.check_extraction(base);
+                self.check_extraction(index);
+            }
+            ExtractionExpr::RegexLiteral(_) => {
+                // Regex literals are validated at parse time (pattern
+                // compiles, flags recognized). Nothing else to check.
+            }
         }
     }
 
@@ -721,6 +800,10 @@ impl<'a> Validator<'a> {
                     en.variants.iter().map(|s| s.as_str()).collect();
                 let used: Vec<String> = labels.map(|s| s.to_string()).collect();
                 for l in &used {
+                    // `_` is the catch-all sentinel — not a real variant.
+                    if l == "_" {
+                        continue;
+                    }
                     if !known.contains(l.as_str()) {
                         self.err_here(
                             ValidationCode::UnknownEnumVariant,
@@ -730,12 +813,20 @@ impl<'a> Validator<'a> {
                 }
                 let used_set: std::collections::HashSet<&str> =
                     used.iter().map(|s| s.as_str()).collect();
-                for v in &en.variants {
-                    if !used_set.contains(v.as_str()) {
-                        self.warn_here(
-                            ValidationCode::UnknownEnumVariant,
-                            format!("case-of over {enum_name} doesn't cover variant '{v}'"),
-                        );
+                // `_` is a catch-all default arm; its presence makes
+                // the case-of exhaustive regardless of which variants
+                // got explicit arms.
+                let has_default = used_set.contains("_");
+                if !has_default {
+                    for v in &en.variants {
+                        if !used_set.contains(v.as_str()) {
+                            self.warn_here(
+                                ValidationCode::UnknownEnumVariant,
+                                format!(
+                                    "case-of over {enum_name} doesn't cover variant '{v}'",
+                                ),
+                            );
+                        }
                     }
                 }
             }
