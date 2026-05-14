@@ -129,10 +129,6 @@ export function useStudioEffects() {
         register("menu:run_live", () => void runActive(false));
         register("menu:run_replay", () => void runActive(true));
         register("menu:validate", () => void saveActive());
-        // Phase 6 hooks publishing into the toolbar directly.
-        register("menu:publish", () =>
-            console.info("publish: Phase 6"),
-        );
         return () => {
             cancelled = true;
             offs.forEach((u) => u());

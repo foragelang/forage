@@ -190,12 +190,10 @@ function WorkspaceHeader({ workspace }: { workspace: WorkspaceInfo | null }) {
                 <TooltipTrigger asChild>
                     <button
                         type="button"
-                        // Workspace switcher is Phase-5+; the click
-                        // logs a marker so the affordance never lies
-                        // about doing nothing.
-                        onClick={() =>
-                            console.info("workspace switch: Phase 5+")
-                        }
+                        // No handler yet — the workspace picker isn't
+                        // built. The tooltip ("Switch workspace (coming
+                        // soon)") tells the user; this button just
+                        // displays the current workspace path.
                         className={cn(
                             "flex w-full items-center gap-2 px-1.5 py-1 text-left",
                             "rounded-sm transition-colors hover:bg-sidebar-accent",
@@ -375,12 +373,11 @@ function DepsSection({ deps }: { deps: Dep[] }) {
                         <TooltipTrigger asChild>
                             <button
                                 type="button"
-                                // Add-dependency UX is Phase 5+; the
-                                // click is a logged stub so the
-                                // affordance doesn't silently lie.
-                                onClick={() =>
-                                    console.info("add dependency: Phase 5+")
-                                }
+                                // No handler yet — the add-dependency
+                                // UX isn't built. The tooltip ("Add
+                                // dependency (coming soon)") tells the
+                                // user; the row is here for the visual
+                                // affordance only.
                                 className={cn(
                                     "flex w-full items-center gap-2 px-2 h-6 rounded-sm",
                                     "text-xs text-muted-foreground hover:text-foreground hover:bg-sidebar-accent",

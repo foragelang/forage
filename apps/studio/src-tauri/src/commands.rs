@@ -471,7 +471,7 @@ pub fn set_recipe_breakpoints(
     slug: String,
     steps: Vec<String>,
 ) -> Result<(), String> {
-    let mut all = workspace::read_breakpoints();
+    let mut all = workspace::read_breakpoints().map_err(|e| e.to_string())?;
     if steps.is_empty() {
         all.remove(&slug);
     } else {
@@ -486,12 +486,12 @@ pub fn set_recipe_breakpoints(
 
 /// Load the persisted breakpoint set for one recipe. Returns an empty
 /// vec when the slug has no entry — the absence of breakpoints is the
-/// default.
+/// default. A malformed sidecar surfaces as an error so the user sees
+/// the parse failure instead of silently losing every breakpoint.
 #[tauri::command]
-pub fn load_recipe_breakpoints(slug: String) -> Vec<String> {
-    workspace::read_breakpoints()
-        .remove(&slug)
-        .unwrap_or_default()
+pub fn load_recipe_breakpoints(slug: String) -> Result<Vec<String>, String> {
+    let mut map = workspace::read_breakpoints().map_err(|e| e.to_string())?;
+    Ok(map.remove(&slug).unwrap_or_default())
 }
 
 /// Toggle "pause inside every `for`-loop iteration" for the in-flight

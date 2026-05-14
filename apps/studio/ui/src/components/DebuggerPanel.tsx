@@ -1,10 +1,10 @@
 //! Bottom debugger panel — slides up from below the editor when the
 //! engine is paused. Three columns: Call Stack · Scope · Watch.
 //!
-//! Watch is a placeholder in Phase 5 — the design flagged user-defined
-//! watch expressions as deferred (DESIGN_HANDOFF.md "open questions").
-//! Per-type emit counters render at the bottom of the Watch column so
-//! users still see "records emitted so far" alongside the placeholder.
+//! Watch is a placeholder: user-defined watch expressions aren't wired
+//! yet (DESIGN_HANDOFF.md "open questions"). Per-type emit counters
+//! render at the bottom of the Watch column so users still see
+//! "records emitted so far" alongside the placeholder.
 
 import { useId, useMemo, useState } from "react";
 import {

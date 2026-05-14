@@ -170,12 +170,19 @@ pub fn breakpoints_path() -> PathBuf {
     workspace_root().join("breakpoints.json")
 }
 
-pub fn read_breakpoints() -> std::collections::HashMap<String, Vec<String>> {
+pub fn read_breakpoints() -> io::Result<std::collections::HashMap<String, Vec<String>>> {
     let path = breakpoints_path();
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return std::collections::HashMap::new();
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Steady state for a fresh workspace — no breakpoints yet,
+            // no sidecar yet. Distinct from a malformed file, which
+            // surfaces below.
+            return Ok(std::collections::HashMap::new());
+        }
+        Err(e) => return Err(e),
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 pub fn write_breakpoints(

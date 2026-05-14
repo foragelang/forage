@@ -19,9 +19,6 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let validate = MenuItemBuilder::with_id("validate", "Validate")
         .accelerator("CmdOrCtrl+Shift+V")
         .build(app)?;
-    let publish = MenuItemBuilder::with_id("publish", "Publish to Hub…")
-        .accelerator("CmdOrCtrl+Shift+P")
-        .build(app)?;
 
     let file = SubmenuBuilder::new(app, "File")
         .item(&new_recipe)
@@ -40,7 +37,6 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&run_replay)
         .separator()
         .item(&validate)
-        .item(&publish)
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
@@ -86,9 +82,6 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         "validate" => {
             let _ = app.emit("menu:validate", ());
-        }
-        "publish" => {
-            let _ = app.emit("menu:publish", ());
         }
         // Context-menu items use ID prefix `recipe_delete:<slug>` so we
         // can route many recipe slugs through one handler.
