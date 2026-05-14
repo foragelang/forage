@@ -33,6 +33,11 @@ struct RecipeExpect {
     enums: Option<Vec<EnumExpect>>,
     #[serde(default)]
     secrets: Option<Vec<String>>,
+    /// Number of top-level `fn` declarations the recipe must carry. Set
+    /// for fixtures that exercise user-defined functions; omitted for
+    /// recipes that don't.
+    #[serde(default, rename = "functionCount")]
+    function_count: Option<usize>,
     #[serde(default)]
     validation: Option<ValExpect>,
 }
@@ -170,6 +175,16 @@ fn shared_recipes_match_expected() {
                 failures.push(format!(
                     "{}: secrets {:?} != expected {:?}",
                     r.file, recipe.secrets, secrets
+                ));
+            }
+        }
+        if let Some(want) = r.function_count {
+            if recipe.functions.len() != want {
+                failures.push(format!(
+                    "{}: functionCount {} != expected {}",
+                    r.file,
+                    recipe.functions.len(),
+                    want,
                 ));
             }
         }

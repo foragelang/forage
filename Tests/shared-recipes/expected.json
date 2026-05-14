@@ -148,6 +148,27 @@
                 { "name": "Listing", "fieldNames": ["title", "url", "host"], "requiredFieldCount": 1 }
             ],
             "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "09-user-functions.forage",
+            "parses": true,
+            "summary": {
+                "name": "user-functions",
+                "engineKind": "http",
+                "typeCount": 1,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 2,
+                "stepNames": ["list"],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 1
+            },
+            "types": [
+                { "name": "Variant", "fieldNames": ["externalId", "label"], "requiredFieldCount": 2 }
+            ],
+            "functionCount": 2,
+            "validation": { "errorCount": 0, "warningCount": 0 }
         }
     ]
 }

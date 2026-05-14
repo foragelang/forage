@@ -1,0 +1,30 @@
+recipe "user-functions"
+engine http
+
+// User-defined transform — composes a built-in `upper` with a template
+// at a pipe site, exercising the param binding and pipe-call path.
+fn shout($x) { $x | upper | trim }
+
+// User-defined transform calling another user fn (forward reference).
+fn loud($x) { $x | shout }
+
+type Variant {
+    externalId: String
+    label:      String
+}
+
+input baseUrl: String
+
+step list {
+    method "GET"
+    url    "{$input.baseUrl}/variants"
+}
+
+for $v in $list.items[*] {
+    emit Variant {
+        externalId ← $v.id
+        label      ← $v.label | loud
+    }
+}
+
+expect { records.where(typeName == "Variant").count >= 1 }

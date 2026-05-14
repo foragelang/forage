@@ -28,6 +28,7 @@ interface ExpectedRecipe {
     paginationModes?: string[]
     secrets?: string[]
     authSessionVariant?: string
+    functionCount?: number
     validation: ExpectedValidation
 }
 
@@ -124,6 +125,10 @@ describe('shared recipes', () => {
                 if (recipe.auth?.tag === 'session') {
                     expect(recipe.auth.session.kind.tag).toBe(rec.authSessionVariant)
                 }
+            }
+
+            if (rec.functionCount !== undefined) {
+                expect(recipe.functions).toHaveLength(rec.functionCount)
             }
 
             const issues = validate(recipe)
