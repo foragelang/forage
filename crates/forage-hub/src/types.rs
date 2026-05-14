@@ -1,73 +1,130 @@
-//! Wire types shared between `HubClient` and the hub API.
+//! Wire types matching `hub-api/src/types.ts`.
 //!
-//! The unit of distribution is a **package** — a directory of `.forage`
-//! files with an optional manifest. Single-file recipes ship as 1-file
-//! packages. Metadata records the same publish info as before
-//! (display name, summary, tags, license, owner) plus the file list.
+//! Every JSON shape on the wire is `snake_case`. The structs here
+//! serialize to the exact same field names that the worker emits and
+//! validates, so a server-side rename forces a Rust-side rename in the
+//! same PR (greenfield: no `#[serde(default)]` to smuggle drift through
+//! the deserializer).
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
-/// Metadata for one published package. Mirrors the server's
-/// `RecipeMetadata` (minus internal storage keys).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PackageMeta {
-    pub slug: String,
-    pub version: u32,
-    #[serde(default)]
-    pub owner_login: Option<String>,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub license: Option<String>,
-    #[serde(default)]
-    pub sha256: Option<String>,
-    #[serde(default)]
-    pub published_at: Option<i64>,
-}
-
-/// One `.forage` file in a package. `name` is the file's path relative
-/// to the package root (matches the server's
-/// `FILE_NAME_RE`: one or more `/`-joined segments, each starting with
-/// `[a-z0-9]`, joined by single `/` separators, terminating in
-/// `.forage`). Workspace recipes typically publish as
-/// `<dir>/recipe.forage`; shared declarations are usually
-/// `<name>.forage` at the workspace root.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One `.forage` file shipped inside a version artifact. `name` is the
+/// in-package path (slash-separated, ending in `.forage`); `source` is
+/// the UTF-8 file body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageFile {
     pub name: String,
-    pub body: String,
+    pub source: String,
 }
 
-/// A fetched package: the publish-time metadata that lived on the
-/// listing entry, plus every `.forage` file's body in declared order.
-///
-/// Wire shape matches the server's detail response 1:1 — top-level
-/// fields rather than a nested `metadata` blob so the wire is one
-/// canonical view of a package version.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Package {
+/// One named fixture inside a version artifact. `content` is the
+/// fixture's UTF-8 body (typically JSONL capture data).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageFixture {
+    pub name: String,
+    pub content: String,
+}
+
+/// Captured run output stamped at publish time. Per-type record arrays
+/// plus a counts summary. Records are intentionally untyped on the wire
+/// because the type catalog is per-package — consumers reuse the
+/// catalog from the artifact's recipe + decls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PackageSnapshot {
+    pub records: IndexMap<String, Vec<Json>>,
+    pub counts: IndexMap<String, u64>,
+}
+
+/// One-shot lineage pointer stamped on a v1 fork.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkedFrom {
+    pub author: String,
     pub slug: String,
     pub version: u32,
-    #[serde(default)]
-    pub author: Option<String>,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
+}
+
+/// The atomic package version artifact: recipe + decls + fixtures +
+/// snapshot ride together. There is no sub-resource that returns one
+/// piece without the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PackageVersion {
+    pub author: String,
+    pub slug: String,
+    pub version: u32,
+    pub recipe: String,
+    pub decls: Vec<PackageFile>,
+    pub fixtures: Vec<PackageFixture>,
+    pub snapshot: Option<PackageSnapshot>,
+    pub base_version: Option<u32>,
+    pub published_at: i64,
+    pub published_by: String,
+}
+
+/// Package metadata returned by `GET /v1/packages/:author/:slug`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageMetadata {
+    pub author: String,
+    pub slug: String,
+    pub description: String,
+    pub category: String,
     pub tags: Vec<String>,
-    #[serde(default)]
-    pub platform: Option<String>,
-    #[serde(default)]
-    pub sha256: Option<String>,
-    #[serde(default)]
-    pub created_at: Option<String>,
-    #[serde(default)]
-    pub updated_at: Option<String>,
-    pub files: Vec<PackageFile>,
+    pub forked_from: Option<ForkedFrom>,
+    pub created_at: i64,
+    pub latest_version: u32,
+    pub stars: u32,
+    pub downloads: u32,
+    pub fork_count: u32,
+    pub owner_login: String,
+}
+
+/// `POST /v1/packages/:author/:slug/versions` body. The server validates
+/// `base_version == latest_version` (or `None` for first publish) and
+/// returns 409 otherwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PublishRequest {
+    pub description: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub recipe: String,
+    pub decls: Vec<PackageFile>,
+    pub fixtures: Vec<PackageFixture>,
+    pub snapshot: Option<PackageSnapshot>,
+    pub base_version: Option<u32>,
+    pub forked_from: Option<ForkedFrom>,
+}
+
+/// Server's response to a successful publish. Fields mirror what the
+/// worker returns in the `201` body; callers display `version`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishResponse {
+    pub author: String,
+    pub slug: String,
+    pub version: u32,
+    pub latest_version: u32,
+}
+
+/// `POST /v1/packages/:author/:slug/fork` body. `as` is the requested
+/// slug for the new fork; `None` keeps the upstream's slug.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkRequest {
+    pub r#as: Option<String>,
+}
+
+/// Specifier for `GET /v1/packages/:author/:slug/versions/:n`. The
+/// server accepts an integer or the literal `latest`.
+#[derive(Debug, Clone, Copy)]
+pub enum VersionSpec {
+    Latest,
+    Numbered(u32),
+}
+
+impl VersionSpec {
+    pub fn as_path_segment(&self) -> String {
+        match self {
+            VersionSpec::Latest => "latest".into(),
+            VersionSpec::Numbered(n) => n.to_string(),
+        }
+    }
 }

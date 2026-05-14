@@ -24,7 +24,12 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 
 dirs        = { workspace = true }
+indexmap    = { workspace = true }
+sha2        = { workspace = true }
 
 [dev-dependencies]
 wiremock    = { workspace = true }
 tempfile    = { workspace = true }
+tokio       = { workspace = true }
+indexmap    = { workspace = true }
+forage-core = { workspace = true }

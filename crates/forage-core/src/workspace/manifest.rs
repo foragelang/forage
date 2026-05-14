@@ -26,6 +26,18 @@ pub struct Manifest {
     /// Publish slug — `"author/name"`. `None` until the workspace
     /// becomes publishable.
     pub name: Option<String>,
+    /// One-line description shown in the hub listing. Empty when the
+    /// workspace hasn't filled it in yet; the publish path requires
+    /// a non-empty value (per the hub-api shape).
+    #[serde(default)]
+    pub description: String,
+    /// Hub category — matches the `category` segment on the listing
+    /// surface. Lowercase kebab-case, validated server-side.
+    #[serde(default)]
+    pub category: String,
+    /// Search tags. Empty list when unset.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Map from `"author/slug"` to integer hub version.
     #[serde(default)]
     pub deps: BTreeMap<String, u32>,

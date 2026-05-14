@@ -7,6 +7,21 @@ export type Manifest = {
  */
 name: string | null, 
 /**
+ * One-line description shown in the hub listing. Empty when the
+ * workspace hasn't filled it in yet; the publish path requires
+ * a non-empty value (per the hub-api shape).
+ */
+description: string, 
+/**
+ * Hub category — matches the `category` segment on the listing
+ * surface. Lowercase kebab-case, validated server-side.
+ */
+category: string, 
+/**
+ * Search tags. Empty list when unset.
+ */
+tags: Array<string>, 
+/**
  * Map from `"author/slug"` to integer hub version.
  */
 deps: { [key in string]?: number }, };
