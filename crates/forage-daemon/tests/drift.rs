@@ -25,6 +25,7 @@ fn ok_run(counts: &[(&str, u32)]) -> ScheduledRun {
         counts: map,
         diagnostics: 0,
         stall: None,
+        recipe_version: Some(1),
     }
 }
 

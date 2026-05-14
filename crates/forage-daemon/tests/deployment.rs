@@ -200,6 +200,8 @@ async fn run_once_without_deployment_fails_cleanly() {
     let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Fail);
     assert_eq!(sr.stall.as_deref(), Some("recipe not deployed"));
+    // Short-circuit fired before any version was resolved.
+    assert_eq!(sr.recipe_version, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -245,6 +247,78 @@ async fn run_once_uses_deployed_source() {
     let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Item").copied(), Some(3));
+    // The row records which deployed version executed; without it,
+    // count history goes incoherent across deploys.
+    assert_eq!(sr.recipe_version, Some(1));
+}
+
+/// Round-trip every `ScheduledRun.recipe_version` shape we persist
+/// — `None` for the no-deployment short-circuit, `Some(v)` for runs
+/// where the engine resolved a deployed version. Without this, the
+/// column drops on the SELECT projection silently turn every row's
+/// version into `None`, which corrupts the "which recipe shape
+/// produced this row?" invariant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduled_run_recipe_version_round_trips() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws_root = tmp.path().to_path_buf();
+    let slug = "fixture-ok";
+    init_workspace(&ws_root, slug, RECIPE);
+
+    let mock = common::http_mock::server_returning_items(&[("a", 0.1), ("b", 0.2)]).await;
+    let recipe_path = ws_root.join(slug).join("recipe.forage");
+    let src = std::fs::read_to_string(&recipe_path).unwrap();
+    let deployed_src = src.replace("https://example.test/items", &mock.url("/items"));
+    std::fs::write(&recipe_path, &deployed_src).unwrap();
+
+    let daemon = Daemon::open(ws_root.clone()).unwrap();
+
+    let cfg = RunConfig {
+        cadence: Cadence::Manual,
+        output: ws_root.join(".forage").join("data").join("ok.sqlite"),
+        enabled: true,
+    };
+    let run = daemon.configure_run(slug, cfg).unwrap();
+
+    // First fire: no deployed version → row carries `recipe_version: None`.
+    let pre_deploy = daemon.trigger_run(&run.id).await.expect("trigger pre-deploy");
+    assert_eq!(pre_deploy.outcome, Outcome::Fail);
+    assert_eq!(pre_deploy.recipe_version, None);
+
+    // Deploy then fire again: row carries `recipe_version: Some(1)`.
+    let catalog = catalog_for(&deployed_src, &ws_root);
+    daemon.deploy(slug, deployed_src, catalog).unwrap();
+    let post_deploy = daemon
+        .trigger_run(&run.id)
+        .await
+        .expect("trigger post-deploy");
+    assert_eq!(post_deploy.outcome, Outcome::Ok, "stall: {:?}", post_deploy.stall);
+    assert_eq!(post_deploy.recipe_version, Some(1));
+
+    // Read back through the same query path Studio uses. Both
+    // versions of the field must survive the SQL round-trip.
+    let history = daemon.list_scheduled_runs(&run.id, 10, None).unwrap();
+    assert_eq!(history.len(), 2);
+    // Newest first.
+    let none_count = history
+        .iter()
+        .filter(|sr| sr.recipe_version.is_none())
+        .count();
+    let some_count = history
+        .iter()
+        .filter(|sr| sr.recipe_version == Some(1))
+        .count();
+    assert_eq!(none_count, 1, "one row should round-trip as None");
+    assert_eq!(some_count, 1, "one row should round-trip as Some(1)");
+
+    // Pin the exact rows so a regression that always returns Some/None
+    // both gets caught — counts above could pass by coincidence.
+    let by_id: std::collections::HashMap<String, Option<u32>> = history
+        .iter()
+        .map(|sr| (sr.id.clone(), sr.recipe_version))
+        .collect();
+    assert_eq!(by_id.get(&pre_deploy.id).copied(), Some(None));
+    assert_eq!(by_id.get(&post_deploy.id).copied(), Some(Some(1)));
 }
 
 /// A v1 daemon DB (schema_version = 1) opens cleanly under the v2
@@ -320,4 +394,9 @@ fn opening_a_v1_database_runs_the_migration() {
     // slug). If the migration didn't add it, this would fail at the
     // SQL prepare step.
     assert!(daemon.deployed_versions("old-slug").unwrap().is_empty());
+
+    // `scheduled_runs.recipe_version` was added in the same v2 block —
+    // querying through the standard path must succeed against a
+    // migrated DB (zero rows here, but the projection has to bind).
+    assert!(daemon.list_scheduled_runs("legacy", 10, None).unwrap().is_empty());
 }

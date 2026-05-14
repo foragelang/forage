@@ -113,6 +113,7 @@ fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
             );
 
             ALTER TABLE runs ADD COLUMN deployed_version INTEGER;
+            ALTER TABLE scheduled_runs ADD COLUMN recipe_version INTEGER;
             "#,
         )?;
     }
@@ -282,8 +283,8 @@ pub(crate) fn insert_scheduled_run(
 ) -> Result<(), DaemonError> {
     let counts_json = serde_json::to_string(&sr.counts)?;
     conn.execute(
-        "INSERT INTO scheduled_runs(id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO scheduled_runs(id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall, recipe_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             sr.id,
             sr.run_id,
@@ -294,6 +295,7 @@ pub(crate) fn insert_scheduled_run(
             counts_json,
             sr.diagnostics,
             sr.stall,
+            sr.recipe_version,
         ],
     )?;
     Ok(())
@@ -310,7 +312,7 @@ pub(crate) fn list_scheduled_runs(
     match before {
         Some(b) => {
             let mut stmt = conn.prepare(
-                "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall
+                "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall, recipe_version
                  FROM scheduled_runs
                  WHERE run_id = ?1 AND at < ?2
                  ORDER BY at DESC LIMIT ?3",
@@ -322,7 +324,7 @@ pub(crate) fn list_scheduled_runs(
         }
         None => {
             let mut stmt = conn.prepare(
-                "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall
+                "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall, recipe_version
                  FROM scheduled_runs
                  WHERE run_id = ?1
                  ORDER BY at DESC LIMIT ?2",
@@ -345,7 +347,7 @@ pub(crate) fn list_prior_ok_scheduled_runs(
     limit: u32,
 ) -> Result<Vec<ScheduledRun>, DaemonError> {
     let mut stmt = conn.prepare(
-        "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall
+        "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall, recipe_version
          FROM scheduled_runs
          WHERE run_id = ?1 AND at < ?2 AND outcome = 'ok'
          ORDER BY at DESC LIMIT ?3",
@@ -370,6 +372,7 @@ fn row_to_scheduled_run(
     let counts_json: String = r.get(6)?;
     let diagnostics: u32 = r.get(7)?;
     let stall: Option<String> = r.get(8)?;
+    let recipe_version_raw: Option<i64> = r.get(9)?;
 
     let trigger = match trigger_from_str(&trigger) {
         Some(t) => t,
@@ -391,6 +394,15 @@ fn row_to_scheduled_run(
         Ok(c) => c,
         Err(e) => return Ok(Err(DaemonError::Serde(e))),
     };
+    let recipe_version = match recipe_version_raw {
+        Some(v) if (0..=u32::MAX as i64).contains(&v) => Some(v as u32),
+        Some(v) => {
+            return Ok(Err(DaemonError::Corrupt {
+                detail: format!("recipe_version {v} out of u32 range for scheduled_run {id}"),
+            }));
+        }
+        None => None,
+    };
     Ok(Ok(ScheduledRun {
         id,
         run_id,
@@ -401,6 +413,7 @@ fn row_to_scheduled_run(
         counts,
         diagnostics,
         stall,
+        recipe_version,
     }))
 }
 

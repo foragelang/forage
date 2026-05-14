@@ -104,6 +104,7 @@ mod tests {
             counts: map,
             diagnostics: 0,
             stall: None,
+            recipe_version: Some(1),
         }
     }
 

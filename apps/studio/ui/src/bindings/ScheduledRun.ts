@@ -34,4 +34,14 @@ diagnostics: number,
  * report carries structured stall info; this is the
  * human-readable summary.
  */
-stall: string | null, };
+stall: string | null, 
+/**
+ * Which deployed version the engine actually executed for this
+ * row. `None` only for the no-deployment short-circuit failure
+ * (where `stall == Some("recipe not deployed")`) and for the
+ * synthetic cron-fail recorded before any version could be
+ * resolved. Every other row — including engine-side failures —
+ * carries the version the engine ran, so emit counts remain
+ * interpretable across deploys.
+ */
+recipe_version: number | null, };

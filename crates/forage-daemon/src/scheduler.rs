@@ -154,6 +154,10 @@ async fn record_synthetic_failure(
         counts: std::collections::BTreeMap::new(),
         diagnostics: 0,
         stall: Some(stall_message.to_string()),
+        // Synthetic cron-fail fires before the engine resolves any
+        // deployed version — the cron expression itself failed to
+        // parse, so we never got far enough to pick a version.
+        recipe_version: None,
     };
     {
         let mut conn = daemon

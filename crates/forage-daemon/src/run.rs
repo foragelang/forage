@@ -46,6 +46,12 @@ impl Daemon {
         let outcome = execute(self, &run, &scheduled_run_id, started_ms).await;
         let finished_ms = self.now_ms();
         let duration_s = ((finished_ms - started_ms).max(0) as f64) / 1000.0;
+        // `recipe_version` is `None` only when the engine never got the
+        // chance to run a deployed source (no `deployed_version` on the
+        // Run row). Every other arm — engine success, engine failure
+        // after a successful `load_deployed` — carries the version that
+        // was resolved, so per-version emit counts stay reconstructible
+        // after later deploys.
         let scheduled = match outcome {
             Ok(ok) => ScheduledRun {
                 id: scheduled_run_id,
@@ -57,6 +63,7 @@ impl Daemon {
                 counts: ok.counts,
                 diagnostics: ok.diagnostics,
                 stall: None,
+                recipe_version: Some(ok.version),
             },
             Err(failure) => ScheduledRun {
                 id: scheduled_run_id,
@@ -68,6 +75,7 @@ impl Daemon {
                 counts: std::collections::BTreeMap::new(),
                 diagnostics: failure.diagnostics,
                 stall: Some(failure.message),
+                recipe_version: failure.version,
             },
         };
 
@@ -120,11 +128,18 @@ impl Daemon {
 struct RunSuccess {
     counts: std::collections::BTreeMap<String, u32>,
     diagnostics: u32,
+    /// Deployed version the engine just executed. Always `Some` because
+    /// success implies `load_deployed` returned a record.
+    version: u32,
 }
 
 struct RunFailure {
     message: String,
     diagnostics: u32,
+    /// The version that was resolved before the failure happened, or
+    /// `None` if the failure happened before a version could be
+    /// resolved (the `run.deployed_version == None` short-circuit).
+    version: Option<u32>,
 }
 
 async fn execute(
@@ -137,6 +152,7 @@ async fn execute(
         return Err(RunFailure {
             message: "recipe not deployed".to_string(),
             diagnostics: 0,
+            version: None,
         });
     };
     let deployed = match daemon.load_deployed(&run.recipe_slug, version) {
@@ -145,6 +161,7 @@ async fn execute(
             return Err(RunFailure {
                 message: format!("load deployment v{version}: {e}"),
                 diagnostics: 0,
+                version: Some(version),
             });
         }
     };
@@ -154,6 +171,7 @@ async fn execute(
             return Err(RunFailure {
                 message: format!("parse deployed source: {e}"),
                 diagnostics: 0,
+                version: Some(version),
             });
         }
     };
@@ -180,6 +198,7 @@ async fn execute(
             return Err(RunFailure {
                 message: format!("open output store: {e}"),
                 diagnostics: 0,
+                version: Some(version),
             });
         }
     };
@@ -201,6 +220,7 @@ async fn execute(
                     return Err(RunFailure {
                         message: format!("http transport: {e}"),
                         diagnostics: 0,
+                        version: Some(version),
                     });
                 }
             };
@@ -211,6 +231,7 @@ async fn execute(
                 .map_err(|e| RunFailure {
                     message: format!("engine: {e}"),
                     diagnostics: 0,
+                    version: Some(version),
                 })
         }
         EngineKind::Browser => {
@@ -223,6 +244,7 @@ async fn execute(
                 return Err(RunFailure {
                     message: "browser engine requires a LiveBrowserDriver — none registered".into(),
                     diagnostics: 0,
+                    version: Some(version),
                 });
             };
             driver
@@ -231,6 +253,7 @@ async fn execute(
                 .map_err(|e| RunFailure {
                     message: format!("browser: {e}"),
                     diagnostics: 0,
+                    version: Some(version),
                 })
         }
     };
@@ -246,6 +269,7 @@ async fn execute(
         return Err(RunFailure {
             message: format!("write records: {e}"),
             diagnostics: 0,
+            version: Some(version),
         });
     }
 
@@ -256,6 +280,7 @@ async fn execute(
     Ok(RunSuccess {
         counts,
         diagnostics: 0,
+        version,
     })
 }
 
