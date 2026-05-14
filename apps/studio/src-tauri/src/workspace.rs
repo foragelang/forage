@@ -505,8 +505,8 @@ pub fn recents_path() -> PathBuf {
         return PathBuf::from(override_dir).join("recents.json");
     }
     dirs::data_dir()
-        .map(|d| d.join("Forage"))
-        .unwrap_or_else(|| PathBuf::from(".forage-data"))
+        .expect("dirs::data_dir() returned None on a supported platform")
+        .join("Forage")
         .join("recents.json")
 }
 
@@ -562,7 +562,7 @@ fn write_recents(list: &[RecentWorkspace]) -> io::Result<()> {
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     // Tempfile in the same dir so the rename stays on one filesystem.
-    let parent = path.parent().unwrap_or(Path::new("."));
+    let parent = path.parent().expect("recents path has parent");
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(&body)?;
     tmp.as_file().sync_all()?;
