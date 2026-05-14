@@ -53,3 +53,4 @@ tempfile     = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
+tracing-test = "0.2.6"

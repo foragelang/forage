@@ -1551,7 +1551,7 @@ pub async fn open_workspace(
     path: PathBuf,
 ) -> Result<WorkspaceInfo, String> {
     let _guard = state.workspace_switch.lock().await;
-    open_workspace_inner(&state, &app, path).await
+    open_workspace_inner(&*state, &app, path).await
 }
 
 /// Scaffold a new workspace at `path` (creates the directory if
@@ -1565,8 +1565,28 @@ pub async fn new_workspace(
     path: PathBuf,
 ) -> Result<WorkspaceInfo, String> {
     let _guard = state.workspace_switch.lock().await;
-    workspace::write_empty_manifest(&path).map_err(|e| e.to_string())?;
-    open_workspace_inner(&state, &app, path).await
+    new_workspace_inner(&*state, &app, path).await
+}
+
+/// Test-reachable core of `new_workspace`. The command body is just
+/// `lock + new_workspace_inner` so tests can assert the manifest-already-
+/// exists rejection through the same code path users hit, not via a
+/// helper one layer down.
+async fn new_workspace_inner(
+    state: &StudioState,
+    app: &AppHandle,
+    path: PathBuf,
+) -> Result<WorkspaceInfo, String> {
+    scaffold_new_workspace(&path)?;
+    open_workspace_inner(state, app, path).await
+}
+
+/// Scaffold a fresh workspace on disk so `open_workspace_inner` can
+/// take over. Pulled out so the `AlreadyExists` rejection — the
+/// `new_workspace` command's user-facing contract — is testable
+/// without a Tauri runtime.
+fn scaffold_new_workspace(path: &Path) -> Result<(), String> {
+    workspace::write_empty_manifest(path).map_err(|e| e.to_string())
 }
 
 /// Close the active workspace. Idempotent: a second close on an
@@ -1577,7 +1597,7 @@ pub async fn close_workspace(
     app: AppHandle,
 ) -> Result<(), String> {
     let _guard = state.workspace_switch.lock().await;
-    close_workspace_inner(&state, &app);
+    close_workspace_inner(&*state, Some(&app));
     Ok(())
 }
 
@@ -1593,23 +1613,15 @@ pub fn list_recent_workspaces() -> Result<Vec<RecentWorkspace>, String> {
 /// `state.workspace_switch`. Closes any prior workspace+daemon first
 /// so the swap is atomic from the frontend's perspective.
 async fn open_workspace_inner(
-    state: &State<'_, StudioState>,
+    state: &StudioState,
     app: &AppHandle,
     path: PathBuf,
 ) -> Result<WorkspaceInfo, String> {
     // Close the previous workspace first. If the user is switching,
     // the old daemon's scheduler stops before the new one starts.
-    close_workspace_inner(state, app);
+    close_workspace_inner(state, Some(app));
 
-    if !path.exists() {
-        return Err(format!("workspace path does not exist: {}", path.display()));
-    }
-    if !path.join("forage.toml").exists() {
-        return Err(format!(
-            "{} is not a workspace (missing forage.toml)",
-            path.display()
-        ));
-    }
+    validate_workspace_path(&path)?;
 
     let workspace = forage_core::workspace::load(&path)
         .map_err(|e| format!("load workspace at {}: {e}", path.display()))?;
@@ -1638,10 +1650,30 @@ async fn open_workspace_inner(
     Ok(info)
 }
 
+/// Path-side preconditions for `open_workspace`: the directory must
+/// exist and contain a `forage.toml`. Factored out so tests can hit
+/// the rejection branches without needing a `StudioState` or
+/// `AppHandle`.
+fn validate_workspace_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("workspace path does not exist: {}", path.display()));
+    }
+    if !path.join("forage.toml").exists() {
+        return Err(format!(
+            "{} is not a workspace (missing forage.toml)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// The transactional core of closing the active workspace. Caller must
 /// hold `state.workspace_switch`. Safe to call when no workspace is
-/// open — drops to a no-op.
-fn close_workspace_inner(state: &State<'_, StudioState>, app: &AppHandle) {
+/// open — drops to a no-op. `app` is `Option` so tests can drive the
+/// state-mutation path without a Tauri runtime; production callers
+/// always pass `Some(handle)` so the `forage:workspace-closed` event
+/// fires and the menu item updates.
+fn close_workspace_inner(state: &StudioState, app: Option<&AppHandle>) {
     // Tear down any in-flight run before the daemon shuts down — the
     // engine task would otherwise keep running against a closed
     // workspace.
@@ -1660,11 +1692,13 @@ fn close_workspace_inner(state: &State<'_, StudioState>, app: &AppHandle) {
 
     if was_open {
         set_close_workspace_enabled(state, false);
-        let _ = app.emit("forage:workspace-closed", ());
+        if let Some(app) = app {
+            let _ = app.emit("forage:workspace-closed", ());
+        }
     }
 }
 
-fn set_close_workspace_enabled(state: &State<'_, StudioState>, enabled: bool) {
+fn set_close_workspace_enabled(state: &StudioState, enabled: bool) {
     if let Some(item) = state
         .menu_close_workspace
         .lock()
@@ -1922,5 +1956,54 @@ for $i in $list.items[*] {
             "declarations file should validate clean: {outcome:?}"
         );
         assert!(outcome.diagnostics.is_empty());
+    }
+
+    use super::{
+        StudioState, close_workspace_inner, scaffold_new_workspace, validate_workspace_path,
+    };
+
+    /// `open_workspace` must refuse a directory that isn't a workspace.
+    /// The check is the first thing `open_workspace_inner` does after
+    /// closing any prior session; surfacing it via the extracted helper
+    /// keeps the assertion on the production rejection branch.
+    #[test]
+    fn open_workspace_rejects_dir_without_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = validate_workspace_path(tmp.path())
+            .expect_err("dir without forage.toml must be rejected");
+        assert!(
+            err.contains("missing forage.toml"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `close_workspace` is idempotent: a second close on an
+    /// already-empty state is a no-op, not a panic. The frontend can
+    /// fire ⌘W from a Welcome screen without special-casing it.
+    #[test]
+    fn close_workspace_idempotent() {
+        let state = StudioState::new_empty();
+        // No prior session installed — both calls hit the `was_open ==
+        // false` branch and return without touching the AppHandle.
+        close_workspace_inner(&state, None);
+        close_workspace_inner(&state, None);
+        assert!(state.session.load().is_none());
+    }
+
+    /// `new_workspace` must refuse a directory that already has a
+    /// `forage.toml` — the user should pick Open instead. Test goes
+    /// through `scaffold_new_workspace` so the assertion sits on the
+    /// `String` error the command surfaces to the frontend, not the
+    /// underlying `io::Error`.
+    #[test]
+    fn new_workspace_rejects_dir_with_existing_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("forage.toml"), "").unwrap();
+        let err = scaffold_new_workspace(tmp.path())
+            .expect_err("dir with existing manifest must be rejected");
+        assert!(
+            err.contains("already has a forage.toml"),
+            "unexpected error: {err}"
+        );
     }
 }

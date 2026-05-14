@@ -951,14 +951,18 @@ mod tests {
         });
     }
 
+    #[tracing_test::traced_test]
     #[test]
-    fn read_recents_on_corrupt_json_returns_empty() {
+    fn read_recents_on_corrupt_json_logs_and_returns_empty() {
         with_data_dir(|| {
             let path = recents_path();
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "not json {{{").unwrap();
-            // Should not panic; logs at warn.
             assert!(read_recents().is_empty());
+            assert!(
+                logs_contain("recents sidecar is not valid JSON"),
+                "expected warn log for corrupt JSON; subscriber saw nothing"
+            );
         });
     }
 
@@ -1038,11 +1042,4 @@ mod tests {
         assert_eq!(derive_workspace_name(&ws), "my-recipes");
     }
 
-    #[test]
-    fn new_workspace_rejects_dir_with_existing_manifest() {
-        let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("forage.toml"), "").unwrap();
-        let err = write_empty_manifest(tmp.path()).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-    }
 }
