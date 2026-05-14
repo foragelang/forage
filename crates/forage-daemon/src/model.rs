@@ -42,6 +42,13 @@ pub struct Run {
     /// `None` for `Cadence::Manual`.
     #[ts(type = "number | null")]
     pub next_run: Option<i64>,
+    /// Pointer to the deployed-recipe version the scheduler should
+    /// execute. `None` until the slug has been deployed at least once;
+    /// scheduled fires against a `None` pointer record a clean failure
+    /// rather than crashing, so the user can configure cadence before
+    /// the first deploy.
+    #[ts(type = "number | null")]
+    pub deployed_version: Option<u32>,
 }
 
 /// How often the daemon should fire a `Run`.
@@ -149,6 +156,19 @@ pub struct RunConfig {
     #[ts(type = "string")]
     pub output: PathBuf,
     pub enabled: bool,
+}
+
+/// Metadata for one frozen deployed version of a recipe. The source
+/// and catalog live on disk under `<daemon_dir>/deployments/<slug>/v<n>/`;
+/// this is the row recorded in the daemon DB and the wire shape Studio
+/// renders in its recipe-status surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DeployedVersion {
+    pub slug: String,
+    pub version: u32,
+    #[ts(type = "number")]
+    pub deployed_at: i64,
 }
 
 /// Daemon process status, surfaced to the Studio footer.

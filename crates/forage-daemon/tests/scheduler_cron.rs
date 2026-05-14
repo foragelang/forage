@@ -29,6 +29,7 @@ fn cron_top_of_each_hour_parses_and_computes_next_fire() {
         output: std::path::PathBuf::from("/tmp/out.sqlite"),
         health: Health::Unknown,
         next_run: None,
+        deployed_version: None,
     };
 
     // Anchor `now` deterministically at 2030-01-01 03:17:23 UTC; the

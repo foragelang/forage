@@ -1,13 +1,15 @@
-//! Daemon lifecycle: open the daemon DB, configure a Run via slug,
-//! trigger it manually against a recorded transport, then verify the
-//! ScheduledRun was persisted and the Run's health is `Ok`.
+//! Daemon lifecycle: open the daemon DB, deploy a recipe, configure a
+//! Run via slug, trigger it manually against a recorded transport,
+//! then verify the ScheduledRun was persisted and the Run's health is
+//! `Ok`. The daemon only executes deployed versions, so the deploy
+//! step is part of every meaningful integration test.
 
 use std::path::Path;
 
 use forage_daemon::{Cadence, Daemon, Health, Outcome, RunConfig, Trigger};
 
 mod common;
-use common::init_workspace;
+use common::{deploy_disk_recipe, init_workspace};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn open_configure_trigger_persist() {
@@ -34,6 +36,12 @@ async fn open_configure_trigger_persist() {
     let run = daemon.configure_run(slug, cfg).expect("configure_run");
     assert_eq!(run.recipe_slug, slug);
     assert_eq!(run.health, Health::Unknown);
+    assert!(
+        run.deployed_version.is_none(),
+        "configure_run without a prior deploy should leave deployed_version unset"
+    );
+
+    deploy_disk_recipe(&daemon, &ws_root, slug);
 
     // Trigger; expect Ok outcome with two emitted records.
     let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");

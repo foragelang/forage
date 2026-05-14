@@ -14,6 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{DeclarationsFile, Recipe, RecipeEnum, RecipeType, WorkspaceFile};
@@ -75,6 +76,35 @@ pub enum WorkspaceFileKind {
 pub struct TypeCatalog {
     pub types: HashMap<String, RecipeType>,
     pub enums: HashMap<String, RecipeEnum>,
+}
+
+/// Wire shape of a `TypeCatalog`. `TypeCatalog` itself isn't `Serialize`
+/// because its component types carry transient state we'd rather not
+/// stabilize on the wire; this struct is the deployable snapshot the
+/// daemon stores alongside a deployed recipe's source so execution
+/// doesn't have to re-resolve declarations from disk.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SerializableCatalog {
+    pub types: HashMap<String, RecipeType>,
+    pub enums: HashMap<String, RecipeEnum>,
+}
+
+impl From<TypeCatalog> for SerializableCatalog {
+    fn from(cat: TypeCatalog) -> Self {
+        Self {
+            types: cat.types,
+            enums: cat.enums,
+        }
+    }
+}
+
+impl From<SerializableCatalog> for TypeCatalog {
+    fn from(cat: SerializableCatalog) -> Self {
+        Self {
+            types: cat.types,
+            enums: cat.enums,
+        }
+    }
 }
 
 impl TypeCatalog {
@@ -649,5 +679,41 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// Round-trip a non-trivial catalog through `SerializableCatalog`
+    /// and back. The daemon stores the wire shape on disk per deployed
+    /// version, so any field that gets dropped here silently loses
+    /// validation context at run time.
+    #[test]
+    fn serializable_catalog_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), "");
+        write(
+            &root.join("cannabis.forage"),
+            "type Dispensary { id: String, name: String? }\n\
+             type Product { id: String, terpenes: String? }\n\
+             enum MenuType { RECREATIONAL, MEDICAL }\n",
+        );
+        let recipe_path = root.join("rec").join("recipe.forage");
+        write(
+            &recipe_path,
+            "recipe \"rec\"\nengine http\n\
+             type Variant { id: String, weight: Double }\n\
+             enum Status { ACTIVE, RETIRED }\n",
+        );
+        let ws = load(root).unwrap();
+        let original = ws.catalog_from_disk(&recipe_path).unwrap();
+        assert!(!original.types.is_empty());
+        assert!(!original.enums.is_empty());
+
+        let wire = SerializableCatalog::from(original.clone());
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: SerializableCatalog = serde_json::from_str(&json).unwrap();
+        let back = TypeCatalog::from(decoded);
+
+        assert_eq!(back.types, original.types);
+        assert_eq!(back.enums, original.enums);
     }
 }

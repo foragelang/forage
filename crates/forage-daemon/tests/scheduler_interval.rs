@@ -17,7 +17,7 @@ use forage_daemon::{
     Cadence, Daemon, RunConfig, TimeUnit, advance_next_run, interval_ms, next_fire_for,
 };
 mod common;
-use common::{StubClock, init_workspace};
+use common::{StubClock, deploy_disk_recipe, init_workspace};
 
 #[test]
 fn next_fire_returns_stored_next_run() {
@@ -92,6 +92,7 @@ async fn interval_run_fires_when_clock_advances() {
 
     let clock = StubClock::new(0);
     let daemon = Daemon::open_with_clock(ws_root.clone(), clock.clone()).expect("open daemon");
+    deploy_disk_recipe(&daemon, &ws_root, slug);
 
     let output = ws_root.join(".forage").join("data").join("tick.sqlite");
     let cfg = RunConfig {
@@ -104,6 +105,7 @@ async fn interval_run_fires_when_clock_advances() {
     };
     let run = daemon.configure_run(slug, cfg).expect("configure_run");
     assert_eq!(run.next_run, Some(60_000));
+    assert_eq!(run.deployed_version, Some(1));
 
     daemon.start_scheduler();
     // Advance the clock past the first tick. The stub clock's
@@ -139,6 +141,7 @@ fn build_run(slug: &str, cadence: Cadence, next_run: Option<i64>) -> forage_daem
         output: std::path::PathBuf::from("/tmp/out.sqlite"),
         health: forage_daemon::Health::Unknown,
         next_run,
+        deployed_version: None,
     }
 }
 

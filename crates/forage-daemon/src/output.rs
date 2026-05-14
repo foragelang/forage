@@ -24,7 +24,7 @@ use forage_core::ast::{
     BrowserConfig, CaptureRule, DocumentCaptureRule, Emission, ExtractionExpr, FieldType,
     JSONValue, Recipe, RecipeType, Statement,
 };
-use forage_core::workspace::TypeCatalog;
+use forage_core::TypeCatalog;
 use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::error::RunError;

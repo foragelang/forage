@@ -209,14 +209,6 @@ pub fn read_secrets_from_env(recipe: &forage_core::Recipe) -> indexmap::IndexMap
     out
 }
 
-#[allow(dead_code)]
-pub fn ensure_path<P: AsRef<Path>>(p: P) -> std::io::Result<()> {
-    if let Some(parent) = p.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------
 // Workspace info + file tree wire types.
 // ---------------------------------------------------------------------
@@ -297,6 +289,52 @@ pub enum FileKind {
     Snapshot,
     Manifest,
     Other,
+}
+
+/// Per-slug status combining the Studio's on-disk view (drafts) with
+/// the daemon's view (deployed versions). The frontend renders these
+/// side by side so the user can see "edited but not deployed" or
+/// "deployed but the draft is missing" without joining the two views
+/// itself.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct RecipeStatus {
+    pub slug: String,
+    pub draft: DraftState,
+    pub deployed: DeployedState,
+}
+
+/// Whether a slug has a draft on disk and whether that draft parses.
+/// `Missing` covers the deployed-but-no-draft case: the daemon
+/// remembers a slug we no longer have a source file for.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DraftState {
+    Valid {
+        #[ts(type = "string")]
+        path: PathBuf,
+    },
+    Broken {
+        #[ts(type = "string")]
+        path: PathBuf,
+        error: String,
+    },
+    Missing,
+}
+
+/// Whether a slug has any deployed version in the daemon. Carries the
+/// latest version's metadata when present.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeployedState {
+    None,
+    Deployed {
+        version: u32,
+        #[ts(type = "number")]
+        deployed_at: i64,
+    },
 }
 
 /// Walk `root` recursively and return a single `Folder` node with

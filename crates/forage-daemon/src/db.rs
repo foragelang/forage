@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::DaemonError;
-use crate::model::{Cadence, Health, Outcome, Run, ScheduledRun, Trigger};
+use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun, Trigger};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Apply pending migrations against `conn`. Idempotent: the `_meta`
 /// row gates each step, so running this against a fully-current DB is
@@ -96,6 +96,27 @@ fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
         )?;
     }
 
+    // v2: the daemon becomes the source of truth for deployed
+    // recipe versions. `deployed_versions` tracks one row per
+    // `(slug, version)`; `runs.deployed_version` points at the
+    // version the scheduler should execute. The pointer is `NULL`
+    // until a slug has been deployed at least once — pre-deploy
+    // scheduled fires record a clean "no deployment" failure.
+    if current < 2 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE deployed_versions (
+                slug         TEXT NOT NULL,
+                version      INTEGER NOT NULL,
+                deployed_at  INTEGER NOT NULL,
+                PRIMARY KEY (slug, version)
+            );
+
+            ALTER TABLE runs ADD COLUMN deployed_version INTEGER;
+            "#,
+        )?;
+    }
+
     if current < SCHEMA_VERSION {
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?1)",
@@ -111,8 +132,8 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
     let cadence_json = serde_json::to_string(&run.cadence)?;
     let health = health_to_str(run.health);
     conn.execute(
-        "INSERT INTO runs(id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO runs(id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             run.id,
             run.recipe_slug,
@@ -122,6 +143,7 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             run.output.to_string_lossy(),
             health,
             run.next_run,
+            run.deployed_version,
         ],
     )?;
     Ok(())
@@ -132,13 +154,14 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
     let health = health_to_str(run.health);
     let changed = conn.execute(
         "UPDATE runs SET
-            recipe_slug    = ?2,
-            workspace_root = ?3,
-            enabled        = ?4,
-            cadence_json   = ?5,
-            output_path    = ?6,
-            health         = ?7,
-            next_run       = ?8
+            recipe_slug      = ?2,
+            workspace_root   = ?3,
+            enabled          = ?4,
+            cadence_json     = ?5,
+            output_path      = ?6,
+            health           = ?7,
+            next_run         = ?8,
+            deployed_version = ?9
          WHERE id = ?1",
         params![
             run.id,
@@ -149,6 +172,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             run.output.to_string_lossy(),
             health,
             run.next_run,
+            run.deployed_version,
         ],
     )?;
     if changed == 0 {
@@ -169,7 +193,7 @@ pub(crate) fn delete_run(conn: &Connection, run_id: &str) -> Result<(), DaemonEr
 
 pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run
+        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
          FROM runs WHERE id = ?1",
         params![run_id],
         row_to_run,
@@ -181,7 +205,7 @@ pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Ru
 
 pub(crate) fn get_run_by_slug(conn: &Connection, slug: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run
+        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
          FROM runs WHERE recipe_slug = ?1",
         params![slug],
         row_to_run,
@@ -193,7 +217,7 @@ pub(crate) fn get_run_by_slug(conn: &Connection, slug: &str) -> Result<Option<Ru
 
 pub(crate) fn list_runs(conn: &Connection) -> Result<Vec<Run>, DaemonError> {
     let mut stmt = conn.prepare(
-        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run
+        "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
          FROM runs ORDER BY recipe_slug ASC",
     )?;
     let mut out = Vec::new();
@@ -213,6 +237,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
     let output_path: String = r.get(5)?;
     let health: String = r.get(6)?;
     let next_run: Option<i64> = r.get(7)?;
+    let deployed_version: Option<i64> = r.get(8)?;
 
     let cadence: Cadence = match serde_json::from_str(&cadence_json) {
         Ok(c) => c,
@@ -226,6 +251,15 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
             }));
         }
     };
+    let deployed_version = match deployed_version {
+        Some(v) if v >= 0 && v <= u32::MAX as i64 => Some(v as u32),
+        Some(v) => {
+            return Ok(Err(DaemonError::Corrupt {
+                detail: format!("deployed_version {v} out of u32 range for run {id}"),
+            }));
+        }
+        None => None,
+    };
 
     Ok(Ok(Run {
         id,
@@ -236,6 +270,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         output: PathBuf::from(output_path),
         health,
         next_run,
+        deployed_version,
     }))
 }
 
@@ -366,6 +401,94 @@ fn row_to_scheduled_run(
         counts,
         diagnostics,
         stall,
+    }))
+}
+
+// --- deployed_versions ---------------------------------------------------
+
+pub(crate) fn insert_deployed_version(
+    conn: &Connection,
+    dv: &DeployedVersion,
+) -> Result<(), DaemonError> {
+    conn.execute(
+        "INSERT INTO deployed_versions(slug, version, deployed_at)
+         VALUES (?1, ?2, ?3)",
+        params![dv.slug, dv.version, dv.deployed_at],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn list_deployed_versions(
+    conn: &Connection,
+    slug: &str,
+) -> Result<Vec<DeployedVersion>, DaemonError> {
+    let mut stmt = conn.prepare(
+        "SELECT slug, version, deployed_at FROM deployed_versions
+         WHERE slug = ?1 ORDER BY version DESC",
+    )?;
+    let rows = stmt.query_map(params![slug], row_to_deployed_version)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row??);
+    }
+    Ok(out)
+}
+
+pub(crate) fn latest_deployed_version(
+    conn: &Connection,
+    slug: &str,
+) -> Result<Option<DeployedVersion>, DaemonError> {
+    conn.query_row(
+        "SELECT slug, version, deployed_at FROM deployed_versions
+         WHERE slug = ?1 ORDER BY version DESC LIMIT 1",
+        params![slug],
+        row_to_deployed_version,
+    )
+    .optional()
+    .map_err(DaemonError::Sqlite)?
+    .transpose()
+}
+
+/// One row per slug: the latest deployed version. Used by Studio's
+/// recipe-status surface so it doesn't have to fan out per-slug.
+pub(crate) fn list_latest_per_slug(
+    conn: &Connection,
+) -> Result<Vec<DeployedVersion>, DaemonError> {
+    let mut stmt = conn.prepare(
+        "SELECT dv.slug, dv.version, dv.deployed_at
+         FROM deployed_versions dv
+         JOIN (
+             SELECT slug, MAX(version) AS max_version
+             FROM deployed_versions
+             GROUP BY slug
+         ) latest ON dv.slug = latest.slug AND dv.version = latest.max_version
+         ORDER BY dv.slug ASC",
+    )?;
+    let rows = stmt.query_map([], row_to_deployed_version)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row??);
+    }
+    Ok(out)
+}
+
+fn row_to_deployed_version(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Result<DeployedVersion, DaemonError>> {
+    let slug: String = r.get(0)?;
+    let version_raw: i64 = r.get(1)?;
+    let deployed_at: i64 = r.get(2)?;
+    let version = if (0..=u32::MAX as i64).contains(&version_raw) {
+        version_raw as u32
+    } else {
+        return Ok(Err(DaemonError::Corrupt {
+            detail: format!("version {version_raw} out of u32 range for slug {slug}"),
+        }));
+    };
+    Ok(Ok(DeployedVersion {
+        slug,
+        version,
+        deployed_at,
     }))
 }
 

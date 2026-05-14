@@ -12,7 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use forage_daemon::Clock;
+use forage_core::SerializableCatalog;
+use forage_daemon::{Clock, Daemon, DeployedVersion};
 
 pub fn init_workspace(ws_root: &Path, slug: &str, recipe_source: &str) {
     std::fs::create_dir_all(ws_root).unwrap();
@@ -20,6 +21,23 @@ pub fn init_workspace(ws_root: &Path, slug: &str, recipe_source: &str) {
     let recipe_dir = ws_root.join(slug);
     std::fs::create_dir_all(&recipe_dir).unwrap();
     std::fs::write(recipe_dir.join("recipe.forage"), recipe_source).unwrap();
+}
+
+/// Read the on-disk source under `ws_root/<slug>/recipe.forage`, build
+/// a catalog the same way Studio does (the workspace's own
+/// declarations + recipe-local types), and deploy via the daemon.
+/// Returns the resulting `DeployedVersion` so tests can pin the
+/// expected version number.
+pub fn deploy_disk_recipe(daemon: &Daemon, ws_root: &Path, slug: &str) -> DeployedVersion {
+    let recipe_path = ws_root.join(slug).join("recipe.forage");
+    let source = std::fs::read_to_string(&recipe_path).expect("read recipe source");
+    let recipe = forage_core::parse(&source).expect("parse recipe");
+    let workspace = forage_core::load(ws_root).expect("load workspace");
+    let catalog = workspace
+        .catalog(&recipe, |p| std::fs::read_to_string(p))
+        .expect("build catalog");
+    let wire = SerializableCatalog::from(catalog);
+    daemon.deploy(slug, source, wire).expect("deploy")
 }
 
 pub fn set_secret(name: &str, value: &str) {
