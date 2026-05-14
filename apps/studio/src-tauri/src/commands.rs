@@ -251,6 +251,7 @@ pub async fn run_recipe(
     slug: String,
     replay: bool,
 ) -> Result<RunOutcome, String> {
+    tracing::info!(slug = %slug, replay, "run_recipe");
     let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
     let recipe = match parse(&source) {
         Ok(r) => r,

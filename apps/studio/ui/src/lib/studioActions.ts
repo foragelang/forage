@@ -38,9 +38,16 @@ export async function runActive(replay: boolean) {
     // a file switch and skip the writes — running state for the
     // original file would otherwise corrupt the new file's view.
     const { activeFilePath: path, running } = useStudio.getState();
-    if (!path || running) return;
+    if (!path) {
+        console.warn("runActive: no active file");
+        return;
+    }
+    if (running) return;
     const slug = slugOf(path);
-    if (!slug) return;
+    if (!slug) {
+        console.warn(`runActive: not a recipe path: ${path}`);
+        return;
+    }
     await saveActive();
     // Bail if the save's await let a file switch land — the slug
     // we're about to run no longer matches the user's active buffer.
