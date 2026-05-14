@@ -214,8 +214,11 @@ export async function publishVersion(
         return jsonError(401, 'unauthorized', 'missing or invalid bearer token', {}, request)
     }
     // Caller may only publish under their own author namespace (or be admin).
+    // Both `caller.login` and `author` are guaranteed lowercase here —
+    // `identifyCaller` normalizes the JWT subject, and `author` already
+    // passed the lowercase-only `SEGMENT_RE` in the router.
     const callerLogin = caller.kind === 'user' ? caller.login : null
-    if (callerLogin !== null && callerLogin.toLowerCase() !== author.toLowerCase()) {
+    if (callerLogin !== null && callerLogin !== author) {
         return jsonError(
             403,
             'forbidden',

@@ -6,6 +6,7 @@ import {
     listVersions,
     getVersionArtifact,
     publishVersion,
+    validateSegment,
     validateSegments,
 } from './routes/packages'
 import { addStar, removeStar, getStars } from './routes/stars'
@@ -101,7 +102,13 @@ async function route(
         if (request.method !== 'GET') {
             return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
         }
-        const author = decodeURIComponent(userMatch[1])
+        // GitHub logins are case-insensitive and the rest of the
+        // system keys users by the lowercase form. Canonicalize at the
+        // boundary so handlers can rely on the invariant.
+        const author = decodeURIComponent(userMatch[1]).toLowerCase()
+        if (!validateSegment(author)) {
+            return jsonError(400, 'bad_slug', `invalid author: ${author}`, {}, request)
+        }
         const sub = userMatch[2] ?? null
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
         if (limit !== null) return limit

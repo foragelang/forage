@@ -31,7 +31,8 @@ export async function getProfile(
     env: Env,
     author: string,
 ): Promise<Response> {
-    const userRaw = await env.METADATA.get(`user:${author.toLowerCase()}`)
+    // `author` is lowercased + segment-validated by the router.
+    const userRaw = await env.METADATA.get(`user:${author}`)
 
     // We synthesize a profile even when the OAuth record is missing
     // (admin / legacy publishes). The shape stays consistent for

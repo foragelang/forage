@@ -103,6 +103,48 @@ describe('forks', () => {
         expect(collision.body.error.code).toBe('already_exists')
     })
 
+    it('normalizes mixed-case caller login when stamping the fork owner', async () => {
+        const a = await userToken('alice')
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/zen-leaf/versions',
+                a,
+                publishRequest(),
+            ),
+        )
+        // Mint a token for `John-Doe`. GitHub returns logins with
+        // their preserved case, but the system stores everything
+        // under the lowercase form.
+        const mixed = await userToken('John-Doe')
+        const forked = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/zen-leaf/fork',
+                mixed,
+                forkRequest(),
+            ),
+        )
+        expect(forked.status).toBe(201)
+        expect(forked.body.author).toBe('john-doe')
+
+        // Direct lookup at the lowercase URL must hit the stored
+        // record — the regression this guards against landed at
+        // pkg:John-Doe:zen-leaf and was unreachable.
+        const direct = await fetchJson(
+            get('https://hub/v1/packages/john-doe/zen-leaf'),
+        )
+        expect(direct.status).toBe(200)
+        expect(direct.body.author).toBe('john-doe')
+        expect(direct.body.owner_login).toBe('john-doe')
+
+        // Profile lookup also normalizes the URL segment so a request
+        // at `/v1/users/John-Doe` resolves to the same data as
+        // `/v1/users/john-doe`.
+        const profile = await fetchJson(get('https://hub/v1/users/John-Doe'))
+        expect(profile.status).toBe(200)
+        expect(profile.body.login).toBe('john-doe')
+        expect(profile.body.package_count).toBe(1)
+    })
+
     it('does not auto-track lineage on subsequent publishes against the fork', async () => {
         const a = await userToken('alice')
         await fetchJson(

@@ -4,7 +4,11 @@ import { verifyAccessToken } from './jwt'
 /// Caller identity resolved from the request's `Authorization` header
 /// (or a `forage_at` cookie, for the web IDE). Values:
 ///
-///   - `{ kind: 'user', login }` — verified JWT issued by /v1/oauth/*
+///   - `{ kind: 'user', login }` — verified JWT issued by /v1/oauth/*.
+///     `login` is always lowercase (GitHub logins are case-insensitive
+///     and the rest of the system keys everything by the lowercase
+///     form). The normalization happens here at the verification
+///     boundary so every caller downstream can rely on the invariant.
 ///   - `{ kind: 'admin' }`       — legacy HUB_PUBLISH_TOKEN bearer
 ///   - `null`                    — unauthenticated
 export type Caller =
@@ -23,7 +27,7 @@ export async function identifyCaller(request: Request, env: Env): Promise<Caller
         if (scheme?.toLowerCase() === 'bearer' && token) {
             if (env.JWT_SIGNING_KEY) {
                 const claims = await verifyAccessToken(token, env.JWT_SIGNING_KEY)
-                if (claims) return { kind: 'user', login: claims.sub }
+                if (claims) return { kind: 'user', login: claims.sub.toLowerCase() }
             }
             // 2) Legacy admin token — same Authorization scheme.
             if (env.HUB_PUBLISH_TOKEN && timingSafeEqual(token, env.HUB_PUBLISH_TOKEN)) {
@@ -37,7 +41,7 @@ export async function identifyCaller(request: Request, env: Env): Promise<Caller
         const match = /(?:^|;\s*)forage_at=([^;]+)/.exec(cookieHeader)
         if (match) {
             const claims = await verifyAccessToken(match[1], env.JWT_SIGNING_KEY)
-            if (claims) return { kind: 'user', login: claims.sub }
+            if (claims) return { kind: 'user', login: claims.sub.toLowerCase() }
         }
     }
     return null
@@ -46,13 +50,15 @@ export async function identifyCaller(request: Request, env: Env): Promise<Caller
 /// True when the caller may write to a recipe owned by `ownerLogin`.
 /// Admin can write to anything; the original owner can write to theirs;
 /// `undefined` owner (legacy / pre-M11 recipes) is admin-owned by
-/// convention.
+/// convention. Both sides of the comparison are lowercase by contract
+/// — `caller.login` from `identifyCaller`, `ownerLogin` from the KV
+/// `pkg:` record (which is also keyed lowercase).
 export function callerCanWrite(caller: Caller, ownerLogin: string | undefined): boolean {
     if (caller === null) return false
     if (caller.kind === 'admin') return true
     const owner = ownerLogin ?? 'admin'
     if (owner === 'admin') return false  // only admin may rewrite legacy entries
-    return caller.kind === 'user' && caller.login.toLowerCase() === owner.toLowerCase()
+    return caller.kind === 'user' && caller.login === owner
 }
 
 /// Back-compat: existing code calls `isAuthorized(...)` for the publish
