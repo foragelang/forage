@@ -1,5 +1,5 @@
 {
-    "description": "Shared test-vector expectations for the Forage parser+validator. Both the Swift implementation and the TypeScript port must produce results consistent with these descriptors; if they diverge, drift has set in. The shape is deliberately structural rather than literal AST, so both implementations can encode the same recipe with their own conventions.",
+    "description": "Shared test-vector expectations for the Forage parser+validator+evaluator. Both the Rust engine and the TypeScript port must produce results consistent with these descriptors; if they diverge, drift has set in. Structural fields (`summary`, `types`, etc.) cover parsing; the optional `runSnapshot` block drives end-to-end evaluation against `inputs` and `httpFixtures` and pins the emitted `records`.",
     "recipes": [
         {
             "file": "01-minimal.forage",
@@ -168,7 +168,22 @@
                 { "name": "Variant", "fieldNames": ["externalId", "label"], "requiredFieldCount": 2 }
             ],
             "functionCount": 2,
-            "validation": { "errorCount": 0, "warningCount": 0 }
+            "validation": { "errorCount": 0, "warningCount": 0 },
+            "runSnapshot": {
+                "inputs": { "baseUrl": "https://x.test" },
+                "httpFixtures": [
+                    {
+                        "url": "https://x.test/variants",
+                        "method": "GET",
+                        "status": 200,
+                        "body": "{\"items\":[{\"id\":\"v1\",\"label\":\"calm\"},{\"id\":\"v2\",\"label\":\"vivid\"}]}"
+                    }
+                ],
+                "records": [
+                    { "typeName": "Variant", "fields": { "externalId": "v1", "label": "CALM" } },
+                    { "typeName": "Variant", "fields": { "externalId": "v2", "label": "VIVID" } }
+                ]
+            }
         }
     ]
 }

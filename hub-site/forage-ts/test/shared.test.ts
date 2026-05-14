@@ -1,7 +1,9 @@
 // Drift-detection: parses the shared `.forage` files and asserts the same
-// structural summary as the Swift `SharedRecipesTests`. Both implementations
-// load `tests/shared-recipes/expected.json`; if a parser/validator change in
-// one drifts from the other, one of these tests fails first.
+// structural summary as the Rust `shared_recipes` harness. Both
+// implementations load `tests/shared-recipes/expected.json`; if a
+// parser/validator change in one drifts from the other, one of these
+// tests fails first. The optional `runSnapshot` block also drives a
+// real run through the TS runner so eval-side drift gets caught too.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -9,6 +11,8 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Parser } from '../src/parser.js'
 import { validate } from '../src/validator.js'
+import { run } from '../src/runner.js'
+import type { FetchLike } from '../src/runner.js'
 import type { Recipe, Statement } from '../src/ast.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -30,6 +34,25 @@ interface ExpectedRecipe {
     authSessionVariant?: string
     functionCount?: number
     validation: ExpectedValidation
+    runSnapshot?: RunSnapshot
+}
+
+interface RunSnapshot {
+    inputs?: Record<string, unknown>
+    httpFixtures?: HttpFixture[]
+    records: ExpectedRecord[]
+}
+
+interface HttpFixture {
+    url: string
+    method: string
+    status: number
+    body: string
+}
+
+interface ExpectedRecord {
+    typeName: string
+    fields: Record<string, unknown>
 }
 
 interface Summary {
@@ -69,6 +92,18 @@ const expectedFile: ExpectedFile = JSON.parse(
 
 describe('shared recipes', () => {
     for (const rec of expectedFile.recipes) {
+        if (rec.runSnapshot) {
+            it(`runs ${rec.file} to expected records`, async () => {
+                const source = readFileSync(resolve(SHARED_DIR, rec.file), 'utf8')
+                const recipe = Parser.parse(source)
+                const snapshot = rec.runSnapshot!
+                const fetchImpl = makeFetch(snapshot.httpFixtures ?? [])
+                const result = await run(recipe, snapshot.inputs ?? {}, { fetch: fetchImpl })
+                expect(result.diagnostic.stallReason, JSON.stringify(result.diagnostic)).toBe('completed')
+                expect(result.records).toEqual(snapshot.records)
+            })
+        }
+
         it(`parses+validates ${rec.file} consistently`, () => {
             const source = readFileSync(resolve(SHARED_DIR, rec.file), 'utf8')
 
@@ -156,6 +191,43 @@ describe('shared recipes', () => {
         })
     }
 })
+
+/// Build a deterministic `fetch` that matches request URL against the
+/// declared fixtures (exact match first, then path+sorted-query to mirror
+/// `forage-http::transport::url_matches`). Falls back to 404 so a missing
+/// fixture surfaces as a real failure rather than a hung test.
+function makeFetch(fixtures: HttpFixture[]): FetchLike {
+    return async (url: string, init: RequestInit) => {
+        const method = (init.method ?? 'GET').toUpperCase()
+        const match = fixtures.find(f =>
+            f.method.toUpperCase() === method && urlMatches(f.url, url),
+        )
+        if (!match) {
+            return new Response(`no fixture for ${method} ${url}`, { status: 404 })
+        }
+        return new Response(match.body, { status: match.status })
+    }
+}
+
+function urlMatches(fixtureUrl: string, reqUrl: string): boolean {
+    if (fixtureUrl === reqUrl) return true
+    return stripOrigin(fixtureUrl) === stripOrigin(reqUrl)
+}
+
+function stripOrigin(u: string): string {
+    const qIdx = u.indexOf('?')
+    let path = qIdx === -1 ? u : u.slice(0, qIdx)
+    const query = qIdx === -1 ? null : u.slice(qIdx + 1)
+    const slashIdx = path.indexOf('//')
+    if (slashIdx !== -1) {
+        const rest = path.slice(slashIdx + 2)
+        const next = rest.indexOf('/')
+        path = next === -1 ? rest : rest.slice(next)
+    }
+    if (query === null) return path
+    const parts = query.split('&').sort()
+    return `${path}?${parts.join('&')}`
+}
 
 function collectStepNames(stmts: Statement[]): string[] {
     const names: string[] = []
