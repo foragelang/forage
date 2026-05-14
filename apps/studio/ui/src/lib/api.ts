@@ -23,6 +23,9 @@ import type { Outcome } from "../bindings/Outcome";
 import type { PausePayload } from "../bindings/PausePayload";
 import type { RecipeRecord } from "../bindings/RecipeRecord";
 import type { ProgressUnit } from "../bindings/ProgressUnit";
+import type { PublishError } from "../bindings/PublishError";
+import type { PublishOutcome } from "../bindings/PublishOutcome";
+import type { PublishPreview } from "../bindings/PublishPreview";
 import type { RecentWorkspace } from "../bindings/RecentWorkspace";
 import type { RecipeOutline } from "../bindings/RecipeOutline";
 import type { ResumeAction } from "../bindings/ResumeAction";
@@ -34,6 +37,7 @@ import type { ScheduledRun } from "../bindings/ScheduledRun";
 import type { Snapshot } from "../bindings/Snapshot";
 import type { StepLocation } from "../bindings/StepLocation";
 import type { StepPause } from "../bindings/StepPause";
+import type { SyncOutcomeWire } from "../bindings/SyncOutcomeWire";
 import type { TimeUnit } from "../bindings/TimeUnit";
 import type { Trigger } from "../bindings/Trigger";
 import type { ValidationOutcome } from "../bindings/ValidationOutcome";
@@ -56,9 +60,13 @@ export type {
     Outcome,
     PausePayload,
     ProgressUnit,
+    PublishError,
+    PublishOutcome,
+    PublishPreview,
     RecentWorkspace,
     RecipeOutline,
     RecipeRecord,
+    SyncOutcomeWire,
     ResumeAction,
     Run,
     RunConfig,
@@ -101,6 +109,10 @@ export const RUN_EVENT = "forage:run-event";
 /// Tauri event name the engine emits when paused — at a step boundary
 /// or inside a for-loop iteration. Matches `commands::DEBUG_PAUSED_EVENT`.
 export const DEBUG_PAUSED_EVENT = "forage:debug-paused";
+/// Tauri event the deeplink handler emits when `forage://clone/...`
+/// fires while Studio is running (or on launch). Payload shape:
+/// `{ author: string, slug: string, version: number | null }`.
+export const DEEPLINK_CLONE_EVENT = "forage:deeplink-clone";
 
 export const api = {
     version: () => invoke<string>("studio_version"),
@@ -144,8 +156,69 @@ export const api = {
         invoke<HoverInfo | null>("recipe_hover", { source, line, col }),
     languageDictionary: () =>
         invoke<LanguageDictionary>("language_dictionary"),
-    publishRecipe: (slug: string, hubUrl: string = HUB, dryRun = true) =>
-        invoke<RunOutcome>("publish_recipe", { slug, hubUrl, dryRun }),
+    /**
+     * Publish the recipe at `slug` to the hub. The Tauri command
+     * assembles the atomic artifact (recipe + workspace decls +
+     * fixtures + snapshot + base_version) and posts it; on 409 the
+     * promise rejects with a typed `PublishError` whose `kind`
+     * discriminator distinguishes `stale_base` from `not_signed_in` /
+     * `other`. Callers should `catch` and dispatch off the kind.
+     */
+    publishRecipe: (args: {
+        author: string;
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+        hubUrl?: string;
+    }) =>
+        invoke<PublishOutcome>("publish_recipe", {
+            author: args.author,
+            slug: args.slug,
+            description: args.description,
+            category: args.category,
+            tags: args.tags,
+            hubUrl: args.hubUrl ?? HUB,
+        }),
+    /** Dry-run publish: assemble the artifact, don't POST. */
+    previewPublish: (args: {
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+    }) =>
+        invoke<PublishPreview>("preview_publish", {
+            slug: args.slug,
+            description: args.description,
+            category: args.category,
+            tags: args.tags,
+        }),
+    /** Pull `@author/slug` (optionally pinned to a version) into the active workspace. */
+    syncFromHub: (args: {
+        author: string;
+        slug: string;
+        version?: number | null;
+        hubUrl?: string;
+    }) =>
+        invoke<SyncOutcomeWire>("sync_from_hub", {
+            author: args.author,
+            slug: args.slug,
+            version: args.version ?? null,
+            hubUrl: args.hubUrl ?? HUB,
+        }),
+    /** Fork an upstream package into the caller's account, then sync the new fork. */
+    forkFromHub: (args: {
+        upstreamAuthor: string;
+        upstreamSlug: string;
+        as?: string | null;
+        hubUrl?: string;
+    }) =>
+        invoke<SyncOutcomeWire>("fork_from_hub", {
+            upstreamAuthor: args.upstreamAuthor,
+            upstreamSlug: args.upstreamSlug,
+            as: args.as ?? null,
+            hubUrl: args.hubUrl ?? HUB,
+        }),
     authWhoami: (hubUrl: string = HUB) =>
         invoke<string | null>("auth_whoami", { hubUrl }),
     authStartDeviceFlow: (hubUrl: string = HUB) =>

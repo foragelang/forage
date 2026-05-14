@@ -15,7 +15,7 @@ use forage_http::{
     Debugger, Engine, IterationPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
     RunEvent, StepPause,
 };
-use forage_hub::{AuthStore, AuthTokens, HubClient, PackageFile, PackageMeta};
+use forage_hub::{AuthStore, AuthTokens};
 
 /// Tauri event name for streaming engine progress to the frontend.
 pub const RUN_EVENT: &str = "forage:run-event";
@@ -670,72 +670,116 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
     Ok(())
 }
 
+/// Publish the recipe at `slug` to the hub. The atomic artifact
+/// (recipe + workspace decls + fixtures + snapshot + base_version)
+/// is assembled by `forage-hub`'s shared operations module; this
+/// command thin-wraps it for the UI.
+///
+/// `author` and `slug` are passed in rather than derived from the
+/// manifest because Studio exposes a publish-as-other-author flow
+/// for forks (the Tauri command stays stateless w.r.t. manifest
+/// drift). `description`, `category`, `tags` ride from the manifest
+/// or the publish dialog.
+///
+/// Errors land as typed [`hub_sync::PublishError`] values so the UI
+/// can render the stale-base banner with a "view diff" link
+/// instead of dumping a stringified server message into a toast.
 #[tauri::command]
 pub async fn publish_recipe(
     state: State<'_, crate::state::StudioState>,
+    author: String,
     slug: String,
     hub_url: String,
-    dry_run: bool,
-) -> Result<RunOutcome, String> {
-    let ws = require_workspace(&state)?;
-    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
-    let recipe = parse(&source).map_err(|e| format!("{e}"))?;
-    let catalog = build_catalog_for_slug(&ws.root, &slug, &recipe).map_err(|e| format!("{e}"))?;
+    description: String,
+    category: String,
+    tags: Vec<String>,
+) -> Result<crate::hub_sync::PublishOutcome, crate::hub_sync::PublishError> {
+    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
+        message: e,
+    })?;
+    // Pre-publish validation: parse + validate the recipe locally so
+    // the server doesn't receive a malformed recipe. A broken recipe
+    // surfaces as `Other` here, not `StaleBase` — the user fixes the
+    // recipe before retrying.
+    let source = workspace::read_source(&ws.root, &slug).map_err(|e| {
+        crate::hub_sync::PublishError::Other {
+            message: e.to_string(),
+        }
+    })?;
+    let recipe =
+        parse(&source).map_err(|e| crate::hub_sync::PublishError::Other {
+            message: format!("parse: {e}"),
+        })?;
+    let catalog = build_catalog_for_slug(&ws.root, &slug, &recipe).map_err(|e| {
+        crate::hub_sync::PublishError::Other {
+            message: format!("catalog: {e}"),
+        }
+    })?;
     if validate(&recipe, &catalog).has_errors() {
-        return Err("recipe failed validation".into());
-    }
-    let store = AuthStore::new();
-    let host = host_of(&hub_url);
-    let token = store.read(&host).ok().flatten().map(|t| t.access_token);
-
-    if dry_run || token.is_none() {
-        return Ok(RunOutcome {
-            ok: true,
-            snapshot: None,
-            error: Some(format!(
-                "would publish {} bytes to {hub_url}/v1/packages/{}{}",
-                source.len(),
-                recipe.name,
-                if token.is_none() {
-                    " — not signed in"
-                } else {
-                    ""
-                }
-            )),
-            daemon_warning: None,
+        return Err(crate::hub_sync::PublishError::Other {
+            message: "recipe failed validation; fix errors before publishing".into(),
         });
     }
-    let mut client = HubClient::new(&hub_url);
-    if let Some(t) = token {
-        client = client.with_token(t);
-    }
-    let meta = PackageMeta {
-        slug: recipe.name.clone(),
-        version: 0,
-        owner_login: None,
-        display_name: Some(recipe.name.clone()),
-        summary: None,
-        tags: vec![],
-        license: None,
-        sha256: None,
-        published_at: None,
-    };
-    // Studio publishes single-recipe packages: one `recipe.forage` file
-    // in the payload. The full workspace publish path goes through
-    // `forage publish` from the CLI.
-    let files = vec![PackageFile {
-        name: "recipe.forage".into(),
-        body: source,
-    }];
-    match client.publish_package(&recipe.name, files, &meta).await {
-        Ok(r) => Ok(RunOutcome {
-            ok: true,
-            snapshot: None,
-            error: Some(format!("published {} v{}", r.slug, r.version)),
-            daemon_warning: None,
-        }),
-        Err(e) => Err(format!("{e}")),
-    }
+    crate::hub_sync::run_publish(
+        &ws.root,
+        &hub_url,
+        &author,
+        &slug,
+        description,
+        category,
+        tags,
+    )
+    .await
+}
+
+/// Pull `(author, slug, version?)` from the hub and materialize the
+/// version under the active workspace. Mirrors `forage sync` from
+/// the CLI.
+#[tauri::command]
+pub async fn sync_from_hub(
+    state: State<'_, crate::state::StudioState>,
+    author: String,
+    slug: String,
+    version: Option<u32>,
+    hub_url: String,
+) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
+    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
+        message: e,
+    })?;
+    crate::hub_sync::run_sync(&ws.root, &hub_url, &author, &slug, version).await
+}
+
+/// Fork `(upstream_author, upstream_slug)` to `@me/<as>` and sync the
+/// new fork into the active workspace. Mirrors `forage fork` from
+/// the CLI.
+#[tauri::command]
+pub async fn fork_from_hub(
+    state: State<'_, crate::state::StudioState>,
+    upstream_author: String,
+    upstream_slug: String,
+    r#as: Option<String>,
+    hub_url: String,
+) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
+    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
+        message: e,
+    })?;
+    crate::hub_sync::run_fork(&ws.root, &hub_url, &upstream_author, &upstream_slug, r#as).await
+}
+
+/// Dry-run preview of a `publish_recipe` call: assemble the artifact
+/// off-disk and report what would be sent without POSTing.
+#[tauri::command]
+pub fn preview_publish(
+    state: State<'_, crate::state::StudioState>,
+    slug: String,
+    description: String,
+    category: String,
+    tags: Vec<String>,
+) -> Result<crate::hub_sync::PublishPreview, crate::hub_sync::PublishError> {
+    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
+        message: e,
+    })?;
+    crate::hub_sync::preview_publish(&ws.root, &slug, description, category, tags)
 }
 
 #[tauri::command]
