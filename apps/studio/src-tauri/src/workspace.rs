@@ -303,6 +303,13 @@ pub enum FileKind {
 /// classified `File` children. Hidden entries (`.*`) — including the
 /// daemon's working dir `.forage/` — are skipped so the file tree
 /// reflects what the user authored, not what the runtime cached.
+///
+/// `FileNode.path` is workspace-relative — the frontend's slug
+/// derivation (`slugOf(path) == "<slug>"` when the path is exactly
+/// `<slug>/recipe.forage`) and per-path equality checks across the
+/// UI assume that shape. The root folder's relative path is empty;
+/// the UI iterates its `children` directly and never selects the
+/// root itself.
 pub fn build_file_tree(root: &Path) -> io::Result<FileNode> {
     let name = root
         .file_name()
@@ -311,7 +318,7 @@ pub fn build_file_tree(root: &Path) -> io::Result<FileNode> {
     let children = read_children(root, root)?;
     Ok(FileNode::Folder {
         name,
-        path: root.to_path_buf(),
+        path: PathBuf::new(),
         children,
     })
 }
@@ -362,18 +369,23 @@ fn read_children(root: &Path, dir: &Path) -> io::Result<Vec<FileNode>> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let name = item.name.to_string_lossy().into_owned();
+        let rel = item
+            .path
+            .strip_prefix(root)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| item.path.clone());
         if item.is_dir {
             let children = read_children(root, &item.path)?;
             out.push(FileNode::Folder {
                 name,
-                path: item.path,
+                path: rel,
                 children,
             });
         } else if item.is_regular_file {
             let file_kind = classify_file(root, &item.path);
             out.push(FileNode::File {
                 name,
-                path: item.path,
+                path: rel,
                 file_kind,
             });
         }
@@ -600,6 +612,71 @@ mod tests {
             })
             .expect("inputs.json");
         assert_eq!(inputs, FileKind::Fixture);
+    }
+
+    /// FileNode.path is workspace-relative. The frontend derives a
+    /// recipe slug from path shape (`<slug>/recipe.forage` → `<slug>`);
+    /// absolute paths break that derivation and silently disable every
+    /// slug-aware action (Run, Replay, context menu).
+    #[test]
+    fn build_file_tree_paths_are_workspace_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(root.join("cannabis.forage"), "").unwrap();
+        let recipe_dir = root.join("trilogy-rec");
+        fs::create_dir_all(recipe_dir.join("fixtures")).unwrap();
+        fs::write(recipe_dir.join("recipe.forage"), "").unwrap();
+        fs::write(recipe_dir.join("fixtures").join("inputs.json"), "{}").unwrap();
+
+        let tree = build_file_tree(root).unwrap();
+        let FileNode::Folder {
+            path: root_path,
+            children,
+            ..
+        } = &tree
+        else {
+            panic!("expected Folder at root");
+        };
+        // Root folder's relative path is empty.
+        assert_eq!(root_path.as_os_str(), "");
+
+        // Collect (name, path) pairs at every depth.
+        fn walk(node: &FileNode, out: &mut Vec<(String, PathBuf)>) {
+            match node {
+                FileNode::File { name, path, .. } => {
+                    out.push((name.clone(), path.clone()));
+                }
+                FileNode::Folder {
+                    name,
+                    path,
+                    children,
+                } => {
+                    out.push((name.clone(), path.clone()));
+                    for c in children {
+                        walk(c, out);
+                    }
+                }
+            }
+        }
+        let mut all: Vec<(String, PathBuf)> = Vec::new();
+        for c in children {
+            walk(c, &mut all);
+        }
+        let by_name: BTreeMap<String, PathBuf> = all.into_iter().collect();
+
+        assert_eq!(by_name["forage.toml"], PathBuf::from("forage.toml"));
+        assert_eq!(by_name["cannabis.forage"], PathBuf::from("cannabis.forage"));
+        assert_eq!(by_name["trilogy-rec"], PathBuf::from("trilogy-rec"));
+        assert_eq!(
+            by_name["recipe.forage"],
+            PathBuf::from("trilogy-rec/recipe.forage")
+        );
+        assert_eq!(by_name["fixtures"], PathBuf::from("trilogy-rec/fixtures"));
+        assert_eq!(
+            by_name["inputs.json"],
+            PathBuf::from("trilogy-rec/fixtures/inputs.json")
+        );
     }
 
     /// Folders come before files in a deterministic order. Stable
