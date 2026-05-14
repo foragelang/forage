@@ -26,15 +26,19 @@ const DAEMON_RUN_COMPLETED_EVENT = "forage:daemon-run-completed";
 export function useStudioEffects() {
     const qc = useQueryClient();
 
-    // Engine run-event stream. The `cancelled` flag is load-bearing
-    // under React.StrictMode — tauri::listen registers its callback
-    // synchronously, so the cleanup must drop it after the promise
-    // resolves even if we already left the effect.
+    // Engine run-event stream. Payload is a batch (Vec<RunEvent>) —
+    // the backend coalesces tight engine bursts at ~50ms / 256-event
+    // boundaries to keep the Tauri IPC channel from saturating. The
+    // `cancelled` flag is load-bearing under React.StrictMode —
+    // tauri::listen registers its callback synchronously, so the
+    // cleanup must drop it after the promise resolves even if we
+    // already left the effect.
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
-        listen<RunEvent>(RUN_EVENT, (e) => {
-            useStudio.getState().runAppend(e.payload);
+        listen<RunEvent[]>(RUN_EVENT, (e) => {
+            const append = useStudio.getState().runAppend;
+            for (const ev of e.payload) append(ev);
         }).then((u) => {
             if (cancelled) u();
             else un = u;

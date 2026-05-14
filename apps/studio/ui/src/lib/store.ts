@@ -9,6 +9,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import {
     api,
     type PausePayload,
+    type ProgressUnit,
     type RunEvent,
     type Snapshot,
     type ValidationOutcome,
@@ -17,6 +18,40 @@ import { slugOf } from "./path";
 
 export type View = "editor" | "deployment";
 export type InspectorMode = "run" | "history" | "records";
+
+/// An aggregated run of `Emitted` events between two non-emit
+/// events. The engine fires one `RunEvent::Emitted` per record per
+/// type (Product, then Variant, then PriceObservation, repeated per
+/// inner iteration); keeping each one as a `runLog` entry would put
+/// thousands of rows in the activity log. The store rolls them up
+/// into bursts: each non-emit event (request, response, auth, run
+/// state change) closes the current burst, and the next emit opens
+/// a fresh one.
+///
+/// The renderer treats this as the unit of "what happened between
+/// these two steps": the unit type drives the header row, child
+/// types show as indented breakdown rows when the burst is
+/// expanded. The `counts` map carries per-burst-local counts (so
+/// "+87 Product" means 87 products in this burst, not since run
+/// start); cumulative totals live in `runCounts`.
+export type EmitBurst = {
+    kind: "emit_burst";
+    /// The recipe's progress unit type captured at burst start.
+    /// Drives the header row; null when no unit is known (recipe
+    /// has no for-loops that emit).
+    unitType: string | null;
+    /// Per-type emit count within this burst.
+    counts: Record<string, number>;
+    /// Source order of types as they first emitted in this burst.
+    /// Renderer puts `unitType` first, then the remaining entries
+    /// in this order.
+    typeOrder: string[];
+};
+
+/// What sits in `runLog`. Raw engine events plus the synthetic
+/// `EmitBurst` aggregator. The renderer is the only consumer that
+/// cares about the distinction; `runAppend` is the only producer.
+export type LogEntry = RunEvent | EmitBurst;
 
 /// Per-step rollup derived from the engine event stream.
 ///
@@ -67,9 +102,16 @@ type StudioState = {
     snapshot: Snapshot | null;
     runError: string | null;
     running: boolean;
-    runLog: RunEvent[];
+    runLog: LogEntry[];
     runCounts: Record<string, number>;
     runStartedAt: number | null;
+    /// Inferred from the active recipe by `infer_progress_unit`. When
+    /// set, `runAppend` filters the activity log to only show emit
+    /// events of `unit.types[0]` — Variant/PriceObservation emits in
+    /// a Product-unit recipe still increment `runCounts` but don't
+    /// clutter the activity stream. Null when no recipe is active or
+    /// the recipe has no emits.
+    progressUnit: ProgressUnit | null;
     /// Per-step rollup tagged by `RequestSent.step`. Cleared on
     /// `runBegin` so a previous run's pills don't bleed through.
     stepStats: Record<string, StepStat>;
@@ -106,6 +148,7 @@ type StudioState = {
     runBegin: () => void;
     runAppend: (e: RunEvent) => void;
     runFinish: () => void;
+    setProgressUnit: (unit: ProgressUnit | null) => void;
     debugPause: (p: PausePayload) => void;
     debugClearPause: () => void;
     toggleBreakpoint: (step: string) => void;
@@ -129,6 +172,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     runLog: [],
     runCounts: {},
     runStartedAt: null,
+    progressUnit: null,
     stepStats: {},
     currentStep: null,
     stepStartMs: {},
@@ -187,6 +231,7 @@ export const useStudio = create<StudioState>((set, get) => ({
             runLog: [],
             runCounts: {},
             runStartedAt: null,
+            progressUnit: null,
             stepStats: {},
             currentStep: null,
             stepStartMs: {},
@@ -255,9 +300,49 @@ export const useStudio = create<StudioState>((set, get) => ({
         }),
     runAppend: (e) =>
         set((state) => {
-            const next: Partial<StudioState> = {
-                runLog: [...state.runLog, e],
-            };
+            // Activity-log shape: emit events roll up into burst
+            // entries; non-emit events end the current burst and get
+            // pushed as themselves. A burst entry carries per-type
+            // counts (Product 87, Variant 87, PriceObservation 87 in
+            // the zen-leaf-elkridge case), so the renderer can show
+            // the unit type as the header and children as an
+            // expandable breakdown.
+            const log = state.runLog;
+            const last = log[log.length - 1];
+
+            let nextLog: LogEntry[];
+            if (e.kind === "emitted") {
+                if (last?.kind === "emit_burst") {
+                    // Aggregate into the running burst.
+                    const prev = last.counts[e.type_name] ?? 0;
+                    const burst: EmitBurst = {
+                        kind: "emit_burst",
+                        unitType: last.unitType,
+                        counts: {
+                            ...last.counts,
+                            [e.type_name]: prev + 1,
+                        },
+                        typeOrder: last.typeOrder.includes(e.type_name)
+                            ? last.typeOrder
+                            : [...last.typeOrder, e.type_name],
+                    };
+                    nextLog = [...log.slice(0, -1), burst];
+                } else {
+                    // Open a fresh burst. Unit type is captured at
+                    // burst-start so a mid-run recipe edit can't
+                    // change the framing of an in-progress burst.
+                    const burst: EmitBurst = {
+                        kind: "emit_burst",
+                        unitType: state.progressUnit?.types[0] ?? null,
+                        counts: { [e.type_name]: 1 },
+                        typeOrder: [e.type_name],
+                    };
+                    nextLog = [...log, burst];
+                }
+            } else {
+                nextLog = [...log, e];
+            }
+            const next: Partial<StudioState> = { runLog: nextLog };
             // Derive per-step stats from the event stream. The engine
             // doesn't emit a `StepCompleted` variant; instead we treat
             // the last `RequestSent` as the "current step" and credit
@@ -378,6 +463,7 @@ export const useStudio = create<StudioState>((set, get) => ({
             }
             return { running: false, paused: null, stepStats };
         }),
+    setProgressUnit: (unit) => set({ progressUnit: unit }),
     debugPause: (p) => set({ paused: p }),
     debugClearPause: () => set({ paused: null }),
     toggleBreakpoint: (step) => {

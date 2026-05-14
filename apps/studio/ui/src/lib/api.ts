@@ -22,6 +22,7 @@ import type { LanguageDictionary } from "../bindings/LanguageDictionary";
 import type { Outcome } from "../bindings/Outcome";
 import type { PausePayload } from "../bindings/PausePayload";
 import type { RecipeRecord } from "../bindings/RecipeRecord";
+import type { ProgressUnit } from "../bindings/ProgressUnit";
 import type { RecipeOutline } from "../bindings/RecipeOutline";
 import type { ResumeAction } from "../bindings/ResumeAction";
 import type { Run } from "../bindings/Run";
@@ -53,6 +54,7 @@ export type {
     LanguageDictionary,
     Outcome,
     PausePayload,
+    ProgressUnit,
     RecipeOutline,
     RecipeRecord,
     ResumeAction,
@@ -107,6 +109,8 @@ export const api = {
         invoke<ValidationOutcome>("save_file", { path, source }),
     validateRecipe: (source: string) =>
         invoke<ValidationOutcome>("validate_recipe", { source }),
+    recipeProgressUnit: (slug: string) =>
+        invoke<ProgressUnit | null>("recipe_progress_unit", { slug }),
     createRecipe: () => invoke<string>("create_recipe"),
     deleteRecipe: (slug: string) => invoke<void>("delete_recipe", { slug }),
     runRecipe: (slug: string, replay: boolean) =>

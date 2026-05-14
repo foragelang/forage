@@ -9,13 +9,15 @@
 //! TanStack Query via the shared `scheduledRunsKey` helper so they
 //! sit in the same cache buckets the deployment view uses.
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
     AlertTriangle,
     ArrowDown,
     ArrowUp,
     CheckCircle2,
+    ChevronDown,
+    ChevronRight,
     Key,
     Loader2,
     Play,
@@ -30,13 +32,14 @@ import { Sparkline } from "@/components/Sparkline";
 import { StatusPill } from "@/components/StatusPill";
 import {
     api,
+    type ProgressUnit,
     type RunEvent,
     type ScheduledRun,
 } from "@/lib/api";
 import { emitRevealLine } from "@/lib/editorCommands";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
-import { useStudio } from "@/lib/store";
+import { useStudio, type EmitBurst, type LogEntry } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function RunPane() {
@@ -58,10 +61,29 @@ export function RunPane() {
     const latest = scheduledRuns[0] ?? null;
     const previous = scheduledRuns[1] ?? null;
 
+    // Static analysis: the outermost-compound emit-bearing for-loop
+    // is the recipe's "unit of work" (see
+    // crates/forage-core/src/progress.rs). Used to scope the progress
+    // bar to a single type instead of summing all emitted records,
+    // and to filter the activity log so non-unit emits don't make it
+    // flash through Variant / PriceObservation rows.
+    const progressUnit = useQuery({
+        queryKey: ["progressUnit", slug ?? ""],
+        queryFn: () => api.recipeProgressUnit(slug!),
+        enabled: !!slug,
+    });
+    // Push the inferred unit into the store so `runAppend` can filter
+    // the activity log to unit-type emits only. Pre-empts the
+    // first emit event in case the engine is faster than React Query.
+    const setProgressUnit = useStudio((s) => s.setProgressUnit);
+    useEffect(() => {
+        setProgressUnit(progressUnit.data ?? null);
+    }, [progressUnit.data, setProgressUnit]);
+
     return (
         <ScrollArea className="flex-1 min-h-0">
             <div className="flex flex-col gap-4 p-3">
-                <RunSummaryCard latest={latest} />
+                <RunSummaryCard latest={latest} unit={progressUnit.data ?? null} />
                 <RecordsByType
                     history={scheduledRuns}
                     latest={latest}
@@ -76,7 +98,13 @@ export function RunPane() {
 
 // ── summary card ─────────────────────────────────────────────────────
 
-function RunSummaryCard({ latest }: { latest: ScheduledRun | null }) {
+function RunSummaryCard({
+    latest,
+    unit,
+}: {
+    latest: ScheduledRun | null;
+    unit: ProgressUnit | null;
+}) {
     const running = useStudio((s) => s.running);
     const paused = useStudio((s) => s.paused);
     const runStartedAt = useStudio((s) => s.runStartedAt);
@@ -100,7 +128,8 @@ function RunSummaryCard({ latest }: { latest: ScheduledRun | null }) {
                 <RunProgress
                     counts={runCounts}
                     startedAt={runStartedAt}
-                    baseline={baselineTotal(latest)}
+                    baseline={baselineForUnit(latest, unit)}
+                    unit={unit}
                     paused={!!paused}
                 />
             </Card>
@@ -154,14 +183,23 @@ function RunProgress({
     counts,
     startedAt,
     baseline,
+    unit,
     paused,
 }: {
     counts: Record<string, number>;
     startedAt: number | null;
     baseline: number | null;
+    unit: ProgressUnit | null;
     paused: boolean;
 }) {
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    // When a unit is inferred, total/baseline are scoped to its
+    // primary type — matches the author's mental model of "how many
+    // products are we through" rather than raw record count. Falls
+    // back to summing every record type when no unit applies.
+    const unitType = unit?.types[0] ?? null;
+    const total = unitType
+        ? (counts[unitType] ?? 0)
+        : Object.values(counts).reduce((a, b) => a + b, 0);
     const pct = baseline ? Math.min(100, (total / baseline) * 100) : null;
     return (
         <div className="space-y-2">
@@ -169,6 +207,7 @@ function RunProgress({
                 <span className="font-mono tabular-nums">
                     {total.toLocaleString()}
                     {baseline ? ` / ${baseline.toLocaleString()}` : ""}
+                    {unitType ? ` ${unitType}` : " records"}
                     {pct !== null && ` · ${pct.toFixed(0)}%`}
                 </span>
                 <span className="text-muted-foreground">
@@ -192,8 +231,16 @@ function Stat({ label, value }: { label: string; value: string }) {
     );
 }
 
-function baselineTotal(latest: ScheduledRun | null): number | null {
+function baselineForUnit(
+    latest: ScheduledRun | null,
+    unit: ProgressUnit | null,
+): number | null {
     if (!latest) return null;
+    const unitType = unit?.types[0] ?? null;
+    if (unitType) {
+        const v = latest.counts[unitType];
+        return typeof v === "number" ? v : null;
+    }
     return Object.values(latest.counts).reduce(
         (a: number, b) => a + (b ?? 0),
         0,
@@ -458,7 +505,7 @@ function ActivitySection() {
     );
 }
 
-function ActivityLog({ log, running }: { log: RunEvent[]; running: boolean }) {
+function ActivityLog({ log, running }: { log: LogEntry[]; running: boolean }) {
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => {
         if (!running) return;
@@ -480,13 +527,108 @@ function ActivityLog({ log, running }: { log: RunEvent[]; running: boolean }) {
             className="max-h-72 overflow-y-auto px-3 py-2 text-xs font-mono space-y-0.5 select-text"
         >
             {log.map((e, i) => (
-                <LogLine key={i} event={e} />
+                <LogLine key={i} entry={e} />
             ))}
         </div>
     );
 }
 
-function LogLine({ event }: { event: RunEvent }) {
+function LogLine({ entry }: { entry: LogEntry }) {
+    if (entry.kind === "emit_burst") return <EmitBurstLine burst={entry} />;
+    if (entry.kind === "emitted") {
+        // Should be unreachable — `runAppend` aggregates every
+        // `Emitted` event into an `EmitBurst` entry, so this branch
+        // exists only to narrow the type and surface a bug if the
+        // invariant ever breaks.
+        console.warn(
+            "Emitted event reached LogLine; expected to be aggregated into a burst",
+            entry,
+        );
+        return null;
+    }
+    return <RunEventLine event={entry} />;
+}
+
+/// Header row for the unit type + expandable child rows for every
+/// other type that emitted in the same burst. Collapsed by default
+/// so a long run reads as one row per `step → response → burst`
+/// section.
+function EmitBurstLine({ burst }: { burst: EmitBurst }) {
+    const [expanded, setExpanded] = useState(false);
+    // Pick the header type: prefer the recipe's unit type when it
+    // actually emitted in this burst; otherwise fall back to the
+    // first emitted type so we don't render an empty header.
+    const headerType =
+        burst.unitType && burst.counts[burst.unitType] !== undefined
+            ? burst.unitType
+            : (burst.typeOrder[0] ?? null);
+    const headerCount = headerType ? (burst.counts[headerType] ?? 0) : 0;
+    const children = burst.typeOrder.filter((t) => t !== headerType);
+    const hasChildren = children.length > 0;
+    return (
+        <div>
+            <button
+                type="button"
+                onClick={() => hasChildren && setExpanded((v) => !v)}
+                className={
+                    "flex items-center gap-2 text-success w-full text-left " +
+                    (hasChildren ? "cursor-pointer" : "cursor-default")
+                }
+                disabled={!hasChildren}
+            >
+                {hasChildren ? (
+                    expanded ? (
+                        <ChevronDown className="size-3 text-muted-foreground" />
+                    ) : (
+                        <ChevronRight className="size-3 text-muted-foreground" />
+                    )
+                ) : (
+                    <span className="size-3 flex items-center justify-center">
+                        +
+                    </span>
+                )}
+                <span>
+                    emit{" "}
+                    <strong className="tabular-nums">{headerCount}</strong>{" "}
+                    {headerType ?? "—"}
+                    {hasChildren && !expanded && (
+                        <span className="text-muted-foreground">
+                            {" "}
+                            · +{children.length}{" "}
+                            {children.length === 1 ? "type" : "types"}
+                        </span>
+                    )}
+                </span>
+            </button>
+            {expanded && hasChildren && (
+                <div className="ml-5 space-y-0.5">
+                    {children.map((t) => (
+                        <div
+                            key={t}
+                            className="flex items-center gap-2 text-success/80"
+                        >
+                            <span className="size-3 flex items-center justify-center text-muted-foreground">
+                                ↳
+                            </span>
+                            <span>
+                                <strong className="tabular-nums">
+                                    {burst.counts[t] ?? 0}
+                                </strong>{" "}
+                                {t}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function RunEventLine({
+    event,
+}: {
+    event: Exclude<RunEvent, { kind: "emitted" }>;
+}) {
     switch (event.kind) {
         case "run_started":
             return (
@@ -535,16 +677,6 @@ function LogLine({ event }: { event: RunEvent }) {
                 </div>
             );
         }
-        case "emitted":
-            return (
-                <div className="flex items-center gap-2 text-success">
-                    <span className="size-3 flex items-center justify-center">+</span>
-                    <span>
-                        emit <strong className="tabular-nums">{event.total}</strong>{" "}
-                        {event.type_name}
-                    </span>
-                </div>
-            );
         case "run_succeeded":
             return (
                 <div className="flex items-center gap-2 text-success">

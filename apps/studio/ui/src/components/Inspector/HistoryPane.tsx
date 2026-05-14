@@ -19,12 +19,11 @@ import { TrendCard } from "@/components/TrendCard";
 import {
     api,
     type Health,
-    type RunEvent,
     type ScheduledRun,
 } from "@/lib/api";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
-import { useStudio } from "@/lib/store";
+import { useStudio, type LogEntry } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function HistoryPane() {
@@ -133,8 +132,11 @@ type SessionRun = {
 
 /// Walk the engine event stream from oldest to newest, opening a new
 /// SessionRun on every `run_started` and closing it on success/fail.
-/// Reverse-sort so the freshest run is on top.
-function collectSessionRuns(log: RunEvent[], running: boolean): SessionRun[] {
+/// Emit events live inside `emit_burst` aggregator entries (see
+/// `runAppend` in `lib/store.ts`); their per-burst counts sum into
+/// the active session's running totals. Reverse-sort so the freshest
+/// run is on top.
+function collectSessionRuns(log: LogEntry[], running: boolean): SessionRun[] {
     const out: SessionRun[] = [];
     let current: SessionRun | null = null;
     let id = 0;
@@ -153,9 +155,11 @@ function collectSessionRuns(log: RunEvent[], running: boolean): SessionRun[] {
                 };
                 out.push(current);
                 break;
-            case "emitted":
+            case "emit_burst":
                 if (current) {
-                    current.counts[e.type_name] = e.total;
+                    for (const [type, n] of Object.entries(e.counts)) {
+                        current.counts[type] = (current.counts[type] ?? 0) + n;
+                    }
                 }
                 break;
             case "run_succeeded":

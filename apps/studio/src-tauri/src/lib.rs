@@ -109,6 +109,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::validate_recipe,
+            commands::recipe_progress_unit,
             commands::create_recipe,
             commands::delete_recipe,
             commands::show_recipe_context_menu,

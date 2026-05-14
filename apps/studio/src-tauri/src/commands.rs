@@ -98,6 +98,17 @@ pub fn validate_recipe(source: String) -> ValidationOutcome {
     validate_source(&source)
 }
 
+/// Infer the recipe's progress unit (the deepest emit-bearing for-
+/// loop scope) from current on-disk source. Frontend caches this per
+/// slug and uses it to scope the live-run / scheduled-run progress
+/// bar to a single type instead of summing all emits.
+#[tauri::command]
+pub fn recipe_progress_unit(slug: String) -> Result<Option<forage_core::ProgressUnit>, String> {
+    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
+    let recipe = forage_core::parse(&source).map_err(|e| format!("{e}"))?;
+    Ok(forage_core::infer_progress_unit(&recipe))
+}
+
 #[tauri::command]
 pub fn create_recipe() -> Result<String, String> {
     workspace::create_recipe(None).map_err(|e| e.to_string())
@@ -163,16 +174,85 @@ pub struct RunOutcome {
 /// `Channel<T>` because the latter had observed delivery problems in 2.8
 /// where events would not surface despite the run progressing; the global
 /// event bus is well-trodden and survives the round-trip cleanly.
+///
+/// Events are batched before crossing the Tauri channel: the engine can
+/// emit thousands of records per second in tight bursts (e.g. a paginated
+/// products endpoint near the end of a run), and per-record `app.emit`
+/// saturates the webview's IPC channel — the JS side falls behind on
+/// `RUN_EVENT` delivery, which also blocks the `run_recipe` invoke
+/// response from reaching JS, so the UI gets stuck in "running" state
+/// even though the engine has completed. The drainer task aggregates
+/// events and emits them as `Vec<RunEvent>` every 50ms or 256 events,
+/// keeping the channel responsive and the invoke promise unblocked.
 struct EmitterSink {
-    app: AppHandle,
+    tx: tokio::sync::mpsc::UnboundedSender<RunEvent>,
 }
 
 impl ProgressSink for EmitterSink {
     fn emit(&self, event: RunEvent) {
-        // Emit failures are non-fatal (e.g. window closed mid-run): the run
+        // Send failures are non-fatal (drainer dropped): the run
         // continues even if the UI can't hear it anymore.
-        let _ = self.app.emit(RUN_EVENT, &event);
+        let _ = self.tx.send(event);
     }
+}
+
+/// Spawn a drainer task that batches incoming `RunEvent`s and flushes
+/// them as `Vec<RunEvent>` on `RUN_EVENT`. Returns the sender side and
+/// the task join handle; callers should drop the sink (closing the
+/// channel) and await the handle so the final partial batch flushes
+/// before `run_recipe` returns.
+fn spawn_event_drainer(
+    app: AppHandle,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<RunEvent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RunEvent>();
+    let handle = tokio::spawn(async move {
+        const MAX_BATCH: usize = 256;
+        const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+        let mut buf: Vec<RunEvent> = Vec::with_capacity(MAX_BATCH);
+        loop {
+            // Wait for the first event (or channel close). Without a
+            // first-event wait we'd spin every 50ms forever even when
+            // idle.
+            let first = match rx.recv().await {
+                Some(ev) => ev,
+                None => break,
+            };
+            buf.push(first);
+            // Drain anything queued *now* without yielding back to the
+            // scheduler — coalesces tight engine bursts.
+            while let Ok(ev) = rx.try_recv() {
+                buf.push(ev);
+                if buf.len() >= MAX_BATCH {
+                    break;
+                }
+            }
+            // If we still have headroom, wait briefly for more events
+            // to ride along. Caps total batch latency at FLUSH_INTERVAL.
+            if buf.len() < MAX_BATCH {
+                let _ = tokio::time::timeout(FLUSH_INTERVAL, async {
+                    while let Some(ev) = rx.recv().await {
+                        buf.push(ev);
+                        if buf.len() >= MAX_BATCH {
+                            return;
+                        }
+                    }
+                })
+                .await;
+            }
+            let batch = std::mem::take(&mut buf);
+            let _ = app.emit(RUN_EVENT, &batch);
+            buf.reserve(MAX_BATCH);
+        }
+        // Channel closed; flush any remaining (unlikely — final flush
+        // happens at end of the loop above).
+        if !buf.is_empty() {
+            let _ = app.emit(RUN_EVENT, &buf);
+        }
+    });
+    (tx, handle)
 }
 
 /// Bridges the engine's `Debugger` trait to a Tauri event + a oneshot.
@@ -297,7 +377,8 @@ pub async fn run_recipe(
         Vec::new()
     };
 
-    let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink { app: app.clone() });
+    let (tx, drainer_handle) = spawn_event_drainer(app.clone());
+    let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink { tx });
 
     // Install a cancellation handle so `cancel_run` can interrupt this
     // run. Replaces any previous handle — Studio only runs one recipe at
@@ -324,7 +405,7 @@ pub async fn run_recipe(
     let snapshot: Result<Snapshot, String> = match (recipe.engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
-            let mut engine = Engine::new(&transport).with_progress(sink);
+            let mut engine = Engine::new(&transport).with_progress(Arc::clone(&sink));
             if let Some(d) = debugger.clone() {
                 engine = engine.with_debugger(d);
             }
@@ -336,7 +417,7 @@ pub async fn run_recipe(
         }
         (EngineKind::Http, false) => {
             let transport = LiveTransport::new().map_err(|e| format!("{e}"))?;
-            let mut engine = Engine::new(&transport).with_progress(sink);
+            let mut engine = Engine::new(&transport).with_progress(Arc::clone(&sink));
             if let Some(d) = debugger.clone() {
                 engine = engine.with_debugger(d);
             }
@@ -362,6 +443,16 @@ pub async fn run_recipe(
     // drops any unfilled oneshot sender along with it.
     state.run_cancel.store(None);
     state.debug_session.store(None);
+
+    // Drop the sink (closing the drainer's channel) and await its
+    // final flush before returning. Without this, run_recipe could
+    // return its Snapshot to JS while the drainer still holds queued
+    // events — the UI would see the completion *before* the final
+    // emits, producing a stuck-at-N% progress bar even on a clean
+    // run. The await is bounded by FLUSH_INTERVAL since the drainer
+    // exits as soon as the channel closes and `buf` is flushed.
+    drop(sink);
+    let _ = drainer_handle.await;
 
     match snapshot {
         Ok(mut s) => {
