@@ -57,25 +57,20 @@ pub fn hover_at(source: &str, line: u32, col: u32) -> Option<HoverInfo> {
     }
     if let Some(inp) = r.inputs.iter().find(|i| i.name == word) {
         return Some(HoverInfo {
-            markdown: format!(
-                "**input `{}`** — {}",
-                inp.name,
-                field_type_label(&inp.ty)
-            ),
+            markdown: format!("**input `{}`** — {}", inp.name, field_type_label(&inp.ty)),
         });
     }
     if let Some(en) = r.enums.iter().find(|e| e.name == word) {
         return Some(HoverInfo {
-            markdown: format!(
-                "**enum `{}`** {{ {} }}",
-                en.name,
-                en.variants.join(" | ")
-            ),
+            markdown: format!("**enum `{}`** {{ {} }}", en.name, en.variants.join(" | ")),
         });
     }
     if r.secrets.iter().any(|s| s == &word) {
         return Some(HoverInfo {
-            markdown: format!("**secret `{word}`** — resolved from `FORAGE_SECRET_{}`", word.to_uppercase()),
+            markdown: format!(
+                "**secret `{word}`** — resolved from `FORAGE_SECRET_{}`",
+                word.to_uppercase()
+            ),
         });
     }
     // Step name?
@@ -129,6 +124,7 @@ fn field_type_label(ty: &FieldType) -> String {
         FieldType::Array(inner) => format!("[{}]", field_type_label(inner)),
         FieldType::Record(name) => name.clone(),
         FieldType::EnumRef(name) => name.clone(),
+        FieldType::Ref(name) => format!("Ref<{name}>"),
     }
 }
 

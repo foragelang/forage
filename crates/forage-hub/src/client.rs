@@ -321,7 +321,11 @@ pub fn hub_cache_root() -> PathBuf {
     }
     if cfg!(target_os = "macos") {
         if let Some(home) = dirs::home_dir() {
-            return home.join("Library").join("Forage").join("Cache").join("hub");
+            return home
+                .join("Library")
+                .join("Forage")
+                .join("Cache")
+                .join("hub");
         }
     }
     if let Some(data) = dirs::data_dir() {

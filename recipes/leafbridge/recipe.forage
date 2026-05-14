@@ -28,6 +28,7 @@ type Category {
     name: String
 }
 type Variant {
+    product: Ref<Product>
     externalId: String
     name: String?
     sizeValue: Double?
@@ -44,8 +45,8 @@ type Product {
     images: [String]
 }
 type PriceObservation {
-    productExternalId: String
-    variantExternalId: String
+    product: Ref<Product>
+    variant: Ref<Variant>
     menuType: MenuType
     price: Double?
     promoPrice: Double?
@@ -138,7 +139,7 @@ for $menu in $input.menuTypes {
             productType        ← $product.subcategory | titleCase
             categoryExternalId ← $product.category | titleCase
             images             ← $product.images[*].url | dedup
-        }
+        } as $prod
 
         emit Category {
             externalId ← $product.category | titleCase
@@ -147,15 +148,16 @@ for $menu in $input.menuTypes {
 
         for $variant in $product.variants[*] {
             emit Variant {
+                product    ← $prod
                 externalId ← $variant.id
                 name       ← $variant.option
                 sizeValue  ← $variant.option | parseSize | normalizeOzToGrams | sizeValue
                 sizeUnit   ← $variant.option | parseSize | normalizeOzToGrams | sizeUnit | normalizeUnitToGrams
-            }
+            } as $var
 
             emit PriceObservation {
-                productExternalId ← $product.id
-                variantExternalId ← $variant.id
+                product           ← $prod
+                variant           ← $var
                 menuType          ← $menu
                 price             ← case $menu of {
                                         MEDICAL      → $variant.priceMed

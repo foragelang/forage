@@ -12,10 +12,8 @@ use std::sync::Mutex;
 
 use forage_core::Recipe;
 use forage_core::parse::ParseError;
-use forage_core::workspace::{
-    self, TypeCatalog, Workspace, WorkspaceError, WorkspaceFileKind,
-};
 use forage_core::validate;
+use forage_core::workspace::{self, TypeCatalog, Workspace, WorkspaceError, WorkspaceFileKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
 use forage_core::LineMap;
@@ -61,14 +59,11 @@ impl DocStore {
     /// workspace (re-)discovery if needed.
     pub fn upsert(&self, uri: Url, source: String) -> Vec<Diagnostic> {
         let path = uri.to_file_path().ok();
-        let workspace_root = path
-            .as_deref()
-            .and_then(workspace::discover)
-            .map(|ws| {
-                let root = ws.root.clone();
-                self.workspaces.lock().unwrap().insert(root.clone(), ws);
-                root
-            });
+        let workspace_root = path.as_deref().and_then(workspace::discover).map(|ws| {
+            let root = ws.root.clone();
+            self.workspaces.lock().unwrap().insert(root.clone(), ws);
+            root
+        });
 
         // Snapshot live buffer contents for every other open document
         // in the same workspace so that catalog reads see unsaved edits
@@ -359,10 +354,7 @@ fn validate_declarations(
                         range: lsp_range(line_map, t.span.clone()),
                         severity: Some(DiagnosticSeverity::ERROR),
                         source: Some("forage".into()),
-                        message: format!(
-                            "field '{}' references unknown type '{missing}'",
-                            f.name
-                        ),
+                        message: format!("field '{}' references unknown type '{missing}'", f.name),
                         ..Default::default()
                     });
                 }
@@ -379,7 +371,7 @@ fn unresolved_field_type(
     match ty {
         FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => None,
         FieldType::Array(inner) => unresolved_field_type(inner, known),
-        FieldType::Record(name) | FieldType::EnumRef(name) => {
+        FieldType::Record(name) | FieldType::EnumRef(name) | FieldType::Ref(name) => {
             if known.contains(name) {
                 None
             } else {
@@ -444,6 +436,10 @@ impl DocStore {
     /// `Document` so `did_change` doesn't re-scan the workspace tree
     /// on every keystroke.
     pub fn workspace_kind_for(&self, uri: &Url) -> Option<WorkspaceFileKind> {
-        self.docs.lock().unwrap().get(uri).and_then(|d| d.kind.clone())
+        self.docs
+            .lock()
+            .unwrap()
+            .get(uri)
+            .and_then(|d| d.kind.clone())
     }
 }

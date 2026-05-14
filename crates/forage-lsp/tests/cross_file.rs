@@ -44,10 +44,7 @@ for $x in $list.items[*] {
     let store = DocStore::new();
 
     let shared_uri = Url::from_file_path(&shared_path).unwrap();
-    store.upsert(
-        shared_uri,
-        fs::read_to_string(&shared_path).unwrap(),
-    );
+    store.upsert(shared_uri, fs::read_to_string(&shared_path).unwrap());
 
     let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
     let diags = store.upsert(
@@ -90,7 +87,10 @@ for $x in $list.items[*] {
     let shared_uri = Url::from_file_path(&shared_path).unwrap();
     let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
 
-    store.upsert(shared_uri.clone(), fs::read_to_string(&shared_path).unwrap());
+    store.upsert(
+        shared_uri.clone(),
+        fs::read_to_string(&shared_path).unwrap(),
+    );
     store.upsert(
         recipe_uri.clone(),
         fs::read_to_string(&recipe_path).unwrap(),
@@ -106,8 +106,9 @@ for $x in $list.items[*] {
 
     // The store records the workspace_root that `discover` returned —
     // walk to it via the same path the docstore took.
-    let ws_root =
-        forage_core::workspace::discover(&shared_path).expect("workspace").root;
+    let ws_root = forage_core::workspace::discover(&shared_path)
+        .expect("workspace")
+        .root;
     let refreshed = store.refresh_workspace(&ws_root);
     let (refreshed_uri, diags) = refreshed
         .into_iter()
@@ -149,17 +150,15 @@ step list {
 
     let store = DocStore::new();
     let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
-    let diags = store.upsert(
-        recipe_uri,
-        fs::read_to_string(&recipe_path).unwrap(),
-    );
+    let diags = store.upsert(recipe_uri, fs::read_to_string(&recipe_path).unwrap());
     let errors: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         .collect();
     assert!(
-        errors.iter().any(|d| d.message.contains("Item")
-            && d.message.to_lowercase().contains("multiple")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("Item") && d.message.to_lowercase().contains("multiple")),
         "expected duplicate-type workspace error to surface as a diagnostic; got: {diags:?}"
     );
 }
@@ -199,10 +198,7 @@ for $x in $list.items[*] {
     store.upsert(shared_uri, "type NewName { id: String }\n".into());
 
     let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
-    let diags = store.upsert(
-        recipe_uri,
-        fs::read_to_string(&recipe_path).unwrap(),
-    );
+    let diags = store.upsert(recipe_uri, fs::read_to_string(&recipe_path).unwrap());
     let errors: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -231,10 +227,7 @@ fn declarations_file_validates_its_own_duplicates() {
 
     let store = DocStore::new();
     let shared_uri = Url::from_file_path(&shared_path).unwrap();
-    let diags = store.upsert(
-        shared_uri,
-        fs::read_to_string(&shared_path).unwrap(),
-    );
+    let diags = store.upsert(shared_uri, fs::read_to_string(&shared_path).unwrap());
     let errors: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -256,17 +249,11 @@ fn declarations_file_flags_unknown_record_references() {
     let root = tmp.path();
     write(&root.join("forage.toml"), "");
     let shared_path = root.join("shared.forage");
-    write(
-        &shared_path,
-        "type Outer { other: Missing }\n",
-    );
+    write(&shared_path, "type Outer { other: Missing }\n");
 
     let store = DocStore::new();
     let shared_uri = Url::from_file_path(&shared_path).unwrap();
-    let diags = store.upsert(
-        shared_uri,
-        fs::read_to_string(&shared_path).unwrap(),
-    );
+    let diags = store.upsert(shared_uri, fs::read_to_string(&shared_path).unwrap());
     let errors: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))

@@ -31,6 +31,7 @@ type Category {
 }
 
 type Variant {
+    product: Ref<Product>
     externalId: String
     name: String?
     sku: String?
@@ -52,8 +53,8 @@ type Product {
 }
 
 type PriceObservation {
-    productExternalId: String
-    variantExternalId: String
+    product: Ref<Product>
+    variant: Ref<Variant>
     menuType: MenuType
     price: Double?
     promoPrice: Double?
@@ -150,20 +151,21 @@ for $menu in $input.menuTypes {
                 categoryExternalId ← $product.category?.id | toString
                 terpenes           ← $product.strain?.terpenes[*].name | dedup
                 images             ← $product.images[*]
-            }
+            } as $prod
 
             for $variant in $product.variants[*] {
                 emit Variant {
+                    product    ← $prod
                     externalId ← $variant.id | toString
                     name       ← $variant.name
                     sku        ← $variant.sku
                     sizeValue  ← $variant.unitSize?.value | normalizeOzToGrams($variant.unitSize?.unitAbbr)
                     sizeUnit   ← $variant.unitSize?.unitAbbr | normalizeUnitToGrams
-                }
+                } as $var
 
                 emit PriceObservation {
-                    productExternalId ← $product.id | toString
-                    variantExternalId ← $variant.id | toString
+                    product           ← $prod
+                    variant           ← $var
                     menuType          ← $menu
                     price             ← $variant.price
                     promoPrice        ← $variant.promoPrice

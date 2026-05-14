@@ -238,7 +238,11 @@ async fn execute(
                 })
         }
         EngineKind::Browser => {
-            let Some(driver) = daemon.browser_driver.lock().expect("driver poisoned").clone()
+            let Some(driver) = daemon
+                .browser_driver
+                .lock()
+                .expect("driver poisoned")
+                .clone()
             else {
                 return Err(RunFailure {
                     message: "browser engine requires a LiveBrowserDriver — none registered".into(),
@@ -287,7 +291,13 @@ fn write_records(
 ) -> Result<(), RunError> {
     let mut tx = store.begin_tx()?;
     for rec in &snapshot.records {
-        tx.write_record(scheduled_run_id, at_ms, &rec.type_name, &rec.fields)?;
+        tx.write_record(
+            scheduled_run_id,
+            at_ms,
+            &rec.id,
+            &rec.type_name,
+            &rec.fields,
+        )?;
     }
     tx.commit()
 }

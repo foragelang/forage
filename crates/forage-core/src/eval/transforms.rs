@@ -96,6 +96,7 @@ fn type_name(v: &EvalValue) -> &'static str {
         EvalValue::Object(_) => "object",
         EvalValue::Node(_) => "node",
         EvalValue::NodeList(_) => "nodelist",
+        EvalValue::Ref { .. } => "ref",
     }
 }
 

@@ -206,3 +206,120 @@ fn second_recipe_header_is_rejected() {
         "unexpected error: {msg}"
     );
 }
+
+#[test]
+fn parses_ref_field_type() {
+    let src = r#"
+        recipe "refs"
+        engine http
+        type Product { id: String }
+        type Variant {
+            product: Ref<Product>
+            id:      String
+        }
+        step list { method "GET" url "https://x.test" }
+        for $p in $list[*] {
+            emit Product { id ← $p.id } as $prod
+            emit Variant { product ← $prod, id ← $p.id }
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let variant = r.types.iter().find(|t| t.name == "Variant").unwrap();
+    let product_field = variant.field("product").unwrap();
+    match &product_field.ty {
+        FieldType::Ref(target) => assert_eq!(target, "Product"),
+        other => panic!("expected Ref<Product>, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_optional_ref_field_type() {
+    let src = r#"
+        recipe "refs"
+        engine http
+        type Product { id: String }
+        type Variant {
+            product: Ref<Product>?
+            id:      String
+        }
+        step list { method "GET" url "https://x.test" }
+        for $p in $list[*] {
+            emit Variant { id ← $p.id }
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let variant = r.types.iter().find(|t| t.name == "Variant").unwrap();
+    let product_field = variant.field("product").unwrap();
+    assert!(product_field.optional);
+    assert!(matches!(&product_field.ty, FieldType::Ref(t) if t == "Product"));
+}
+
+#[test]
+fn parses_emit_with_as_binding() {
+    let src = r#"
+        recipe "binds"
+        engine http
+        type Item { id: String }
+        step list { method "GET" url "https://x.test" }
+        for $i in $list[*] {
+            emit Item { id ← $i.id } as $it
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let Statement::ForLoop { body, .. } = &r.body[1] else {
+        panic!("expected for-loop");
+    };
+    let Statement::Emit(em) = &body[0] else {
+        panic!("expected emit");
+    };
+    assert_eq!(em.bind_name.as_deref(), Some("it"));
+}
+
+#[test]
+fn parses_emit_without_as_binding() {
+    let src = r#"
+        recipe "no-binds"
+        engine http
+        type Item { id: String }
+        step list { method "GET" url "https://x.test" }
+        for $i in $list[*] {
+            emit Item { id ← $i.id }
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let Statement::ForLoop { body, .. } = &r.body[1] else {
+        panic!("expected for-loop");
+    };
+    let Statement::Emit(em) = &body[0] else {
+        panic!("expected emit");
+    };
+    assert!(em.bind_name.is_none());
+}
+
+#[test]
+fn ref_without_close_angle_fails_parse() {
+    // The parser must reject `Ref<Foo` (no closing `>`) — otherwise the
+    // mistake silently degrades to a record reference and the validator
+    // emits a misleading downstream error.
+    let src = r#"
+        recipe "bad"
+        engine http
+        type T { f: Ref<Foo }
+        step s { method "GET" url "https://x.test" }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn as_without_dollar_fails_parse() {
+    let src = r#"
+        recipe "bad"
+        engine http
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        for $i in $s[*] {
+            emit T { id ← $i.id } as bareName
+        }
+    "#;
+    assert!(parse(src).is_err());
+}

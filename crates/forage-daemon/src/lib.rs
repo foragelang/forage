@@ -54,7 +54,9 @@ pub use health::{PRIOR_WINDOW, derive_health};
 // Output-store API. `OutputStore` and `derive_schema` are how Studio
 // (Phase 3) and any other host inspect / write a Run's emitted rows
 // without holding the full daemon state.
-pub use output::{ColumnDef, ColumnStorage, OutputStore, TableDef, WriteTx, derive_schema, load_records};
+pub use output::{
+    ColumnDef, ColumnStorage, OutputStore, TableDef, WriteTx, derive_schema, load_records,
+};
 
 // Scheduler helpers. The pure-computation functions (`next_fire_for`,
 // `advance_next_run`, `interval_ms`, `validate_cron`) are part of the
@@ -424,10 +426,7 @@ impl Daemon {
     }
 
     /// Fire a run manually. Equivalent to `run_once(run_id, Trigger::Manual)`.
-    pub async fn trigger_run(
-        self: &Arc<Self>,
-        run_id: &str,
-    ) -> Result<ScheduledRun, RunError> {
+    pub async fn trigger_run(self: &Arc<Self>, run_id: &str) -> Result<ScheduledRun, RunError> {
         self.run_once(run_id, Trigger::Manual).await
     }
 
@@ -466,7 +465,6 @@ impl Daemon {
     pub fn on_run_completed(&self, cb: RunCompletedCb) {
         *self.run_completed_cb.lock().expect("cb poisoned") = Some(cb);
     }
-
 }
 
 /// Forwards engine progress to the host sink (if set). Counts are

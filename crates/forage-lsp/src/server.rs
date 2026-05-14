@@ -79,11 +79,7 @@ impl LanguageServer for ForageLsp {
                     .expect("serialize watcher options"),
             ),
         };
-        if let Err(e) = self
-            .client
-            .register_capability(vec![registration])
-            .await
-        {
+        if let Err(e) = self.client.register_capability(vec![registration]).await {
             tracing::warn!(error = %e, "client refused workspace file watch registration");
         }
     }
@@ -101,7 +97,9 @@ impl LanguageServer for ForageLsp {
             return;
         };
         let diags = self.store.upsert(uri.clone(), change.text);
-        self.client.publish_diagnostics(uri.clone(), diags, None).await;
+        self.client
+            .publish_diagnostics(uri.clone(), diags, None)
+            .await;
 
         // If the edited document is a declarations file, every open
         // recipe in the same workspace needs to be re-validated against
@@ -117,7 +115,9 @@ impl LanguageServer for ForageLsp {
                     if other_uri == uri {
                         continue;
                     }
-                    self.client.publish_diagnostics(other_uri, diags, None).await;
+                    self.client
+                        .publish_diagnostics(other_uri, diags, None)
+                        .await;
                 }
             }
         }
@@ -219,7 +219,9 @@ impl LanguageServer for ForageLsp {
         // (which take this path) always agree on hover content.
         let info = self
             .store
-            .with(&uri, |doc| crate::intel::hover_at(&doc.source, pos.line, pos.character))
+            .with(&uri, |doc| {
+                crate::intel::hover_at(&doc.source, pos.line, pos.character)
+            })
             .flatten();
         Ok(info.map(|h| Hover {
             contents: HoverContents::Scalar(MarkedString::String(h.markdown)),
@@ -315,6 +317,7 @@ fn field_type_label(t: &FieldType) -> String {
         FieldType::Array(inner) => format!("[{}]", field_type_label(inner)),
         FieldType::Record(n) => n.clone(),
         FieldType::EnumRef(n) => n.clone(),
+        FieldType::Ref(n) => format!("Ref<{n}>"),
     }
 }
 

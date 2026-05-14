@@ -481,7 +481,10 @@ fn resolve_recipe_dir(path: &Path) -> Result<(PathBuf, PathBuf)> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         if leaf == "recipe.forage" {
-            let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+            let dir = path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
             return Ok((dir, path.to_path_buf()));
         }
         bail!(
@@ -568,7 +571,9 @@ async fn do_publish(
     let Some(name) = ws.manifest.name.clone() else {
         bail!(
             "{} requires `name = \"<author>/<slug>\"` in forage.toml",
-            ws.root.join(forage_core::workspace::MANIFEST_NAME).display()
+            ws.root
+                .join(forage_core::workspace::MANIFEST_NAME)
+                .display()
         );
     };
     let hub = hub_override

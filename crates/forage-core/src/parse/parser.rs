@@ -472,6 +472,13 @@ impl Parser {
                 self.bump();
                 Ok(FieldType::Bool)
             }
+            Some(Token::Keyword(k)) if k == "Ref" => {
+                self.bump();
+                self.expect_punct(&Token::Lt)?;
+                let target = self.expect_typename()?;
+                self.expect_punct(&Token::Gt)?;
+                Ok(FieldType::Ref(target))
+            }
             Some(Token::TypeName(t)) => {
                 self.bump();
                 // Without resolution, treat any user-declared TypeName as a Record.
@@ -754,9 +761,25 @@ impl Parser {
             let _ = self.eat_punct(&Token::Semicolon) || self.eat_punct(&Token::Comma);
         }
         self.expect_punct(&Token::RBrace)?;
+        // Optional post-fix `as $ident` — introduces a `Ref<TypeName>`
+        // binding visible to subsequent statements in the enclosing
+        // lexical scope.
+        let bind_name = if matches!(self.peek(), Some(Token::Keyword(k)) if k == "as") {
+            self.bump();
+            match self.peek().cloned() {
+                Some(Token::DollarVar(s)) => {
+                    self.bump();
+                    Some(s)
+                }
+                _ => return Err(self.unexpected("'$<name>'")),
+            }
+        } else {
+            None
+        };
         Ok(Emission {
             type_name,
             bindings,
+            bind_name,
             span: self.span_to_here(start),
         })
     }

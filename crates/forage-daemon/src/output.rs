@@ -21,14 +21,18 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use forage_core::ast::{
-    BrowserConfig, CaptureRule, DocumentCaptureRule, Emission, ExtractionExpr, FieldType, JSONValue,
-    Recipe, RecipeType, Statement,
+    BrowserConfig, CaptureRule, DocumentCaptureRule, Emission, ExtractionExpr, FieldType,
+    JSONValue, Recipe, RecipeType, Statement,
 };
 use forage_core::workspace::TypeCatalog;
 use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::error::RunError;
 
+/// Trailing metadata column on every output table — synthetic
+/// record id assigned by the engine at emit time (`rec-0`, …). What
+/// `Ref<T>` field values point at.
+const RECORD_ID_COL: &str = "_id";
 /// Trailing metadata column on every output table — carries the
 /// `ScheduledRun.id` that produced the row.
 const SCHEDULED_RUN_ID_COL: &str = "_scheduled_run_id";
@@ -125,11 +129,15 @@ fn storage_for(ty: &FieldType) -> ColumnStorage {
         FieldType::Int => ColumnStorage::Integer,
         FieldType::Double => ColumnStorage::Real,
         FieldType::Bool => ColumnStorage::Integer,
-        // Arrays, named records, enum references all serialize as JSON
-        // text — keeps the column count bounded and the wire format
-        // flat. Consumers wanting structured access can drill via
-        // sqlite's `json_extract`.
-        FieldType::Array(_) | FieldType::Record(_) | FieldType::EnumRef(_) => ColumnStorage::Json,
+        // Arrays, named records, enum references, and typed refs all
+        // serialize as JSON text — keeps the column count bounded and
+        // the wire format flat. Refs land as `{"_ref": id, "_type":
+        // name}` objects per `EvalValue::Ref::into_json`. Consumers
+        // wanting structured access can drill via sqlite's
+        // `json_extract`.
+        FieldType::Array(_) | FieldType::Record(_) | FieldType::EnumRef(_) | FieldType::Ref(_) => {
+            ColumnStorage::Json
+        }
     }
 }
 
@@ -238,14 +246,17 @@ pub struct WriteTx<'a> {
 }
 
 impl<'a> WriteTx<'a> {
-    /// Insert one row. `fields` is the field map from `Record.fields`
-    /// (an `IndexMap<String, JSONValue>`); the writer projects it
-    /// into the table's column order, missing optional fields become
-    /// SQL NULLs, missing required fields are a write error.
+    /// Insert one row. `record_id` is the synthetic `_id` the engine
+    /// assigned to the record (what `Ref<T>` fields elsewhere point at).
+    /// `fields` is the field map from `Record.fields` (an
+    /// `IndexMap<String, JSONValue>`); the writer projects it into the
+    /// table's column order, missing optional fields become SQL NULLs,
+    /// missing required fields are a write error.
     pub fn write_record(
         &mut self,
         scheduled_run_id: &str,
         emitted_at_ms: i64,
+        record_id: &str,
         type_name: &str,
         fields: &indexmap::IndexMap<String, JSONValue>,
     ) -> Result<(), RunError> {
@@ -258,9 +269,9 @@ impl<'a> WriteTx<'a> {
                     "record type '{type_name}' has no derived table — recipe schema mismatch"
                 ))
             })?;
-        let mut col_names: Vec<String> = Vec::with_capacity(table.field_columns.len() + 2);
-        let mut placeholders: Vec<String> = Vec::with_capacity(table.field_columns.len() + 2);
-        let mut values: Vec<Box<dyn ToSql>> = Vec::with_capacity(table.field_columns.len() + 2);
+        let mut col_names: Vec<String> = Vec::with_capacity(table.field_columns.len() + 3);
+        let mut placeholders: Vec<String> = Vec::with_capacity(table.field_columns.len() + 3);
+        let mut values: Vec<Box<dyn ToSql>> = Vec::with_capacity(table.field_columns.len() + 3);
         for col in &table.field_columns {
             col_names.push(quote_ident(&col.name));
             placeholders.push(format!("?{}", col_names.len()));
@@ -268,6 +279,10 @@ impl<'a> WriteTx<'a> {
             let bound = bind_value(raw, col)?;
             values.push(bound);
         }
+        col_names.push(RECORD_ID_COL.into());
+        placeholders.push(format!("?{}", col_names.len()));
+        values.push(Box::new(record_id.to_string()));
+
         col_names.push(SCHEDULED_RUN_ID_COL.into());
         placeholders.push(format!("?{}", col_names.len()));
         values.push(Box::new(scheduled_run_id.to_string()));
@@ -297,11 +312,16 @@ impl<'a> WriteTx<'a> {
 }
 
 fn ensure_table(conn: &Connection, t: &TableDef) -> rusqlite::Result<()> {
-    let mut cols = Vec::with_capacity(t.field_columns.len() + 2);
+    let mut cols = Vec::with_capacity(t.field_columns.len() + 3);
     for c in &t.field_columns {
         let null = if c.optional { "" } else { " NOT NULL" };
-        cols.push(format!("{} {}{null}", quote_ident(&c.name), c.storage.sql()));
+        cols.push(format!(
+            "{} {}{null}",
+            quote_ident(&c.name),
+            c.storage.sql()
+        ));
     }
+    cols.push(format!("{RECORD_ID_COL} TEXT NOT NULL"));
     cols.push(format!("{SCHEDULED_RUN_ID_COL} TEXT NOT NULL"));
     cols.push(format!("{EMITTED_AT_COL} INTEGER NOT NULL"));
     let sql = format!(
@@ -460,10 +480,7 @@ fn pragma_columns(conn: &Connection, table: &str) -> Result<Vec<String>, RunErro
     Ok(out)
 }
 
-fn sqlite_value_to_json(
-    r: &rusqlite::Row<'_>,
-    idx: usize,
-) -> rusqlite::Result<serde_json::Value> {
+fn sqlite_value_to_json(r: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<serde_json::Value> {
     use rusqlite::types::ValueRef;
     Ok(match r.get_ref(idx)? {
         ValueRef::Null => serde_json::Value::Null,

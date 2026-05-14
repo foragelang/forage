@@ -152,9 +152,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
         ],
     )?;
     if changed == 0 {
-        return Err(DaemonError::UnknownRun {
-            id: run.id.clone(),
-        });
+        return Err(DaemonError::UnknownRun { id: run.id.clone() });
     }
     Ok(())
 }

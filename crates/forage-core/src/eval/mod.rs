@@ -235,6 +235,7 @@ fn kind_of(v: &EvalValue) -> &'static str {
         EvalValue::Object(_) => "object",
         EvalValue::Node(_) => "node",
         EvalValue::NodeList(_) => "nodelist",
+        EvalValue::Ref { .. } => "ref",
     }
 }
 
@@ -255,6 +256,11 @@ fn stringify(v: &EvalValue) -> String {
         )
         .unwrap_or_default(),
         EvalValue::NodeList(xs) => xs.join(","),
+        // A ref stringifies to its target id — useful inside templates
+        // and `toString` pipelines (e.g. logging, debug rendering). The
+        // structured `{_ref, _type}` shape only appears in JSON-bound
+        // contexts via `into_json`.
+        EvalValue::Ref { id, .. } => id.clone(),
     }
 }
 

@@ -21,6 +21,14 @@ pub enum EvalValue {
     Node(String),
     /// `select(...)` result — many node fragments.
     NodeList(Vec<String>),
+    /// Typed reference to a previously-emitted record. Produced by an
+    /// `emit T { … } as $v` binding; the engine writes the bound
+    /// record's `_id` into `id` and the type name into `target_type`.
+    /// Serializes into a snapshot as `{"_ref": <id>, "_type": <type>}`.
+    Ref {
+        target_type: String,
+        id: String,
+    },
 }
 
 impl EvalValue {
@@ -39,10 +47,15 @@ impl EvalValue {
             EvalValue::Object(o) => !o.is_empty(),
             EvalValue::Node(_) => true,
             EvalValue::NodeList(xs) => !xs.is_empty(),
+            // A ref always points at a real emitted record.
+            EvalValue::Ref { .. } => true,
         }
     }
 
-    /// Convert to JSONValue. Nodes serialize as outerHTML strings.
+    /// Convert to JSONValue. Nodes serialize as outerHTML strings; refs
+    /// serialize as a self-describing `{"_ref": id, "_type": type}`
+    /// object so consumers can distinguish typed pointers from arbitrary
+    /// object fields without an out-of-band schema.
     pub fn into_json(self) -> JSONValue {
         match self {
             EvalValue::Null => JSONValue::Null,
@@ -63,6 +76,12 @@ impl EvalValue {
             EvalValue::Node(html) => JSONValue::String(html),
             EvalValue::NodeList(xs) => {
                 JSONValue::Array(xs.into_iter().map(JSONValue::String).collect())
+            }
+            EvalValue::Ref { target_type, id } => {
+                let mut out = IndexMap::new();
+                out.insert("_ref".into(), JSONValue::String(id));
+                out.insert("_type".into(), JSONValue::String(target_type));
+                JSONValue::Object(out)
             }
         }
     }
@@ -120,5 +139,28 @@ impl From<&serde_json::Value> for EvalValue {
 impl From<serde_json::Value> for EvalValue {
     fn from(v: serde_json::Value) -> Self {
         (&v).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_serializes_to_self_describing_object() {
+        // The wire shape distinguishes "this is a typed pointer" from
+        // "this is an arbitrary object with `_ref`/`_type` keys" by
+        // convention: only refs land here, because the engine writes
+        // them through `EvalValue::Ref::into_json`.
+        let r = EvalValue::Ref {
+            target_type: "Product".into(),
+            id: "rec-3".into(),
+        };
+        let j = r.into_json();
+        let JSONValue::Object(o) = j else {
+            panic!("expected object");
+        };
+        assert_eq!(o.get("_ref"), Some(&JSONValue::String("rec-3".into())));
+        assert_eq!(o.get("_type"), Some(&JSONValue::String("Product".into())),);
     }
 }

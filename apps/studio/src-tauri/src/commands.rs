@@ -764,11 +764,7 @@ pub fn auth_logout(hub_url: String) -> Result<(), String> {
 /// recognizable identifier (transform / type / input / enum / secret /
 /// step name).
 #[tauri::command]
-pub fn recipe_hover(
-    source: String,
-    line: u32,
-    col: u32,
-) -> Option<forage_lsp::intel::HoverInfo> {
+pub fn recipe_hover(source: String, line: u32, col: u32) -> Option<forage_lsp::intel::HoverInfo> {
     forage_lsp::intel::hover_at(&source, line, col)
 }
 
@@ -961,7 +957,10 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
             span.clone(),
             format!("unexpected {found}, expected {expected}"),
         ),
-        PE::UnexpectedEof { expected } => (0..0, format!("unexpected end of input, expected {expected}")),
+        PE::UnexpectedEof { expected } => (
+            0..0,
+            format!("unexpected end of input, expected {expected}"),
+        ),
         PE::Generic { span, message } => (span.clone(), message.clone()),
         PE::Lex(le) => (0..0, format!("{le}")),
     }
@@ -1401,7 +1400,9 @@ for $i in $list.items[*] {
             output: ws_root.join(".forage").join("data").join("items.sqlite"),
             enabled: true,
         };
-        let created = daemon.configure_run(slug, cfg.clone()).expect("configure_run");
+        let created = daemon
+            .configure_run(slug, cfg.clone())
+            .expect("configure_run");
 
         let listed = daemon.list_runs().expect("list_runs");
         assert_eq!(listed.len(), 1);
@@ -1416,7 +1417,9 @@ for $i in $list.items[*] {
             enabled: false,
             ..cfg
         };
-        let updated = daemon.configure_run(slug, updated_cfg).expect("configure_run update");
+        let updated = daemon
+            .configure_run(slug, updated_cfg)
+            .expect("configure_run update");
         assert_eq!(updated.id, created.id);
         let after = daemon.list_runs().expect("list_runs after update");
         assert_eq!(after.len(), 1);
@@ -1519,8 +1522,7 @@ for $i in $list.items[*] {
         let err =
             resolve_existing(tmp.path(), Path::new("")).expect_err("empty path must be rejected");
         assert!(err.contains("empty path"), "unexpected error: {err}");
-        let err =
-            resolve_new(tmp.path(), Path::new("")).expect_err("empty path must be rejected");
+        let err = resolve_new(tmp.path(), Path::new("")).expect_err("empty path must be rejected");
         assert!(err.contains("empty path"), "unexpected error: {err}");
     }
 
@@ -1553,7 +1555,10 @@ for $i in $list.items[*] {
         std::fs::write(&decl, "type Dispensary { id: String }\n").unwrap();
 
         let outcome = validate_path(root, &decl, "type Dispensary { id: String }\n");
-        assert!(outcome.ok, "declarations file should validate clean: {outcome:?}");
+        assert!(
+            outcome.ok,
+            "declarations file should validate clean: {outcome:?}"
+        );
         assert!(outcome.diagnostics.is_empty());
     }
 }

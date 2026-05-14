@@ -11,7 +11,14 @@ use ts_rs::TS;
 use crate::ast::{ComparisonOp, Expectation, ExpectationKind, JSONValue};
 use crate::source::LineMap;
 
-/// One emitted record — a type name + the bound fields as plain JSON.
+/// One emitted record — a synthetic `_id`, a type name, and the bound
+/// fields as plain JSON.
+///
+/// `_id` is assigned by the engine at emit time as a sequential string
+/// (`rec-0`, `rec-1`, …) and is what `Ref<T>` field values point at. It
+/// rides through the snapshot and serializes alongside the type-defined
+/// fields so downstream consumers (Studio, the output store) can
+/// resolve ref pointers without a side channel.
 ///
 /// On the TS side it's exported as `RecipeRecord` to avoid colliding
 /// with the built-in `Record<K, V>` utility type — without the rename,
@@ -20,6 +27,9 @@ use crate::source::LineMap;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, rename = "RecipeRecord")]
 pub struct Record {
+    #[serde(rename = "_id")]
+    #[ts(rename = "_id")]
+    pub id: String,
     #[serde(rename = "typeName")]
     #[ts(rename = "typeName")]
     pub type_name: String,
@@ -44,8 +54,20 @@ impl Snapshot {
         }
     }
 
+    /// Push a record into the snapshot. Callers are responsible for
+    /// assigning `_id`; the engine uses `next_record_id` to pull a
+    /// sequential id off the snapshot before constructing the record.
     pub fn emit(&mut self, rec: Record) {
         self.records.push(rec);
+    }
+
+    /// Allocate the next sequential record id (`rec-0`, `rec-1`, …)
+    /// without committing the record. Engines call this when
+    /// constructing a record so they can plug the id into both the
+    /// `Record._id` field and any `Ref<T>` binding the emit introduces
+    /// via `as $v`.
+    pub fn next_record_id(&self) -> String {
+        format!("rec-{}", self.records.len())
     }
 
     pub fn count_by_type(&self, type_name: &str) -> usize {
@@ -152,6 +174,7 @@ mod tests {
             m.insert((*k).to_string(), v.clone());
         }
         Record {
+            id: String::new(),
             type_name: t.into(),
             fields: m,
         }
@@ -231,5 +254,41 @@ mod tests {
         let back: Snapshot = serde_json::from_str(&j).unwrap();
         assert_eq!(back.records.len(), 1);
         assert_eq!(back.records[0].type_name, "Item");
+    }
+
+    #[test]
+    fn record_id_round_trips_through_json() {
+        let mut s = Snapshot::new();
+        s.emit(Record {
+            id: "rec-7".into(),
+            type_name: "Variant".into(),
+            fields: IndexMap::new(),
+        });
+        let j = serde_json::to_string(&s.records[0]).unwrap();
+        // `_id` is the canonical wire name; what `Ref<T>` field values
+        // point at. Keeping the underscore-prefix avoids colliding with
+        // a recipe author's own `id: String` field.
+        assert!(j.contains("\"_id\":\"rec-7\""), "got {j}");
+        let back: Record = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.id, "rec-7");
+        assert_eq!(back.type_name, "Variant");
+    }
+
+    #[test]
+    fn next_record_id_is_sequential() {
+        let mut s = Snapshot::new();
+        assert_eq!(s.next_record_id(), "rec-0");
+        s.emit(Record {
+            id: s.next_record_id(),
+            type_name: "X".into(),
+            fields: IndexMap::new(),
+        });
+        assert_eq!(s.next_record_id(), "rec-1");
+        s.emit(Record {
+            id: s.next_record_id(),
+            type_name: "X".into(),
+            fields: IndexMap::new(),
+        });
+        assert_eq!(s.next_record_id(), "rec-2");
     }
 }

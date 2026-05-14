@@ -68,9 +68,8 @@ pub fn run() {
             // Open the daemon; it loads the workspace once at
             // construction and serves it through `Daemon::workspace()`
             // for both its own scheduler and Studio's command paths.
-            let daemon = forage_daemon::Daemon::open(ws_root.clone()).map_err(|e| {
-                format!("failed to open daemon at {}: {e}", ws_root.display())
-            })?;
+            let daemon = forage_daemon::Daemon::open(ws_root.clone())
+                .map_err(|e| format!("failed to open daemon at {}: {e}", ws_root.display()))?;
 
             // Plug Studio's live browser driver into the daemon so
             // scheduled `engine browser` recipes can run. Without

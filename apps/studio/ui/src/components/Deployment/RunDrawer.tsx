@@ -438,6 +438,21 @@ function renderCell(v: unknown): string {
     if (typeof v === "string") return v.length > 60 ? v.slice(0, 60) + "…" : v;
     if (typeof v === "number" || typeof v === "boolean") return String(v);
     if (Array.isArray(v)) return `[${v.length}]`;
-    if (typeof v === "object") return JSON.stringify(v).slice(0, 60);
+    if (typeof v === "object") {
+        const ref = refValue(v);
+        if (ref) return `→ ${ref.type}(${ref.id})`;
+        return JSON.stringify(v).slice(0, 60);
+    }
     return String(v);
+}
+
+/// A `Ref<T>` field serializes as `{_ref: string, _type: string}` per
+/// `EvalValue::Ref::into_json`. Render the typed pointer instead of the
+/// raw JSON blob so parent-child links stay legible in the run table.
+function refValue(v: object): { id: string; type: string } | null {
+    const o = v as Record<string, unknown>;
+    if (typeof o._ref === "string" && typeof o._type === "string") {
+        return { id: o._ref, type: o._type };
+    }
+    return null;
 }

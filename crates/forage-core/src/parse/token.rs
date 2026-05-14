@@ -184,6 +184,7 @@ pub const KEYWORDS: &[&str] = &[
     "Int",
     "Double",
     "Bool",
+    "Ref",
     // Session auth.
     "secret",
     "session",

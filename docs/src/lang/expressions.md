@@ -24,6 +24,14 @@ $<stepName>.items[*]    // typical
 Inside a `for $x in <expr>` body, `$x` and `$.` both bind to the loop
 item. After the loop ends, `$x` is out of scope.
 
+`emit T { … } as $v` also introduces a name into scope — a typed
+reference (`Ref<T>`) to the record that was just emitted. The binding
+lives until the enclosing lexical block ends; subsequent emits inside
+the same for-loop body (or sibling top-level statements) can refer to
+`$v` when binding their own `Ref<T>` fields. See
+[Types — Typed references](./types.md#typed-references--reft) for the
+full type-check rules.
+
 ## Pipelines
 
 The `|` operator threads a value through a sequence of transforms:

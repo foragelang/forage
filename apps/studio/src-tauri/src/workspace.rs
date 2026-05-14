@@ -556,16 +556,17 @@ mod tests {
                 } => {
                     by_name.insert(name, file_kind);
                 }
-                FileNode::Folder {
-                    name, children, ..
-                } => {
+                FileNode::Folder { name, children, .. } => {
                     folders.insert(name, children);
                 }
             }
         }
 
         // Root-level classification.
-        assert_eq!(by_name.get("forage.toml").copied(), Some(FileKind::Manifest));
+        assert_eq!(
+            by_name.get("forage.toml").copied(),
+            Some(FileKind::Manifest)
+        );
         assert_eq!(
             by_name.get("cannabis.forage").copied(),
             Some(FileKind::Declarations)
@@ -582,9 +583,7 @@ mod tests {
                 } => {
                     recipe_files.insert(name.clone(), *file_kind);
                 }
-                FileNode::Folder {
-                    name, children, ..
-                } => {
+                FileNode::Folder { name, children, .. } => {
                     recipe_subfolders.insert(name.clone(), children.clone());
                 }
             }
@@ -598,7 +597,10 @@ mod tests {
             Some(FileKind::Snapshot)
         );
         // Random file is classified as Other, not silently dropped.
-        assert_eq!(recipe_files.get("README.md").copied(), Some(FileKind::Other));
+        assert_eq!(
+            recipe_files.get("README.md").copied(),
+            Some(FileKind::Other)
+        );
 
         // Fixtures subfolder contains a fixture file.
         let fixtures = recipe_subfolders.get("fixtures").expect("fixtures folder");

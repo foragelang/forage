@@ -64,14 +64,16 @@ async fn configure_run_rejects_bad_cron() {
         cadence: Cadence::Cron {
             expr: "totally invalid".into(),
         },
-        output: ws_root.join(".forage").join("data").join(format!("{slug}.sqlite")),
+        output: ws_root
+            .join(".forage")
+            .join("data")
+            .join(format!("{slug}.sqlite")),
         enabled: true,
     };
-    let err = daemon.configure_run(slug, cfg).expect_err("expected bad-cron");
-    assert!(matches!(
-        err,
-        forage_daemon::DaemonError::BadCron { .. }
-    ));
+    let err = daemon
+        .configure_run(slug, cfg)
+        .expect_err("expected bad-cron");
+    assert!(matches!(err, forage_daemon::DaemonError::BadCron { .. }));
 }
 
 /// A stored cron expression that was valid at configure-time can
@@ -135,7 +137,10 @@ async fn corrupted_stored_cron_records_synthetic_failure() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     assert_eq!(synthetic.outcome, Outcome::Fail);
-    let stall = synthetic.stall.as_deref().expect("synthetic failure carries stall message");
+    let stall = synthetic
+        .stall
+        .as_deref()
+        .expect("synthetic failure carries stall message");
     assert!(
         stall.contains("invalid cron expression"),
         "stall message must explain the failure, got: {stall:?}",

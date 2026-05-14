@@ -22,8 +22,8 @@
 //! two views can't drift.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use forage_daemon::Daemon;

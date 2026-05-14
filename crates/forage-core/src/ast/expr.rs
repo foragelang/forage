@@ -106,14 +106,24 @@ pub struct TransformCall {
     pub args: Vec<ExtractionExpr>,
 }
 
-/// `emit Product { name ← $.name; brand ← $.brand?.name }`.
+/// `emit Product { name ← $.name; brand ← $.brand?.name } as $p`.
 /// Produces one record per execution; the runtime accumulates them.
+///
+/// The optional `bind_name` (post-fix `as $ident`) introduces a
+/// scope-local binding of type `Ref<T>` so that subsequent emits in the
+/// same lexical scope can link back to this record. The leading `$` is
+/// stripped — `bind_name` carries just the identifier text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Emission {
     pub type_name: String,
     pub bindings: Vec<FieldBinding>,
-    /// Source range from `emit` keyword through the closing `}`. Populated
-    /// by the parser; default (`0..0`) when constructed by hand.
+    /// `emit T { … } as $v` — the identifier after `as`, without the
+    /// leading `$`. `None` when the emit isn't bound.
+    #[serde(default)]
+    pub bind_name: Option<String>,
+    /// Source range from `emit` keyword through the closing `}` (or
+    /// through the `$ident` suffix when an `as` binding is present).
+    /// Populated by the parser; default (`0..0`) when constructed by hand.
     #[serde(default)]
     pub span: Span,
 }

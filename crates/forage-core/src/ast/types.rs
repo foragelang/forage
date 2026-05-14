@@ -43,6 +43,11 @@ pub enum FieldType {
     Record(String),
     /// Named enum reference.
     EnumRef(String),
+    /// `Ref<T>` — typed reference to a record of type `T`. The value at
+    /// runtime is the `_id` of an emitted record of that type, carried
+    /// as `EvalValue::Ref` so the engine can serialize it as a typed
+    /// pointer rather than a bare string FK.
+    Ref(String),
 }
 
 /// `enum MenuType { RECREATIONAL, MEDICAL }`.

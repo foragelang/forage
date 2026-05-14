@@ -67,18 +67,14 @@ fn recipe_local_overrides_shared_type() {
 fn duplicate_across_declarations_files_is_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
-    write(
-        &root.join("a.forage"),
-        "type Product { id: String }\n",
-    );
-    write(
-        &root.join("b.forage"),
-        "type Product { id: String }\n",
-    );
+    write(&root.join("a.forage"), "type Product { id: String }\n");
+    write(&root.join("b.forage"), "type Product { id: String }\n");
     let recipe_path = root.join("r").join("recipe.forage");
     write(&recipe_path, "recipe \"r\"\nengine http\n");
     let ws = workspace::load(root).unwrap();
-    let err = ws.catalog_from_disk(&recipe_path).expect_err("duplicate must fail");
+    let err = ws
+        .catalog_from_disk(&recipe_path)
+        .expect_err("duplicate must fail");
     match err {
         WorkspaceError::DuplicateType { name, paths } => {
             assert_eq!(name, "Product");
@@ -95,7 +91,10 @@ fn discover_walks_ancestors_and_returns_none_outside() {
     let nested = root.join("a").join("b").join("c");
     fs::create_dir_all(&nested).unwrap();
     let ws = discover(&nested).expect("ancestor walk should find marker");
-    assert_eq!(ws.root.canonicalize().unwrap(), root.canonicalize().unwrap());
+    assert_eq!(
+        ws.root.canonicalize().unwrap(),
+        root.canonicalize().unwrap()
+    );
 
     let stranded = tempfile::tempdir().unwrap();
     assert!(

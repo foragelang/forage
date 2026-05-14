@@ -450,7 +450,7 @@ impl<'t> Engine<'t> {
         &self,
         em: &Emission,
         evaluator: &Evaluator<'_>,
-        scope: &Scope,
+        scope: &mut Scope,
         snapshot: &mut Snapshot,
         emit_counts: &mut IndexMap<String, usize>,
     ) -> HttpResult<()> {
@@ -459,7 +459,22 @@ impl<'t> Engine<'t> {
             let v = evaluator.eval_extraction(&b.expr, scope)?;
             fields.insert(b.field_name.clone(), v.into_json());
         }
+        let id = snapshot.next_record_id();
+        // If the emit was post-fixed with `as $v`, bind a `Ref` value
+        // for the freshly-emitted record into the current scope so
+        // sibling emits can reference it. The validator guarantees the
+        // identifier is well-formed and not shadowing.
+        if let Some(name) = &em.bind_name {
+            scope.bind(
+                name,
+                EvalValue::Ref {
+                    target_type: em.type_name.clone(),
+                    id: id.clone(),
+                },
+            );
+        }
         snapshot.emit(Record {
+            id,
             type_name: em.type_name.clone(),
             fields,
         });
@@ -1362,5 +1377,85 @@ mod tests {
         assert!(err.to_string().contains("stopped by debugger"));
         let iters = dbg.seen_iterations.lock().unwrap();
         assert_eq!(iters.len(), 1, "stopped before iter #1 could fire");
+    }
+
+    #[tokio::test]
+    async fn emit_as_binding_flows_through_typed_ref() {
+        // End-to-end: `emit Product { … } as $p`, then a sibling
+        // `emit Variant { product ← $p }` should land a snapshot record
+        // whose `product` field carries the previously-emitted
+        // Product's `_id` inside a `Ref` JSON object.
+        let src = r#"
+            recipe "refs"
+            engine http
+            type Product { id: String }
+            type Variant {
+                product: Ref<Product>
+                id:      String
+            }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $p in $list.items[*] {
+                emit Product { id ← $p.id } as $prod
+                emit Variant { product ← $prod, id ← $p.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let exchange = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![exchange]);
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+
+        assert_eq!(snap.records.len(), 4);
+        // Records interleave: Product, Variant, Product, Variant.
+        assert_eq!(snap.records[0].type_name, "Product");
+        assert_eq!(snap.records[0].id, "rec-0");
+        assert_eq!(snap.records[1].type_name, "Variant");
+        assert_eq!(snap.records[1].id, "rec-1");
+        assert_eq!(snap.records[2].type_name, "Product");
+        assert_eq!(snap.records[2].id, "rec-2");
+        assert_eq!(snap.records[3].type_name, "Variant");
+        assert_eq!(snap.records[3].id, "rec-3");
+
+        // Variant.product points at the immediately-preceding Product.
+        let JSONValue::Object(ref product_ref) = snap.records[1].fields["product"] else {
+            panic!(
+                "expected Variant.product to be an object Ref; got {:?}",
+                snap.records[1].fields["product"],
+            );
+        };
+        assert_eq!(
+            product_ref.get("_ref"),
+            Some(&JSONValue::String("rec-0".into())),
+        );
+        assert_eq!(
+            product_ref.get("_type"),
+            Some(&JSONValue::String("Product".into())),
+        );
+
+        // And the second Variant points at the second Product. The
+        // for-loop iteration resets the binding, so `$prod` always
+        // refers to the Product that was just emitted in the same
+        // iteration — not the one from the previous iteration.
+        let JSONValue::Object(ref product_ref_2) = snap.records[3].fields["product"] else {
+            panic!("expected second Variant.product to be a Ref object");
+        };
+        assert_eq!(
+            product_ref_2.get("_ref"),
+            Some(&JSONValue::String("rec-2".into())),
+        );
     }
 }

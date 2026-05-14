@@ -86,10 +86,34 @@ mod tests {
     fn position_resolves_lines_and_columns() {
         let src = "line1\nline two\nthird";
         let lm = LineMap::new(src);
-        assert_eq!(lm.position(0), Position { line: 0, character: 0 });
-        assert_eq!(lm.position(5), Position { line: 0, character: 5 });
-        assert_eq!(lm.position(6), Position { line: 1, character: 0 });
-        assert_eq!(lm.position(15), Position { line: 2, character: 0 });
+        assert_eq!(
+            lm.position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            lm.position(5),
+            Position {
+                line: 0,
+                character: 5
+            }
+        );
+        assert_eq!(
+            lm.position(6),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            lm.position(15),
+            Position {
+                line: 2,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -97,14 +121,32 @@ mod tests {
         let src = "abc\ndefgh\nij";
         let lm = LineMap::new(src);
         let r = lm.range(4..9);
-        assert_eq!(r.start, Position { line: 1, character: 0 });
-        assert_eq!(r.end, Position { line: 1, character: 5 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 1,
+                character: 5
+            }
+        );
     }
 
     #[test]
     fn offset_past_end_clamps() {
         let src = "abc";
         let lm = LineMap::new(src);
-        assert_eq!(lm.position(99), Position { line: 0, character: 3 });
+        assert_eq!(
+            lm.position(99),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
     }
 }

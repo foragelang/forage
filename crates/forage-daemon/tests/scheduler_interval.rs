@@ -129,11 +129,7 @@ async fn interval_run_fires_when_clock_advances() {
     }
 }
 
-fn build_run(
-    slug: &str,
-    cadence: Cadence,
-    next_run: Option<i64>,
-) -> forage_daemon::Run {
+fn build_run(slug: &str, cadence: Cadence, next_run: Option<i64>) -> forage_daemon::Run {
     forage_daemon::Run {
         id: ulid::Ulid::new().to_string(),
         recipe_slug: slug.into(),

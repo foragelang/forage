@@ -91,6 +91,7 @@ fn output_store_creates_table_with_metadata_columns() {
     assert!(names.contains(&"available"));
     assert!(names.contains(&"stock_units"));
     assert!(names.contains(&"tags"));
+    assert!(names.contains(&"_id"));
     assert!(names.contains(&"_scheduled_run_id"));
     assert!(names.contains(&"_emitted_at"));
 
@@ -102,6 +103,7 @@ fn output_store_creates_table_with_metadata_columns() {
     assert_eq!(by_name["available"], "INTEGER");
     assert_eq!(by_name["stock_units"], "INTEGER");
     assert_eq!(by_name["tags"], "TEXT"); // JSON columns store as TEXT
+    assert_eq!(by_name["_id"], "TEXT");
     assert_eq!(by_name["_scheduled_run_id"], "TEXT");
     assert_eq!(by_name["_emitted_at"], "INTEGER");
 }
@@ -122,10 +124,7 @@ fn write_record_round_trips_through_load_records() {
     );
     fields.insert("price".into(), forage_core::ast::JSONValue::Double(9.95));
     fields.insert("available".into(), forage_core::ast::JSONValue::Bool(true));
-    fields.insert(
-        "stock_units".into(),
-        forage_core::ast::JSONValue::Int(42),
-    );
+    fields.insert("stock_units".into(), forage_core::ast::JSONValue::Int(42));
     fields.insert(
         "tags".into(),
         forage_core::ast::JSONValue::Array(vec![
@@ -135,25 +134,27 @@ fn write_record_round_trips_through_load_records() {
     );
 
     let mut tx = store.begin_tx().unwrap();
-    tx.write_record("sched-1", 1_700_000_000_000, "Product", &fields)
+    tx.write_record("sched-1", 1_700_000_000_000, "rec-0", "Product", &fields)
         .expect("write");
     tx.commit().expect("commit");
 
-    let records =
-        forage_daemon::load_records(&path, "sched-1", "Product", 10).expect("load");
+    let records = forage_daemon::load_records(&path, "sched-1", "Product", 10).expect("load");
     assert_eq!(records.len(), 1);
     let obj = records[0].as_object().unwrap();
     assert_eq!(obj["id"], serde_json::json!("sku-1"));
     assert_eq!(obj["price"], serde_json::json!(9.95));
     assert_eq!(obj["available"], serde_json::json!(1));
     assert_eq!(obj["stock_units"], serde_json::json!(42));
+    assert_eq!(obj["_id"], serde_json::json!("rec-0"));
     // Tags round-trip as the JSON-encoded array text (it's stored in
     // a TEXT column with the `Json` storage tag).
     let tags_text = obj["tags"].as_str().expect("tags is text-encoded JSON");
     let tags: serde_json::Value = serde_json::from_str(tags_text).unwrap();
     assert_eq!(tags, serde_json::json!(["featured", "flash"]));
     // Bookkeeping columns are filtered out at the load boundary — the
-    // UI tables show recipe-declared fields, not internal columns.
+    // UI tables show recipe-declared fields + `_id` (the synthetic
+    // record identity that `Ref<T>` values point at), not the audit
+    // metadata.
     assert!(!obj.contains_key("_scheduled_run_id"));
     assert!(!obj.contains_key("_emitted_at"));
 }
@@ -175,18 +176,14 @@ fn load_records_excludes_bookkeeping_columns() {
     fields.insert("price".into(), forage_core::ast::JSONValue::Double(9.95));
     fields.insert("available".into(), forage_core::ast::JSONValue::Bool(true));
     fields.insert("stock_units".into(), forage_core::ast::JSONValue::Int(1));
-    fields.insert(
-        "tags".into(),
-        forage_core::ast::JSONValue::Array(vec![]),
-    );
+    fields.insert("tags".into(), forage_core::ast::JSONValue::Array(vec![]));
 
     let mut tx = store.begin_tx().unwrap();
-    tx.write_record("sched-1", 1_700_000_000_000, "Product", &fields)
+    tx.write_record("sched-1", 1_700_000_000_000, "rec-0", "Product", &fields)
         .expect("write");
     tx.commit().expect("commit");
 
-    let rows =
-        forage_daemon::load_records(&path, "sched-1", "Product", 10).expect("load");
+    let rows = forage_daemon::load_records(&path, "sched-1", "Product", 10).expect("load");
     let row = rows[0].as_object().unwrap();
     let keys: std::collections::HashSet<&str> = row.keys().map(|s| s.as_str()).collect();
     assert!(keys.contains("id"));
@@ -194,6 +191,7 @@ fn load_records_excludes_bookkeeping_columns() {
     assert!(keys.contains("available"));
     assert!(keys.contains("stock_units"));
     assert!(keys.contains("tags"));
+    assert!(keys.contains("_id"));
     assert!(!keys.contains("_scheduled_run_id"));
     assert!(!keys.contains("_emitted_at"));
 }

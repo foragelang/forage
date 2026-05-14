@@ -26,6 +26,7 @@ type Dispensary {
     website: String?
 }
 type Variant {
+    product: Ref<Product>
     externalId: String
     name: String?
     sizeValue: Double?
@@ -41,8 +42,8 @@ type Product {
     images: [String]
 }
 type PriceObservation {
-    productExternalId: String
-    variantExternalId: String
+    product: Ref<Product>
+    variant: Ref<Variant>
     menuType: MenuType
     price: Double?
     promoPrice: Double?
@@ -92,19 +93,20 @@ browser {
                 productType      ← coalesce($product.search_attributes.kind,
                                              $product.search_attributes.custom_product_subtype)
                 images           ← $product.search_attributes.image_urls
-            }
+            } as $prod
 
             for $weight in $product.search_attributes.available_weights[*] {
                 emit Variant {
+                    product    ← $prod
                     externalId ← "{$product.search_attributes.objectID}:{$weight}"
                     name       ← $weight
                     sizeValue  ← $weight | parseJaneWeight
                     sizeUnit   ← $weight | janeWeightUnit
-                }
+                } as $var
 
                 emit PriceObservation {
-                    productExternalId ← $product.search_attributes.objectID
-                    variantExternalId ← "{$product.search_attributes.objectID}:{$weight}"
+                    product           ← $prod
+                    variant           ← $var
                     menuType          ← $input.menuType
                     price             ← getField($product.search_attributes, "price_{$weight | janeWeightKey}")
                     promoPrice        ← getField($product.search_attributes, "discounted_price_{$weight | janeWeightKey}")

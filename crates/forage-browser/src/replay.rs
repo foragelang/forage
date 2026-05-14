@@ -176,7 +176,7 @@ fn run_for_each_item(
 fn run_emit(
     em: &Emission,
     evaluator: &Evaluator<'_>,
-    scope: &Scope,
+    scope: &mut Scope,
     snapshot: &mut Snapshot,
 ) -> BrowserResult<()> {
     let mut fields: IndexMap<String, JSONValue> = IndexMap::new();
@@ -184,7 +184,18 @@ fn run_emit(
         let v = evaluator.eval_extraction(&b.expr, scope)?;
         fields.insert(b.field_name.clone(), v.into_json());
     }
+    let id = snapshot.next_record_id();
+    if let Some(name) = &em.bind_name {
+        scope.bind(
+            name,
+            EvalValue::Ref {
+                target_type: em.type_name.clone(),
+                id: id.clone(),
+            },
+        );
+    }
     snapshot.emit(Record {
+        id,
         type_name: em.type_name.clone(),
         fields,
     });

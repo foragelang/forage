@@ -72,7 +72,10 @@ async fn run_loop(daemon: Arc<Daemon>) {
             NextFire::None => None,
         };
 
-        let deadline_ms = plan.as_ref().map(|(at, _)| *at).unwrap_or(now_ms + IDLE_POLL_MS);
+        let deadline_ms = plan
+            .as_ref()
+            .map(|(at, _)| *at)
+            .unwrap_or(now_ms + IDLE_POLL_MS);
 
         tokio::select! {
             biased;
@@ -108,8 +111,14 @@ async fn run_loop(daemon: Arc<Daemon>) {
 /// failed `ScheduledRun` + `Health::Fail`, rather than silently skipping
 /// the run forever.
 enum NextFire {
-    Run { at: i64, run_id: String },
-    SyntheticFail { run_id: String, stall_message: String },
+    Run {
+        at: i64,
+        run_id: String,
+    },
+    SyntheticFail {
+        run_id: String,
+        stall_message: String,
+    },
     None,
 }
 
@@ -124,7 +133,10 @@ async fn record_synthetic_failure(
 ) -> Result<(), DaemonError> {
     let at_ms = daemon.now_ms();
     let run = {
-        let conn = daemon.connection.lock().expect("daemon connection poisoned");
+        let conn = daemon
+            .connection
+            .lock()
+            .expect("daemon connection poisoned");
         crate::db::get_run_by_id(&conn, run_id)?
     };
     let Some(run) = run else {
@@ -144,7 +156,10 @@ async fn record_synthetic_failure(
         stall: Some(stall_message.to_string()),
     };
     {
-        let mut conn = daemon.connection.lock().expect("daemon connection poisoned");
+        let mut conn = daemon
+            .connection
+            .lock()
+            .expect("daemon connection poisoned");
         let tx = conn.transaction()?;
         crate::db::insert_scheduled_run(&tx, &scheduled)?;
         let updated = crate::model::Run {
@@ -155,7 +170,12 @@ async fn record_synthetic_failure(
         crate::db::update_run(&tx, &updated)?;
         tx.commit()?;
     }
-    if let Some(cb) = daemon.run_completed_cb.lock().expect("cb poisoned").as_ref() {
+    if let Some(cb) = daemon
+        .run_completed_cb
+        .lock()
+        .expect("cb poisoned")
+        .as_ref()
+    {
         cb(&scheduled);
     }
     Ok(())

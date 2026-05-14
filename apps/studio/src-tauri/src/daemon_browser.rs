@@ -51,8 +51,14 @@ impl LiveBrowserDriver for StudioLiveBrowserDriver {
         // `BrowserDriverError` is a boxed `Error + Send + Sync`, so
         // promote the string error through `From<String>` for
         // `Box<dyn Error + Send + Sync>` — the standard erasure path.
-        run_live(&self.app, recipe, inputs, secrets, LiveRunOptions::default())
-            .await
-            .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
+        run_live(
+            &self.app,
+            recipe,
+            inputs,
+            secrets,
+            LiveRunOptions::default(),
+        )
+        .await
+        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
     }
 }

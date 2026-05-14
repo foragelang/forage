@@ -68,7 +68,10 @@ pub enum ValidationCode {
     DuplicateEnum,
     DuplicateInput,
     DuplicateSecret,
+    DuplicateBinding,
     MissingRequiredField,
+    MissingRefAssignment,
+    RefTypeMismatch,
     UnknownField,
     UnknownEnumVariant,
     MissingBrowserConfig,
@@ -121,8 +124,15 @@ struct Validator<'a> {
     issues: Vec<ValidationIssue>,
     /// Variable bindings in scope at the current walking position. Includes
     /// step names (recipe-body-wide), for-loop variables (nested),
-    /// htmlPrime-extracted vars (from auth or step.extract.regex.groups).
+    /// htmlPrime-extracted vars (from auth or step.extract.regex.groups),
+    /// and `emit … as $v` bindings.
     known_vars: std::collections::HashSet<String>,
+    /// `emit … as $v` bindings active at the current walking position,
+    /// mapping the bare identifier (no `$`) to the emit's target type
+    /// name. Used for `Ref<T>` field type-checks: a `product ← $p`
+    /// binding inside an `emit Variant {…}` is valid only when `$p` is
+    /// in this map and points at `Product`.
+    ref_bindings: std::collections::HashMap<String, String>,
     /// Source range of the enclosing AST node being checked. Set by the
     /// callers as they descend (`with_span` / `Statement::span`) and read
     /// by `err_here` / `warn_here` so diagnostics inherit the smallest
@@ -159,6 +169,7 @@ impl<'a> Validator<'a> {
             catalog,
             issues: Vec::new(),
             known_vars,
+            ref_bindings: std::collections::HashMap::new(),
             cur_span: 0..0,
         }
     }
@@ -350,7 +361,26 @@ impl<'a> Validator<'a> {
                     v.check_body(b);
                 }
             }
-            Statement::Emit(em) => v.check_emit(em),
+            Statement::Emit(em) => {
+                v.check_emit(em);
+                // After the emit, its `as $v` binding (if any) is in
+                // scope for subsequent statements in the same lexical
+                // body. Tracked separately from `known_vars` so the
+                // type-checker can ask "is $p a ref?" and "to what?".
+                if let Some(name) = &em.bind_name {
+                    if v.ref_bindings.contains_key(name) {
+                        v.err_here(
+                            ValidationCode::DuplicateBinding,
+                            format!(
+                                "binding '${name}' is already declared in this scope",
+                            ),
+                        );
+                    } else {
+                        v.ref_bindings
+                            .insert(name.clone(), em.type_name.clone());
+                    }
+                }
+            }
             Statement::ForLoop {
                 variable,
                 collection,
@@ -358,10 +388,25 @@ impl<'a> Validator<'a> {
                 ..
             } => {
                 v.check_extraction(collection);
+                // Lexical scoping for for-loop bodies: any `as $v` (and
+                // any inner for-loop variable) that appears inside must
+                // disappear when the loop ends, so siblings can't see
+                // it. Snapshot the binding state on entry and restore on
+                // exit.
                 let inserted = v.known_vars.insert(variable.clone());
+                let saved_refs = v.ref_bindings.clone();
+                if v.ref_bindings.contains_key(variable) {
+                    v.err_here(
+                        ValidationCode::DuplicateBinding,
+                        format!(
+                            "for-loop variable '${variable}' shadows an `as` binding from an enclosing scope",
+                        ),
+                    );
+                }
                 for s in body {
                     v.check_statement(s);
                 }
+                v.ref_bindings = saved_refs;
                 if inserted {
                     v.known_vars.remove(variable);
                 }
@@ -380,24 +425,93 @@ impl<'a> Validator<'a> {
             };
             let bound: std::collections::HashSet<&str> =
                 em.bindings.iter().map(|b| b.field_name.as_str()).collect();
+            // Required fields must be bound; `Ref<T>` fields are
+            // *always* required regardless of the `optional` flag —
+            // there is no implicit-null ref. (We re-flag them with the
+            // dedicated `MissingRefAssignment` code so authors get a
+            // clearer message than the generic missing-field one.)
             for f in &ty.fields {
-                if !f.optional && !bound.contains(f.name.as_str()) {
-                    v.err_here(
-                        ValidationCode::MissingRequiredField,
-                        format!("emit {} missing required field '{}'", em.type_name, f.name),
-                    );
+                if !bound.contains(f.name.as_str()) {
+                    if matches!(f.ty, FieldType::Ref(_)) {
+                        v.err_here(
+                            ValidationCode::MissingRefAssignment,
+                            format!(
+                                "emit {} missing required Ref field '{}' (every Ref<T> field must be explicitly bound)",
+                                em.type_name, f.name,
+                            ),
+                        );
+                    } else if !f.optional {
+                        v.err_here(
+                            ValidationCode::MissingRequiredField,
+                            format!("emit {} missing required field '{}'", em.type_name, f.name),
+                        );
+                    }
                 }
             }
             for b in &em.bindings {
-                if ty.field(&b.field_name).is_none() {
-                    v.err_here(
-                        ValidationCode::UnknownField,
-                        format!("type {} has no field '{}'", em.type_name, b.field_name),
-                    );
+                match ty.field(&b.field_name) {
+                    None => {
+                        v.err_here(
+                            ValidationCode::UnknownField,
+                            format!("type {} has no field '{}'", em.type_name, b.field_name),
+                        );
+                    }
+                    Some(f) => {
+                        if let FieldType::Ref(target) = &f.ty {
+                            v.check_ref_expr(target, &b.field_name, &em.type_name, &b.expr);
+                        }
+                    }
                 }
                 v.check_extraction(&b.expr);
             }
         });
+    }
+
+    /// The RHS of a `Ref<T>` field binding must evaluate to a
+    /// `Ref<T>` value. The only construct that produces one is a path
+    /// expression naming a variable bound via `emit … as $v` — so this
+    /// check rejects literals, templates, pipes, and case-ofs outright,
+    /// and (for path expressions) requires the head variable to live in
+    /// `ref_bindings` with a matching target type.
+    fn check_ref_expr(
+        &mut self,
+        target: &str,
+        field_name: &str,
+        emit_type: &str,
+        expr: &ExtractionExpr,
+    ) {
+        let var = match expr {
+            ExtractionExpr::Path(PathExpr::Variable(name)) => Some(name),
+            _ => None,
+        };
+        let Some(var) = var else {
+            self.err_here(
+                ValidationCode::RefTypeMismatch,
+                format!(
+                    "field '{emit_type}.{field_name}' is Ref<{target}>; expected a `$name` introduced by `emit {target} {{…}} as $name`",
+                ),
+            );
+            return;
+        };
+        match self.ref_bindings.get(var) {
+            None => {
+                self.err_here(
+                    ValidationCode::RefTypeMismatch,
+                    format!(
+                        "field '{emit_type}.{field_name}' expects a Ref<{target}>; '${var}' is not an `emit … as $name` binding",
+                    ),
+                );
+            }
+            Some(bound_type) if bound_type != target => {
+                self.err_here(
+                    ValidationCode::RefTypeMismatch,
+                    format!(
+                        "field '{emit_type}.{field_name}' expects Ref<{target}> but '${var}' is Ref<{bound_type}>",
+                    ),
+                );
+            }
+            Some(_) => {}
+        }
     }
 
     fn check_extraction(&mut self, e: &ExtractionExpr) {
@@ -620,13 +734,22 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            FieldType::Ref(name) => {
+                if self.catalog.ty(name).is_none() {
+                    self.err_here(
+                        ValidationCode::UnknownType,
+                        format!("{where_} references unknown type 'Ref<{name}>'"),
+                    );
+                }
+            }
             FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
         }
     }
 }
 
 /// Walk a body recursively and collect every name introduced into scope:
-/// step names, `extract.regex` group bindings, nested for-loop variables.
+/// step names, `extract.regex` group bindings, nested for-loop variables,
+/// and `emit … as $v` bindings.
 fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<String>) {
     for s in body {
         match s {
@@ -642,7 +765,11 @@ fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<Stri
                 out.insert(variable.clone());
                 collect_bindings(body, out);
             }
-            Statement::Emit(_) => {}
+            Statement::Emit(em) => {
+                if let Some(name) = &em.bind_name {
+                    out.insert(name.clone());
+                }
+            }
         }
     }
 }
@@ -830,6 +957,201 @@ emit Item { }
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::UnknownSecret))
+        );
+    }
+
+    #[test]
+    fn ref_to_unknown_target_type_flagged() {
+        let src = r#"
+            recipe "bad"
+            engine http
+            type Variant { product: Ref<DoesNotExist>, id: String }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Variant { id ← $p.id, product ← $missing }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::UnknownType
+                && i.message.contains("Ref<DoesNotExist>")),
+            "expected UnknownType for Ref<DoesNotExist>; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn missing_ref_assignment_flagged() {
+        // A `Ref<T>` field has no implicit default — the emit site must
+        // bind it explicitly. Even on optional fields the binding is
+        // required (the meaningful absence of a ref is "no record was
+        // emitted as the parent"; you can't infer it).
+        let src = r#"
+            recipe "missing"
+            engine http
+            type Product { id: String }
+            type Variant {
+                product: Ref<Product>
+                id:      String
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+                emit Variant { id ← $p.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::MissingRefAssignment),
+            "expected MissingRefAssignment; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn ref_type_mismatch_flagged() {
+        let src = r#"
+            recipe "mismatch"
+            engine http
+            type Product { id: String }
+            type Category { id: String }
+            type Variant {
+                product: Ref<Product>
+                id:      String
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Category { id ← $p.id } as $cat
+                emit Variant { product ← $cat, id ← $p.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RefTypeMismatch),
+            "expected RefTypeMismatch; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn ref_field_bound_to_literal_flagged() {
+        let src = r#"
+            recipe "lit"
+            engine http
+            type Product { id: String }
+            type Variant {
+                product: Ref<Product>
+                id:      String
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Variant { product ← "rec-0", id ← $p.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RefTypeMismatch),
+            "expected RefTypeMismatch; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn duplicate_as_binding_flagged() {
+        let src = r#"
+            recipe "dup"
+            engine http
+            type Product { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+                emit Product { id ← $p.id } as $prod
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::DuplicateBinding),
+            "expected DuplicateBinding; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn valid_typed_ref_recipe_has_no_errors() {
+        // End-to-end: nested for-loops with `emit … as $v` and refs
+        // pointing back to outer-scope emits — should validate cleanly.
+        let src = r#"
+            recipe "ok"
+            engine http
+            type Product { id: String }
+            type Variant {
+                product: Ref<Product>
+                id:      String
+            }
+            type PriceObservation {
+                product: Ref<Product>
+                variant: Ref<Variant>
+                price:   Double?
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+                for $v in $p.variants[*] {
+                    emit Variant { product ← $prod, id ← $v.id } as $var
+                    emit PriceObservation {
+                        product ← $prod
+                        variant ← $var
+                        price   ← $v.price
+                    }
+                }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn as_binding_does_not_leak_out_of_for_loop() {
+        // `$prod` is introduced inside the for-loop body; a sibling emit
+        // outside the loop must NOT see it.
+        let src = r#"
+            recipe "scope"
+            engine http
+            type Product { id: String }
+            type Wrap {
+                product: Ref<Product>
+                id:      String
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+            }
+            emit Wrap { product ← $prod, id ← "x" }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RefTypeMismatch),
+            "expected RefTypeMismatch when $prod leaks out of the loop; got {:?}",
+            rep.issues,
         );
     }
 }
