@@ -37,21 +37,11 @@ impl<'r> Evaluator<'r> {
             ExtractionExpr::Pipe(head, calls) => {
                 let mut v = self.eval_extraction(head, scope)?;
                 for call in calls {
-                    v = self.apply_transform(&call.name, v, &call.args, scope)?;
+                    v = self.apply_pipe_call(&call.name, v, &call.args, scope)?;
                 }
                 Ok(v)
             }
-            ExtractionExpr::Call { name, args } => {
-                // Function-call form: feed the *current* binding as the head value
-                // and the explicit args as args. If there's no current (e.g. top-level),
-                // pass Null.
-                let head = scope
-                    .current
-                    .clone()
-                    .or_else(|| Some(EvalValue::Null))
-                    .unwrap();
-                self.apply_transform(name, head, args, scope)
-            }
+            ExtractionExpr::Call { name, args } => self.apply_direct_call(name, args, scope),
             ExtractionExpr::CaseOf {
                 scrutinee,
                 branches,
@@ -178,22 +168,94 @@ impl<'r> Evaluator<'r> {
         Ok(out)
     }
 
-    fn apply_transform(
+    /// Pipe-style application: `<head> |> name(args...)`. The pipe head
+    /// is always passed in as the leading value; for user fns it
+    /// becomes param 0, and `args` fill params 1..N.
+    fn apply_pipe_call(
         &self,
         name: &str,
         head: EvalValue,
         args: &[ExtractionExpr],
         scope: &Scope,
     ) -> Result<EvalValue, EvalError> {
-        let f = self
-            .registry
-            .get(name)
-            .ok_or_else(|| EvalError::UnknownTransform { name: name.into() })?;
         let mut resolved = Vec::with_capacity(args.len());
         for a in args {
             resolved.push(self.eval_extraction(a, scope)?);
         }
+        if let Some(decl) = self.registry.get_user_fn(name) {
+            return self.apply_user_fn(decl, head, &resolved, scope);
+        }
+        let f = self
+            .registry
+            .get(name)
+            .ok_or_else(|| EvalError::UnknownTransform { name: name.into() })?;
         f(head, &resolved)
+    }
+
+    /// Direct-call application: `name(args...)`. For user fns every
+    /// argument is explicit — args[0] is param 0, args[1..] fill the
+    /// rest. For built-in transforms we preserve the historical
+    /// convention of passing `scope.current` as the head value because
+    /// the cannabis-domain transforms rely on it.
+    fn apply_direct_call(
+        &self,
+        name: &str,
+        args: &[ExtractionExpr],
+        scope: &Scope,
+    ) -> Result<EvalValue, EvalError> {
+        let mut resolved = Vec::with_capacity(args.len());
+        for a in args {
+            resolved.push(self.eval_extraction(a, scope)?);
+        }
+        if let Some(decl) = self.registry.get_user_fn(name) {
+            // Pull out the head (param 0) from the explicit args.
+            let (head, rest) = match resolved.split_first() {
+                Some((h, r)) => (h.clone(), r.to_vec()),
+                None => (EvalValue::Null, Vec::new()),
+            };
+            return self.apply_user_fn(decl, head, &rest, scope);
+        }
+        let f = self
+            .registry
+            .get(name)
+            .ok_or_else(|| EvalError::UnknownTransform { name: name.into() })?;
+        let head = scope.current.clone().unwrap_or(EvalValue::Null);
+        f(head, &resolved)
+    }
+
+    /// Evaluate a user-fn body with parameters bound to (head, args...).
+    /// The body sees only the parameters plus the recipe-level
+    /// `$secret.*` / `$input.*` paths — for-loop variables and `as $v`
+    /// bindings at the call site are deliberately invisible.
+    fn apply_user_fn(
+        &self,
+        decl: &crate::ast::FnDecl,
+        head: EvalValue,
+        args: &[EvalValue],
+        scope: &Scope,
+    ) -> Result<EvalValue, EvalError> {
+        let expected = decl.params.len();
+        let provided = args.len() + 1; // head + explicit args
+        if provided != expected {
+            return Err(EvalError::Generic(format!(
+                "function '{}' expects {expected} argument{}, got {provided}",
+                decl.name,
+                if expected == 1 { "" } else { "s" },
+            )));
+        }
+        // Build a closed scope from the parent's inputs + secrets only.
+        // The parent's frames (for-loop vars, `as $v` bindings) are
+        // deliberately excluded so functions are closed units.
+        let mut child = Scope::new()
+            .with_inputs(scope.inputs().clone())
+            .with_secrets(scope.secrets_map().clone());
+        if let Some((first, rest)) = decl.params.split_first() {
+            child.bind(first, head);
+            for (p, v) in rest.iter().zip(args.iter()) {
+                child.bind(p, v.clone());
+            }
+        }
+        self.eval_extraction(&decl.body, &child)
     }
 }
 

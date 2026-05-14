@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::ast::FnDecl;
 use crate::eval::error::EvalError;
 use crate::eval::html;
 use crate::eval::value::EvalValue;
@@ -16,6 +17,12 @@ pub type TransformFn = fn(EvalValue, &[EvalValue]) -> Result<EvalValue, EvalErro
 #[derive(Default)]
 pub struct TransformRegistry {
     table: HashMap<String, TransformFn>,
+    /// User-defined transforms cloned from the recipe at engine boot.
+    /// Layered on top of the built-ins: `get_user_fn` is consulted
+    /// before the built-in table, so a recipe-level `fn lower($x) { … }`
+    /// would shadow the built-in `lower` (validator surfaces the
+    /// shadow as a warning).
+    user_fns: HashMap<String, FnDecl>,
 }
 
 impl TransformRegistry {
@@ -25,6 +32,26 @@ impl TransformRegistry {
 
     pub fn get(&self, name: &str) -> Option<TransformFn> {
         self.table.get(name).copied()
+    }
+
+    pub fn get_user_fn(&self, name: &str) -> Option<&FnDecl> {
+        self.user_fns.get(name)
+    }
+
+    /// Build a registry by layering user-defined functions on top of an
+    /// existing one. The base registry's built-in entries are cloned in;
+    /// `fns` becomes the user-fn table. The base is conventionally
+    /// `default_registry()`, but isolated tests can pass a fresh
+    /// registry too.
+    pub fn with_user_fns(base: &TransformRegistry, fns: Vec<FnDecl>) -> Self {
+        let mut user_fns = HashMap::new();
+        for f in fns {
+            user_fns.insert(f.name.clone(), f);
+        }
+        Self {
+            table: base.table.clone(),
+            user_fns,
+        }
     }
 }
 

@@ -80,6 +80,13 @@ impl Scope {
         self.secrets.get(name).map(String::as_str)
     }
 
+    /// Full secrets map — used when spawning a child scope for a
+    /// user-fn call (the child needs the recipe's secrets but not the
+    /// parent's loop bindings).
+    pub fn secrets_map(&self) -> &IndexMap<String, String> {
+        &self.secrets
+    }
+
     /// All active frames, outer-most first. Used by the debugger to render
     /// the binding stack at a pause point — same iteration order as `bind`
     /// would have produced.
