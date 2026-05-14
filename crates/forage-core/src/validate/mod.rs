@@ -367,12 +367,28 @@ impl<'a> Validator<'a> {
                 // scope for subsequent statements in the same lexical
                 // body. Tracked separately from `known_vars` so the
                 // type-checker can ask "is $p a ref?" and "to what?".
+                //
+                // Both directions of name collision are errors:
+                //   1. `$v` already bound by another `emit … as $v` in
+                //      the same scope (DuplicateBinding).
+                //   2. `$v` shadowing a `for $v in …` loop variable —
+                //      the for-direction is caught in the ForLoop arm
+                //      below; this is the symmetric as-side check that
+                //      otherwise lets a recipe silently rebind the
+                //      loop variable mid-iteration.
                 if let Some(name) = &em.bind_name {
                     if v.ref_bindings.contains_key(name) {
                         v.err_here(
                             ValidationCode::DuplicateBinding,
                             format!(
                                 "binding '${name}' is already declared in this scope",
+                            ),
+                        );
+                    } else if v.known_vars.contains(name) {
+                        v.err_here(
+                            ValidationCode::DuplicateBinding,
+                            format!(
+                                "`as ${name}` shadows the for-loop variable '${name}' in this scope",
                             ),
                         );
                     } else {
@@ -622,7 +638,14 @@ impl<'a> Validator<'a> {
                 }
             }
             PathExpr::Variable(name) => {
-                if !self.known_vars.contains(name) {
+                // `as $v` bindings live in `ref_bindings` (scope-tracked
+                // per body); for-loop vars / step names / regex captures
+                // live in `known_vars`. A `$name` reference is valid if
+                // it's present in either — out-of-scope references to
+                // an `as` binding fall through both checks and surface
+                // here, regardless of whether the receiving field is a
+                // Ref or a plain expression.
+                if !self.known_vars.contains(name) && !self.ref_bindings.contains_key(name) {
                     self.err_here(
                         ValidationCode::UnknownVariable,
                         format!("$ {name} is an unbound variable"),
@@ -747,9 +770,18 @@ impl<'a> Validator<'a> {
     }
 }
 
-/// Walk a body recursively and collect every name introduced into scope:
-/// step names, `extract.regex` group bindings, nested for-loop variables,
-/// and `emit … as $v` bindings.
+/// Walk a body recursively and collect every globally-known variable
+/// name. Used to seed `known_vars` so `$x` references in extraction
+/// expressions resolve against the full set of step names, regex
+/// captures, and for-loop variables — `check_path` doesn't have to
+/// know about lexical scope to accept a reference into an enclosing
+/// for-loop.
+///
+/// `emit … as $v` bindings are deliberately excluded. They live in
+/// `ref_bindings`, which is scope-tracked (snapshotted on for-loop
+/// entry, restored on exit), so the Emit branch in `check_statement`
+/// catches out-of-scope `$v` references symmetrically with the in-scope
+/// shadow check.
 fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<String>) {
     for s in body {
         match s {
@@ -765,11 +797,7 @@ fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<Stri
                 out.insert(variable.clone());
                 collect_bindings(body, out);
             }
-            Statement::Emit(em) => {
-                if let Some(name) = &em.bind_name {
-                    out.insert(name.clone());
-                }
-            }
+            Statement::Emit(_) => {}
         }
     }
 }
@@ -1124,6 +1152,36 @@ emit Item { }
         let cat = TypeCatalog::from_recipe(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn as_binding_shadowing_for_variable_is_flagged() {
+        // `emit … as $prod` inside `for $prod in …` silently rebinds the
+        // loop variable to a Ref mid-iteration: `$prod.id` works in the
+        // emit's own bindings (because `$prod` was on the frame before
+        // the emit pushed its as-binding), but any subsequent reference
+        // in the loop body sees the Ref instead of the iteration item.
+        // The validator must reject this — the symmetric for-side check
+        // already exists for the reverse direction (for-loop var shadowing
+        // an enclosing `as`).
+        let src = r#"
+            recipe "shadow"
+            engine http
+            type Product { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $prod in $list[*] {
+                emit Product { id ← $prod.id } as $prod
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_recipe(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::DuplicateBinding),
+            "expected DuplicateBinding when `as $prod` shadows `for $prod`; got {:?}",
+            rep.issues,
+        );
     }
 
     #[test]
