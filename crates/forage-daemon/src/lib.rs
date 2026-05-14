@@ -1,22 +1,26 @@
 //! Forage scheduling + persistence runtime.
 //!
-//! The daemon is the system that:
-//! - Tracks one `Run` per recipe in a per-workspace
+//! The daemon is a fortress around deployed recipe versions:
+//! - Holds one `Run` per recipe slug in a per-installation
 //!   `<workspace_root>/.forage/daemon.sqlite` (the "daemon DB").
-//! - Runs an in-process scheduler over those Runs (interval / cron /
-//!   manual), firing the engine and writing emitted records to
-//!   `Run.output` (the "output store").
+//! - Stores frozen, validated deployed sources + catalogs under
+//!   `<workspace_root>/.forage/deployments/<slug>/v<n>/`.
+//! - Runs an in-process scheduler over Runs (interval / cron / manual),
+//!   executing the deployed version pointed to by `Run.deployed_version`
+//!   and writing emitted records to `Run.output` (the "output store").
 //! - Derives per-Run health (Ok / Drift / Fail / Paused) from history
 //!   via a count-based drift rule.
 //! - Surfaces a callback-driven API so a host (Studio today, a
 //!   sidecar tomorrow) can listen for `run-completed` events without
 //!   coupling to the runtime.
 //!
-//! The library API is the source of truth. Phase 3 wires this into
-//! Studio's Tauri commands; an out-of-process binary is a future
-//! drop-in that uses the same `Daemon` type.
+//! Drafts on disk are the host's concern — the daemon never scans the
+//! user's edit folder. The host explicitly `deploy`s a source +
+//! catalog; the daemon validates, freezes, and assigns it a per-slug
+//! monotonic version. Scheduled fires execute frozen versions only.
 
 mod db;
+mod deployments;
 mod error;
 mod health;
 mod model;
@@ -26,12 +30,11 @@ mod scheduler;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use forage_core::workspace::{Workspace, discover, load};
-use forage_core::{EvalValue, Recipe, Snapshot};
+use forage_core::{EvalValue, Recipe, SerializableCatalog, Snapshot, TypeCatalog};
 use forage_http::{ProgressSink, RunEvent};
 use indexmap::IndexMap;
 use rusqlite::{Connection, OptionalExtension};
@@ -40,9 +43,10 @@ use tokio::task::JoinHandle;
 
 // Wire types — Studio (Phase 3) carries these through Tauri commands
 // and ts-rs generates matching TypeScript from them.
-pub use error::{DaemonError, RunError};
+pub use error::{DaemonError, DeployError, RunError};
 pub use model::{
-    Cadence, DaemonStatus, Health, Outcome, Run, RunConfig, ScheduledRun, TimeUnit, Trigger,
+    Cadence, DaemonStatus, DeployedVersion, Health, Outcome, Run, RunConfig, ScheduledRun,
+    TimeUnit, Trigger,
 };
 
 // Drift derivation. The constants and `derive_health` are part of the
@@ -61,6 +65,19 @@ pub use output::{ColumnDef, ColumnStorage, OutputStore, TableDef, WriteTx, deriv
 // public surface so callers can reason about when a Run will fire
 // without spinning up a scheduler task.
 pub use scheduler::{advance_next_run, interval_ms, next_fire_for, validate_cron};
+
+/// Source + catalog for one deployed version, as read back from the
+/// daemon's on-disk store. The shape is symmetric across callers:
+/// `run.rs` uses it to drive an execution, and Studio uses it to render
+/// "what is currently deployed" in the editor.
+#[derive(Debug, Clone)]
+pub struct DeployedRecord {
+    pub slug: String,
+    pub version: u32,
+    pub source: String,
+    pub catalog: SerializableCatalog,
+    pub deployed_at: i64,
+}
 
 /// Boxed live-engine driver error. The trait is `Send + Sync` so the
 /// daemon can plug it into `RunError::Browser` without erasing the
@@ -128,6 +145,10 @@ impl Clock for SystemClock {
 pub struct Daemon {
     workspace_root: PathBuf,
     daemon_dir: PathBuf,
+    /// `<daemon_dir>/deployments/`. Cached at construction since every
+    /// deploy + every scheduled fire reads under it. Created on open
+    /// so first-deploy doesn't have to.
+    deployments_dir: PathBuf,
     /// Daemon DB connection. Sync API protected by a Mutex; every
     /// query is short-lived so contention is irrelevant.
     pub(crate) connection: Mutex<Connection>,
@@ -157,19 +178,12 @@ pub struct Daemon {
     /// Time source. Production uses `SystemClock`; tests inject a
     /// stub so they can drive scheduler ticks without wall-clock waits.
     pub(crate) clock: Arc<dyn Clock>,
-    /// Workspace loaded at `Daemon::open` and reused across every
-    /// `run_once`. Avoids re-walking the directory tree (and re-parsing
-    /// every recipe) on every scheduled fire. `refresh_workspace()`
-    /// re-reads it for Studio's filesystem-watch path. Held via a sync
-    /// `RwLock` and never across `.await`; `run.rs` reads it briefly
-    /// to derive the catalog, then drops the guard before the engine
-    /// call.
-    pub(crate) workspace: RwLock<Workspace>,
 }
 
 impl Daemon {
     /// Open (or create) the daemon at `<workspace_root>/.forage/daemon.sqlite`.
-    /// Runs schema migrations on connect.
+    /// Runs schema migrations on connect. Does not touch anything
+    /// outside `.forage/` — the host owns the rest of the workspace.
     pub fn open(workspace_root: PathBuf) -> Result<Arc<Self>, DaemonError> {
         Self::open_with_clock(workspace_root, Arc::new(SystemClock))
     }
@@ -182,19 +196,12 @@ impl Daemon {
     ) -> Result<Arc<Self>, DaemonError> {
         let daemon_dir = workspace_root.join(".forage");
         let conn = db::open_connection(&daemon_dir)?;
-        // Load the workspace once. `discover` ancestor-walks for a
-        // `forage.toml` marker; lonely-recipe mode (no marker) is not
-        // supported by the daemon — the daemon is per-workspace by
-        // construction.
-        let ws_root = discover(&workspace_root)
-            .map(|w| w.root.clone())
-            .ok_or_else(|| DaemonError::NoWorkspace {
-                root: workspace_root.clone(),
-            })?;
-        let workspace = load(&ws_root)?;
+        let deployments_dir = daemon_dir.join("deployments");
+        std::fs::create_dir_all(&deployments_dir)?;
         Ok(Arc::new(Self {
             workspace_root,
             daemon_dir,
+            deployments_dir,
             connection: Mutex::new(conn),
             schedule_changed: Notify::new(),
             shutdown: Notify::new(),
@@ -205,21 +212,11 @@ impl Daemon {
             scheduler_started_at: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
             clock,
-            workspace: RwLock::new(workspace),
         }))
     }
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
-    }
-
-    /// Read-lock guard on the daemon's loaded `Workspace`. Studio's
-    /// Tauri commands read this when serving `current_workspace` and
-    /// `list_workspace_files` instead of holding their own copy —
-    /// dual ownership was the bug. Held briefly and never across
-    /// `.await`; `refresh_workspace()` takes the write side.
-    pub fn workspace(&self) -> std::sync::RwLockReadGuard<'_, Workspace> {
-        self.workspace.read().expect("workspace lock poisoned")
     }
 
     /// "Now" through the configured clock. Production = wall clock;
@@ -261,21 +258,6 @@ impl Daemon {
         {
             handle.abort();
         }
-    }
-
-    /// Reload the workspace from disk. Studio (Phase 3) calls this on
-    /// filesystem events so the cached `Workspace` reflects new /
-    /// renamed / deleted recipes without restarting the daemon.
-    pub fn refresh_workspace(&self) -> Result<(), DaemonError> {
-        let root = self
-            .workspace
-            .read()
-            .expect("workspace lock poisoned")
-            .root
-            .clone();
-        let fresh = load(&root)?;
-        *self.workspace.write().expect("workspace lock poisoned") = fresh;
-        Ok(())
     }
 
     pub fn status(&self) -> Result<DaemonStatus, DaemonError> {
@@ -355,7 +337,7 @@ impl Daemon {
     }
 
     /// Create-or-update a Run for the given slug. Matches the
-    /// "auto-create on first Run live" pattern Studio will adopt in
+    /// "auto-create on first Run live" pattern Studio adopted in
     /// Phase 3 — `slug` is the canonical key here, not a generated id.
     pub fn configure_run(&self, slug: &str, cfg: RunConfig) -> Result<Run, DaemonError> {
         // Reject bad cron expressions up front so we don't store
@@ -385,20 +367,30 @@ impl Daemon {
                     next_run: None, // recomputed below
                     ..prev
                 },
-                None => Run {
-                    id: ulid::Ulid::new().to_string(),
-                    recipe_slug: slug.to_string(),
-                    workspace_root: self.workspace_root.clone(),
-                    enabled: cfg.enabled,
-                    cadence: cfg.cadence,
-                    output: cfg.output,
-                    health: if cfg.enabled {
-                        Health::Unknown
-                    } else {
-                        Health::Paused
-                    },
-                    next_run: None,
-                },
+                None => {
+                    // A fresh Run picks up whatever's already been
+                    // deployed for this slug. The common case is
+                    // configure-before-deploy (cadence first), in
+                    // which case the pointer stays None until a
+                    // subsequent deploy advances it.
+                    let deployed_version = db::latest_deployed_version(&conn, slug)?
+                        .map(|dv| dv.version);
+                    Run {
+                        id: ulid::Ulid::new().to_string(),
+                        recipe_slug: slug.to_string(),
+                        workspace_root: self.workspace_root.clone(),
+                        enabled: cfg.enabled,
+                        cadence: cfg.cadence,
+                        output: cfg.output,
+                        health: if cfg.enabled {
+                            Health::Unknown
+                        } else {
+                            Health::Paused
+                        },
+                        next_run: None,
+                        deployed_version,
+                    }
+                }
             };
             let next_run = scheduler::next_fire_for(&run, now_ms);
             let run = Run { next_run, ..run };
@@ -451,6 +443,121 @@ impl Daemon {
     /// configured a custom path: `<workspace>/.forage/data/<slug>.sqlite`.
     pub fn default_output_path(&self, slug: &str) -> PathBuf {
         self.daemon_dir.join("data").join(format!("{slug}.sqlite"))
+    }
+
+    // --- deployments -------------------------------------------------
+
+    /// Persist `source` + `catalog` as the next version of `slug`.
+    /// Parses + validates first; on failure no row is inserted and no
+    /// files are written. The returned `DeployedVersion` is the row in
+    /// the metadata table; the source lives at
+    /// `<daemon_dir>/deployments/<slug>/v<n>/`.
+    pub fn deploy(
+        &self,
+        slug: &str,
+        source: String,
+        catalog: SerializableCatalog,
+    ) -> Result<DeployedVersion, DeployError> {
+        let recipe = forage_core::parse(&source).map_err(|e| DeployError::Parse(e.to_string()))?;
+        let typed_catalog: TypeCatalog = catalog.clone().into();
+        let report = forage_core::validate(&recipe, &typed_catalog);
+        if report.has_errors() {
+            let detail = report
+                .errors()
+                .map(|i| i.message.clone())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(DeployError::Validate(detail));
+        }
+
+        let now_ms = self.now_ms();
+        // Pick the next version under the DB-derived ordering so two
+        // racing deploys can't pick the same number; the SQLite
+        // primary key catches any leftover collision.
+        let next_version = {
+            let conn = self.connection.lock().expect("daemon connection poisoned");
+            db::latest_deployed_version(&conn, slug)?
+                .map(|dv| dv.version + 1)
+                .unwrap_or(1)
+        };
+
+        deployments::write_atomic(&self.deployments_dir, slug, next_version, &source, &catalog)?;
+
+        let dv = DeployedVersion {
+            slug: slug.to_string(),
+            version: next_version,
+            deployed_at: now_ms,
+        };
+
+        // Insert the metadata row and update the Run pointer (if any)
+        // in a single transaction so the run.deployed_version field
+        // can never reference a row that doesn't exist.
+        {
+            let mut conn = self.connection.lock().expect("daemon connection poisoned");
+            let tx = conn.transaction().map_err(DaemonError::Sqlite)?;
+            db::insert_deployed_version(&tx, &dv)?;
+            if let Some(existing) = db::get_run_by_slug(&tx, slug)? {
+                let updated = Run {
+                    deployed_version: Some(next_version),
+                    ..existing
+                };
+                db::update_run(&tx, &updated)?;
+            }
+            tx.commit().map_err(DaemonError::Sqlite)?;
+        }
+        self.schedule_changed.notify_one();
+        Ok(dv)
+    }
+
+    /// All deployed versions for one slug, newest first.
+    pub fn deployed_versions(&self, slug: &str) -> Result<Vec<DeployedVersion>, DaemonError> {
+        let conn = self.connection.lock().expect("daemon connection poisoned");
+        db::list_deployed_versions(&conn, slug)
+    }
+
+    /// Highest-numbered deployed version for one slug, or `None`.
+    pub fn current_deployed(&self, slug: &str) -> Result<Option<DeployedVersion>, DaemonError> {
+        let conn = self.connection.lock().expect("daemon connection poisoned");
+        db::latest_deployed_version(&conn, slug)
+    }
+
+    /// Latest deployed version per slug, alphabetical by slug. Used by
+    /// Studio's recipe-status surface to join the daemon's view with
+    /// its on-disk drafts.
+    pub fn deployed_slugs(&self) -> Result<Vec<DeployedVersion>, DaemonError> {
+        let conn = self.connection.lock().expect("daemon connection poisoned");
+        db::list_latest_per_slug(&conn)
+    }
+
+    /// Read a specific version's source + catalog from the
+    /// filesystem. Used by `run.rs` and by Studio's "show me what's
+    /// deployed" view.
+    pub fn load_deployed(
+        &self,
+        slug: &str,
+        version: u32,
+    ) -> Result<DeployedRecord, DaemonError> {
+        // The metadata row carries `deployed_at`; the filesystem
+        // payload carries source + catalog. We read both so callers
+        // see a complete picture without having to fan out.
+        let dv = {
+            let conn = self.connection.lock().expect("daemon connection poisoned");
+            db::list_deployed_versions(&conn, slug)?
+                .into_iter()
+                .find(|dv| dv.version == version)
+                .ok_or_else(|| DaemonError::UnknownDeployment {
+                    slug: slug.to_string(),
+                    version,
+                })?
+        };
+        let (source, catalog) = deployments::read_deployed(&self.deployments_dir, slug, version)?;
+        Ok(DeployedRecord {
+            slug: dv.slug,
+            version: dv.version,
+            source,
+            catalog,
+            deployed_at: dv.deployed_at,
+        })
     }
 
     // --- host hooks --------------------------------------------------

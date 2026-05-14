@@ -1,18 +1,18 @@
-//! One execution of a `Run`. Loads the recipe, validates it against
-//! the workspace catalog, executes against the appropriate engine,
-//! writes emitted records to the output store, and persists a
-//! `ScheduledRun` row capturing what happened.
+//! One execution of a `Run`. Loads the deployed source + catalog,
+//! executes against the appropriate engine, writes emitted records
+//! to the output store, and persists a `ScheduledRun` row capturing
+//! what happened.
 //!
-//! Always produces a `ScheduledRun` — even when validation rejects
-//! the recipe or the engine fails — so the consumer (Studio) can
-//! render a failure row in the history table. Only setup-level
-//! errors (DB corruption, missing run row) bubble out as `Err`.
+//! Always produces a `ScheduledRun` — even when the engine fails or
+//! the Run has no deployment yet — so the consumer (Studio) can
+//! render a failure row in the history table. Only setup-level errors
+//! (DB corruption, missing run row) bubble out as `Err`.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use forage_core::ast::EngineKind;
-use forage_core::{EvalValue, Recipe, ValidationReport};
+use forage_core::{EvalValue, Recipe, TypeCatalog};
 use forage_http::{Engine, LiveTransport};
 use indexmap::IndexMap;
 
@@ -133,67 +133,43 @@ async fn execute(
     scheduled_run_id: &str,
     scheduled_at_ms: i64,
 ) -> Result<RunSuccess, RunFailure> {
+    let Some(version) = run.deployed_version else {
+        return Err(RunFailure {
+            message: "recipe not deployed".to_string(),
+            diagnostics: 0,
+        });
+    };
+    let deployed = match daemon.load_deployed(&run.recipe_slug, version) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(RunFailure {
+                message: format!("load deployment v{version}: {e}"),
+                diagnostics: 0,
+            });
+        }
+    };
+    let recipe = match forage_core::parse(&deployed.source) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(RunFailure {
+                message: format!("parse deployed source: {e}"),
+                diagnostics: 0,
+            });
+        }
+    };
+    // The catalog was validated against the source at deploy time;
+    // we trust it here without re-validating. A parser version drift
+    // since deploy would surface above in `forage_core::parse`.
+    let catalog: TypeCatalog = deployed.catalog.into();
+
+    // Inputs live on disk next to the user's edit-folder recipe.
+    // Drafts and deployed versions share inputs intentionally — the
+    // user wants to iterate on a recipe's fixture without redeploying
+    // each time.
     let recipe_path = run
         .workspace_root
         .join(&run.recipe_slug)
         .join("recipe.forage");
-    if !recipe_path.exists() {
-        return Err(RunFailure {
-            message: format!("recipe file missing at {}", recipe_path.display()),
-            diagnostics: 0,
-        });
-    }
-    let recipe_src = match std::fs::read_to_string(&recipe_path) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(RunFailure {
-                message: format!("read recipe: {e}"),
-                diagnostics: 0,
-            });
-        }
-    };
-    let recipe = match forage_core::parse(&recipe_src) {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(RunFailure {
-                message: format!("parse: {e}"),
-                diagnostics: 0,
-            });
-        }
-    };
-
-    // Build a workspace-aware catalog from the cached workspace.
-    // Catalog failures (duplicate type, unreadable declarations file)
-    // surface as a recorded failed `ScheduledRun` — falling back to
-    // recipe-local types would silently disable workspace types and
-    // hide a real problem.
-    let catalog = {
-        let ws = daemon.workspace.read().expect("workspace lock poisoned");
-        match ws.catalog(&recipe, |p| std::fs::read_to_string(p)) {
-            Ok(c) => c,
-            Err(e) => {
-                return Err(RunFailure {
-                    message: format!("workspace catalog: {e}"),
-                    diagnostics: 0,
-                });
-            }
-        }
-    };
-
-    let validation: ValidationReport = forage_core::validate(&recipe, &catalog);
-    let diagnostics = validation.issues.len() as u32;
-    if validation.has_errors() {
-        let detail = validation
-            .errors()
-            .map(|i| i.message.clone())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(RunFailure {
-            message: format!("validation: {detail}"),
-            diagnostics,
-        });
-    }
-
     let inputs = load_inputs(&recipe_path);
     let secrets = load_secrets(&recipe);
 
@@ -203,7 +179,7 @@ async fn execute(
         Err(e) => {
             return Err(RunFailure {
                 message: format!("open output store: {e}"),
-                diagnostics,
+                diagnostics: 0,
             });
         }
     };
@@ -224,7 +200,7 @@ async fn execute(
                 Err(e) => {
                     return Err(RunFailure {
                         message: format!("http transport: {e}"),
-                        diagnostics,
+                        diagnostics: 0,
                     });
                 }
             };
@@ -234,7 +210,7 @@ async fn execute(
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("engine: {e}"),
-                    diagnostics,
+                    diagnostics: 0,
                 })
         }
         EngineKind::Browser => {
@@ -242,7 +218,7 @@ async fn execute(
             else {
                 return Err(RunFailure {
                     message: "browser engine requires a LiveBrowserDriver — none registered".into(),
-                    diagnostics,
+                    diagnostics: 0,
                 });
             };
             driver
@@ -250,7 +226,7 @@ async fn execute(
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("browser: {e}"),
-                    diagnostics,
+                    diagnostics: 0,
                 })
         }
     };
@@ -265,7 +241,7 @@ async fn execute(
     if let Err(e) = write_records(&mut store, scheduled_run_id, scheduled_at_ms, &snapshot) {
         return Err(RunFailure {
             message: format!("write records: {e}"),
-            diagnostics,
+            diagnostics: 0,
         });
     }
 
@@ -275,7 +251,7 @@ async fn execute(
     }
     Ok(RunSuccess {
         counts,
-        diagnostics,
+        diagnostics: 0,
     })
 }
 

@@ -35,4 +35,12 @@ health: Health,
  * Next time the scheduler will fire this run, ms since epoch.
  * `None` for `Cadence::Manual`.
  */
-next_run: number | null, };
+next_run: number | null, 
+/**
+ * Pointer to the deployed-recipe version the scheduler should
+ * execute. `None` until the slug has been deployed at least once;
+ * scheduled fires against a `None` pointer record a clean failure
+ * rather than crashing, so the user can configure cadence before
+ * the first deploy.
+ */
+deployed_version: number | null, };

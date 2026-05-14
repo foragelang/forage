@@ -1,16 +1,14 @@
-//! Daemon error types. Two flavors: `DaemonError` for setup, persistence,
-//! and configuration; `RunError` for things that go wrong inside one
-//! `run_once` cycle.
+//! Daemon error types. Three flavors: `DaemonError` for setup,
+//! persistence, and configuration; `DeployError` for the deploy
+//! pipeline (parse + validate + write); `RunError` for things that go
+//! wrong inside one `run_once` cycle.
 //!
 //! A `RunError` is *always* persisted as a failed `ScheduledRun` —
 //! callers see both the typed error (via `Result`) and the recorded
 //! row. `DaemonError` is for failures that prevent recording the
 //! scheduled-run at all (DB unreachable, the Run doesn't exist).
 
-use std::path::PathBuf;
-
 use forage_core::parse::ParseError;
-use forage_core::workspace::WorkspaceError;
 use thiserror::Error;
 
 use crate::BrowserDriverError;
@@ -25,16 +23,31 @@ pub enum DaemonError {
     Serde(#[from] serde_json::Error),
     #[error("unknown run id: {id}")]
     UnknownRun { id: String },
-    #[error("workspace error: {0}")]
-    Workspace(#[from] WorkspaceError),
-    #[error("no workspace found at {root}")]
-    NoWorkspace { root: PathBuf },
+    #[error("unknown deployment: {slug} v{version}")]
+    UnknownDeployment { slug: String, version: u32 },
     #[error("corrupt daemon state: {detail}")]
     Corrupt { detail: String },
     #[error("corrupt daemon DB: {detail}")]
     CorruptDb { detail: String },
     #[error("invalid cron expression '{expr}': {detail}")]
     BadCron { expr: String, detail: String },
+}
+
+/// Errors that surface from `Daemon::deploy`. Parse and validation
+/// failures abort the deploy before any row is inserted or file is
+/// written, so the daemon's fortress invariant — only validated,
+/// frozen versions enter the store — holds even when callers feed
+/// junk.
+#[derive(Debug, Error)]
+pub enum DeployError {
+    #[error("parse: {0}")]
+    Parse(String),
+    #[error("validate: {0}")]
+    Validate(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("daemon: {0}")]
+    Daemon(#[from] DaemonError),
 }
 
 /// Errors that surface during a single recipe run. Every variant
@@ -44,16 +57,8 @@ pub enum DaemonError {
 pub enum RunError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("workspace: {0}")]
-    Workspace(#[from] WorkspaceError),
-    #[error("workspace not found at {root}")]
-    NoWorkspace { root: PathBuf },
-    #[error("recipe file not found at {path}")]
-    RecipeMissing { path: PathBuf },
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
-    #[error("validation failed: {detail}")]
-    Validation { detail: String },
     #[error("engine: {0}")]
     Engine(String),
     #[error("browser: {0}")]

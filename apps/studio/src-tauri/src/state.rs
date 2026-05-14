@@ -16,16 +16,19 @@
 //!   accessed from the Tauri main thread, but the type isn't easy to
 //!   wrap in `ArcSwap`).
 //!
-//! Studio doesn't keep its own `Workspace`. The daemon already loads
-//! one at `Daemon::open` and exposes it via `Daemon::workspace()`;
-//! every Studio command path reads through that single source so the
-//! two views can't drift.
+//! Studio owns the user-facing workspace: scans for recipes, tracks
+//! declarations, resolves catalogs against on-disk drafts. The daemon
+//! owns deployed versions and run history; the two domains touch
+//! through the `deploy_recipe` Tauri command, which validates a draft
+//! against the Studio-side catalog and hands the frozen pair to the
+//! daemon.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, RwLock};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use forage_core::workspace::Workspace;
 use forage_daemon::Daemon;
 use forage_http::ResumeAction;
 use tauri::Wry;
@@ -35,6 +38,12 @@ pub struct StudioState {
     /// In-process daemon for scheduling, run history, and output stores.
     /// Owned for the life of the Studio process; closed during teardown.
     pub daemon: Arc<Daemon>,
+    /// Cached on-disk workspace view: recipes, declarations files,
+    /// manifest. Loaded at boot via `forage_core::workspace::load` and
+    /// refreshed by the `refresh_workspace` command on filesystem
+    /// changes. Held briefly under `read()` for catalog resolution and
+    /// file-tree listing; `write()` only fires during a refresh.
+    pub workspace: RwLock<Workspace>,
     /// Cancellation signal for the in-flight `run_recipe` call. The
     /// frontend `cancel_run` command notifies through this; `run_recipe`
     /// selects against it so the engine future drops mid-fetch. Lifecycle:
@@ -58,13 +67,14 @@ pub struct StudioState {
 }
 
 impl StudioState {
-    /// Build a `StudioState` around an already-opened daemon.
-    /// `lib.rs::run` does the construction at app boot so the daemon's
-    /// scheduler is alive before any command fires; tests construct
-    /// one through here too.
-    pub fn new(daemon: Arc<Daemon>) -> Self {
+    /// Build a `StudioState` around an already-opened daemon and a
+    /// pre-loaded workspace. `lib.rs::run` does the construction at
+    /// app boot so the daemon's scheduler is alive before any command
+    /// fires; tests construct one through here too.
+    pub fn new(daemon: Arc<Daemon>, workspace: Workspace) -> Self {
         Self {
             daemon,
+            workspace: RwLock::new(workspace),
             run_cancel: ArcSwapOption::empty(),
             last_context_menu: Mutex::new(None),
             breakpoints: ArcSwap::new(Arc::new(HashSet::new())),

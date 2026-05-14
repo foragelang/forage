@@ -65,9 +65,16 @@ pub fn run() {
                 )
             })?;
 
-            // Open the daemon; it loads the workspace once at
-            // construction and serves it through `Daemon::workspace()`
-            // for both its own scheduler and Studio's command paths.
+            // Load the workspace once. The daemon never scans the
+            // edit folder — Studio owns that view, refreshes it on
+            // filesystem changes, and resolves catalogs against it.
+            let workspace = forage_core::workspace::load(&ws_root).map_err(|e| {
+                format!("failed to load workspace at {}: {e}", ws_root.display())
+            })?;
+
+            // Open the daemon. It manages its own `.forage/` data
+            // directory under the same root; recipes outside that
+            // directory are Studio's concern.
             let daemon = forage_daemon::Daemon::open(ws_root.clone()).map_err(|e| {
                 format!("failed to open daemon at {}: {e}", ws_root.display())
             })?;
@@ -99,7 +106,7 @@ pub fn run() {
                 daemon.start_scheduler();
             });
 
-            app.manage(StudioState::new(daemon));
+            app.manage(StudioState::new(daemon, workspace));
             let m = menu::build_menu(app.handle())?;
             app.set_menu(m)?;
             Ok(())
@@ -132,6 +139,7 @@ pub fn run() {
             // Workspace + files + daemon.
             commands::current_workspace,
             commands::list_workspace_files,
+            commands::refresh_workspace,
             commands::load_file,
             commands::save_file,
             commands::daemon_status,
@@ -143,6 +151,9 @@ pub fn run() {
             commands::list_scheduled_runs,
             commands::load_run_records,
             commands::validate_cron_expr,
+            commands::deploy_recipe,
+            commands::list_deployed_versions,
+            commands::list_recipe_statuses,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forage Studio");

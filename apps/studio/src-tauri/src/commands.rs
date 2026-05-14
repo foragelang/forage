@@ -1000,16 +1000,28 @@ fn host_of(url: &str) -> String {
 // ---------------------------------------------------------------------
 // Workspace + filesystem + daemon commands.
 //
-// These read the workspace through `state.daemon.workspace()` — the
-// daemon owns the single cached `Workspace` and refreshes it on
-// filesystem events. Studio doesn't duplicate that state.
+// Studio owns the on-disk workspace via `state.workspace`. The daemon
+// holds only deployed versions; draft state, file-tree listings, and
+// catalog resolution against on-disk declarations all go through the
+// Studio-side cache.
 // ---------------------------------------------------------------------
 
 use std::path::{Path, PathBuf};
 
-use forage_daemon::{DaemonStatus, Run, RunConfig, ScheduledRun, validate_cron};
+use forage_core::workspace::Workspace;
+use forage_daemon::{
+    DaemonStatus, DeployedVersion, Run, RunConfig, ScheduledRun, validate_cron,
+};
 
-use crate::workspace::{FileNode, WorkspaceInfo, build_file_tree};
+use crate::workspace::{
+    DeployedState, DraftState, FileNode, RecipeStatus, WorkspaceInfo, build_file_tree,
+};
+
+fn read_workspace<'a>(
+    state: &'a State<'_, StudioState>,
+) -> std::sync::RwLockReadGuard<'a, Workspace> {
+    state.workspace.read().expect("workspace lock poisoned")
+}
 
 /// Snapshot of the loaded workspace: root path, manifest's `name`,
 /// and `[deps]`. The file list is fetched separately via
@@ -1017,7 +1029,7 @@ use crate::workspace::{FileNode, WorkspaceInfo, build_file_tree};
 /// reship the manifest.
 #[tauri::command]
 pub fn current_workspace(state: State<'_, StudioState>) -> WorkspaceInfo {
-    WorkspaceInfo::from_workspace(&state.daemon.workspace())
+    WorkspaceInfo::from_workspace(&read_workspace(&state))
 }
 
 /// Recursive directory tree rooted at the workspace root, with each
@@ -1026,8 +1038,20 @@ pub fn current_workspace(state: State<'_, StudioState>) -> WorkspaceInfo {
 /// authored content, not runtime state.
 #[tauri::command]
 pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, String> {
-    let root = state.daemon.workspace().root.clone();
+    let root = read_workspace(&state).root.clone();
     build_file_tree(&root).map_err(|e| e.to_string())
+}
+
+/// Re-scan the workspace from disk and replace the cached snapshot.
+/// Called from the frontend when a filesystem change (new recipe,
+/// renamed declarations file, manifest edit) should be reflected
+/// without restarting Studio.
+#[tauri::command]
+pub fn refresh_workspace(state: State<'_, StudioState>) -> Result<(), String> {
+    let root = read_workspace(&state).root.clone();
+    let fresh = forage_core::workspace::load(&root).map_err(|e| e.to_string())?;
+    *state.workspace.write().expect("workspace lock poisoned") = fresh;
+    Ok(())
 }
 
 /// Read an arbitrary file under the workspace by absolute or
@@ -1064,7 +1088,7 @@ fn resolve_existing_in_workspace(
     state: &State<'_, StudioState>,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    let root = state.daemon.workspace().root.clone();
+    let root = read_workspace(state).root.clone();
     resolve_existing(&root, path)
 }
 
@@ -1077,12 +1101,12 @@ fn resolve_new_in_workspace(
     state: &State<'_, StudioState>,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    let root = state.daemon.workspace().root.clone();
+    let root = read_workspace(state).root.clone();
     resolve_new(&root, path)
 }
 
 fn workspace_root_canonical(state: &State<'_, StudioState>) -> Result<PathBuf, String> {
-    let root = state.daemon.workspace().root.clone();
+    let root = read_workspace(state).root.clone();
     canonicalize_root(&root)
 }
 
@@ -1333,6 +1357,121 @@ pub async fn validate_cron_expr(expr: String) -> Result<(), String> {
     validate_cron(&expr).map_err(|e| e.to_string())
 }
 
+/// Promote a draft recipe to a frozen deployed version. Reads the
+/// on-disk source for `slug`, resolves its catalog against the
+/// Studio-side workspace (so workspace declarations and cached hub
+/// deps are folded in), and hands the validated pair to the daemon.
+/// Returns the new `DeployedVersion` row.
+#[tauri::command]
+pub fn deploy_recipe(
+    state: State<'_, StudioState>,
+    slug: String,
+) -> Result<DeployedVersion, String> {
+    let source = workspace::read_source(&slug).map_err(|e| e.to_string())?;
+    let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
+    let catalog = {
+        let ws = read_workspace(&state);
+        ws.catalog(&recipe, |p| std::fs::read_to_string(p))
+            .map_err(|e| format!("catalog: {e}"))?
+    };
+    let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+    state
+        .daemon
+        .deploy(&slug, source, wire)
+        .map_err(|e| e.to_string())
+}
+
+/// All deployed versions for one slug, newest first. Returns an
+/// empty vec when the slug has never been deployed.
+#[tauri::command]
+pub fn list_deployed_versions(
+    state: State<'_, StudioState>,
+    slug: String,
+) -> Result<Vec<DeployedVersion>, String> {
+    state
+        .daemon
+        .deployed_versions(&slug)
+        .map_err(|e| e.to_string())
+}
+
+/// Per-recipe status surface: joins Studio's on-disk view of drafts
+/// (valid, broken, missing) with the daemon's view of deployed
+/// versions. Returns one entry per slug that's known to either side,
+/// alphabetical by slug.
+#[tauri::command]
+pub fn list_recipe_statuses(
+    state: State<'_, StudioState>,
+) -> Result<Vec<RecipeStatus>, String> {
+    use forage_core::workspace::WorkspaceFileKind;
+    use std::collections::BTreeMap;
+
+    let mut by_slug: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
+
+    {
+        let ws = read_workspace(&state);
+        for entry in &ws.files {
+            match &entry.kind {
+                WorkspaceFileKind::Recipe { slug } => {
+                    by_slug.insert(
+                        slug.clone(),
+                        (
+                            DraftState::Valid {
+                                path: entry.path.clone(),
+                            },
+                            DeployedState::None,
+                        ),
+                    );
+                }
+                WorkspaceFileKind::Broken {
+                    slug: Some(slug),
+                    error,
+                } => {
+                    by_slug.insert(
+                        slug.clone(),
+                        (
+                            DraftState::Broken {
+                                path: entry.path.clone(),
+                                error: error.clone(),
+                            },
+                            DeployedState::None,
+                        ),
+                    );
+                }
+                WorkspaceFileKind::Declarations | WorkspaceFileKind::Broken { slug: None, .. } => {
+                    // Declarations files have no slug; a broken file
+                    // we couldn't derive a slug for can't be paired
+                    // with a deployment. Both are skipped here — the
+                    // file tree surfaces them elsewhere.
+                }
+            }
+        }
+    }
+
+    let deployments = state
+        .daemon
+        .deployed_slugs()
+        .map_err(|e| e.to_string())?;
+    for dv in deployments {
+        let entry = by_slug.entry(dv.slug.clone()).or_insert((
+            DraftState::Missing,
+            DeployedState::None,
+        ));
+        entry.1 = DeployedState::Deployed {
+            version: dv.version,
+            deployed_at: dv.deployed_at,
+        };
+    }
+
+    Ok(by_slug
+        .into_iter()
+        .map(|(slug, (draft, deployed))| RecipeStatus {
+            slug,
+            draft,
+            deployed,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     //! Studio-side smoke tests for the daemon wiring. The commands
@@ -1387,6 +1526,18 @@ for $i in $list.items[*] {
         std::fs::write(path, src.replace("https://example.test/items", url)).unwrap();
     }
 
+    fn deploy_from_disk(daemon: &Daemon, ws_root: &Path, slug: &str) {
+        let recipe_path = ws_root.join(slug).join("recipe.forage");
+        let source = std::fs::read_to_string(&recipe_path).unwrap();
+        let recipe = forage_core::parse(&source).unwrap();
+        let workspace = forage_core::workspace::load(ws_root).unwrap();
+        let catalog = workspace
+            .catalog(&recipe, |p| std::fs::read_to_string(p))
+            .unwrap();
+        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+        daemon.deploy(slug, source, wire).expect("deploy");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn configure_run_then_list_runs_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1408,6 +1559,10 @@ for $i in $list.items[*] {
         assert_eq!(listed[0].id, created.id);
         assert_eq!(listed[0].recipe_slug, slug);
         assert!(listed[0].enabled);
+        // Bare configure (no prior deploy) leaves the pointer
+        // unset — pre-deploy scheduled fires record a clean
+        // "recipe not deployed" failure instead of crashing.
+        assert!(listed[0].deployed_version.is_none());
 
         // Repeated configure on the same slug is an update, not an
         // insert — list_runs should still return one row, and the id
@@ -1449,6 +1604,7 @@ for $i in $list.items[*] {
             enabled: true,
         };
         let run = daemon.configure_run(slug, cfg).expect("configure_run");
+        deploy_from_disk(&daemon, &ws_root, slug);
 
         let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
         assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
