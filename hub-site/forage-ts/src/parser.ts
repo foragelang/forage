@@ -164,15 +164,28 @@ export class Parser {
     }
 
     /// fn_decl := 'fn' ident '(' ($ident (',' $ident)*)? ')' '{' extraction '}'
+    ///
+    /// `$input` / `$secret` are reserved roots — the lexer emits them
+    /// as distinct token kinds, so they're rejected here with a
+    /// recipe-author message instead of the generic "expected parameter"
+    /// fallback. `$page` is engine-injected and is rejected later by
+    /// the validator.
     private parseFnDecl(): FnDecl {
         const name = this.consumeIdentifierOrKeyword()
         this.expect('lparen', '(')
         const params: string[] = []
         if (!this.check('rparen')) {
             do {
+                const tok = this.peek()
+                if (tok.kind.tag === 'dollarInput' || tok.kind.tag === 'dollarSecret') {
+                    throw new ParseError(
+                        tok.loc,
+                        `${tok.lexeme} is a reserved root and cannot be a fn parameter; pick another name`,
+                    )
+                }
                 const p = this.matchDollarVariable()
                 if (p === null) {
-                    throw new ParseError(this.peek().loc, `expected parameter ($name), got ${this.peek().lexeme}`)
+                    throw new ParseError(tok.loc, `expected parameter ($name), got ${tok.lexeme}`)
                 }
                 params.push(p)
             } while (this.match('comma'))

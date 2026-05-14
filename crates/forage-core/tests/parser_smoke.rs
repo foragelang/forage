@@ -401,6 +401,47 @@ fn fn_decl_rejects_non_dollar_param() {
 }
 
 #[test]
+fn fn_decl_rejects_dollar_input_param() {
+    // The lexer emits `$input` as `DollarInput`, not `DollarVar`, so
+    // the parser is the layer that rejects it as a parameter. If a
+    // future refactor folds `$input` back into `DollarVar`, the
+    // ReservedParam validator branch goes dead and nothing catches it
+    // — this test pins the parser-side rejection.
+    let src = r#"
+        recipe "bad"
+        engine http
+        fn nope($input) { 1 }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    let err = parse(src).expect_err("parser must reject $input parameter");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("$input") && msg.contains("reserved"),
+        "expected message to mention '$input' and 'reserved'; got: {msg}",
+    );
+}
+
+#[test]
+fn fn_decl_rejects_dollar_secret_param() {
+    let src = r#"
+        recipe "bad"
+        engine http
+        fn nope($secret) { 1 }
+        type T { id: String }
+        step s { method "GET" url "https://x.test" }
+        emit T { id ← "a" }
+    "#;
+    let err = parse(src).expect_err("parser must reject $secret parameter");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("$secret") && msg.contains("reserved"),
+        "expected message to mention '$secret' and 'reserved'; got: {msg}",
+    );
+}
+
+#[test]
 fn fn_with_pipe_body_round_trips_through_ast() {
     let src = r#"
         recipe "ok"

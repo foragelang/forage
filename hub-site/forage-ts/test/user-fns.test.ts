@@ -29,6 +29,27 @@ step s { method "GET"; url "https://x.test" }
 emit T { id ← "a" }`)).toThrow()
     })
 
+    it('rejects $input as a fn parameter at the parser', () => {
+        // The lexer emits `$input` as `dollarInput`, not `dollarVariable`,
+        // so the parser rejects it before the validator runs. Pin the
+        // message so a future refactor doesn't silently swallow it.
+        expect(() => Parser.parse(`recipe "bad"
+engine http
+fn nope($input) { 1 }
+type T { id: String }
+step s { method "GET"; url "https://x.test" }
+emit T { id ← "a" }`)).toThrow(/\$input.*reserved/)
+    })
+
+    it('rejects $secret as a fn parameter at the parser', () => {
+        expect(() => Parser.parse(`recipe "bad"
+engine http
+fn nope($secret) { 1 }
+type T { id: String }
+step s { method "GET"; url "https://x.test" }
+emit T { id ← "a" }`)).toThrow(/\$secret.*reserved/)
+    })
+
     it('validates a user fn calling a built-in transform', () => {
         const recipe = Parser.parse(`recipe "ok"
 engine http

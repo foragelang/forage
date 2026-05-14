@@ -373,6 +373,12 @@ impl Parser {
     /// Single-expression body — branching via `case … of`, mapping via
     /// pipe-into-transform. No statement sequencing or let-bindings; see
     /// `plans/user-defined-functions.md`.
+    ///
+    /// `$input` / `$secret` are reserved roots — the lexer emits them as
+    /// distinct tokens (not `DollarVar`), so they're rejected here with
+    /// a recipe-author message instead of the generic
+    /// `expected parameter ($name)` fallback. `$page` is engine-injected
+    /// and is rejected later by the validator (`ReservedParam`).
     fn parse_fn_decl(&mut self) -> Result<FnDecl, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("fn")?;
@@ -385,6 +391,16 @@ impl Parser {
                     Some(Token::DollarVar(s)) => {
                         self.bump();
                         params.push(s);
+                    }
+                    Some(Token::DollarInput) | Some(Token::DollarSecret) => {
+                        let span = self.current_span();
+                        let found = self.peek().unwrap().describe();
+                        return Err(ParseError::Generic {
+                            span,
+                            message: format!(
+                                "{found} is a reserved root and cannot be a fn parameter; pick another name",
+                            ),
+                        });
                     }
                     _ => return Err(self.unexpected("parameter ($name)")),
                 }
