@@ -373,10 +373,10 @@ fn print_pretty(snapshot: &Snapshot) {
     if d.has_content() {
         println!();
         if let Some(r) = &d.stall_reason {
-            println!("{} {r}", "stall:".yellow());
+            println!("{} {}", "stall:".yellow(), r.message);
         }
         for e in &d.unmet_expectations {
-            println!("{} {e}", "expect:".red());
+            println!("{} {}", "expect:".red(), e.message);
         }
     }
 }

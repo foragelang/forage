@@ -103,6 +103,10 @@ impl Statement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Expectation {
     pub kind: ExpectationKind,
+    /// Byte range of the `expect { … }` block in the recipe source.
+    /// Used by `Snapshot::evaluate_expectations` to attach a source
+    /// line to every unmet-expectation diagnostic so UIs can jump to it.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

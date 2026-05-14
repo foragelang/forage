@@ -1,11 +1,9 @@
-//! Phase 4 stub of the right-inspector. Segmented Tabs at the top
-//! (This run / History / Records). The "This run" panel reuses the
-//! existing SnapshotTab so the regression-test flow (run a recipe,
-//! see records) keeps working. History and Records render a
-//! placeholder pending Phase 5.
+//! Right inspector. Three modes via segmented tabs at the top:
+//! "This run" (live + last-known), "History" (per-session run rollup),
+//! "Records" (rows from the latest scheduled run).
 //!
-//! Reactive-UI rule: leaf-reads from the store; Tabs.value is bound
-//! to `inspectorMode`, write-back through `setInspectorMode`.
+//! The mode lives in the store (`inspectorMode`) so the choice
+//! persists across file switches.
 
 import {
     Tabs,
@@ -13,8 +11,12 @@ import {
     TabsList,
     TabsTrigger,
 } from "@/components/ui/tabs";
-import { SnapshotTab } from "@/tabs/SnapshotTab";
+
 import { useStudio, type InspectorMode } from "@/lib/store";
+
+import { HistoryPane } from "./HistoryPane";
+import { RecordsPane } from "./RecordsPane";
+import { RunPane } from "./RunPane";
 
 export function Inspector() {
     const inspectorMode = useStudio((s) => s.inspectorMode);
@@ -37,29 +39,21 @@ export function Inspector() {
                     value="run"
                     className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
                 >
-                    <SnapshotTab />
+                    <RunPane />
                 </TabsContent>
                 <TabsContent
                     value="history"
                     className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
                 >
-                    <Placeholder label="History (Phase 5)" />
+                    <HistoryPane />
                 </TabsContent>
                 <TabsContent
                     value="records"
                     className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
                 >
-                    <Placeholder label="Records (Phase 5)" />
+                    <RecordsPane />
                 </TabsContent>
             </Tabs>
         </aside>
-    );
-}
-
-function Placeholder({ label }: { label: string }) {
-    return (
-        <div className="flex-1 flex items-center justify-center p-6 text-sm text-muted-foreground">
-            {label}
-        </div>
     );
 }

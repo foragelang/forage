@@ -1,13 +1,11 @@
 //! Editor surface: toolbar across the top, editor pane + inspector
 //! side-by-side, debugger panel mounted below when the engine is
-//! paused. Phase 4 wires the structure; the underlying components
-//! are stubs (EditorPane re-exports SourceTab; Inspector has
-//! placeholder History/Records panels).
+//! paused.
 
 import { DebuggerPanel } from "@/components/DebuggerPanel";
 import { EditorPane } from "@/components/EditorPane";
 import { EditorToolbar } from "@/components/EditorToolbar";
-import { Inspector } from "@/components/Inspector";
+import { Inspector } from "@/components/Inspector/index";
 import { useStudio } from "@/lib/store";
 
 export function EditorView() {

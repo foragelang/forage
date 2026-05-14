@@ -393,6 +393,10 @@ impl From<serde_json::Error> for RunError {
 /// Read records back from the output store for a given scheduled-run.
 /// Used by the daemon's `load_records` API surface; returns JSON so the
 /// caller doesn't need to know the schema.
+///
+/// The returned rows carry recipe-declared fields only — internal
+/// bookkeeping columns (`_scheduled_run_id`, `_emitted_at`) are
+/// filtered out so callers see what the recipe actually emitted.
 pub fn load_records(
     path: &Path,
     scheduled_run_id: &str,
@@ -402,7 +406,14 @@ pub fn load_records(
     let conn = Connection::open(path).map_err(|e| RunError::Output(e.to_string()))?;
     // Discover the column list dynamically — the daemon's `Run` record
     // doesn't carry the recipe-derived schema separately.
-    let cols = pragma_columns(&conn, type_name)?;
+    let all_cols = pragma_columns(&conn, type_name)?;
+    if all_cols.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cols: Vec<String> = all_cols
+        .into_iter()
+        .filter(|c| c != SCHEDULED_RUN_ID_COL && c != EMITTED_AT_COL)
+        .collect();
     if cols.is_empty() {
         return Ok(Vec::new());
     }

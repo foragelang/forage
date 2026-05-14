@@ -62,14 +62,20 @@ export function useStudioEffects() {
         };
     }, []);
 
-    // Daemon completion — invalidate the per-run scheduled-runs query
-    // so the deployment view picks up the new row.
+    // Daemon completion — invalidate every per-run scheduled-runs
+    // bucket (each pane keeps its own limit, so the keys are
+    // `["scheduledRuns", runId, { limit }]`) so the deployment view,
+    // inspector, and toolbar pick up the new row.
     useEffect(() => {
         let cancelled = false;
         let un: (() => void) | undefined;
         listen<ScheduledRun>(DAEMON_RUN_COMPLETED_EVENT, (e) => {
+            const runId = e.payload.run_id;
             qc.invalidateQueries({
-                queryKey: ["scheduledRuns", e.payload.run_id],
+                predicate: (q) =>
+                    Array.isArray(q.queryKey) &&
+                    q.queryKey[0] === "scheduledRuns" &&
+                    q.queryKey[1] === runId,
             });
             // Also nudge the runs list — health may have changed.
             qc.invalidateQueries({ queryKey: ["runs"] });

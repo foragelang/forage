@@ -18,6 +18,37 @@ import { slugOf } from "./path";
 export type View = "editor" | "deployment";
 export type InspectorMode = "run" | "history" | "records";
 
+/// Per-step rollup derived from the engine event stream.
+///
+/// The engine emits step-tagged `RequestSent` / `ResponseReceived` events
+/// and emit-tagged `Emitted` events. There is no `StepCompleted` event;
+/// instead the store tracks the "current step" (last `RequestSent`) and
+/// attributes emits to it. `done` flips to `true` when the run finishes
+/// or the engine moves on to the next step.
+///
+/// Tone in the editor pill is computed in the consumer (EditorPane)
+/// from this shape — keeping the derivation out of the reducer.
+export type StepStat = {
+    /// Number of HTTP requests the engine has fired for this step.
+    requests: number;
+    /// Number of records emitted while this step was current.
+    emits: number;
+    /// Wall-clock duration in ms from the first request to the most
+    /// recent response. Null until at least one response arrives.
+    duration_ms: number | null;
+    /// True after the engine moves on to a different step, or the run
+    /// finishes / fails. Once true, the step's pill stops updating.
+    done: boolean;
+    /// True when the run terminated with a failure while this step was
+    /// current. Only the step the engine was on at `run_failed` time is
+    /// marked failed; prior steps stay clean.
+    failed: boolean;
+    /// First-line marker — set when this step entry is created so the
+    /// consumer can drop the stat if the step is missing from the new
+    /// recipe outline.
+    name: string;
+};
+
 type StudioState = {
     // Top-level routing.
     view: View;
@@ -39,6 +70,16 @@ type StudioState = {
     runLog: RunEvent[];
     runCounts: Record<string, number>;
     runStartedAt: number | null;
+    /// Per-step rollup tagged by `RequestSent.step`. Cleared on
+    /// `runBegin` so a previous run's pills don't bleed through.
+    stepStats: Record<string, StepStat>;
+    /// Name of the step that's currently emitting requests/responses.
+    /// Used by `runAppend` to attribute `Emitted` events back to a step
+    /// because the engine doesn't tag emits with a step name.
+    currentStep: string | null;
+    /// First request `RequestSent` timestamps per step, in ms since
+    /// epoch. Used to compute durations on `ResponseReceived`.
+    stepStartMs: Record<string, number>;
     // Breakpoints — step names with breakpoints set. Toggled by gutter
     // clicks in the editor pane; the backend reads the latest set on
     // every step pause to decide whether to actually wait.
@@ -88,6 +129,9 @@ export const useStudio = create<StudioState>((set, get) => ({
     runLog: [],
     runCounts: {},
     runStartedAt: null,
+    stepStats: {},
+    currentStep: null,
+    stepStartMs: {},
     breakpoints: new Set<string>(),
     paused: null,
     pauseIterations: false,
@@ -143,6 +187,9 @@ export const useStudio = create<StudioState>((set, get) => ({
             runLog: [],
             runCounts: {},
             runStartedAt: null,
+            stepStats: {},
+            currentStep: null,
+            stepStartMs: {},
             paused: null,
             breakpoints: new Set(),
         });
@@ -198,6 +245,9 @@ export const useStudio = create<StudioState>((set, get) => ({
             runLog: [],
             runCounts: {},
             runStartedAt: Date.now(),
+            stepStats: {},
+            currentStep: null,
+            stepStartMs: {},
             snapshot: null,
             runError: null,
             paused: null,
@@ -208,12 +258,126 @@ export const useStudio = create<StudioState>((set, get) => ({
             const next: Partial<StudioState> = {
                 runLog: [...state.runLog, e],
             };
-            if (e.kind === "emitted") {
-                next.runCounts = { ...state.runCounts, [e.type_name]: e.total };
+            // Derive per-step stats from the event stream. The engine
+            // doesn't emit a `StepCompleted` variant; instead we treat
+            // the last `RequestSent` as the "current step" and credit
+            // emits to it. This is best-effort but matches the way the
+            // engine actually drives runs: steps are sequential, and
+            // emits inside `for $i in $step[*] { emit … }` always follow
+            // their step's responses.
+            switch (e.kind) {
+                case "request_sent": {
+                    const prev = state.stepStats[e.step];
+                    const nowMs = Date.now();
+                    const startMs = state.stepStartMs[e.step] ?? nowMs;
+                    next.stepStats = {
+                        ...state.stepStats,
+                        [e.step]: {
+                            name: e.step,
+                            requests: (prev?.requests ?? 0) + 1,
+                            emits: prev?.emits ?? 0,
+                            duration_ms: prev?.duration_ms ?? null,
+                            done: false,
+                            failed: false,
+                        },
+                    };
+                    next.stepStartMs = {
+                        ...state.stepStartMs,
+                        [e.step]: startMs,
+                    };
+                    // Stepping onto a new step closes out the previous.
+                    if (
+                        state.currentStep !== null &&
+                        state.currentStep !== e.step &&
+                        state.stepStats[state.currentStep]
+                    ) {
+                        next.stepStats[state.currentStep] = {
+                            ...state.stepStats[state.currentStep]!,
+                            done: true,
+                        };
+                    }
+                    next.currentStep = e.step;
+                    break;
+                }
+                case "response_received": {
+                    const start = state.stepStartMs[e.step];
+                    const prev = state.stepStats[e.step];
+                    if (prev) {
+                        next.stepStats = {
+                            ...state.stepStats,
+                            [e.step]: {
+                                ...prev,
+                                duration_ms:
+                                    start !== undefined
+                                        ? Date.now() - start
+                                        : prev.duration_ms,
+                            },
+                        };
+                    }
+                    break;
+                }
+                case "emitted": {
+                    next.runCounts = {
+                        ...state.runCounts,
+                        [e.type_name]: e.total,
+                    };
+                    const cur = state.currentStep;
+                    if (cur && state.stepStats[cur]) {
+                        next.stepStats = {
+                            ...(next.stepStats ?? state.stepStats),
+                            [cur]: {
+                                ...(next.stepStats?.[cur] ?? state.stepStats[cur]!),
+                                emits:
+                                    (next.stepStats?.[cur]?.emits ??
+                                        state.stepStats[cur]!.emits) + 1,
+                            },
+                        };
+                    }
+                    break;
+                }
+                case "run_succeeded": {
+                    // Freeze the final step.
+                    if (state.currentStep && state.stepStats[state.currentStep]) {
+                        next.stepStats = {
+                            ...state.stepStats,
+                            [state.currentStep]: {
+                                ...state.stepStats[state.currentStep]!,
+                                done: true,
+                            },
+                        };
+                    }
+                    break;
+                }
+                case "run_failed": {
+                    // Freeze the final step and mark it failed. Only the
+                    // step the engine was on when the run failed gets the
+                    // red pill — prior steps did complete successfully.
+                    if (state.currentStep && state.stepStats[state.currentStep]) {
+                        next.stepStats = {
+                            ...state.stepStats,
+                            [state.currentStep]: {
+                                ...state.stepStats[state.currentStep]!,
+                                done: true,
+                                failed: true,
+                            },
+                        };
+                    }
+                    break;
+                }
             }
             return next;
         }),
-    runFinish: () => set({ running: false, paused: null }),
+    runFinish: () =>
+        set((state) => {
+            // Mark every step done — defensive in case `runFinish` is
+            // called without a preceding `run_succeeded`/`run_failed`
+            // event (e.g. a Tauri command error before the engine fires).
+            const stepStats = { ...state.stepStats };
+            for (const k of Object.keys(stepStats)) {
+                stepStats[k] = { ...stepStats[k]!, done: true };
+            }
+            return { running: false, paused: null, stepStats };
+        }),
     debugPause: (p) => set({ paused: p }),
     debugClearPause: () => set({ paused: null }),
     toggleBreakpoint: (step) => {

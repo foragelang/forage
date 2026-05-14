@@ -168,7 +168,10 @@ impl<'t> Engine<'t> {
             &mut step_index,
         )
         .await?;
-        snapshot.evaluate_expectations(&recipe.expectations);
+        // No source on hand at engine boundary — line annotations get
+        // filled in by callers that have both the recipe and its
+        // source text (CLI, Studio commands).
+        snapshot.evaluate_expectations(&recipe.expectations, None);
         Ok(snapshot)
     }
 

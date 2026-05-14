@@ -107,7 +107,10 @@ impl<'r> ReplayEngine<'r> {
             }
         }
 
-        snapshot.evaluate_expectations(&self.recipe.expectations);
+        // The browser replay path has only the parsed recipe, not its
+        // source — line annotations come from callers that build their
+        // own LineMap (e.g. the CLI, Studio commands).
+        snapshot.evaluate_expectations(&self.recipe.expectations, None);
         Ok(snapshot)
     }
 }

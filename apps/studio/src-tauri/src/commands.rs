@@ -363,7 +363,13 @@ pub async fn run_recipe(
     state.debug_session.store(None);
 
     match snapshot {
-        Ok(s) => {
+        Ok(mut s) => {
+            // The engine evaluates expectations without source access,
+            // so its diagnostics carry `line: None`. Re-evaluate here
+            // with a `LineMap` so the UI can render a `recipe:L` jump
+            // badge on every unmet-expect card.
+            let line_map = LineMap::new(&source);
+            s.evaluate_expectations(&recipe.expectations, Some(&line_map));
             // Make sure the recipe shows up in the daemon's Runs
             // sidebar after its first dev-run. `ensure_run` is
             // idempotent — repeated dev-runs of the same recipe don't
@@ -909,7 +915,7 @@ fn host_of(url: &str) -> String {
 
 use std::path::{Path, PathBuf};
 
-use forage_daemon::{DaemonStatus, Run, RunConfig, ScheduledRun};
+use forage_daemon::{DaemonStatus, Run, RunConfig, ScheduledRun, validate_cron};
 
 use crate::workspace::{FileNode, WorkspaceInfo, build_file_tree};
 
@@ -1222,6 +1228,17 @@ pub fn load_run_records(
         .daemon
         .load_records(&scheduled_run_id, &type_name, limit)
         .map_err(|e| e.to_string())
+}
+
+/// Validate a cron expression using the daemon's parser. The frontend
+/// uses this as the gate for the schedule editor's Save button so the
+/// client and server agree on what counts as valid syntax — `cronstrue`
+/// (the client-side humanizer) accepts a wider grammar than the daemon's
+/// 5-field parser, and a mismatch would let the user save a schedule
+/// that the daemon then rejects at configure time.
+#[tauri::command]
+pub async fn validate_cron_expr(expr: String) -> Result<(), String> {
+    validate_cron(&expr).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

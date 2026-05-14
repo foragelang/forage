@@ -64,6 +64,8 @@
     --color-success-foreground: var(--success-foreground);
     --color-warning: var(--warning);
     --color-warning-foreground: var(--warning-foreground);
+    --color-info: var(--info);
+    --color-info-foreground: var(--info-foreground);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -107,6 +109,8 @@
     --success-foreground: oklch(0.985 0 0);
     --warning: oklch(0.769 0.188 70.08);
     --warning-foreground: oklch(0.205 0 0);
+    --info: oklch(0.602 0.158 245);
+    --info-foreground: oklch(0.985 0 0);
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
@@ -146,6 +150,8 @@
     --success-foreground: oklch(0.145 0 0);
     --warning: oklch(0.828 0.189 84.429);
     --warning-foreground: oklch(0.145 0 0);
+    --info: oklch(0.7 0.158 245);
+    --info-foreground: oklch(0.145 0 0);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
@@ -193,4 +199,34 @@
 }
 .forage-paused-line {
     background-color: color-mix(in oklab, var(--warning) 12%, transparent);
+}
+
+/*
+ * Inline step-stats pill rendered as a Monaco content widget anchored
+ * to the end of the step's first line. Pure visual; not clickable.
+ * Tone classes line up with the run outcome from the latest engine
+ * events: ok = green, warn = amber (e.g. unmet expectation), fail = red.
+ */
+.step-stat {
+    margin-left: 14px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    opacity: 0.92;
+    pointer-events: none;
+}
+.step-stat-ok {
+    color: var(--success);
+    background: color-mix(in oklab, var(--success) 14%, transparent);
+}
+.step-stat-warn {
+    color: var(--warning);
+    background: color-mix(in oklab, var(--warning) 14%, transparent);
+}
+.step-stat-fail {
+    color: var(--destructive);
+    background: color-mix(in oklab, var(--destructive) 14%, transparent);
 }

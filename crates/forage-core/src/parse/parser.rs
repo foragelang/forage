@@ -1747,6 +1747,7 @@ impl Parser {
     // --- expect ------------------------------------------------------------
 
     fn parse_expect_block(&mut self) -> Result<Expectation, ParseError> {
+        let start = self.current_span().start;
         self.expect_keyword("expect")?;
         self.expect_punct(&Token::LBrace)?;
         // `records.where(typeName == "X").count <op> N`
@@ -1770,6 +1771,7 @@ impl Parser {
                 op,
                 value,
             },
+            span: self.span_to_here(start),
         })
     }
 

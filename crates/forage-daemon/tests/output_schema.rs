@@ -152,6 +152,48 @@ fn write_record_round_trips_through_load_records() {
     let tags_text = obj["tags"].as_str().expect("tags is text-encoded JSON");
     let tags: serde_json::Value = serde_json::from_str(tags_text).unwrap();
     assert_eq!(tags, serde_json::json!(["featured", "flash"]));
-    assert_eq!(obj["_scheduled_run_id"], serde_json::json!("sched-1"));
-    assert_eq!(obj["_emitted_at"], serde_json::json!(1_700_000_000_000_i64));
+    // Bookkeeping columns are filtered out at the load boundary — the
+    // UI tables show recipe-declared fields, not internal columns.
+    assert!(!obj.contains_key("_scheduled_run_id"));
+    assert!(!obj.contains_key("_emitted_at"));
+}
+
+#[test]
+fn load_records_excludes_bookkeeping_columns() {
+    let recipe = parse(RECIPE).expect("parse");
+    let catalog = TypeCatalog::from_recipe(&recipe);
+    let tables = derive_schema(&recipe, &catalog);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("products.sqlite");
+    let mut store = OutputStore::open(&path, tables).expect("open");
+
+    let mut fields: IndexMap<String, forage_core::ast::JSONValue> = IndexMap::new();
+    fields.insert(
+        "id".into(),
+        forage_core::ast::JSONValue::String("sku-1".into()),
+    );
+    fields.insert("price".into(), forage_core::ast::JSONValue::Double(9.95));
+    fields.insert("available".into(), forage_core::ast::JSONValue::Bool(true));
+    fields.insert("stock_units".into(), forage_core::ast::JSONValue::Int(1));
+    fields.insert(
+        "tags".into(),
+        forage_core::ast::JSONValue::Array(vec![]),
+    );
+
+    let mut tx = store.begin_tx().unwrap();
+    tx.write_record("sched-1", 1_700_000_000_000, "Product", &fields)
+        .expect("write");
+    tx.commit().expect("commit");
+
+    let rows =
+        forage_daemon::load_records(&path, "sched-1", "Product", 10).expect("load");
+    let row = rows[0].as_object().unwrap();
+    let keys: std::collections::HashSet<&str> = row.keys().map(|s| s.as_str()).collect();
+    assert!(keys.contains("id"));
+    assert!(keys.contains("price"));
+    assert!(keys.contains("available"));
+    assert!(keys.contains("stock_units"));
+    assert!(keys.contains("tags"));
+    assert!(!keys.contains("_scheduled_run_id"));
+    assert!(!keys.contains("_emitted_at"));
 }

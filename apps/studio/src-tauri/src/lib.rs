@@ -44,6 +44,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Note: no tauri-plugin-log — tracing-subscriber above already
             // captures both `tracing::` events and (via its tracing-log
@@ -135,6 +136,7 @@ pub fn run() {
             commands::trigger_run,
             commands::list_scheduled_runs,
             commands::load_run_records,
+            commands::validate_cron_expr,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forage Studio");

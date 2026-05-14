@@ -1,5 +1,22 @@
-import { useId, useMemo } from "react";
-import { ChevronRight, Pause, Play, Repeat, Square, X } from "lucide-react";
+//! Bottom debugger panel — slides up from below the editor when the
+//! engine is paused. Three columns: Call Stack · Scope · Watch.
+//!
+//! Watch is a placeholder in Phase 5 — the design flagged user-defined
+//! watch expressions as deferred (DESIGN_HANDOFF.md "open questions").
+//! Per-type emit counters render at the bottom of the Watch column so
+//! users still see "records emitted so far" alongside the placeholder.
+
+import { useId, useMemo, useState } from "react";
+import {
+    ChevronRight,
+    Pause,
+    Play,
+    Plus,
+    Repeat,
+    Square,
+    SquareDashed,
+    X,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,26 +33,27 @@ import { cn } from "@/lib/utils";
 import { api, type DebugAction, type DebugScope, type PausePayload } from "@/lib/api";
 import { useStudio } from "@/lib/store";
 
-/// Bottom panel attached to the Source tab. Renders the engine's paused
-/// scope and the resume controls. Mounted only when `paused !== null` —
-/// the SourceTab handles that gating.
+/// Bottom panel attached to the editor pane. Renders the engine's
+/// paused scope and the resume controls. Mounted only when
+/// `paused !== null` — EditorView handles that gating.
 export function DebuggerPanel() {
-    const {
-        paused,
-        debugClearPause,
-        breakpoints,
-        clearBreakpoints,
-        pauseIterations,
-        setPauseIterations,
-    } = useStudio();
+    const paused = useStudio((s) => s.paused);
+    const debugClearPause = useStudio((s) => s.debugClearPause);
+    const breakpoints = useStudio((s) => s.breakpoints);
+    const clearBreakpoints = useStudio((s) => s.clearBreakpoints);
+    const pauseIterations = useStudio((s) => s.pauseIterations);
+    const setPauseIterations = useStudio((s) => s.setPauseIterations);
     const loopToggleId = useId();
+    // Frame switcher — Call Stack column writes into this; Scope reads
+    // it. Default to the innermost (last) frame, which is what the
+    // engine paused on.
+    const [activeFrame, setActiveFrame] = useState<number>(
+        paused?.scope.bindings.length ? paused.scope.bindings.length - 1 : 0,
+    );
+
     if (!paused) return null;
 
     const resume = async (action: DebugAction) => {
-        // Optimistically clear the pause so the panel collapses and the
-        // line highlight goes away immediately. The next pause event (if
-        // any) reinstates it. Without this the buttons feel "stuck"
-        // between click and engine wakeup.
         debugClearPause();
         try {
             await api.debugResume(action);
@@ -61,7 +79,9 @@ export function DebuggerPanel() {
                                     id={loopToggleId}
                                     type="checkbox"
                                     checked={pauseIterations}
-                                    onChange={(e) => setPauseIterations(e.target.checked)}
+                                    onChange={(e) =>
+                                        setPauseIterations(e.target.checked)
+                                    }
                                     className="size-3 accent-primary"
                                 />
                                 <Label
@@ -99,27 +119,42 @@ export function DebuggerPanel() {
                     <Separator orientation="vertical" className="!h-4" />
                     <Tooltip>
                         <TooltipTrigger asChild>
-                            <Button size="xs" onClick={() => resume("step_over")}>
-                                <Play />
-                                Step over
+                            <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                onClick={() => resume("step_over")}
+                                aria-label="Step over"
+                            >
+                                <SquareDashed />
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>
-                            Run this step, pause at the next one
-                        </TooltipContent>
+                        <TooltipContent>Step over · F10</TooltipContent>
                     </Tooltip>
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <Button
-                                size="xs"
-                                variant="secondary"
-                                onClick={() => resume("continue")}
+                                size="icon-xs"
+                                variant="ghost"
+                                onClick={() => resume("step_over")}
+                                aria-label="Step into"
                             >
+                                <ChevronRight />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            Step into · F11 (uses step_over until step_in lands)
+                        </TooltipContent>
+                    </Tooltip>
+                    <Separator orientation="vertical" className="!h-4" />
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button size="xs" onClick={() => resume("continue")}>
+                                <Play />
                                 Continue
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>
-                            Run to next breakpoint or end of recipe
+                            Run to next breakpoint or end · F5
                         </TooltipContent>
                     </Tooltip>
                     <Tooltip>
@@ -137,7 +172,15 @@ export function DebuggerPanel() {
                     </Tooltip>
                 </div>
             </header>
-            <ScopeView paused={paused} />
+            <div className="flex-1 min-h-0 grid grid-cols-[200px_minmax(0,1fr)_240px] divide-x">
+                <CallStackColumn
+                    paused={paused}
+                    activeFrame={activeFrame}
+                    onSelectFrame={setActiveFrame}
+                />
+                <ScopeColumn paused={paused} activeFrame={activeFrame} />
+                <WatchColumn counts={paused.scope.emit_counts} />
+            </div>
         </div>
     );
 }
@@ -166,82 +209,189 @@ function PauseLabel({ paused }: { paused: PausePayload }) {
     );
 }
 
-function ScopeView({ paused }: { paused: PausePayload }) {
+// ── columns ──────────────────────────────────────────────────────────
+
+function CallStackColumn({
+    paused,
+    activeFrame,
+    onSelectFrame,
+}: {
+    paused: PausePayload;
+    activeFrame: number;
+    onSelectFrame: (i: number) => void;
+}) {
+    const frames = paused.scope.bindings;
     return (
-        <div className="flex-1 overflow-auto p-4 grid grid-cols-[1fr_1fr] gap-x-6 gap-y-4">
-            <BindingsSection scope={paused.scope} />
-            <div className="space-y-6">
-                <CountsSection counts={paused.scope.emit_counts} />
+        <Column title="Call stack" meta={`${frames.length}`}>
+            {frames.map((f, i) => {
+                const active = i === activeFrame;
+                const keyCount = Object.keys(f.bindings).length;
+                return (
+                    <button
+                        type="button"
+                        key={i}
+                        onClick={() => onSelectFrame(i)}
+                        className={cn(
+                            "w-full flex items-baseline gap-2 px-3 py-1 text-xs text-left",
+                            "hover:bg-muted",
+                            active && "bg-accent/40 text-foreground",
+                            !active && "text-muted-foreground",
+                        )}
+                    >
+                        <span className="font-mono tabular-nums w-6 text-right text-muted-foreground">
+                            #{i}
+                        </span>
+                        <span className="font-mono truncate flex-1">
+                            {i === 0 ? "scope" : `frame ${i}`}
+                        </span>
+                        <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+                            {keyCount}
+                        </span>
+                    </button>
+                );
+            })}
+            {frames.length === 0 && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                    (no frames)
+                </div>
+            )}
+        </Column>
+    );
+}
+
+function ScopeColumn({
+    paused,
+    activeFrame,
+}: {
+    paused: PausePayload;
+    activeFrame: number;
+}) {
+    const frame = paused.scope.bindings[activeFrame];
+    return (
+        <Column
+            title="Scope"
+            meta={
+                paused.scope.bindings.length > 0
+                    ? `frame #${activeFrame}`
+                    : undefined
+            }
+        >
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
                 <InputsSection inputs={paused.scope.inputs} />
                 <SecretsSection names={paused.scope.secrets} />
+                <BindingsSection frame={frame} index={activeFrame} />
                 {paused.scope.current !== null &&
                     paused.scope.current !== undefined && (
-                        <Section title="$ (current)">
+                        <Section title="$ current">
                             <JsonNode value={paused.scope.current} />
                         </Section>
                     )}
             </div>
+        </Column>
+    );
+}
+
+function WatchColumn({ counts }: { counts: Record<string, number> }) {
+    const entries = Object.entries(counts);
+    return (
+        <Column
+            title="Watch"
+            meta=""
+            trailing={
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Add watch (coming soon)"
+                            disabled
+                        >
+                            <Plus />
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Add watch — coming</TooltipContent>
+                </Tooltip>
+            }
+        >
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                <div className="text-xs text-muted-foreground italic">
+                    Add watch — coming
+                </div>
+                {entries.length > 0 && (
+                    <Section title="Records so far">
+                        <div className="space-y-1">
+                            {entries.map(([t, n]) => (
+                                <div
+                                    key={t}
+                                    className="flex items-baseline justify-between gap-2 text-sm"
+                                >
+                                    <span className="font-mono truncate">{t}</span>
+                                    <Badge variant="success" className="tabular-nums shrink-0">
+                                        {n}
+                                    </Badge>
+                                </div>
+                            ))}
+                        </div>
+                    </Section>
+                )}
+            </div>
+        </Column>
+    );
+}
+
+function Column({
+    title,
+    meta,
+    trailing,
+    children,
+}: {
+    title: string;
+    meta?: string;
+    trailing?: React.ReactNode;
+    children: React.ReactNode;
+}) {
+    return (
+        <div className="flex flex-col min-h-0">
+            <div className="flex items-baseline gap-2 px-3 py-1.5 border-b text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">
+                <span>{title}</span>
+                {meta !== undefined && meta !== "" && (
+                    <span className="font-mono text-muted-foreground/70">{meta}</span>
+                )}
+                {trailing && <span className="ml-auto">{trailing}</span>}
+            </div>
+            <div className="flex-1 min-h-0 flex flex-col">{children}</div>
         </div>
     );
 }
 
-function CountsSection({ counts }: { counts: Record<string, number> }) {
-    const entries = Object.entries(counts);
-    if (entries.length === 0) return null;
-    return (
-        <Section title="Records so far">
-            <div className="space-y-1 max-w-sm">
-                {entries.map(([t, n]) => (
-                    <div key={t} className="flex items-baseline justify-between gap-2">
-                        <span className="font-mono text-sm truncate">{t}</span>
-                        <Badge variant="success" className="tabular-nums shrink-0">
-                            {n}
-                        </Badge>
-                    </div>
-                ))}
-            </div>
-        </Section>
-    );
-}
+// ── scope sub-sections ───────────────────────────────────────────────
 
-function BindingsSection({ scope }: { scope: DebugScope }) {
-    // Flatten frames into a single view, marking which frame each binding
-    // came from. Outer-most first matches push order; inner shadows outer
-    // (which the engine honors via Scope::lookup). The UI groups by frame
-    // depth so the user can see how a `for`-loop binding sits relative to
-    // the top-level scope.
-    const allEmpty = scope.bindings.every(
-        (f) => Object.keys(f.bindings).length === 0,
-    );
+function BindingsSection({
+    frame,
+    index,
+}: {
+    frame: DebugScope["bindings"][number] | undefined;
+    index: number;
+}) {
+    if (!frame) return null;
+    const keys = Object.keys(frame.bindings);
     return (
-        <Section title="Bindings">
-            {allEmpty ? (
-                <div className="text-sm text-muted-foreground">
+        <Section
+            title={index === 0 ? "Bindings" : `Bindings (frame ${index})`}
+        >
+            {keys.length === 0 ? (
+                <div className="text-xs text-muted-foreground">
                     (no named bindings yet)
                 </div>
             ) : (
-                <div className="space-y-4">
-                    {scope.bindings.map((frame, i) => {
-                        const keys = Object.keys(frame.bindings);
-                        if (keys.length === 0) return null;
-                        return (
-                            <div key={i}>
-                                {i > 0 && <Separator className="mb-3" />}
-                                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
-                                    {i === 0 ? "scope" : `frame #${i}`}
-                                </div>
-                                <div className="space-y-1">
-                                    {keys.map((k) => (
-                                        <KeyValueRow
-                                            key={k}
-                                            name={k}
-                                            value={frame.bindings[k]}
-                                        />
-                                    ))}
-                                </div>
-                            </div>
-                        );
-                    })}
+                <div className="space-y-1">
+                    {keys.map((k) => (
+                        <KeyValueRow
+                            key={k}
+                            name={k}
+                            value={frame.bindings[k]}
+                        />
+                    ))}
                 </div>
             )}
         </Section>
@@ -281,7 +431,7 @@ function SecretsSection({ names }: { names: string[] }) {
 function Section(props: { title: string; children: React.ReactNode }) {
     return (
         <section>
-            <h3 className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
+            <h3 className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
                 {props.title}
             </h3>
             <div>{props.children}</div>
@@ -301,8 +451,6 @@ function KeyValueRow({ name, value }: { name: string; value: unknown }) {
     );
 }
 
-/// Compact JSON view: scalars inline, objects/arrays as Collapsible with
-/// a summary line and the full value on expand.
 function JsonNode({ value }: { value: unknown }) {
     const summary = useMemo(() => describe(value), [value]);
     if (

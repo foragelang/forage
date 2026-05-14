@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { Cadence } from "../bindings/Cadence";
 import type { DaemonStatus } from "../bindings/DaemonStatus";
 import type { DebugFrame } from "../bindings/DebugFrame";
 import type { DebugScope } from "../bindings/DebugScope";
@@ -18,6 +19,7 @@ import type { Health } from "../bindings/Health";
 import type { HoverInfo } from "../bindings/HoverInfo";
 import type { IterationPause } from "../bindings/IterationPause";
 import type { LanguageDictionary } from "../bindings/LanguageDictionary";
+import type { Outcome } from "../bindings/Outcome";
 import type { PausePayload } from "../bindings/PausePayload";
 import type { RecipeRecord } from "../bindings/RecipeRecord";
 import type { RecipeOutline } from "../bindings/RecipeOutline";
@@ -30,12 +32,15 @@ import type { ScheduledRun } from "../bindings/ScheduledRun";
 import type { Snapshot } from "../bindings/Snapshot";
 import type { StepLocation } from "../bindings/StepLocation";
 import type { StepPause } from "../bindings/StepPause";
+import type { TimeUnit } from "../bindings/TimeUnit";
+import type { Trigger } from "../bindings/Trigger";
 import type { ValidationOutcome } from "../bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "../bindings/WorkspaceInfo";
 
 // Re-export for the rest of the UI. Importing from "lib/api" rather than
 // directly from "bindings/…" keeps the call sites stable if bindings move.
 export type {
+    Cadence,
     DaemonStatus,
     DebugFrame,
     DebugScope,
@@ -46,6 +51,7 @@ export type {
     HoverInfo,
     IterationPause,
     LanguageDictionary,
+    Outcome,
     PausePayload,
     RecipeOutline,
     RecipeRecord,
@@ -58,6 +64,8 @@ export type {
     Snapshot,
     StepLocation,
     StepPause,
+    TimeUnit,
+    Trigger,
     ValidationOutcome,
     WorkspaceInfo,
 };
@@ -154,4 +162,6 @@ export const api = {
             typeName,
             limit,
         }),
+    validateCron: (expr: string) =>
+        invoke<void>("validate_cron_expr", { expr }),
 };
