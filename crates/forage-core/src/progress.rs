@@ -144,8 +144,7 @@ fn pick_outermost_last_wins(
     let min_depth = candidates.iter().map(|(d, _)| *d).min()?;
     candidates
         .into_iter()
-        .filter(|(d, _)| *d == min_depth)
-        .last()
+        .rfind(|(d, _)| *d == min_depth)
         .map(|(_, u)| u)
 }
 

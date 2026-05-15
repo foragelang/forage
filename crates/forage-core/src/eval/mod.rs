@@ -325,13 +325,14 @@ impl<'r> Evaluator<'r> {
 
 /// Apply `lhs op rhs` with the language's numeric-coercion rule:
 ///   * `Int op Int`:  `+`, `-`, `*` stay `Int`; `/` and `%` always
-///                     promote to `Double` (no integer division — `1/2`
-///                     is `0.5`, not `0`). Division by zero
-///                     (numerator+denominator both zero or just
-///                     denominator) is a domain error.
+///     promote to `Double` (no integer division — `1/2`
+///     is `0.5`, not `0`). Division by zero
+///     (numerator+denominator both zero or just
+///     denominator) is a domain error.
 ///   * Any `Double` operand promotes the other side to `Double`.
 ///   * `String + String` concatenates.
 ///   * Everything else (`1 + "x"`, etc.) is `TypeMismatch`.
+///
 /// Null on either side is `TypeMismatch` — we deliberately don't fold
 /// null into the numeric rules, because `null + 1 → 1` is exactly the
 /// kind of silent coercion that produces broken records downstream.
@@ -358,7 +359,7 @@ fn apply_binary(op: BinOp, lhs: EvalValue, rhs: EvalValue) -> Result<EvalValue, 
             // pure Int % Int stays Int but a zero divisor is a domain
             // error rather than a panic.
             match (l, r) {
-                (Numeric::Int(_), Numeric::Int(b)) if b == 0 => Err(EvalError::ArithmeticDomain(
+                (Numeric::Int(_), Numeric::Int(0)) => Err(EvalError::ArithmeticDomain(
                     "modulo by zero".into(),
                 )),
                 (Numeric::Int(a), Numeric::Int(b)) => Ok(EvalValue::Int(a % b)),

@@ -1601,7 +1601,7 @@ pub async fn open_workspace(
     path: PathBuf,
 ) -> Result<WorkspaceInfo, String> {
     let _guard = state.workspace_switch.lock().await;
-    open_workspace_inner(&*state, &app, path).await
+    open_workspace_inner(&state, &app, path).await
 }
 
 /// Scaffold a new workspace at `path` (creates the directory if
@@ -1615,7 +1615,7 @@ pub async fn new_workspace(
     path: PathBuf,
 ) -> Result<WorkspaceInfo, String> {
     let _guard = state.workspace_switch.lock().await;
-    new_workspace_inner(&*state, &app, path).await
+    new_workspace_inner(&state, &app, path).await
 }
 
 /// Test-reachable core of `new_workspace`. The command body is just
@@ -1647,7 +1647,7 @@ pub async fn close_workspace(
     app: AppHandle,
 ) -> Result<(), String> {
     let _guard = state.workspace_switch.lock().await;
-    close_workspace_inner(&*state, Some(&app));
+    close_workspace_inner(&state, Some(&app));
     Ok(())
 }
 
