@@ -1,4 +1,0 @@
-name = "forage/hacker-news-html"
-description = "Hacker News front page — scraped from the rendered HTML at news.ycombinator.com"
-category = "news"
-tags = ["hacker-news", "html", "scraping"]

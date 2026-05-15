@@ -1,4 +1,0 @@
-name = "forage/sample-login"
-description = "Sample formLogin recipe demonstrating auth.session.formLogin and $secret.* against httpbin"
-category = "examples"
-tags = ["auth", "example", "session"]

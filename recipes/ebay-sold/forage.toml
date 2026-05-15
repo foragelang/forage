@@ -1,4 +1,0 @@
-name = "forage/ebay-sold"
-description = "eBay completed-listings — sold price + date for items matching a query"
-category = "marketplaces"
-tags = ["ebay", "marketplace", "browser-engine", "interactive"]

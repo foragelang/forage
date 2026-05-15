@@ -1,4 +1,0 @@
-name = "forage/letterboxd-popular"
-description = "Letterboxd — films popular this week, scraped through the browser engine"
-category = "entertainment"
-tags = ["letterboxd", "film", "browser-engine"]

@@ -1,4 +1,0 @@
-name = "forage/github-releases"
-description = "Latest 15 releases for any public GitHub repository"
-category = "developer-tools"
-tags = ["github", "releases", "api"]

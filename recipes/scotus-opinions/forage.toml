@@ -1,4 +1,0 @@
-name = "forage/scotus-opinions"
-description = "US Supreme Court slip opinions — current-term opinion list scraped from supremecourt.gov"
-category = "government"
-tags = ["scotus", "law", "scraping"]

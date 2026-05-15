@@ -1,4 +1,0 @@
-name = "forage/sweed"
-description = "Sweed platform recipe — dispensary product menus over the Sweed JSON API"
-category = "dispensary"
-tags = ["cannabis", "dispensary", "sweed", "api"]
