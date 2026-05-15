@@ -437,10 +437,12 @@ async fn scheduled_run_recipe_version_round_trips() {
     assert_eq!(by_id.get(&post_deploy.id).copied(), Some(Some(1)));
 }
 
-/// A v1 daemon DB (schema_version = 1) opens cleanly under the v2
-/// migration: the new `deployed_versions` table is created and the
-/// `deployed_version` column is added to `runs` without losing prior
-/// rows.
+/// A v1 daemon DB (schema_version = 1) opens cleanly through every
+/// migration step up to the current schema: `deployed_versions` is
+/// created, `runs.deployed_version` + `scheduled_runs.recipe_version`
+/// are added (v2), and the legacy `recipe_slug` / `slug` column names
+/// are renamed to `recipe_name` (v3) — all without dropping any
+/// pre-existing row.
 #[test]
 fn opening_a_v1_database_runs_the_migration() {
     use rusqlite::Connection;
@@ -452,9 +454,9 @@ fn opening_a_v1_database_runs_the_migration() {
     let db_path = daemon_dir.join("daemon.sqlite");
 
     {
-        // Hand-build a v1 schema. Mirrors the legacy migration in
-        // `db::apply_migrations` — the contract under test is that
-        // opening this DB through v2 doesn't drop or corrupt the row.
+        // Hand-build a v1 schema. Mirrors the original `runs` table
+        // shape so the migration chain has something realistic to
+        // walk forward from.
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(
             r#"
@@ -498,16 +500,17 @@ fn opening_a_v1_database_runs_the_migration() {
         .unwrap();
     }
 
-    let daemon = Daemon::open(ws_root.clone()).expect("open v1 db under v2");
-    // The migration must have added the column without dropping the
-    // legacy row.
+    let daemon = Daemon::open(ws_root.clone()).expect("open v1 db under current schema");
+    // The migration chain must preserve the legacy row through both
+    // the v2 column additions and the v3 rename.
     let runs = daemon.list_runs().expect("list runs after migration");
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, "legacy");
+    assert_eq!(runs[0].recipe_name, "old-slug");
     assert!(runs[0].deployed_version.is_none());
 
     // The new table is queryable (returns empty for a never-deployed
-    // slug). If the migration didn't add it, this would fail at the
+    // recipe). If the migration didn't add it, this would fail at the
     // SQL prepare step.
     assert!(daemon.deployed_versions("old-slug").unwrap().is_empty());
 
