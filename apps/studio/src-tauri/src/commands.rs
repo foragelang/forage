@@ -2130,13 +2130,25 @@ pub async fn notebook_run(
 }
 
 /// Render the `.forage` source a notebook would publish. Pure
-/// function — takes the recipe header name and the ordered stage
-/// names and returns a parseable composition recipe. The frontend
-/// uses this to preview the publish payload and to write the
-/// synthetic file via `notebook_save`.
+/// function — takes the recipe header name, the ordered stage
+/// names, and the tail stage's output type, and returns a
+/// parseable composition recipe. The frontend uses this to preview
+/// the publish payload and to write the synthetic file via
+/// `notebook_save`.
+///
+/// `output_type` is the tail stage's output type name. It rides
+/// onto the synthesized recipe as `output T` so the validator can
+/// check the composition's chain and the daemon can build an output-
+/// store schema. The frontend already knows this from the picker's
+/// `RecipeSignatureWire`; passing `None` synthesizes a no-output
+/// recipe that runs ephemerally but can't persist records.
 #[tauri::command]
-pub fn notebook_compose_source(name: String, stages: Vec<String>) -> String {
-    render_composition_source(&name, &stages)
+pub fn notebook_compose_source(
+    name: String,
+    stages: Vec<String>,
+    output_type: Option<String>,
+) -> String {
+    render_composition_source(&name, &stages, output_type.as_deref())
 }
 
 /// Persist a notebook as a `.forage` recipe file at the workspace
@@ -2153,12 +2165,13 @@ pub fn notebook_save(
     state: State<'_, StudioState>,
     name: String,
     stages: Vec<String>,
+    output_type: Option<String>,
 ) -> Result<NotebookSaveOutcome, String> {
     if stages.is_empty() {
         return Err("notebook has no stages".into());
     }
     let ws = require_workspace(&state)?;
-    let source = render_composition_source(&name, &stages);
+    let source = render_composition_source(&name, &stages, output_type.as_deref());
     let target = ws.root.join(format!("{name}.forage"));
     if target.exists() {
         return Err(format!(
@@ -2287,12 +2300,22 @@ pub struct NotebookSaveOutcome {
     pub source: String,
 }
 
-fn render_composition_source(name: &str, stages: &[String]) -> String {
+fn render_composition_source(
+    name: &str,
+    stages: &[String],
+    output_type: Option<&str>,
+) -> String {
     let mut body = String::new();
     body.push_str("recipe \"");
     body.push_str(name);
     body.push_str("\"\n");
-    body.push_str("engine http\n\n");
+    body.push_str("engine http\n");
+    if let Some(t) = output_type {
+        body.push_str("output ");
+        body.push_str(t);
+        body.push('\n');
+    }
+    body.push('\n');
     if !stages.is_empty() {
         body.push_str("compose ");
         for (i, stage) in stages.iter().enumerate() {
@@ -2895,5 +2918,203 @@ for $i in $list.items[*] {
             err.contains("already has a forage.toml"),
             "unexpected error: {err}"
         );
+    }
+
+    // --- Notebook --------------------------------------------------------
+    //
+    // The notebook commands are thin delegations to `Daemon::run_composition`
+    // and to the local `render_composition_source` helper. The unit tests
+    // here pin the helper's output shape (`compose "a" | "b"`) and assert
+    // that the rendered source round-trips: parse + validate + deploy + run
+    // produces the same snapshot as `Daemon::run_composition` against the
+    // same stages.
+
+    const NOTEBOOK_UPSTREAM: &str = r#"recipe "scrape"
+engine http
+
+share type Item { id: String }
+
+output Item
+
+step list {
+    method "GET"
+    url    "https://example.test/items"
+}
+
+for $i in $list.items[*] {
+    emit Item { id ← $i.id }
+}
+"#;
+
+    const NOTEBOOK_ENRICH: &str = r#"recipe "enrich"
+engine http
+
+share type Item { id: String }
+
+input prior: [Item]
+
+output Item
+
+for $p in $input.prior {
+    emit Item { id ← $p.id }
+}
+"#;
+
+    #[test]
+    fn render_composition_source_emits_parseable_compose_recipe() {
+        let src = super::render_composition_source(
+            "notebook",
+            &["scrape".to_string(), "enrich".to_string()],
+            Some("Item"),
+        );
+        assert!(src.contains("recipe \"notebook\""));
+        assert!(src.contains("engine http"));
+        assert!(src.contains("output Item"));
+        assert!(src.contains("compose \"scrape\" | \"enrich\""));
+
+        // The synthesized source must parse cleanly — that's the
+        // contract publish relies on. The validator needs the peer
+        // signatures (the workspace's other recipes), so we don't
+        // run it here; the round-trip test below does.
+        let parsed = forage_core::parse(&src).expect("parses");
+        assert_eq!(parsed.recipe_name(), Some("notebook"));
+        let comp = parsed.body.composition().expect("composition body");
+        assert_eq!(comp.stages.len(), 2);
+        assert_eq!(comp.stages[0].name, "scrape");
+        assert!(comp.stages[0].author.is_none());
+        assert_eq!(comp.stages[1].name, "enrich");
+        let output = parsed.output.as_ref().expect("output decl");
+        assert_eq!(output.types, vec!["Item".to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn published_notebook_runs_identically_to_run_composition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "a"}, {"id": "b"}],
+            })))
+            .mount(&mock)
+            .await;
+
+        write_workspace(&ws_root, "scrape", NOTEBOOK_UPSTREAM);
+        std::fs::write(ws_root.join("enrich.forage"), NOTEBOOK_ENRICH).unwrap();
+        let scrape_path = ws_root.join("scrape.forage");
+        rewrite_url(&scrape_path, &format!("{}/items", mock.uri()));
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        deploy_from_disk(&daemon, &ws_root, "scrape");
+        deploy_from_disk(&daemon, &ws_root, "enrich");
+
+        // Notebook preview: run via `run_composition` directly.
+        let stages = vec!["scrape".to_string(), "enrich".to_string()];
+        let preview = daemon
+            .run_composition(
+                "notebook",
+                stages.clone(),
+                indexmap::IndexMap::new(),
+                RunFlags::prod(),
+            )
+            .await
+            .expect("run_composition");
+
+        // Publish: render the same chain, write it as a recipe,
+        // deploy through the normal flow, trigger it. The published
+        // run's snapshot must match the preview's record set.
+        let published_src =
+            super::render_composition_source("notebook", &stages, Some("Item"));
+        std::fs::write(ws_root.join("notebook.forage"), &published_src).unwrap();
+        deploy_from_disk(&daemon, &ws_root, "notebook");
+        let cfg = RunConfig {
+            cadence: Cadence::Manual,
+            output: ws_root.join(".forage").join("data").join("notebook.sqlite"),
+            enabled: true,
+            inputs: indexmap::IndexMap::new(),
+            output_format: forage_daemon::OutputFormat::default(),
+        };
+        let run = daemon.configure_run("notebook", cfg).expect("configure_run");
+        let sr = daemon
+            .trigger_run(&run.id, RunFlags::prod())
+            .await
+            .expect("trigger_run");
+        assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
+
+        // The trigger persisted records under the published recipe's
+        // output store; load them back and compare against the
+        // preview snapshot's record ids.
+        let records = daemon
+            .load_records(&sr.id, "Item", 100)
+            .expect("load records");
+        let published_ids: Vec<String> = records
+            .iter()
+            .map(|r| {
+                r.get("id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .expect("id field")
+            })
+            .collect();
+        let preview_ids: Vec<String> = preview
+            .records
+            .iter()
+            .map(|r| match r.fields.get("id") {
+                Some(forage_core::ast::JSONValue::String(s)) => s.clone(),
+                other => panic!("expected String id, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(preview_ids, published_ids);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_composition_passes_replay_path_through_flags() {
+        // Replay-path threading: feed `RunFlags::replay = Some(path)`
+        // and assert the engine reaches the replay transport (no HTTP
+        // request is made). A live mock would catch any request that
+        // leaks through; the absence of a live mock plus a successful
+        // run means the replay path won.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+
+        // Captures file: one GET to /items returning two items.
+        let captures_dir = ws_root.join("_fixtures");
+        std::fs::create_dir_all(&captures_dir).unwrap();
+        let captures_path = captures_dir.join("scrape.jsonl");
+        let captures_jsonl = format!(
+            "{}\n",
+            serde_json::json!({
+                "kind": "http",
+                "url": "https://example.test/items",
+                "method": "GET",
+                "status": 200,
+                "body": "{\"items\":[{\"id\":\"x\"},{\"id\":\"y\"}]}"
+            })
+        );
+        std::fs::write(&captures_path, captures_jsonl).unwrap();
+
+        write_workspace(&ws_root, "scrape", NOTEBOOK_UPSTREAM);
+        std::fs::write(ws_root.join("enrich.forage"), NOTEBOOK_ENRICH).unwrap();
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        deploy_from_disk(&daemon, &ws_root, "scrape");
+        deploy_from_disk(&daemon, &ws_root, "enrich");
+
+        let flags = RunFlags {
+            sample_limit: None,
+            replay: Some(captures_path),
+            ephemeral: true,
+        };
+        let snapshot = daemon
+            .run_composition(
+                "notebook",
+                vec!["scrape".into(), "enrich".into()],
+                indexmap::IndexMap::new(),
+                flags,
+            )
+            .await
+            .expect("run_composition with replay");
+        assert_eq!(snapshot.records.len(), 2);
     }
 }

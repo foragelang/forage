@@ -318,10 +318,18 @@ export class HubStudioService implements StudioService {
         // through. Notebooks are a Studio-only surface.
         return Promise.reject(new NotSupportedByService("runNotebook"));
     }
-    composeNotebookSource(): Promise<string> {
+    composeNotebookSource(
+        _name: string,
+        _stages: string[],
+        _outputType: string | null,
+    ): Promise<string> {
         return Promise.reject(new NotSupportedByService("composeNotebookSource"));
     }
-    saveNotebook(): Promise<NotebookSaveOutcome> {
+    saveNotebook(
+        _name: string,
+        _stages: string[],
+        _outputType: string | null,
+    ): Promise<NotebookSaveOutcome> {
         return Promise.reject(new NotSupportedByService("saveNotebook"));
     }
     listWorkspaceRecipeSignatures(): Promise<RecipeSignatureWire[]> {

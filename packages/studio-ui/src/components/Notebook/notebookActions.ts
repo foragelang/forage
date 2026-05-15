@@ -77,8 +77,13 @@ export async function commitNotebookPublish(args: {
     const service = state.service;
     const name = state.notebook.name;
     const stageNames = stages.map((s) => s.name);
+    // The composition's output type is the tail stage's output — what
+    // the chain emits is what its last stage emits. Captured at add-
+    // time on the stage so we can stamp `output T` on the synthesized
+    // recipe without re-fetching the stage's signature.
+    const tailOutput = stages[stages.length - 1]?.outputType ?? null;
     try {
-        await service.saveNotebook(name, stageNames);
+        await service.saveNotebook(name, stageNames, tailOutput);
     } catch (e) {
         return { saved: false, published: false, error: String(e) };
     }

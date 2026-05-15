@@ -177,11 +177,27 @@ export class TauriStudioService implements StudioService {
             flags: args.flags ?? null,
         });
     }
-    composeNotebookSource(name: string, stages: string[]): Promise<string> {
-        return invoke<string>("notebook_compose_source", { name, stages });
+    composeNotebookSource(
+        name: string,
+        stages: string[],
+        outputType: string | null,
+    ): Promise<string> {
+        return invoke<string>("notebook_compose_source", {
+            name,
+            stages,
+            outputType,
+        });
     }
-    saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome> {
-        return invoke<NotebookSaveOutcome>("notebook_save", { name, stages });
+    saveNotebook(
+        name: string,
+        stages: string[],
+        outputType: string | null,
+    ): Promise<NotebookSaveOutcome> {
+        return invoke<NotebookSaveOutcome>("notebook_save", {
+            name,
+            stages,
+            outputType,
+        });
     }
     listWorkspaceRecipeSignatures(): Promise<RecipeSignatureWire[]> {
         return invoke<RecipeSignatureWire[]>("list_workspace_recipe_signatures");

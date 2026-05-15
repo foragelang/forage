@@ -70,11 +70,15 @@ export class FakeStudioService implements StudioService {
         return this.call("runRecipe", [name, flags]);
     }
     runNotebook(args: unknown) { return this.call("runNotebook", [args]); }
-    composeNotebookSource(name: string, stages: string[]) {
-        return this.call("composeNotebookSource", [name, stages]);
+    composeNotebookSource(
+        name: string,
+        stages: string[],
+        outputType: string | null,
+    ) {
+        return this.call("composeNotebookSource", [name, stages, outputType]);
     }
-    saveNotebook(name: string, stages: string[]) {
-        return this.call("saveNotebook", [name, stages]);
+    saveNotebook(name: string, stages: string[], outputType: string | null) {
+        return this.call("saveNotebook", [name, stages, outputType]);
     }
     listWorkspaceRecipeSignatures() {
         return this.call("listWorkspaceRecipeSignatures", []);

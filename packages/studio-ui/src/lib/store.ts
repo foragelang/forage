@@ -34,6 +34,13 @@ export type NotebookStage = {
     /// `@author/name` references carry the author here so the
     /// type-shaped picker can render the citation chip.
     author: string | null;
+    /// The stage's declared output type at add-time. Captured so
+    /// "publish notebook" can stamp the right `output T` on the
+    /// synthesized recipe (the tail stage's output flows out of the
+    /// composition). `null` for recipes that haven't migrated to a
+    /// typed output — the publish path falls back to a no-output
+    /// composition the daemon still runs ephemerally.
+    outputType: string | null;
 };
 
 /// Persisted notebook scratchpad. One notebook open at a time —
@@ -269,9 +276,16 @@ type StudioState = {
     /// Rename the notebook. The new name becomes the recipe header
     /// when "Publish notebook" lands the chain as a `.forage` file.
     setNotebookName: (name: string) => void;
-    /// Append `(name, author)` to the chain. `author` is `null` for
-    /// workspace-local recipes; non-null for hub-pulled references.
-    addNotebookStage: (name: string, author: string | null) => void;
+    /// Append `(name, author, outputType)` to the chain. `author` is
+    /// `null` for workspace-local recipes; non-null for hub-pulled
+    /// references. `outputType` is the stage's declared output type
+    /// captured at add-time so a later "publish notebook" can stamp
+    /// the recipe with the tail stage's output without a re-fetch.
+    addNotebookStage: (
+        name: string,
+        author: string | null,
+        outputType: string | null,
+    ) => void;
     /// Remove the stage at `index`. No-op when the index is out of
     /// range. Removing any stage clears `snapshot` — the prior
     /// preview no longer corresponds to the new chain.
@@ -748,13 +762,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     // ── Notebook actions ────────────────────────────────────────────
     setNotebookName: (name) =>
         set((state) => ({ notebook: { ...state.notebook, name } })),
-    addNotebookStage: (name, author) =>
+    addNotebookStage: (name, author, outputType) =>
         set((state) => ({
             notebook: {
                 ...state.notebook,
                 stages: [
                     ...state.notebook.stages,
-                    { id: freshStageId(), name, author },
+                    { id: freshStageId(), name, author, outputType },
                 ],
                 snapshot: null,
                 runError: null,

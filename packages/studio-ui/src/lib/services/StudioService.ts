@@ -329,10 +329,21 @@ export interface StudioService {
     }): Promise<RunOutcome>;
     /// Render the `.forage` source a `notebookSave` would write,
     /// without touching disk. Used to power the publish-preview pane.
-    composeNotebookSource(name: string, stages: string[]): Promise<string>;
+    /// `outputType` rides onto the synthesized recipe as `output T`;
+    /// pass the tail stage's output type so the published recipe
+    /// can persist records.
+    composeNotebookSource(
+        name: string,
+        stages: string[],
+        outputType: string | null,
+    ): Promise<string>;
     /// Write the notebook out as a workspace recipe file. Returns the
     /// path + the synthesized source so the editor can switch onto it.
-    saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome>;
+    saveNotebook(
+        name: string,
+        stages: string[],
+        outputType: string | null,
+    ): Promise<NotebookSaveOutcome>;
     /// Recipe-signature index over the active workspace. The picker
     /// reads this to filter local recipes by output type without
     /// fetching anything.

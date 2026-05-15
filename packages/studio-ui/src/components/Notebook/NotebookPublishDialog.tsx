@@ -77,10 +77,12 @@ function PublishDialogBody() {
     // stage list or name change.
     useEffect(() => {
         let cancelled = false;
+        const tailOutput = stages[stages.length - 1]?.outputType ?? null;
         service
             .composeNotebookSource(
                 name,
                 stages.map((s) => s.name),
+                tailOutput,
             )
             .then((src) => {
                 if (!cancelled) setPreview(src);

@@ -250,7 +250,11 @@ function ResultList({
                         <button
                             type="button"
                             onClick={() => {
-                                addStage(entry.signature.name, entry.author);
+                                addStage(
+                                    entry.signature.name,
+                                    entry.author,
+                                    entry.signature.outputs[0] ?? null,
+                                );
                                 closePicker();
                             }}
                             className={cn(
