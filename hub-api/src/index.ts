@@ -23,6 +23,11 @@ import { createFork } from './routes/forks'
 import { getProfile, getProfilePackages, getProfileStars } from './routes/users'
 import { listCategories } from './routes/categories'
 import {
+    discoverProducers,
+    discoverConsumers,
+    discoverAlignedWith,
+} from './routes/discover'
+import {
     oauthStart,
     oauthCallback,
     oauthDevice,
@@ -107,6 +112,23 @@ async function route(
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
         if (limit !== null) return limit
         return listCategories(request, env)
+    }
+
+    // ----- Discover (type-shaped) ---------------------------------------
+    if (path === '/v1/discover/producers' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return discoverProducers(request, env)
+    }
+    if (path === '/v1/discover/consumers' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return discoverConsumers(request, env)
+    }
+    if (path === '/v1/discover/aligned-with' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return discoverAlignedWith(request, env)
     }
 
     // ----- /v1/users/:author* -------------------------------------------
