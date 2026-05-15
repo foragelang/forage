@@ -105,6 +105,14 @@ type StudioState = {
     // Top-level routing.
     view: View;
     activeFilePath: string | null;
+    /// Recipe header name at `activeFilePath`, or null when the active
+    /// path has no parsed recipe (header-less declarations file,
+    /// fixture, snapshot, broken file). Derived from the
+    /// recipe-statuses query cache at the time `setActiveFilePath` /
+    /// `setActiveRecipeName` runs; components that need the live join
+    /// (so a freshly-arrived cache update propagates without another
+    /// path switch) keep using `useRecipeNameOf`.
+    activeRecipeName: string | null;
     activeRunId: string | null;
     selectedScheduledRunId: string | null;
     inspectorMode: InspectorMode;
@@ -154,6 +162,13 @@ type StudioState = {
     // Actions.
     setView: (v: View) => void;
     setActiveFilePath: (p: string | null) => Promise<void>;
+    /// Open a recipe by header name. Looks up its draft path in the
+    /// recipe-statuses cache and routes through `setActiveFilePath` so
+    /// every prompt-on-dirty-switch / breakpoint-load side effect
+    /// runs. The optional `path` overrides the cache lookup — the
+    /// sidebar's Recipes section passes both so a click works even if
+    /// the cache hasn't propagated the latest entry.
+    setActiveRecipeName: (name: string, path?: string) => Promise<void>;
     setActiveRunId: (id: string | null) => void;
     setSelectedScheduledRunId: (id: string | null) => void;
     setInspectorMode: (m: InspectorMode) => void;
@@ -184,6 +199,114 @@ function recipeNameForPath(state: StudioState, path: string): string | null {
     return recipeNameOf(path, recipes);
 }
 
+/// Reverse of `recipeNameForPath`: look up the on-disk draft path for
+/// a recipe by header name. Used by `setActiveRecipeName` when the
+/// caller didn't pass a path explicitly — only `valid` drafts have a
+/// path (broken / missing entries return null).
+function pathForRecipeName(state: StudioState, name: string): string | null {
+    const recipes = state.queryClient?.getQueryData<RecipeStatus[]>(recipeStatusesKey());
+    if (!recipes) return null;
+    for (const r of recipes) {
+        if (r.name === name && r.draft.kind === "valid") return r.draft.path;
+    }
+    return null;
+}
+
+/// Shared path-switch reducer routed through by both
+/// `setActiveFilePath` and `setActiveRecipeName`. The explicit
+/// `forcedRecipeName` lets `setActiveRecipeName` win the race when
+/// the recipe-statuses cache hasn't yet populated the entry the
+/// caller is selecting against; passing `null` falls back to the
+/// cache lookup. Returns once the synchronous state writes are done;
+/// async side effects (loadFile, loadRecipeBreakpoints) continue in
+/// the background.
+async function switchActiveTarget(
+    get: () => StudioState,
+    set: (partial: Partial<StudioState>) => void,
+    path: string | null,
+    forcedRecipeName: string | null,
+): Promise<void> {
+    const state = get();
+    const service = state.service;
+    // Prompt-on-switch: single-buffer model means an unsaved buffer
+    // would otherwise be silently discarded when the user picks a
+    // different file. The host's confirm dialog only offers OK /
+    // Cancel — we frame it as "save first?" so cancelling keeps the
+    // user on the dirty file rather than discarding it.
+    if (state.dirty && state.activeFilePath && state.activeFilePath !== path) {
+        const dirtyPath = state.activeFilePath;
+        const dirtySource = state.source;
+        const proceed = await service.confirm(
+            `Save changes to "${dirtyPath}" before switching?`,
+            {
+                title: "Unsaved changes",
+                okLabel: "Save and switch",
+                cancelLabel: "Cancel",
+            },
+        );
+        if (!proceed) return;
+        try {
+            const v = await service.saveFile(dirtyPath, dirtySource);
+            if (get().activeFilePath === dirtyPath) {
+                set({ validation: v, dirty: false });
+            }
+        } catch (e) {
+            set({ runError: String(e) });
+            return;
+        }
+    }
+    const name = forcedRecipeName ?? (path ? recipeNameForPath(state, path) : null);
+    set({
+        activeFilePath: path,
+        activeRecipeName: name,
+        source: "",
+        dirty: false,
+        validation: null,
+        snapshot: null,
+        runError: null,
+        running: false,
+        runLog: [],
+        runCounts: {},
+        runStartedAt: null,
+        progressUnit: null,
+        stepStats: {},
+        currentStep: null,
+        stepStartMs: {},
+        paused: null,
+        breakpoints: new Set(),
+    });
+    // Clear engine-side breakpoints synchronously so a fast Run after
+    // the switch doesn't pause on the previous recipe's steps. The
+    // per-recipe set arrives via `loadRecipeBreakpoints` below and
+    // overwrites this.
+    service.setBreakpoints([]).catch((e) =>
+        set({ runError: `set_breakpoints failed: ${String(e)}` }),
+    );
+    if (path === null) return;
+    service.loadFile(path)
+        .then((s) => {
+            if (get().activeFilePath === path) {
+                set({ source: s, dirty: false });
+            }
+        })
+        .catch((e) => set({ runError: String(e) }));
+    if (name) {
+        service.loadRecipeBreakpoints(name)
+            .then((steps) => {
+                if (get().activeFilePath === path) {
+                    set({ breakpoints: new Set(steps) });
+                    return service.setBreakpoints(steps);
+                }
+                return undefined;
+            })
+            .catch((e) =>
+                set({
+                    runError: `load_recipe_breakpoints failed: ${String(e)}`,
+                }),
+            );
+    }
+}
+
 /// Placeholder service used before `installStudioService` runs. Every
 /// method throws; tests and the boot path must replace it. Keeps the
 /// store typing honest — no `Optional<StudioService>` to thread.
@@ -205,6 +328,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     queryClient: null,
     view: "editor",
     activeFilePath: null,
+    activeRecipeName: null,
     activeRunId: null,
     selectedScheduledRunId: null,
     inspectorMode: "run",
@@ -231,96 +355,22 @@ export const useStudio = create<StudioState>((set, get) => ({
     setSelectedScheduledRunId: (id) => set({ selectedScheduledRunId: id }),
     setInspectorMode: (m) => set({ inspectorMode: m }),
     setActiveFilePath: async (path) => {
-        const state = get();
-        const service = state.service;
-        // Prompt-on-switch: single-buffer model means an unsaved
-        // buffer would otherwise be silently discarded when the user
-        // picks a different file. The host's confirm dialog only
-        // offers OK / Cancel — we frame it as "save first?" so
-        // cancelling keeps the user on the dirty file rather than
-        // discarding it.
-        if (state.dirty && state.activeFilePath && state.activeFilePath !== path) {
-            const dirtyPath = state.activeFilePath;
-            const dirtySource = state.source;
-            const proceed = await service.confirm(
-                `Save changes to "${dirtyPath}" before switching?`,
-                {
-                    title: "Unsaved changes",
-                    okLabel: "Save and switch",
-                    cancelLabel: "Cancel",
-                },
-            );
-            if (!proceed) return;
-            // Inline save — keeps the store free of an import cycle
-            // against `studioActions.ts`. The guard ensures we only
-            // touch the store after the save if the user hasn't moved
-            // on yet (a second switch could race with the dialog).
-            try {
-                const v = await service.saveFile(dirtyPath, dirtySource);
-                if (get().activeFilePath === dirtyPath) {
-                    set({ validation: v, dirty: false });
-                }
-            } catch (e) {
-                set({ runError: String(e) });
-                return;
-            }
+        await switchActiveTarget(get, set, path, null);
+    },
+    setActiveRecipeName: async (name, path) => {
+        // When the sidebar's Recipes section calls this, it already
+        // has the recipe's draft path in hand; pass it through so the
+        // editor opens even if the recipe-statuses cache hasn't
+        // surfaced this entry yet. Fall back to the cache when no
+        // explicit path was provided.
+        const resolved = path ?? pathForRecipeName(get(), name);
+        if (!resolved) {
+            set({
+                runError: `setActiveRecipeName: no path for recipe "${name}"`,
+            });
+            return;
         }
-        // Reset transient editor state so a previous file's source,
-        // validation, run log, etc. don't bleed across.
-        set({
-            activeFilePath: path,
-            source: "",
-            dirty: false,
-            validation: null,
-            snapshot: null,
-            runError: null,
-            running: false,
-            runLog: [],
-            runCounts: {},
-            runStartedAt: null,
-            progressUnit: null,
-            stepStats: {},
-            currentStep: null,
-            stepStartMs: {},
-            paused: null,
-            breakpoints: new Set(),
-        });
-        // Clear engine-side breakpoints synchronously so a fast Run
-        // after the switch doesn't pause on the previous recipe's
-        // steps. The per-recipe set arrives via `loadRecipeBreakpoints`
-        // below and overwrites this.
-        service.setBreakpoints([]).catch((e) =>
-            set({ runError: `set_breakpoints failed: ${String(e)}` }),
-        );
-        if (path === null) return;
-        // Load source for any file the user picked. Errors surface in
-        // the store via setRunError; no silent swallowing.
-        service.loadFile(path)
-            .then((s) => {
-                // Guard against a faster-arriving second selection
-                // landing here before this promise resolves — only
-                // populate if the path is still active.
-                if (get().activeFilePath === path) {
-                    set({ source: s, dirty: false });
-                }
-            })
-            .catch((e) => set({ runError: String(e) }));
-        const name = recipeNameForPath(get(), path);
-        if (name) {
-            service.loadRecipeBreakpoints(name)
-                .then((steps) => {
-                    if (get().activeFilePath === path) {
-                        set({ breakpoints: new Set(steps) });
-                        return service.setBreakpoints(steps);
-                    }
-                    return undefined;
-                })
-                .catch((e) =>
-                    set({
-                        runError: `load_recipe_breakpoints failed: ${String(e)}`,
-                    }),
-                );
-        }
+        await switchActiveTarget(get, set, resolved, name);
     },
     setSource: (s) =>
         set((state) => ({
