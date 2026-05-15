@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ast::alignment::AlignmentUri;
 use crate::ast::span::Span;
 
 /// A recipe-declared type. Recipes ship their own type catalog;
@@ -10,11 +11,19 @@ use crate::ast::span::Span;
 /// `shared = true` (the `share type …` prefix) makes this declaration
 /// visible to every other file in the workspace. Without it, the type
 /// is file-scoped.
+///
+/// `alignments` are ontology correspondences declared between the type
+/// keyword and the opening `{` — `aligns schema.org/Product`,
+/// `aligns wikidata/Q2424752`, repeatable. Independent of `shared`:
+/// a file-local type can carry alignments. The hub uses them for
+/// discovery and JSON-LD output; the runtime carries them through to
+/// the snapshot but does not transform values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecipeType {
     pub name: String,
     pub fields: Vec<RecipeField>,
     pub shared: bool,
+    pub alignments: Vec<AlignmentUri>,
     /// Source range covering the whole `type Name { … }` block. Default
     /// (`0..0`) when constructed by hand.
     #[serde(default)]
@@ -27,12 +36,18 @@ impl RecipeType {
     }
 }
 
+/// One field inside a `RecipeType`. `alignment` is the optional
+/// per-field ontology mapping declared with `aligns <uri>` after the
+/// field type / optional marker (e.g. `name: String aligns schema.org/name`).
+/// Limited to one per field — multi-ontology field correspondence is
+/// out of scope until the hub side has reason for it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecipeField {
     pub name: String,
     pub ty: FieldType,
     /// `name: Type?` — required vs optional.
     pub optional: bool,
+    pub alignment: Option<AlignmentUri>,
 }
 
 /// Recipe field types. References to other recipe-declared types and enums

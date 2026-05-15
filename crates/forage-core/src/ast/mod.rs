@@ -5,6 +5,7 @@
 //! AST; the validator checks it; the evaluator interprets it; the engines
 //! (forage-http, forage-browser) execute it.
 
+mod alignment;
 mod auth;
 mod browser;
 mod expr;
@@ -15,6 +16,7 @@ mod recipe;
 mod span;
 mod types;
 
+pub use alignment::AlignmentUri;
 pub use auth::{
     AuthStrategy, BearerLogin, CookieFormat, CookiePersist, FormLogin, HtmlPrimeVar, SessionAuth,
     SessionKind,

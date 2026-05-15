@@ -40,8 +40,10 @@ fn header_less_forage_file_serializes() {
                 name: "id".into(),
                 ty: FieldType::String,
                 optional: false,
+                alignment: None,
             }],
             shared: true,
+            alignments: vec![],
             span: 0..0,
         }],
         enums: vec![],
@@ -68,14 +70,17 @@ fn typed_record_with_optional_field() {
                 name: "id".into(),
                 ty: FieldType::String,
                 optional: false,
+                alignment: None,
             },
             RecipeField {
                 name: "brand".into(),
                 ty: FieldType::String,
                 optional: true,
+                alignment: None,
             },
         ],
         shared: false,
+        alignments: vec![],
         span: 0..0,
     };
     assert!(ty.field("id").is_some());

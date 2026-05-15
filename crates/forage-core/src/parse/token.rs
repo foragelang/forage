@@ -130,6 +130,7 @@ pub const KEYWORDS: &[&str] = &[
     "fn",
     "input",
     "output",
+    "aligns",
     "step",
     "method",
     "url",

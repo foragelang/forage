@@ -438,6 +438,106 @@ fn fn_decl_rejects_dollar_secret_param() {
 }
 
 #[test]
+fn type_level_alignment_parses_with_ontology_and_term() {
+    let src = r#"
+        recipe "aligned"
+        engine http
+        type Product aligns schema.org/Product {
+            name: String
+        }
+        step s { method "GET" url "https://x.test" }
+        emit Product { name ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    let ty = r.types.iter().find(|t| t.name == "Product").unwrap();
+    assert_eq!(ty.alignments.len(), 1);
+    assert_eq!(ty.alignments[0].ontology, "schema.org");
+    assert_eq!(ty.alignments[0].term, "Product");
+}
+
+#[test]
+fn type_level_alignments_accumulate_across_ontologies() {
+    let src = r#"
+        recipe "aligned"
+        engine http
+        type Product
+            aligns schema.org/Product
+            aligns wikidata/Q2424752
+        {
+            name: String
+        }
+        step s { method "GET" url "https://x.test" }
+        emit Product { name ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    let ty = r.types.iter().find(|t| t.name == "Product").unwrap();
+    assert_eq!(ty.alignments.len(), 2);
+    assert_eq!(ty.alignments[0].ontology, "schema.org");
+    assert_eq!(ty.alignments[0].term, "Product");
+    assert_eq!(ty.alignments[1].ontology, "wikidata");
+    assert_eq!(ty.alignments[1].term, "Q2424752");
+}
+
+#[test]
+fn field_level_alignment_parses_after_optional_marker() {
+    let src = r#"
+        recipe "aligned"
+        engine http
+        type Product {
+            name:        String   aligns schema.org/name
+            description: String?  aligns schema.org/description
+            price:       Double   aligns schema.org/offers.price
+        }
+        step s { method "GET" url "https://x.test" }
+        emit Product { name ← "a", price ← 1.0 }
+    "#;
+    let r = parse(src).expect("parse");
+    let ty = r.types.iter().find(|t| t.name == "Product").unwrap();
+    let name = ty.field("name").unwrap();
+    let description = ty.field("description").unwrap();
+    let price = ty.field("price").unwrap();
+    assert_eq!(name.alignment.as_ref().unwrap().ontology, "schema.org");
+    assert_eq!(name.alignment.as_ref().unwrap().term, "name");
+    assert!(description.optional);
+    assert_eq!(
+        description.alignment.as_ref().unwrap().term,
+        "description"
+    );
+    assert_eq!(price.alignment.as_ref().unwrap().term, "offers.price");
+}
+
+#[test]
+fn shared_type_carries_alignments() {
+    // Alignments are independent of `share`: a workspace-shared type
+    // can carry the same alignment vector as a file-local one.
+    let src = r#"
+        share type Product aligns schema.org/Product {
+            name: String aligns schema.org/name
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let ty = r.types.iter().find(|t| t.name == "Product").unwrap();
+    assert!(ty.shared);
+    assert_eq!(ty.alignments.len(), 1);
+    assert_eq!(ty.fields[0].alignment.as_ref().unwrap().term, "name");
+}
+
+#[test]
+fn type_without_alignments_yields_empty_vectors() {
+    let src = r#"
+        recipe "plain"
+        engine http
+        type Product { name: String }
+        step s { method "GET" url "https://x.test" }
+        emit Product { name ← "a" }
+    "#;
+    let r = parse(src).expect("parse");
+    let ty = r.types.iter().find(|t| t.name == "Product").unwrap();
+    assert!(ty.alignments.is_empty());
+    assert!(ty.fields[0].alignment.is_none());
+}
+
+#[test]
 fn fn_with_pipe_body_round_trips_through_ast() {
     let src = r#"
         recipe "ok"

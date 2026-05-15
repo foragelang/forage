@@ -453,16 +453,26 @@ impl Parser {
 
     // --- type / enum / input ----------------------------------------------
 
-    /// type_decl := 'share'? 'type' TypeName '{' field (';'|',')? ... '}'
+    /// type_decl := 'share'? 'type' TypeName ('aligns' alignment_uri)*
+    ///              '{' field (';'|',')? ... '}'
     ///
     /// `share` consumption happens in `parse_forage_file`; this helper
     /// just receives the flag and the head `type` keyword still in the
     /// stream. The span covers the `type` keyword through the closing
     /// brace (the `share` prefix sits outside the recorded span).
+    ///
+    /// Type-level `aligns` clauses sit between the type name and the
+    /// opening `{`. Each clause is one ontology alignment; multiple
+    /// clauses (different ontologies) stack.
     fn parse_type_decl_shared(&mut self, shared: bool) -> Result<RecipeType, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("type")?;
         let name = self.expect_typename()?;
+        let mut alignments = Vec::new();
+        while self.peek_is_keyword("aligns") {
+            self.bump();
+            alignments.push(self.parse_alignment_uri()?);
+        }
         self.expect_punct(&Token::LBrace)?;
         let mut fields = Vec::new();
         while !matches!(self.peek(), Some(Token::RBrace) | None) {
@@ -475,6 +485,7 @@ impl Parser {
             name,
             fields,
             shared,
+            alignments,
             span: self.span_to_here(start),
         })
     }
@@ -484,7 +495,70 @@ impl Parser {
         self.expect_punct(&Token::Colon)?;
         let ty = self.parse_field_type()?;
         let optional = self.eat_punct(&Token::Question);
-        Ok(RecipeField { name, ty, optional })
+        let alignment = if self.peek_is_keyword("aligns") {
+            self.bump();
+            Some(self.parse_alignment_uri()?)
+        } else {
+            None
+        };
+        Ok(RecipeField {
+            name,
+            ty,
+            optional,
+            alignment,
+        })
+    }
+
+    /// `'aligns' <peek>`. The keyword is consumed by the caller; this
+    /// helper only inspects without bumping.
+    fn peek_is_keyword(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(Token::Keyword(k)) if k == kw)
+    }
+
+    /// alignment_uri := segment ('.' segment)* '/' segment ('.' segment)*
+    ///
+    /// `segment` is any ident-like token: `Ident`, `TypeName`, or a
+    /// `Keyword` (so terms like `schema.org/name` parse — `name` is a
+    /// recipe keyword in another context). The ontology is everything
+    /// before the first `/`, joined by `.`; the term is everything after,
+    /// also joined by `.`. The grammar requires at least one `/` and at
+    /// least one segment on each side; malformed inputs surface in the
+    /// validator with `MalformedAlignment` (e.g. empty ontology, empty
+    /// term) — the parser only refuses to advance when no segment is
+    /// available at all.
+    fn parse_alignment_uri(&mut self) -> Result<AlignmentUri, ParseError> {
+        let start = self.current_span().start;
+        let ontology = self.parse_dotted_segments()?;
+        self.expect_punct(&Token::Slash)?;
+        let term = self.parse_dotted_segments()?;
+        Ok(AlignmentUri {
+            ontology,
+            term,
+            span: self.span_to_here(start),
+        })
+    }
+
+    /// One or more `<segment>` joined by `.`. Caller has already
+    /// positioned the cursor at the first segment.
+    fn parse_dotted_segments(&mut self) -> Result<String, ParseError> {
+        let mut out = String::new();
+        out.push_str(&self.expect_alignment_segment()?);
+        while self.eat_punct(&Token::Dot) {
+            out.push('.');
+            out.push_str(&self.expect_alignment_segment()?);
+        }
+        Ok(out)
+    }
+
+    /// One alignment-URI segment: ident, type name, or keyword.
+    fn expect_alignment_segment(&mut self) -> Result<String, ParseError> {
+        match self.peek().cloned() {
+            Some(Token::Ident(s)) | Some(Token::TypeName(s)) | Some(Token::Keyword(s)) => {
+                self.bump();
+                Ok(s)
+            }
+            _ => Err(self.unexpected("alignment URI segment")),
+        }
     }
 
     /// Field-position identifiers can be keywords (e.g. `name: String`).
