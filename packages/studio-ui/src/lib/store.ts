@@ -67,6 +67,9 @@ export type NotebookState = {
     /// so menu / keyboard shortcuts can open the picker without
     /// climbing the React tree.
     stagePickerOpen: boolean;
+    /// Whether the publish dialog is open. Lives in the store for the
+    /// same reason as `stagePickerOpen`.
+    publishDialogOpen: boolean;
 };
 export type InspectorMode = "run" | "history" | "records";
 
@@ -288,6 +291,10 @@ type StudioState = {
     resetNotebook: () => void;
     openStagePicker: () => void;
     closeStagePicker: () => void;
+    /// Open the publish dialog. The dialog reads the notebook's
+    /// current `(name, stages)` at submit time.
+    openPublishDialog: () => void;
+    closePublishDialog: () => void;
 };
 
 /// Fresh-notebook shape. Used both at boot and by `resetNotebook`.
@@ -298,6 +305,7 @@ const EMPTY_NOTEBOOK: NotebookState = {
     runError: null,
     running: false,
     stagePickerOpen: false,
+    publishDialogOpen: false,
 };
 
 /// Stable per-stage React key. The notebook can compose the same
@@ -819,6 +827,14 @@ export const useStudio = create<StudioState>((set, get) => ({
     closeStagePicker: () =>
         set((state) => ({
             notebook: { ...state.notebook, stagePickerOpen: false },
+        })),
+    openPublishDialog: () =>
+        set((state) => ({
+            notebook: { ...state.notebook, publishDialogOpen: true },
+        })),
+    closePublishDialog: () =>
+        set((state) => ({
+            notebook: { ...state.notebook, publishDialogOpen: false },
         })),
 }));
 

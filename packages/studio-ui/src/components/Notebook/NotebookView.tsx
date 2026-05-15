@@ -10,11 +10,16 @@
 //! recipe-picker dialog and the publish flow live in sibling files
 //! to keep this top-level layout readable.
 
-import { ChevronDown, GripVertical, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, GripVertical, Plus, Settings, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
@@ -22,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { useStudio, type NotebookStage } from "@/lib/store";
 
 import { notebookPublishAction, notebookRunAction } from "./notebookActions";
+import { NotebookPublishDialog } from "./NotebookPublishDialog";
 import { StagePickerDialog } from "./StagePickerDialog";
 
 export function NotebookView() {
@@ -39,6 +45,7 @@ export function NotebookView() {
                 <NotebookInspector />
             </div>
             <StagePickerDialog />
+            <NotebookPublishDialog />
         </div>
     );
 }
@@ -64,6 +71,7 @@ function NotebookHeader() {
                 aria-label="Notebook name"
             />
             <div className="ml-auto flex items-center gap-1">
+                <NotebookRunFlagsPopover disabled={runDisabled} />
                 <Button
                     size="sm"
                     variant="ghost"
@@ -85,6 +93,162 @@ function NotebookHeader() {
             </div>
         </header>
     );
+}
+
+/// Run-flags popover for the notebook header. The notebook shares
+/// the editor's `runFlags` slot — there's a single "Run" preset
+/// across views — but its backend always forces ephemeral on, so
+/// the persisted-output toggle is a no-op here. Surfacing it anyway
+/// keeps the chip's vocabulary consistent with the editor toolbar.
+function NotebookRunFlagsPopover({ disabled }: { disabled: boolean }) {
+    const flags = useStudio((s) => s.runFlags);
+    const setRunFlags = useStudio((s) => s.setRunFlags);
+    const preset = describePreset(flags);
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={disabled}
+                    aria-label="Run flags"
+                    className="gap-1.5"
+                >
+                    <Settings className="size-3.5" />
+                    <span className="text-xs font-mono">{preset}</span>
+                    <ChevronDown className="size-3" />
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-72 space-y-3">
+                <div>
+                    <Label className="text-xs">Preset</Label>
+                    <div className="mt-1 flex gap-1">
+                        <Button
+                            size="sm"
+                            variant={preset === "dev" ? "default" : "outline"}
+                            onClick={() =>
+                                setRunFlags({
+                                    sample_limit: 10,
+                                    replay: true,
+                                    ephemeral: true,
+                                })
+                            }
+                            className="flex-1"
+                        >
+                            dev
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant={preset === "prod" ? "default" : "outline"}
+                            onClick={() =>
+                                setRunFlags({
+                                    sample_limit: null,
+                                    replay: false,
+                                    ephemeral: false,
+                                })
+                            }
+                            className="flex-1"
+                        >
+                            prod
+                        </Button>
+                    </div>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-col">
+                            <Label htmlFor="notebook-sample" className="text-xs">
+                                Sample limit
+                            </Label>
+                            <span className="text-[10px] text-muted-foreground">
+                                Caps each stage's top-level for-loop.
+                            </span>
+                        </div>
+                        <Input
+                            id="notebook-sample"
+                            type="number"
+                            min={1}
+                            value={flags.sample_limit ?? ""}
+                            placeholder="off"
+                            onChange={(e) => {
+                                const raw = e.target.value;
+                                if (raw === "") {
+                                    setRunFlags({ sample_limit: null });
+                                    return;
+                                }
+                                const n = Number.parseInt(raw, 10);
+                                if (Number.isNaN(n) || n < 1) return;
+                                setRunFlags({ sample_limit: n });
+                            }}
+                            className="w-20 h-7 text-xs"
+                        />
+                    </div>
+                    <NotebookFlagToggle
+                        id="notebook-replay"
+                        label="Replay"
+                        hint="Replay against stage 1's _fixtures/<recipe>.jsonl."
+                        checked={flags.replay}
+                        onChange={(v) => setRunFlags({ replay: v })}
+                    />
+                </div>
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+function NotebookFlagToggle(props: {
+    id: string;
+    label: string;
+    hint: string;
+    checked: boolean;
+    onChange: (v: boolean) => void;
+}) {
+    return (
+        <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+                <Label htmlFor={props.id} className="text-xs">
+                    {props.label}
+                </Label>
+                <span className="text-[10px] text-muted-foreground">
+                    {props.hint}
+                </span>
+            </div>
+            <button
+                id={props.id}
+                type="button"
+                role="switch"
+                aria-checked={props.checked}
+                onClick={() => props.onChange(!props.checked)}
+                className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center",
+                    "rounded-full transition-colors",
+                    props.checked ? "bg-primary" : "bg-muted",
+                )}
+            >
+                <span
+                    className={cn(
+                        "inline-block size-4 transform rounded-full bg-background",
+                        "transition-transform",
+                        props.checked ? "translate-x-4" : "translate-x-0.5",
+                    )}
+                />
+            </button>
+        </div>
+    );
+}
+
+function describePreset(flags: {
+    sample_limit: number | null;
+    replay: boolean;
+    ephemeral: boolean;
+}): "dev" | "prod" | "custom" {
+    if (flags.sample_limit === 10 && flags.replay && flags.ephemeral) {
+        return "dev";
+    }
+    if (flags.sample_limit === null && !flags.replay && !flags.ephemeral) {
+        return "prod";
+    }
+    return "custom";
 }
 
 function NotebookStageList() {

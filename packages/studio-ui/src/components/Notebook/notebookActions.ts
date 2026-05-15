@@ -45,25 +45,60 @@ export async function notebookRunAction(): Promise<void> {
     }
 }
 
-/// Save the notebook as a `.forage` recipe in the workspace. The
-/// publish flow proper (description / category / tags) hangs off the
-/// editor's existing publish dialog, which the user picks up after
-/// the save lands them on the new recipe file.
+/// Open the publish dialog. The dialog collects description /
+/// category / tags, then runs the save → publish sequence. Save is
+/// not done eagerly — it'd clutter the workspace with files the
+/// user might not have wanted to commit yet.
+export function notebookPublishAction(): void {
+    const stages = useStudio.getState().notebook.stages;
+    if (stages.length === 0) return;
+    useStudio.getState().openPublishDialog();
+}
+
+/// Save + publish the notebook in one transactional flow. Called by
+/// the publish dialog's submit button.
 ///
-/// Returns the path of the saved file so callers can route the user
-/// onto it; surfaces errors back through the notebook's banner.
-export async function notebookPublishAction(): Promise<string | null> {
+/// Steps: synthesize the `.forage` source, write it to the workspace,
+/// then post it to the hub via the existing `publishRecipe` flow.
+/// On any failure the dialog stays open so the user can correct +
+/// retry; the save is idempotent (refuses to clobber) so a partial
+/// failure can be retried without manual cleanup.
+export async function commitNotebookPublish(args: {
+    author: string;
+    description: string;
+    category: string;
+    tags: string[];
+}): Promise<{ saved: boolean; published: boolean; error?: string }> {
     const state = useStudio.getState();
     const { stages } = state.notebook;
-    if (stages.length === 0) return null;
+    if (stages.length === 0) {
+        return { saved: false, published: false, error: "no stages" };
+    }
     const service = state.service;
     const name = state.notebook.name;
     const stageNames = stages.map((s) => s.name);
     try {
-        const outcome = await service.saveNotebook(name, stageNames);
-        return outcome.path;
+        await service.saveNotebook(name, stageNames);
     } catch (e) {
-        useStudio.getState().notebookRunFinish({ error: String(e) });
-        return null;
+        return { saved: false, published: false, error: String(e) };
     }
+    try {
+        await service.publishRecipe({
+            author: args.author,
+            name,
+            description: args.description,
+            category: args.category,
+            tags: args.tags,
+        });
+    } catch (e) {
+        // The file is on disk but the hub publish failed. Surface
+        // both facts in the error so the user knows their workspace
+        // already has the new recipe.
+        return {
+            saved: true,
+            published: false,
+            error: `recipe saved to workspace but hub publish failed: ${String(e)}`,
+        };
+    }
+    return { saved: true, published: true };
 }
