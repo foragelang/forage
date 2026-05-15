@@ -83,7 +83,7 @@ export function publishRequest(
         category: 'dispensary',
         tags: ['test'],
         recipe: `recipe "${slug}" {\n  step list { source = "https://example.com" }\n}\n`,
-        decls: [],
+        type_refs: [],
         fixtures: [],
         snapshot: null,
         base_version: null,

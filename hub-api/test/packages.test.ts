@@ -34,12 +34,29 @@ describe('publish + retrieve', () => {
         expect(body.latest_version).toBe(1)
     })
 
-    it('returns the atomic version artifact with recipe + decls + fixtures + snapshot', async () => {
+    it('returns the atomic version artifact with recipe + type_refs + fixtures + snapshot', async () => {
         const token = await userToken('alice')
+        // Publish a type the recipe will reference, then publish the
+        // recipe pinning it.
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/alice/X/versions',
+                token,
+                {
+                    description: 'X',
+                    category: 'shared-types',
+                    tags: [],
+                    source: 'share type X {\n    id: String\n}\n',
+                    alignments: [],
+                    field_alignments: [{ field: 'id', alignment: null }],
+                    base_version: null,
+                },
+            ),
+        )
         const payload = publishRequest('atom', {
             description: 'Carries everything in one artifact',
             recipe: 'recipe "atom" {}\n',
-            decls: [{ name: 'shared.forage', source: 'type X {}\n' }],
+            type_refs: [{ author: 'alice', name: 'X', version: 1 }],
             fixtures: [{ name: 'captures.jsonl', content: '{"a":1}\n' }],
             snapshot: { records: { X: [{ a: 1 }] }, counts: { X: 1 } },
         })
@@ -51,7 +68,7 @@ describe('publish + retrieve', () => {
         )
         expect(status).toBe(200)
         expect(body.recipe).toBe(payload.recipe)
-        expect(body.decls).toEqual(payload.decls)
+        expect(body.type_refs).toEqual(payload.type_refs)
         expect(body.fixtures).toEqual(payload.fixtures)
         expect(body.snapshot).toEqual(payload.snapshot)
         expect(body.base_version).toBeNull()

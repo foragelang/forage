@@ -118,14 +118,6 @@ export interface ListTypesResponse {
 
 // --- Packages ------------------------------------------------------------
 
-// One `.forage` declaration file shipped inside a version artifact.
-// `name` is the in-package path (slash-separated, ending in `.forage`).
-// `source` is the UTF-8 file body.
-export interface PackageFile {
-    name: string
-    source: string
-}
-
 // One named fixture shipped inside a version artifact. `content` is the
 // fixture's UTF-8 body (typically JSONL capture data).
 export interface PackageFixture {
@@ -142,18 +134,33 @@ export interface ForkedFrom {
     version: number
 }
 
-// The atomic package version artifact. recipe + decls + fixtures +
+// Reference from a recipe to a hub-published type. The recipe pins the
+// exact `(author, name, version)` it consumes / produces; resolution
+// against the type registry happens at sync time.
+export interface TypeRef {
+    author: string
+    name: string
+    version: number
+}
+
+// The atomic package version artifact. recipe + type_refs + fixtures +
 // snapshot ride together; there is no sub-resource that returns one
 // without the others.
+//
+// Types referenced by the recipe live at their own `/v1/types/…/versions`
+// resource; the recipe pins them by `{author, name, version}` in
+// `type_refs`. Sync flows fetch each referenced type into the local
+// type cache.
 export interface PackageVersion {
     author: string
     slug: string
     version: number
     // The main recipe file's UTF-8 source. Required.
     recipe: string
-    // Additional `.forage` files in the package (shared decls, etc.).
-    // Empty array if the package has no extra files.
-    decls: PackageFile[]
+    // Hub types the recipe consumes / produces / shares. Pinned by
+    // exact version so a recipe pull is reproducible regardless of
+    // upstream type evolution.
+    type_refs: TypeRef[]
     // Captured replay fixtures. Empty array if the package was published
     // without fixtures.
     fixtures: PackageFixture[]
@@ -234,7 +241,7 @@ export interface PublishRequest {
     category: string
     tags: string[]
     recipe: string
-    decls: PackageFile[]
+    type_refs: TypeRef[]
     fixtures: PackageFixture[]
     snapshot: PackageSnapshot | null
     base_version: number | null

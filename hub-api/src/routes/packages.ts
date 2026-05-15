@@ -1,6 +1,5 @@
 import type {
     Env,
-    PackageFile,
     PackageFixture,
     PackageListing,
     PackageMetadata,
@@ -9,6 +8,7 @@ import type {
     PublishRequest,
     ForkedFrom,
     ListPackagesResponse,
+    TypeRef,
 } from '../types'
 import {
     getPackage,
@@ -32,12 +32,12 @@ import { json, jsonError } from '../http'
 const SEGMENT_RE = /^[a-z0-9][a-z0-9-]{0,38}$/
 
 // Body shape limits. The whole publish envelope is bounded so a 50 MB
-// drive-by never spins up a worker. The recipe + one decls file +
-// fixtures + snapshot ride together; the largest known fixture (the
-// cannabis captures) is several MB.
+// drive-by never spins up a worker. The recipe + type_refs + fixtures +
+// snapshot ride together; the largest known fixture (the cannabis
+// captures) is several MB.
 const MAX_PUBLISH_PAYLOAD = 64 * 1024 * 1024 // 64 MiB envelope ceiling
 const MAX_RECIPE_BYTES = 1 * 1024 * 1024 // 1 MiB per .forage file
-const MAX_DECLS_FILES = 64
+const MAX_TYPE_REFS = 128
 const MAX_FIXTURES_FILES = 16
 const MAX_TAGS = 16
 const MAX_CATEGORY_LEN = 64
@@ -50,9 +50,10 @@ const MAX_DESCRIPTION_LEN = 2048
 // publish-time validation enforces the match.
 const RECIPE_HEAD_NAME_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"([^"]+)"/
 
-const FILE_NAME_RE = /^[a-z0-9][a-z0-9._\-]*(?:\/[a-z0-9][a-z0-9._\-]*)*\.forage$/i
 const FIXTURE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,127}$/
 const CATEGORY_RE = /^[a-z0-9][a-z0-9-]*$/
+const AUTHOR_RE = /^[a-z0-9][a-z0-9-]{0,38}$/
+const TYPE_NAME_RE = /^[A-Z][A-Za-z0-9]{0,63}$/
 
 // --- Listing ------------------------------------------------------------
 
@@ -314,7 +315,7 @@ export async function publishVersion(
         slug,
         version: nextVersion,
         recipe: payload.recipe,
-        decls: payload.decls,
+        type_refs: payload.type_refs,
         fixtures: payload.fixtures,
         snapshot: payload.snapshot,
         base_version: payload.base_version,
@@ -409,13 +410,13 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
         return 'recipe must start with `recipe "..."` (after comments / whitespace)'
     }
     const recipeName = headerMatch[1]
-    if (!Array.isArray(payload.decls) || payload.decls.length > MAX_DECLS_FILES) {
-        return `decls must be an array of at most ${MAX_DECLS_FILES} files`
+    if (!Array.isArray(payload.type_refs) || payload.type_refs.length > MAX_TYPE_REFS) {
+        return `type_refs must be an array of at most ${MAX_TYPE_REFS} entries`
     }
-    const seenDecls = new Set<string>()
-    for (const f of payload.decls) {
-        const err = validateFile(f, seenDecls, MAX_RECIPE_BYTES)
-        if (err !== null) return `decls: ${err}`
+    const seenRefs = new Set<string>()
+    for (const r of payload.type_refs) {
+        const err = validateTypeRef(r, seenRefs)
+        if (err !== null) return `type_refs: ${err}`
     }
     if (!Array.isArray(payload.fixtures) || payload.fixtures.length > MAX_FIXTURES_FILES) {
         return `fixtures must be an array of at most ${MAX_FIXTURES_FILES} entries`
@@ -440,19 +441,27 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
     return { recipeName }
 }
 
-function validateFile(
-    f: PackageFile | undefined,
+function validateTypeRef(
+    r: TypeRef | undefined,
     seen: Set<string>,
-    maxBytes: number,
 ): string | null {
-    if (f === null || typeof f !== 'object') return 'each file must be an object'
-    if (typeof f.name !== 'string' || !FILE_NAME_RE.test(f.name) || f.name.includes('..')) {
-        return `invalid file name: ${JSON.stringify(f.name)}`
+    if (r === null || typeof r !== 'object') return 'each entry must be an object'
+    if (typeof r.author !== 'string' || !AUTHOR_RE.test(r.author)) {
+        return `invalid author: ${JSON.stringify(r.author)}`
     }
-    if (seen.has(f.name)) return `duplicate file name: ${f.name}`
-    seen.add(f.name)
-    if (typeof f.source !== 'string') return `${f.name}: source must be a string`
-    if (f.source.length > maxBytes) return `${f.name}: source exceeds ${maxBytes} bytes`
+    if (typeof r.name !== 'string' || !TYPE_NAME_RE.test(r.name)) {
+        return `invalid name: ${JSON.stringify(r.name)}`
+    }
+    if (
+        typeof r.version !== 'number'
+        || !Number.isInteger(r.version)
+        || r.version < 1
+    ) {
+        return `${r.author}/${r.name}: version must be a positive integer`
+    }
+    const key = `${r.author}/${r.name}`
+    if (seen.has(key)) return `duplicate type ref: ${key}`
+    seen.add(key)
     return null
 }
 

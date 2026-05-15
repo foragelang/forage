@@ -115,7 +115,11 @@ export async function createFork(
         slug: forkSlug,
         version: 1,
         recipe: upstreamArtifact.recipe,
-        decls: upstreamArtifact.decls,
+        // Forks ride on the upstream's pins: the new recipe references
+        // the same hub-published types. A user that wants to evolve the
+        // shapes their fork uses re-publishes the relevant types under
+        // their own author after the fork lands.
+        type_refs: upstreamArtifact.type_refs,
         fixtures: upstreamArtifact.fixtures,
         snapshot: upstreamArtifact.snapshot,
         base_version: null,
