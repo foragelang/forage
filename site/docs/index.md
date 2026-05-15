@@ -25,7 +25,7 @@ The [syntax reference](/docs/syntax) walks through each. If you'd rather see one
 
 Forage ships two engines that share the same recipe shape:
 
-- **HTTP engine** — drives recipes against documented JSON/HTML APIs over `URLSession`. Cheap and fast. The right choice when the site exposes its data through requests a client can replay.
+- **HTTP engine** — drives recipes against documented JSON/HTML APIs over `reqwest`. Cheap and fast. The right choice when the site exposes its data through requests a client can replay.
 - **Browser engine** — drives recipes against a real `WKWebView` on macOS, capturing in-flight requests the page makes. The right choice when the data sits behind a JS SPA, bot-management gates, or auth flows that demand a real browser.
 
 Both engines target the same record types. Downstream code doesn't care which engine ran. See [Engines & pagination](/docs/engines) for the full picture.
