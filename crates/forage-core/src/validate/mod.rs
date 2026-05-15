@@ -256,6 +256,24 @@ pub enum ValidationCode {
     /// `Workspace::recipe_by_name` resolves to the first match in path
     /// order, but each colliding file gets its own diagnostic.
     DuplicateRecipeName,
+    /// `emit X { … }` whose `X` is not listed in the recipe's `output`
+    /// declaration. Fires only when an `output` clause is present —
+    /// recipes that haven't been migrated to a typed output yet skip
+    /// the check entirely.
+    MissingFromOutput,
+    /// `output` clause was declared with no types listed. Almost
+    /// always a typo (`output` followed by a non-TypeName like the
+    /// next top-level keyword); the parser keeps the empty clause and
+    /// the validator surfaces it here.
+    EmptyOutput,
+    /// `output` declared in a header-less file. The output signature
+    /// is recipe-local; a declarations-only file has nothing to sign.
+    OutputWithoutHeader,
+    /// `output T` is declared but no `emit T` exists anywhere in the
+    /// recipe body. Warning, not error — a recipe that *could* emit
+    /// `T` (conditionally, based on inputs) is legitimate, but
+    /// most of the time this is a stale signature.
+    UnusedInOutput,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -428,6 +446,7 @@ impl<'a> Validator<'a> {
         self.check_user_fns();
         self.check_references();
         self.check_emit_records();
+        self.check_output_decl();
     }
 
     /// Walk every `fn` declaration: duplicate detection, parameter rules,
@@ -687,6 +706,13 @@ impl<'a> Validator<'a> {
                 "`input` declarations require a `recipe \"<name>\" engine <kind>` header",
             );
         }
+        if let Some(out) = &self.file.output {
+            self.err(
+                out.span.clone(),
+                ValidationCode::OutputWithoutHeader,
+                "`output` declarations require a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
     }
 
     // --- name resolution ---------------------------------------------------
@@ -815,6 +841,22 @@ impl<'a> Validator<'a> {
                 );
                 return;
             };
+            // `output` cross-check. Skip when the recipe has no
+            // declared output (legacy un-migrated recipes) or when the
+            // declared output is empty — `EmptyOutput` already covers
+            // that case and adding `MissingFromOutput` per emit would
+            // bury the real diagnostic.
+            if let Some(out) = &v.file.output {
+                if !out.types.is_empty() && !out.types.iter().any(|t| t == &em.type_name) {
+                    v.err_here(
+                        ValidationCode::MissingFromOutput,
+                        format!(
+                            "emit {} is not listed in the recipe's `output` declaration",
+                            em.type_name,
+                        ),
+                    );
+                }
+            }
             let bound: std::collections::HashSet<&str> =
                 em.bindings.iter().map(|b| b.field_name.as_str()).collect();
             // Required fields must be bound; `Ref<T>` fields are
@@ -1166,6 +1208,60 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// Validates the `output` clause itself: empty list, unknown type
+    /// names, and declared-but-unemitted types. Skipped entirely on
+    /// header-less files (`OutputWithoutHeader` already fired) and on
+    /// recipes that haven't declared an output yet.
+    fn check_output_decl(&mut self) {
+        let Some(out) = self.file.output.clone() else {
+            return;
+        };
+        if self.file.recipe_header().is_none() {
+            // Header-less files already got `OutputWithoutHeader`; no
+            // point also surfacing unknown-type / empty errors that
+            // duplicate the diagnostic.
+            return;
+        }
+        if out.types.is_empty() {
+            self.err(
+                out.span.clone(),
+                ValidationCode::EmptyOutput,
+                "`output` declared with no types — list at least one (`output T` or `output T1 | T2`)",
+            );
+            return;
+        }
+        for name in &out.types {
+            if self.catalog.ty(name).is_none() {
+                self.err(
+                    out.span.clone(),
+                    ValidationCode::UnknownType,
+                    format!("`output {name}` references an unknown type"),
+                );
+            }
+        }
+        let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        collect_emitted_types(&self.file.body, &mut emitted);
+        if let Some(b) = &self.file.browser {
+            for cap in &b.captures {
+                collect_emitted_types(&cap.body, &mut emitted);
+            }
+            if let Some(doc) = &b.document_capture {
+                collect_emitted_types(&doc.body, &mut emitted);
+            }
+        }
+        for name in &out.types {
+            if !emitted.contains(name) {
+                self.warn(
+                    out.span.clone(),
+                    ValidationCode::UnusedInOutput,
+                    format!(
+                        "`output {name}` is declared but no `emit {name}` exists in the recipe body",
+                    ),
+                );
+            }
+        }
+    }
+
     fn check_emit_records(&mut self) {
         // Verify each declared type's field types either resolve to a
         // primitive, an Array of one, an EnumRef to a declared enum, or a
@@ -1228,6 +1324,23 @@ impl<'a> Validator<'a> {
 /// entry, restored on exit), so the Emit branch in `check_statement`
 /// catches out-of-scope `$v` references symmetrically with the in-scope
 /// shadow check.
+/// Walk a body recursively (steps, for-loops, captures) and collect
+/// every type name reached by an `emit T { … }`. Used by
+/// `check_output_decl` to compute the `output` set's coverage.
+fn collect_emitted_types(body: &[Statement], out: &mut std::collections::HashSet<String>) {
+    for s in body {
+        match s {
+            Statement::Emit(em) => {
+                out.insert(em.type_name.clone());
+            }
+            Statement::ForLoop { body, .. } => {
+                collect_emitted_types(body, out);
+            }
+            Statement::Step(_) => {}
+        }
+    }
+}
+
 fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<String>) {
     for s in body {
         match s {
@@ -2257,6 +2370,223 @@ emit Item { }
         assert!(
             by_path.is_empty(),
             "distinct recipe names + header-less file must not collide; got {by_path:?}",
+        );
+    }
+
+    // ---- output declarations -----------------------------------------
+
+    #[test]
+    fn emit_listed_in_output_validates_clean() {
+        let src = r#"
+            recipe "ok"
+            engine http
+            output Item
+            type Item { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn emit_not_listed_in_output_flagged_as_missing_from_output() {
+        let src = r#"
+            recipe "bad"
+            engine http
+            output Product
+            type Product { id: String }
+            type Variant { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id }
+                emit Variant { id ← $p.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::MissingFromOutput)
+            .expect("MissingFromOutput");
+        assert!(
+            issue.message.contains("Variant"),
+            "expected message to name Variant; got {:?}",
+            issue,
+        );
+    }
+
+    #[test]
+    fn multi_type_output_covers_each_listed_emit() {
+        let src = r#"
+            recipe "multi"
+            engine http
+            output Product | Variant | PriceObservation
+            type Product { id: String }
+            type Variant {
+                product: Ref<Product>
+                id: String
+            }
+            type PriceObservation {
+                product: Ref<Product>
+                variant: Ref<Variant>
+                price: Double?
+            }
+            step list { method "GET" url "https://x.test" }
+            for $p in $list[*] {
+                emit Product { id ← $p.id } as $prod
+                emit Variant { product ← $prod, id ← $p.id } as $var
+                emit PriceObservation { product ← $prod, variant ← $var, price ← $p.price }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn empty_output_clause_flagged() {
+        // `output` followed by no TypeName parses with an empty list;
+        // validator flags it so the author doesn't end up with a silent
+        // no-op output signature.
+        let src = r#"
+            recipe "empty"
+            engine http
+            output
+            type Item { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::EmptyOutput),
+            "expected EmptyOutput; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn output_in_header_less_file_flagged() {
+        // `output` belongs to a recipe — a declarations-only file has
+        // nothing to sign.
+        let src = r#"
+            share type Item { id: String }
+            output Item
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::OutputWithoutHeader),
+            "expected OutputWithoutHeader; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn output_with_unknown_type_flagged() {
+        // An `output T` for a `T` the catalog can't resolve is almost
+        // always a typo. Re-uses the existing `UnknownType` code.
+        let src = r#"
+            recipe "typo"
+            engine http
+            output Itme
+            type Item { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::UnknownType && i.message.contains("Itme")),
+            "expected UnknownType for the typo; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn unused_output_type_emits_warning() {
+        // `output T` is declared but no `emit T` exists — warn so the
+        // author notices a stale signature without blocking the build.
+        let src = r#"
+            recipe "stale"
+            engine http
+            output Item | Stale
+            type Item { id: String }
+            type Stale { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            !rep.has_errors(),
+            "UnusedInOutput must not error; got: {:?}",
+            rep.issues,
+        );
+        assert!(
+            rep.issues.iter().any(|i| i.code
+                == ValidationCode::UnusedInOutput
+                && i.severity == Severity::Warning
+                && i.message.contains("Stale")),
+            "expected UnusedInOutput warning naming 'Stale'; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn recipe_without_output_decl_skips_missing_from_output_check() {
+        // Pre-migration recipes with no `output` clause still validate.
+        // The grammar keeps `output` optional in the AST; downstream
+        // sub-plans (composition) will tighten the constraint.
+        let src = r#"
+            recipe "legacy"
+            engine http
+            type Item { id: String }
+            step list { method "GET" url "https://x.test" }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn output_diagnostic_anchors_at_the_output_clause() {
+        let src = "recipe \"anchor\"\nengine http\noutput Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        let missing = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::MissingFromOutput)
+            .expect("MissingFromOutput");
+        assert!(
+            src[missing.span.clone()].starts_with("emit Variant"),
+            "diagnostic must anchor at the emit; got {:?}",
+            &src[missing.span.clone()],
         );
     }
 }
