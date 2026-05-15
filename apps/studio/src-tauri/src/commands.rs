@@ -1469,31 +1469,56 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
     }
 }
 
-/// Parse-only validation for header-less declarations files. If
-/// the source parses, it contributes its types via the workspace
-/// catalog; semantic validation against sibling recipes lands
-/// when the LSP runs cross-file validation on every edit.
+/// Validate a header-less declarations file. Runs the parser, then
+/// the file-local validator against a catalog containing only the
+/// file's own types — that catches duplicate types, unknown record
+/// references, and (post-greenfield parser) `RecipeContextWithoutHeader`
+/// when stray recipe-context forms (auth, browser, expect, statements)
+/// appear without a `recipe` header. Workspace-wide cross-file checks
+/// land in `append_workspace_shared_diagnostics` once the file is
+/// persisted; the LSP-side cross-file pass handles live buffers.
 fn validate_declarations_source(source: &str) -> ValidationOutcome {
-    match forage_core::parse::parse(source) {
-        Ok(_) => ValidationOutcome {
-            ok: true,
-            diagnostics: Vec::new(),
-        },
+    let line_map = LineMap::new(source);
+    let to_diag = |span: std::ops::Range<usize>,
+                   severity: &'static str,
+                   code: String,
+                   message: String|
+     -> Diagnostic {
+        let r = line_map.range(span);
+        Diagnostic {
+            severity,
+            code,
+            message,
+            start_line: r.start.line,
+            start_col: r.start.character,
+            end_line: r.end.line,
+            end_col: r.end.character,
+        }
+    };
+    match parse(source) {
+        Ok(r) => {
+            let catalog = forage_core::TypeCatalog::from_file(&r);
+            let report = validate(&r, &catalog);
+            let mut diagnostics: Vec<Diagnostic> = report
+                .issues
+                .into_iter()
+                .map(|i| {
+                    let sev = match i.severity {
+                        forage_core::Severity::Error => "error",
+                        forage_core::Severity::Warning => "warning",
+                    };
+                    to_diag(i.span, sev, format!("{:?}", i.code), i.message)
+                })
+                .collect();
+            diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
+            let ok = !diagnostics.iter().any(|d| d.severity == "error");
+            ValidationOutcome { ok, diagnostics }
+        }
         Err(e) => {
-            let line_map = LineMap::new(source);
             let (span, msg) = parse_error_span(&e);
-            let r = line_map.range(span);
             ValidationOutcome {
                 ok: false,
-                diagnostics: vec![Diagnostic {
-                    severity: "error",
-                    code: "ParseError".into(),
-                    message: msg,
-                    start_line: r.start.line,
-                    start_col: r.start.character,
-                    end_line: r.end.line,
-                    end_col: r.end.character,
-                }],
+                diagnostics: vec![to_diag(span, "error", "ParseError".into(), msg)],
             }
         }
     }
@@ -2122,6 +2147,33 @@ for $i in $list.items[*] {
             "declarations file should validate clean: {outcome:?}"
         );
         assert!(outcome.diagnostics.is_empty());
+    }
+
+    /// A header-less file with a stray recipe-context form (here an
+    /// `auth` block without a `recipe` header) must surface
+    /// `RecipeContextWithoutHeader`. The greenfield parser accepts the
+    /// shape; the validator is where this lands.
+    #[test]
+    fn validate_path_flags_recipe_context_in_header_less_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("forage.toml"), "description = \"\"\ncategory = \"\"\ntags = []\n").unwrap();
+        let decl = root.join("stray.forage");
+        let src = "auth.staticHeader { name: \"X-API-Key\", value: \"abc\" }\n";
+        std::fs::write(&decl, src).unwrap();
+
+        let outcome = validate_path(root, &decl, src);
+        assert!(
+            !outcome.ok,
+            "stray auth without a recipe header must not validate clean: {outcome:?}",
+        );
+        assert!(
+            outcome
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "RecipeContextWithoutHeader"),
+            "expected RecipeContextWithoutHeader; got {outcome:?}",
+        );
     }
 
     use super::append_workspace_shared_diagnostics;
