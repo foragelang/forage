@@ -7,10 +7,10 @@
         "hub-site/ide"
     ],
     "scripts": {
-        "dev:studio": "cd apps/studio && cargo tauri dev",
-        "dev:hub-ide": "npm --prefix hub-site/ide run dev",
-        "dev:hub-site": "npm --prefix hub-site run dev",
-        "build:studio": "bash scripts/run-studio.sh",
-        "build:hub-site": "npm --prefix hub-site run build"
+        "studio:dev": "cd apps/studio && cargo tauri dev",
+        "studio:build": "bash scripts/run-studio.sh",
+        "hub-ide:dev": "npm --prefix hub-site/ide run dev",
+        "hub-site:dev": "npm --prefix hub-site run dev",
+        "hub-site:build": "npm --prefix hub-site run build"
     }
 }
