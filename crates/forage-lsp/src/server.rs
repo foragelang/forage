@@ -107,17 +107,17 @@ impl LanguageServer for ForageLsp {
         // can add or remove a `share` declaration that affects sibling
         // cross-file diagnostics. The upserted doc already received its
         // own diagnostics; siblings need a fresh pass.
-        if self.store.workspace_kind_for(&uri).is_some() {
-            if let Some(root) = workspace_root_for(&uri) {
-                let refreshed = self.store.refresh_workspace(&root);
-                for (other_uri, diags) in refreshed {
-                    if other_uri == uri {
-                        continue;
-                    }
-                    self.client
-                        .publish_diagnostics(other_uri, diags, None)
-                        .await;
+        if self.store.is_in_workspace(&uri)
+            && let Some(root) = workspace_root_for(&uri)
+        {
+            let refreshed = self.store.refresh_workspace(&root);
+            for (other_uri, diags) in refreshed {
+                if other_uri == uri {
+                    continue;
                 }
+                self.client
+                    .publish_diagnostics(other_uri, diags, None)
+                    .await;
             }
         }
     }

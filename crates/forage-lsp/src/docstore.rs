@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use forage_core::ForageFile;
 use forage_core::parse::ParseError;
 use forage_core::validate::{WorkspaceFileRef, validate, validate_workspace_shared};
-use forage_core::workspace::{self, TypeCatalog, Workspace, WorkspaceError, WorkspaceFileKind};
+use forage_core::workspace::{self, TypeCatalog, Workspace, WorkspaceError};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
 use forage_core::LineMap;
@@ -43,11 +43,6 @@ pub struct Document {
     /// Root of the workspace this document belongs to. `None` when no
     /// `forage.toml` was discovered up the ancestor chain.
     pub workspace_root: Option<PathBuf>,
-    /// Whether this file is a recipe or a header-less declarations
-    /// file. Cached at upsert time so `did_change` doesn't have to
-    /// re-discover the workspace + re-parse on every keystroke. `None`
-    /// for non-`file:` URIs that aren't in any workspace.
-    pub kind: Option<WorkspaceFileKind>,
 }
 
 impl DocStore {
@@ -172,11 +167,6 @@ impl DocStore {
         let workspace = workspace_root
             .as_ref()
             .and_then(|root| workspaces.get(root));
-        let kind = path.as_deref().and_then(|p| {
-            workspace
-                .and_then(|ws| ws.files.iter().find(|f| f.path == p))
-                .map(|f| f.kind.clone())
-        });
         let (file, diagnostics) =
             build_diagnostics(&source, &line_map, workspace, path.as_deref(), live_sources);
         Document {
@@ -186,7 +176,6 @@ impl DocStore {
             diagnostics,
             path,
             workspace_root,
-            kind,
         }
     }
 }
@@ -389,16 +378,15 @@ pub fn workspace_root_for(uri: &Url) -> Option<PathBuf> {
 }
 
 impl DocStore {
-    /// What kind of file does this URI represent, according to the
-    /// most recent upsert? `None` for never-seen URIs and for URIs
-    /// outside any workspace. Reads from the cached classification on
-    /// `Document` so `did_change` doesn't re-scan the workspace tree
-    /// on every keystroke.
-    pub fn workspace_kind_for(&self, uri: &Url) -> Option<WorkspaceFileKind> {
+    /// Whether this URI belongs to a discovered workspace. Used by
+    /// `did_change` to decide whether to fan out a sibling refresh —
+    /// lonely-file mode (no surrounding `forage.toml`) doesn't have
+    /// siblings to refresh.
+    pub fn is_in_workspace(&self, uri: &Url) -> bool {
         self.docs
             .lock()
             .unwrap()
             .get(uri)
-            .and_then(|d| d.kind.clone())
+            .is_some_and(|d| d.workspace_root.is_some())
     }
 }

@@ -1651,48 +1651,47 @@ pub fn list_deployed_versions(
 pub fn list_recipe_statuses(
     state: State<'_, StudioState>,
 ) -> Result<Vec<RecipeStatus>, String> {
-    use forage_core::workspace::WorkspaceFileKind;
     use std::collections::BTreeMap;
 
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
     let mut by_slug: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
 
-    for entry in &ws.files {
-        match &entry.kind {
-            WorkspaceFileKind::Recipe { slug } => {
-                by_slug.insert(
-                    slug.clone(),
-                    (
-                        DraftState::Valid {
-                            path: entry.path.clone(),
-                        },
-                        DeployedState::None,
-                    ),
-                );
-            }
-            WorkspaceFileKind::Broken {
-                slug: Some(slug),
-                error,
-            } => {
-                by_slug.insert(
-                    slug.clone(),
-                    (
-                        DraftState::Broken {
-                            path: entry.path.clone(),
-                            error: error.clone(),
-                        },
-                        DeployedState::None,
-                    ),
-                );
-            }
-            WorkspaceFileKind::Declarations | WorkspaceFileKind::Broken { slug: None, .. } => {
-                // Declarations files have no slug; a broken file
-                // we couldn't derive a slug for can't be paired
-                // with a deployment. Both are skipped here — the
-                // file tree surfaces them elsewhere.
-            }
-        }
+    // Parsed recipes contribute their path-derived slug + a Valid
+    // draft state. Path-derived because the daemon's `deployed_slugs`
+    // still keys on path-derived slugs (Phase 4 swaps this to recipe
+    // header name across both sides); we keep them aligned so the join
+    // below pairs the correct rows. Header-less files contribute
+    // declarations to the workspace catalog and are visible in the
+    // file tree, but have no slug to surface here.
+    for recipe in ws.recipes() {
+        let Some(slug) = forage_core::workspace::slug_from_path(&ws.root, recipe.path) else {
+            continue;
+        };
+        by_slug.insert(
+            slug,
+            (
+                DraftState::Valid {
+                    path: recipe.path.to_path_buf(),
+                },
+                DeployedState::None,
+            ),
+        );
+    }
+    for broken in ws.broken() {
+        let Some(slug) = forage_core::workspace::slug_from_path(&ws.root, broken.path) else {
+            continue;
+        };
+        by_slug.insert(
+            slug,
+            (
+                DraftState::Broken {
+                    path: broken.path.to_path_buf(),
+                    error: broken.error.to_string(),
+                },
+                DeployedState::None,
+            ),
+        );
     }
 
     let deployments = daemon.deployed_slugs().map_err(|e| e.to_string())?;

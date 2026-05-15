@@ -17,6 +17,13 @@
 //! Discovery is an ancestor walk from a starting path. If no marker is
 //! found, callers fall back to lonely-file mode — the file sees no
 //! shared declarations.
+//!
+//! Source vs data: the source scan picks up every `.forage` file under
+//! the root at any depth, skipping hidden dirs (`.forage/`, `.git/`)
+//! and the reserved data dirs `_fixtures/` and `_snapshots/`. A file's
+//! role is read off its content (`recipe_header().is_some()`), not its
+//! location — `Workspace::recipes()` returns the recipe-bearing files;
+//! everything else is a declarations-only contributor.
 
 pub mod manifest;
 
@@ -43,6 +50,13 @@ pub const MANIFEST_NAME: &str = "forage.toml";
 /// The well-known lockfile filename written by `forage update`.
 pub const LOCKFILE_NAME: &str = "forage.lock";
 
+/// Reserved data-dir names skipped during source scanning. `_fixtures/`
+/// and `_snapshots/` host workspace data keyed by recipe header name;
+/// they may contain `.forage` text accidentally (a runtime dump, a
+/// scenario YAML named with the wrong extension) and must not feed the
+/// source catalog. `.forage/` is hidden anyway via the dotfile filter.
+const DATA_DIRS: &[&str] = &["_fixtures", "_snapshots"];
+
 /// A discovered workspace: root path, parsed manifest, and the list of
 /// `.forage` files inside the tree.
 #[derive(Debug, Clone)]
@@ -52,34 +66,56 @@ pub struct Workspace {
     pub files: Vec<WorkspaceFileEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One `.forage` source file inside the workspace. The parsed AST is
+/// cached at load time so `recipes()` / `recipe_by_name()` can hand out
+/// references without re-reading disk; a syntactically broken file is
+/// retained with the parse error so the daemon's status UI can flag
+/// it.
+#[derive(Debug, Clone)]
 pub struct WorkspaceFileEntry {
     /// Absolute path to the file.
     pub path: PathBuf,
-    pub kind: WorkspaceFileKind,
+    /// Parsed AST when the file parsed clean, or the parse error message
+    /// otherwise. The error is held as `String` (not `ParseError`) so
+    /// `WorkspaceFileEntry` stays `Clone`-able and cheap to ship through
+    /// the daemon's status pipeline.
+    pub parsed: Result<ForageFile, String>,
 }
 
-/// Whether a `.forage` file inside the workspace declares a recipe.
-/// File location carries no semantics; this purely reflects the file's
-/// content — does it have a `recipe "<name>" engine <kind>` header.
-///
-/// `slug` is the historical run / hub key. During this transition it is
-/// derived from path layout (`<slug>/recipe.forage` → `slug`, otherwise
-/// the file stem); Phase 3 of the simplification swaps this for the
-/// recipe header name across the daemon, CLI, and Studio.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkspaceFileKind {
-    /// A file that declares a recipe header. Runnable.
-    Recipe { slug: String },
-    /// A header-less file. Contributes shared declarations to the
-    /// workspace catalog but is never run on its own.
-    Declarations,
-    /// A `.forage` file that exists on disk but failed to parse. The
-    /// entry is retained (rather than silently dropped) so the daemon
-    /// can surface a broken status — a single bad file shouldn't take
-    /// down the whole workspace, but it also shouldn't disappear from
-    /// the user's view.
-    Broken { slug: Option<String>, error: String },
+impl WorkspaceFileEntry {
+    /// Recipe header name if this file declares one and parsed cleanly.
+    /// `None` for header-less files and for files that failed to parse.
+    pub fn recipe_name(&self) -> Option<&str> {
+        self.parsed.as_ref().ok().and_then(|f| f.recipe_name())
+    }
+}
+
+/// Typed view of a recipe-bearing entry. Constructed by
+/// `Workspace::recipes()` / `recipe_by_name()`; `file.recipe_header` is
+/// guaranteed `Some` by the constructor so the helper accessors don't
+/// need to fall back.
+#[derive(Debug, Clone, Copy)]
+pub struct RecipeRef<'a> {
+    pub path: &'a Path,
+    pub file: &'a ForageFile,
+}
+
+impl<'a> RecipeRef<'a> {
+    /// Recipe header name. The future hub / daemon / CLI key.
+    pub fn name(&self) -> &'a str {
+        self.file
+            .recipe_name()
+            .expect("RecipeRef constructed only for files with a recipe header")
+    }
+}
+
+/// Typed view of a `.forage` file that failed to parse. Used by the
+/// daemon's status surface to flag broken files in the editor without
+/// aborting workspace load.
+#[derive(Debug, Clone, Copy)]
+pub struct BrokenFile<'a> {
+    pub path: &'a Path,
+    pub error: &'a str,
 }
 
 /// Merged type/enum namespace for a recipe-validation pass. Built by
@@ -227,7 +263,7 @@ pub fn load(root: &Path) -> Result<Workspace, WorkspaceError> {
         source,
     })?;
     let mut files = Vec::new();
-    scan_dir(&root, &root, &mut files)?;
+    scan_dir(&root, &mut files)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Workspace {
         root,
@@ -244,25 +280,24 @@ pub fn refresh(ws: &mut Workspace) -> Result<(), WorkspaceError> {
     Ok(())
 }
 
-fn scan_dir(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<WorkspaceFileEntry>,
-) -> Result<(), WorkspaceError> {
+fn scan_dir(dir: &Path, out: &mut Vec<WorkspaceFileEntry>) -> Result<(), WorkspaceError> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         // Skip hidden directories (`.forage/`, `.git/`, etc.) and the
-        // standard build/output sinks. Keeps the scan cheap on large
-        // libraries.
+        // reserved data dirs `_fixtures/` / `_snapshots/`. Source files
+        // live anywhere else in the tree.
         if name_str.starts_with('.') {
             continue;
         }
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            scan_dir(root, &path, out)?;
+            if DATA_DIRS.contains(&name_str.as_ref()) {
+                continue;
+            }
+            scan_dir(&path, out)?;
             continue;
         }
         if ft.is_file() && path.extension().is_some_and(|e| e == "forage") {
@@ -270,82 +305,76 @@ fn scan_dir(
             // A single broken file used to abort the entire workspace
             // load, which cascaded into "Studio won't even start" when
             // the daemon library held an unparseable file. Capture the
-            // failure as a `Broken` entry instead — the engine won't
+            // failure as a parse-error entry instead — the engine won't
             // try to run it, but the daemon surfaces it through the
-            // recipe-status API so the user can find and fix it. Slug
-            // is derived from path layout where possible.
-            let parsed = match parse(&source) {
-                Ok(p) => p,
-                Err(err) => {
-                    let slug = derive_slug(root, &path);
-                    out.push(WorkspaceFileEntry {
-                        path,
-                        kind: WorkspaceFileKind::Broken {
-                            slug,
-                            error: err.to_string(),
-                        },
-                    });
-                    continue;
-                }
-            };
-            // A file with a `recipe "<name>" engine <kind>` header is
-            // runnable. Header-less files contribute declarations to
-            // the workspace catalog but aren't run on their own.
-            let kind = if parsed.recipe_header().is_some() {
-                match derive_slug(root, &path) {
-                    Some(slug) => WorkspaceFileKind::Recipe { slug },
-                    None => WorkspaceFileKind::Broken {
-                        slug: None,
-                        error: "recipe path has no recoverable file stem".into(),
-                    },
-                }
-            } else {
-                WorkspaceFileKind::Declarations
-            };
-            out.push(WorkspaceFileEntry { path, kind });
+            // recipe-status API so the user can find and fix it.
+            let parsed = parse(&source).map_err(|e| e.to_string());
+            out.push(WorkspaceFileEntry { path, parsed });
         }
     }
     Ok(())
 }
 
-/// Slug for a recipe at `path` inside `root`. The canonical layout is
-/// `<root>/<slug>/recipe.forage` (matches the existing Studio library
-/// layout); loose recipes fall back to the file stem. Returns `None`
-/// when the path has no recoverable stem — callers surface that as an
-/// invalid-path workspace error rather than papering over it.
-fn derive_slug(root: &Path, path: &Path) -> Option<String> {
+/// Path-derived slug for a `.forage` file inside `root`. Today the
+/// daemon, Studio, and hub still address recipes by slug; Phase 4 swaps
+/// daemon keying to the recipe header name and the slug bridge goes
+/// away. Until then, this helper exists so consumers can compute the
+/// slug uniformly:
+///
+/// - `<root>/<slug>/recipe.forage` → `<slug>` (the legacy Studio layout).
+/// - any other path → the file stem (`<root>/foo.forage` → `foo`).
+///
+/// Returns `None` only when the path has no recoverable stem.
+pub fn slug_from_path(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let components: Vec<_> = rel.components().collect();
-    if components.len() == 2 {
-        if let (Some(dir), Some(file)) = (components.first(), components.get(1)) {
-            if file.as_os_str() == "recipe.forage" {
-                return Some(dir.as_os_str().to_string_lossy().into_owned());
-            }
-        }
+    if components.len() == 2
+        && let (Some(dir), Some(file)) = (components.first(), components.get(1))
+        && file.as_os_str() == "recipe.forage"
+    {
+        return Some(dir.as_os_str().to_string_lossy().into_owned());
     }
     path.file_stem().map(|s| s.to_string_lossy().into_owned())
 }
 
 impl Workspace {
-    /// Look up a recipe entry by slug.
-    pub fn recipe_for(&self, slug: &str) -> Option<&WorkspaceFileEntry> {
-        self.files.iter().find(|f| matches!(&f.kind, WorkspaceFileKind::Recipe { slug: s } if s == slug))
+    /// All recipe-bearing files in the workspace, in path order. A
+    /// recipe is any `.forage` file that parsed clean *and* declares a
+    /// `recipe "<name>" engine <kind>` header. Header-less files
+    /// contribute shared declarations to the workspace catalog but
+    /// aren't surfaced here.
+    pub fn recipes(&self) -> impl Iterator<Item = RecipeRef<'_>> {
+        self.files.iter().filter_map(|entry| {
+            let file = entry.parsed.as_ref().ok()?;
+            file.recipe_header()?;
+            Some(RecipeRef {
+                path: &entry.path,
+                file,
+            })
+        })
     }
 
-    /// All recipe entries in the workspace, in path order.
-    pub fn recipes(&self) -> impl Iterator<Item = &WorkspaceFileEntry> {
-        self.files
-            .iter()
-            .filter(|f| matches!(f.kind, WorkspaceFileKind::Recipe { .. }))
+    /// First recipe in path order whose header name equals `name`. The
+    /// recipe namespace is flat across the workspace; duplicates are a
+    /// validator concern (cross-file `DuplicateRecipeName`), not a
+    /// discovery failure — the workspace still loads so the user can
+    /// see both files and resolve the collision.
+    pub fn recipe_by_name(&self, name: &str) -> Option<RecipeRef<'_>> {
+        self.recipes().find(|r| r.name() == name)
     }
 
-    /// All `.forage` files that failed to parse, in path order. Used by
-    /// the daemon's recipe-status surface to flag unparseable files in
-    /// the editor without aborting workspace load.
-    pub fn broken(&self) -> impl Iterator<Item = &WorkspaceFileEntry> {
-        self.files
-            .iter()
-            .filter(|f| matches!(f.kind, WorkspaceFileKind::Broken { .. }))
+    /// Every `.forage` file in the workspace whose contents failed to
+    /// parse, in path order. The daemon's recipe-status surface joins
+    /// this with its own deployment view so a syntactically broken file
+    /// stays visible (rather than silently dropping out of the list).
+    pub fn broken(&self) -> impl Iterator<Item = BrokenFile<'_>> {
+        self.files.iter().filter_map(|entry| match &entry.parsed {
+            Err(error) => Some(BrokenFile {
+                path: &entry.path,
+                error,
+            }),
+            Ok(_) => None,
+        })
     }
 
     /// Build a merged `TypeCatalog` for validating `file` in this
@@ -386,10 +415,7 @@ impl Workspace {
         //    already surfaced via `Workspace::broken()` for the daemon's
         //    status UI.
         for entry in &self.files {
-            if !matches!(
-                entry.kind,
-                WorkspaceFileKind::Recipe { .. } | WorkspaceFileKind::Declarations
-            ) {
+            if entry.parsed.is_err() {
                 continue;
             }
             let parsed = read_workspace_file(&entry.path, &read)?;
@@ -475,10 +501,10 @@ fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), Wo
         // every type in a header-less package file is treated as
         // workspace-visible. The typed-hub program will revisit this so
         // hub packages declare their exports explicitly.
-        if let Ok(file) = parse(&src) {
-            if file.recipe_header().is_none() {
-                cat.merge_all(&file);
-            }
+        if let Ok(file) = parse(&src)
+            && file.recipe_header().is_none()
+        {
+            cat.merge_all(&file);
         }
     }
     Ok(())
@@ -491,15 +517,15 @@ fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), Wo
 /// elsewhere. Override with `FORAGE_HUB_CACHE` (tests, alternative
 /// installs).
 pub fn hub_cache_root() -> PathBuf {
-    if let Ok(p) = std::env::var("FORAGE_HUB_CACHE") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
+    if let Ok(p) = std::env::var("FORAGE_HUB_CACHE")
+        && !p.is_empty()
+    {
+        return PathBuf::from(p);
     }
-    if cfg!(target_os = "macos") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join("Library").join("Forage").join("Cache").join("hub");
-        }
+    if cfg!(target_os = "macos")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join("Library").join("Forage").join("Cache").join("hub");
     }
     if let Some(data) = dirs::data_dir() {
         return data.join("Forage").join("Cache").join("hub");
@@ -553,39 +579,139 @@ mod tests {
         assert!(discover(tmp.path()).is_none());
     }
 
+    /// `recipes()` reports every file that parsed cleanly *and* declares
+    /// a header; header-less files are visible via `files` but not
+    /// `recipes()`. Files live at any depth, not only `<slug>/recipe.forage`.
     #[test]
-    fn workspace_classifies_recipe_and_declarations() {
+    fn recipes_discovers_files_at_any_depth() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        // Header-less file at the root.
         write(
             &root.join("cannabis.forage"),
             "type Dispensary { id: String }\n",
         );
+        // Recipe at the root.
         write(
-            &root.join("trilogy-rec").join("recipe.forage"),
-            "recipe \"trilogy-rec\"\nengine http\n",
+            &root.join("remedy.forage"),
+            "recipe \"remedy\"\nengine http\n",
+        );
+        // Recipe nested in a folder.
+        write(
+            &root.join("subdir").join("nested.forage"),
+            "recipe \"nested\"\nengine http\n",
+        );
+        // Recipe in the legacy `<slug>/recipe.forage` shape.
+        write(
+            &root.join("legacy").join("recipe.forage"),
+            "recipe \"legacy\"\nengine http\n",
+        );
+
+        let ws = load(root).unwrap();
+        let names: Vec<&str> = ws.recipes().map(|r| r.name()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec!["legacy", "nested", "remedy"]);
+        assert_eq!(ws.files.len(), 4, "all four files in `files`");
+    }
+
+    /// Files under `_fixtures/`, `_snapshots/`, and `.forage/` are
+    /// workspace data, not source. The source scan must skip them at
+    /// any depth.
+    #[test]
+    fn data_dirs_excluded_from_source_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("real.forage"),
+            "recipe \"real\"\nengine http\n",
+        );
+        // Files inside data dirs at the root: must be skipped.
+        write(
+            &root.join("_fixtures").join("real.forage"),
+            "recipe \"shadow\"\nengine http\n",
+        );
+        write(
+            &root.join("_snapshots").join("snap.forage"),
+            "type Bogus { id: String }\n",
+        );
+        write(
+            &root.join(".forage").join("hidden.forage"),
+            "type Hidden { id: String }\n",
+        );
+        // Files inside data dirs nested inside a normal folder: also
+        // must be skipped (the filter must trigger at every depth).
+        write(
+            &root.join("nested").join("_fixtures").join("inner.forage"),
+            "recipe \"inner-shadow\"\nengine http\n",
+        );
+
+        let ws = load(root).unwrap();
+        let paths: Vec<&Path> = ws.files.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(paths.len(), 1, "only the source file is scanned: {paths:?}");
+        assert!(paths[0].ends_with("real.forage"));
+        let recipes: Vec<&str> = ws.recipes().map(|r| r.name()).collect();
+        assert_eq!(recipes, vec!["real"]);
+    }
+
+    /// `recipe_by_name` resolves a recipe regardless of which file holds
+    /// it. Path layout is incidental.
+    #[test]
+    fn recipe_by_name_resolves_across_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("flat-one.forage"),
+            "recipe \"flat-one\"\nengine http\n",
+        );
+        write(
+            &root.join("dir").join("recipe.forage"),
+            "recipe \"in-dir\"\nengine http\n",
+        );
+        write(
+            &root.join("deep").join("more").join("file.forage"),
+            "recipe \"deep-one\"\nengine http\n",
+        );
+
+        let ws = load(root).unwrap();
+        let flat = ws.recipe_by_name("flat-one").expect("flat-one");
+        assert!(flat.path.ends_with("flat-one.forage"));
+        let nested = ws.recipe_by_name("in-dir").expect("in-dir");
+        assert!(nested.path.ends_with("dir/recipe.forage"));
+        let deep = ws.recipe_by_name("deep-one").expect("deep-one");
+        assert!(deep.path.ends_with("deep/more/file.forage"));
+        assert!(ws.recipe_by_name("missing").is_none());
+    }
+
+    /// Two recipes declaring the same header name don't break workspace
+    /// load. The validator surfaces the collision via
+    /// `DuplicateRecipeName`; the discovery API returns the first match
+    /// in path order so callers can still resolve *some* file. The
+    /// recipe-name namespace stays flat across the workspace.
+    #[test]
+    fn duplicate_recipe_names_resolve_to_first_in_path_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("a.forage"),
+            "recipe \"dup\"\nengine http\n",
+        );
+        write(
+            &root.join("z.forage"),
+            "recipe \"dup\"\nengine http\n",
         );
         let ws = load(root).unwrap();
-        let mut kinds: Vec<(String, &WorkspaceFileKind)> = ws
-            .files
-            .iter()
-            .map(|f| {
-                (
-                    f.path.file_name().unwrap().to_string_lossy().into_owned(),
-                    &f.kind,
-                )
-            })
-            .collect();
-        kinds.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(kinds.len(), 2);
-        assert_eq!(kinds[0].0, "cannabis.forage");
-        assert!(matches!(kinds[0].1, WorkspaceFileKind::Declarations));
-        assert_eq!(kinds[1].0, "recipe.forage");
+        let dup_count = ws.recipes().filter(|r| r.name() == "dup").count();
+        assert_eq!(dup_count, 2, "both duplicates surface in recipes()");
+        let pick = ws.recipe_by_name("dup").expect("dup resolves");
         assert!(
-            matches!(kinds[1].1, WorkspaceFileKind::Recipe { slug } if slug == "trilogy-rec"),
-            "got {:?}",
-            kinds[1].1
+            pick.path.ends_with("a.forage"),
+            "path-order tiebreak picks a.forage; got {:?}",
+            pick.path,
         );
     }
 
@@ -674,13 +800,13 @@ mod tests {
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         // One good recipe plus one syntactically-broken one. The
         // workspace must still load — the broken one becomes a
-        // Broken entry so the daemon can surface it.
+        // parse-error entry so the daemon can surface it.
         write(
-            &root.join("good").join("recipe.forage"),
+            &root.join("good.forage"),
             "recipe \"good\"\nengine http\n",
         );
         write(
-            &root.join("bad").join("recipe.forage"),
+            &root.join("bad.forage"),
             // Missing `engine` line + dangling `for` makes the parser
             // bail out. Exact error text is the parser's concern; we
             // just need *some* parse failure.
@@ -688,30 +814,19 @@ mod tests {
         );
 
         let ws = load(root).expect("load must succeed despite broken file");
-        let recipes: Vec<_> = ws.recipes().collect();
-        let broken: Vec<_> = ws.broken().collect();
+        let recipe_names: Vec<&str> = ws.recipes().map(|r| r.name()).collect();
+        assert_eq!(recipe_names, vec!["good"]);
 
-        assert_eq!(recipes.len(), 1);
-        assert!(
-            matches!(&recipes[0].kind, WorkspaceFileKind::Recipe { slug } if slug == "good"),
-            "got {:?}",
-            recipes[0].kind,
-        );
+        let broken: Vec<BrokenFile<'_>> = ws.broken().collect();
         assert_eq!(broken.len(), 1);
-        match &broken[0].kind {
-            WorkspaceFileKind::Broken { slug, error } => {
-                assert_eq!(slug.as_deref(), Some("bad"));
-                assert!(!error.is_empty(), "error message should not be empty");
-            }
-            other => panic!("expected Broken, got {other:?}"),
-        }
+        assert!(broken[0].path.ends_with("bad.forage"));
+        assert!(!broken[0].error.is_empty());
     }
 
     #[test]
     fn declarations_parse_failure_is_captured_too() {
         // A header-less `.forage` file with a syntax error also lands
-        // in the Broken bucket — slug derived from filename stem since
-        // it isn't under a `<slug>/recipe.forage` layout.
+        // in the broken bucket.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
@@ -721,14 +836,9 @@ mod tests {
             "type { id: String }\n",
         );
         let ws = load(root).unwrap();
-        let broken: Vec<_> = ws.broken().collect();
+        let broken: Vec<BrokenFile<'_>> = ws.broken().collect();
         assert_eq!(broken.len(), 1);
-        match &broken[0].kind {
-            WorkspaceFileKind::Broken { slug, .. } => {
-                assert_eq!(slug.as_deref(), Some("shared"));
-            }
-            other => panic!("expected Broken, got {other:?}"),
-        }
+        assert!(broken[0].path.ends_with("shared.forage"));
     }
 
     /// Two sibling files each declaring a bare `type Product` is no

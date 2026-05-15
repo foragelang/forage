@@ -3,9 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use forage_core::workspace::{
-    self, MANIFEST_NAME, TypeCatalog, Workspace, WorkspaceFileKind, discover,
-};
+use forage_core::workspace::{self, MANIFEST_NAME, TypeCatalog, Workspace, discover};
 use forage_core::{parse, validate};
 
 fn write(path: &Path, body: &str) {
@@ -177,8 +175,12 @@ fn lonely_recipe_mode_uses_recipe_local_catalog() {
     assert!(!rep.has_errors(), "lonely recipe errored: {:?}", rep.issues);
 }
 
+/// A file with a `recipe "<name>" engine <kind>` header surfaces in
+/// `recipes()`; a header-less file does not. The discriminator is the
+/// parsed content's `recipe_header().is_some()` — file location is
+/// incidental.
 #[test]
-fn workspace_classifies_files_by_kind() {
+fn recipes_iterator_filters_by_header_presence() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(&root.join("shared.forage"), "type T { id: String }\n");
@@ -187,27 +189,26 @@ fn workspace_classifies_files_by_kind() {
         "recipe \"rec\"\nengine http\n",
     );
     let ws: Workspace = workspace::load(root).unwrap();
-    let mut recipes: Vec<&PathBuf> = ws
-        .files
-        .iter()
-        .filter(|f| matches!(f.kind, WorkspaceFileKind::Recipe { .. }))
-        .map(|f| &f.path)
-        .collect();
-    let declarations: Vec<&PathBuf> = ws
-        .files
-        .iter()
-        .filter(|f| matches!(f.kind, WorkspaceFileKind::Declarations))
-        .map(|f| &f.path)
-        .collect();
-    assert_eq!(recipes.len(), 1);
-    assert_eq!(declarations.len(), 1);
+    let mut recipes: Vec<&Path> = ws.recipes().map(|r| r.path).collect();
     recipes.sort();
+    assert_eq!(recipes.len(), 1);
     assert!(recipes[0].ends_with("rec/recipe.forage"));
-    assert!(declarations[0].ends_with("shared.forage"));
+    // Header-less file is still present in `files` so the catalog can
+    // pick up its share declarations; it just doesn't surface in
+    // `recipes()`.
+    assert_eq!(ws.files.len(), 2);
+    let header_less: Vec<&PathBuf> = ws
+        .files
+        .iter()
+        .filter(|e| e.parsed.as_ref().is_ok_and(|f| f.recipe_header().is_none()))
+        .map(|e| &e.path)
+        .collect();
+    assert_eq!(header_less.len(), 1);
+    assert!(header_less[0].ends_with("shared.forage"));
 }
 
 #[test]
-fn workspace_recipe_for_finds_by_slug() {
+fn recipe_by_name_finds_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(
@@ -215,8 +216,9 @@ fn workspace_recipe_for_finds_by_slug() {
         "recipe \"alpha\"\nengine http\n",
     );
     let ws = workspace::load(root).unwrap();
-    let entry = ws.recipe_for("alpha").expect("recipe by slug");
-    assert!(entry.path.ends_with("alpha/recipe.forage"));
+    let recipe = ws.recipe_by_name("alpha").expect("recipe by name");
+    assert!(recipe.path.ends_with("alpha/recipe.forage"));
+    assert_eq!(recipe.name(), "alpha");
 }
 
 #[test]
