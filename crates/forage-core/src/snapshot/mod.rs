@@ -4,12 +4,16 @@
 //! plus a `DiagnosticReport` describing how the run terminated and which
 //! expectations went unmet.
 
+mod jsonld;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ast::{AlignmentUri, ComparisonOp, Expectation, ExpectationKind, JSONValue, RecipeType};
 use crate::source::LineMap;
+
+pub use jsonld::{JsonLdDocument, JsonLdRecord, JsonLdTypeContext, alignment_iri};
 
 /// One emitted record — a synthetic `_id`, a type name, and the bound
 /// fields as plain JSON.

@@ -22,7 +22,8 @@ pub use eval::{
 pub use parse::parse;
 pub use progress::{ProgressUnit, infer_progress_unit};
 pub use snapshot::{
-    DiagnosticReport, Record, RecordType, RecordTypeField, RuntimeDiagnostic, Snapshot,
+    DiagnosticReport, JsonLdDocument, JsonLdRecord, JsonLdTypeContext, Record, RecordType,
+    RecordTypeField, RuntimeDiagnostic, Snapshot, alignment_iri,
 };
 pub use source::{LineMap, Position, Range};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
