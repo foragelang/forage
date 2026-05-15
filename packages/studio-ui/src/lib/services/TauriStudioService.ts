@@ -28,12 +28,14 @@ import {
     type PublishOutcome,
     type PublishPayload,
     type PublishPreview,
+    type PublishTypePayload,
     type RecipeStatus,
     type RunEvent,
     type ScheduledRun,
     type ServiceCapabilities,
     type StudioService,
     type SyncOutcomeWire,
+    type TypeVersion,
     type Unsubscribe,
 } from "./StudioService";
 import type { DaemonStatus } from "../../bindings/DaemonStatus";
@@ -361,6 +363,30 @@ export class TauriStudioService implements StudioService {
     ): Promise<PackageVersion> {
         return this.fetchJson<PackageVersion>(
             `${this.hubUrl}/v1/packages/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/versions`,
+            {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+            },
+        );
+    }
+    getTypeVersion(
+        author: string,
+        name: string,
+        version: number | "latest",
+    ): Promise<TypeVersion> {
+        return this.fetchJson<TypeVersion>(
+            `${this.hubUrl}/v1/types/${encodeURIComponent(author)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
+        );
+    }
+    publishTypeVersion(
+        author: string,
+        name: string,
+        payload: PublishTypePayload,
+    ): Promise<TypeVersion> {
+        return this.fetchJson<TypeVersion>(
+            `${this.hubUrl}/v1/types/${encodeURIComponent(author)}/${encodeURIComponent(name)}/versions`,
             {
                 method: "POST",
                 credentials: "include",

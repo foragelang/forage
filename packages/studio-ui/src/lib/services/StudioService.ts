@@ -84,11 +84,6 @@ export type PackageMetadata = PackageListing & {
     owner_login: string;
 };
 
-export type PackageFile = {
-    name: string;
-    source: string;
-};
-
 export type PackageFixture = {
     name: string;
     content: string;
@@ -99,12 +94,53 @@ export type PackageSnapshot = {
     counts: Record<string, number>;
 };
 
+// Reference from a recipe to a hub-published type. The recipe pins
+// the exact `(author, name, version)` it consumes / produces.
+export type TypeRef = {
+    author: string;
+    name: string;
+    version: number;
+};
+
+export type AlignmentUri = {
+    ontology: string;
+    term: string;
+};
+
+export type TypeFieldAlignment = {
+    field: string;
+    alignment: AlignmentUri | null;
+};
+
+export type TypeVersion = {
+    author: string;
+    name: string;
+    version: number;
+    source: string;
+    alignments: AlignmentUri[];
+    field_alignments: TypeFieldAlignment[];
+    base_version: number | null;
+    published_at: number;
+    published_by: string;
+};
+
+export type TypeMetadata = {
+    author: string;
+    name: string;
+    description: string;
+    category: string;
+    tags: string[];
+    created_at: number;
+    latest_version: number;
+    owner_login: string;
+};
+
 export type PackageVersion = {
     author: string;
     slug: string;
     version: number;
     recipe: string;
-    decls: PackageFile[];
+    type_refs: TypeRef[];
     fixtures: PackageFixture[];
     snapshot: PackageSnapshot | null;
     base_version: number | null;
@@ -150,9 +186,21 @@ export type PublishPayload = {
     category: string;
     tags: string[];
     recipe: string;
-    decls: PackageFile[];
+    type_refs: TypeRef[];
     fixtures: PackageFixture[];
     snapshot: PackageSnapshot | null;
+    base_version: number | null;
+};
+
+// `POST /v1/types/:author/:name/versions` body — used by the hub IDE
+// for direct type publishes.
+export type PublishTypePayload = {
+    description: string;
+    category: string;
+    tags: string[];
+    source: string;
+    alignments: AlignmentUri[];
+    field_alignments: TypeFieldAlignment[];
     base_version: number | null;
 };
 
@@ -337,6 +385,18 @@ export interface StudioService {
         slug: string,
         payload: PublishPayload,
     ): Promise<PackageVersion>;
+
+    // ── Hub type discovery / publish ─────────────────────────────────
+    getTypeVersion(
+        author: string,
+        name: string,
+        version: number | "latest",
+    ): Promise<TypeVersion>;
+    publishTypeVersion(
+        author: string,
+        name: string,
+        payload: PublishTypePayload,
+    ): Promise<TypeVersion>;
 
     // ── Studio-specific bookkeeping ─────────────────────────────────
     version(): Promise<string>;

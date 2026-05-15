@@ -44,7 +44,23 @@ async function boot() {
                     slug,
                     "latest",
                 );
-                service.setLoaded({ author, slug, version: versionArtifact });
+                // Resolve every type the recipe pins. The hub-IDE
+                // renders these in the file tree (one node per type)
+                // and the in-browser replay folds them into the
+                // catalog. Type fetches run sequentially because the
+                // hub IDE doesn't batch — pre-1.0 type counts per
+                // recipe are small.
+                const types = [];
+                for (const ref of versionArtifact.type_refs) {
+                    types.push(
+                        await service.getTypeVersion(
+                            ref.author,
+                            ref.name,
+                            ref.version,
+                        ),
+                    );
+                }
+                service.setLoaded({ author, slug, version: versionArtifact, types });
                 // Seed the editor session: emulate the workspace-open +
                 // file-open flow Studio's sidebar drives. Recipes are
                 // flat at the workspace root: `<slug>.forage`.

@@ -132,6 +132,12 @@ export class FakeStudioService implements StudioService {
     publishVersion(a: string, s: string, payload: unknown) {
         return this.call("publishVersion", [a, s, payload]);
     }
+    getTypeVersion(a: string, n: string, v: number | "latest") {
+        return this.call("getTypeVersion", [a, n, v]);
+    }
+    publishTypeVersion(a: string, n: string, payload: unknown) {
+        return this.call("publishTypeVersion", [a, n, payload]);
+    }
 
     // Bookkeeping
     version() { return this.call("version", []); }

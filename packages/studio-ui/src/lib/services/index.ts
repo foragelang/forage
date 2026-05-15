@@ -4,12 +4,12 @@ export { StudioServiceProvider, useStudioService } from "./context";
 export {
     NotSupportedByService,
     StaleBaseError,
+    type AlignmentUri,
     type DebugAction,
     type DeeplinkClonePayload,
     type DeviceStart,
     type ForkedFrom,
     type ListVersionsItem,
-    type PackageFile,
     type PackageFixture,
     type PackageListing,
     type PackageMetadata,
@@ -21,9 +21,14 @@ export {
     type PublishOutcome,
     type PublishPayload,
     type PublishPreview,
+    type PublishTypePayload,
     type ServiceCapabilities,
     type StudioService,
     type SyncOutcomeWire,
+    type TypeFieldAlignment,
+    type TypeMetadata,
+    type TypeRef,
+    type TypeVersion,
     type Unsubscribe,
 } from "./StudioService";
 export { TauriStudioService } from "./TauriStudioService";

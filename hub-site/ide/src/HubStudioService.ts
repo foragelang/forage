@@ -25,9 +25,11 @@ import {
     type PublishOutcome,
     type PublishPayload,
     type PublishPreview,
+    type PublishTypePayload,
     type ServiceCapabilities,
     type StudioService,
     type SyncOutcomeWire,
+    type TypeVersion,
     type Unsubscribe,
 } from "@/lib/services";
 import type { DaemonStatus } from "@/bindings/DaemonStatus";
@@ -66,12 +68,18 @@ type ListVersionsResponse = {
 
 /// Currently loaded version artifact — the IDE caches the latest fetch
 /// so subsequent `runRecipe` calls can replay against the same recipe
-/// + decls + fixtures without round-tripping to hub-api. `loadPackage`
+/// + types + fixtures without round-tripping to hub-api. `loadPackage`
 /// from the IDE shell sets this; the methods that need it read it.
-type LoadedPackage = {
+///
+/// `types` mirrors `version.type_refs` resolved against the type
+/// resource — the shell fetches each referenced type alongside the
+/// recipe so the editor can render them in the file tree and the
+/// in-browser replay can fold them into the catalog.
+export type LoadedPackage = {
     author: string;
     slug: string;
     version: PackageVersion;
+    types: TypeVersion[];
 };
 
 export class HubStudioService implements StudioService {
@@ -109,9 +117,9 @@ export class HubStudioService implements StudioService {
     listRecentWorkspaces(): Promise<RecentWorkspace[]> { return Promise.resolve([]); }
     listWorkspaceFiles(): Promise<FileNode> {
         // The hub IDE has a single package open at a time; we expose
-        // recipe + decls as a flat folder so the existing sidebar's
-        // file tree still has something to render. Real workspace
-        // navigation doesn't exist here.
+        // recipe + each referenced type as a flat folder so the
+        // existing sidebar's file tree still has something to render.
+        // Real workspace navigation doesn't exist here.
         const loaded = this.loaded;
         if (!loaded) {
             return Promise.resolve({ kind: "folder", name: "ide", path: "", children: [] });
@@ -124,10 +132,10 @@ export class HubStudioService implements StudioService {
                 path: recipePath,
                 file_kind: "recipe",
             },
-            ...loaded.version.decls.map((d): FileNode => ({
+            ...loaded.types.map((t): FileNode => ({
                 kind: "file",
-                name: d.name,
-                path: d.name,
+                name: `${t.name}.forage`,
+                path: `${t.name}.forage`,
                 file_kind: "declarations",
             })),
         ];
@@ -145,9 +153,9 @@ export class HubStudioService implements StudioService {
         if (path === `${this.loaded.slug}.forage`) {
             return Promise.resolve(this.loaded.version.recipe);
         }
-        const decl = this.loaded.version.decls.find((d) => d.name === path);
-        if (!decl) return Promise.reject(new Error(`no such file: ${path}`));
-        return Promise.resolve(decl.source);
+        const type = this.loaded.types.find((t) => `${t.name}.forage` === path);
+        if (!type) return Promise.reject(new Error(`no such file: ${path}`));
+        return Promise.resolve(type.source);
     }
     saveFile(path: string, source: string): Promise<ValidationOutcome> {
         // Edits live in the in-memory loaded artifact until the user
@@ -160,9 +168,9 @@ export class HubStudioService implements StudioService {
         if (path === `${this.loaded.slug}.forage`) {
             this.loaded.version.recipe = source;
         } else {
-            const decl = this.loaded.version.decls.find((d) => d.name === path);
-            if (!decl) return Promise.reject(new Error(`no such file: ${path}`));
-            decl.source = source;
+            const type = this.loaded.types.find((t) => `${t.name}.forage` === path);
+            if (!type) return Promise.reject(new Error(`no such file: ${path}`));
+            type.source = source;
         }
         return this.validateRecipe(this.loaded.version.recipe);
     }
@@ -262,12 +270,21 @@ export class HubStudioService implements StudioService {
         const captures = this.loaded.version.fixtures
             .map((f) => f.content)
             .join("\n");
+        // Each loaded type rides into the catalog as a single decl-file
+        // shape (`{ name, source }`); `run_replay` merges every decl
+        // body's types into the recipe's catalog. The synthetic name
+        // (`<Name>.forage`) is purely for diagnostic surfaces — the
+        // wasm side keys off `source` content.
+        const decls = this.loaded.types.map((t) => ({
+            name: `${t.name}.forage`,
+            source: t.source,
+        }));
         try {
             // `run_replay` returns the engine's `Snapshot` serialized as a
             // JS object — same shape as `bindings/Snapshot.ts`.
             const snapshot = (await run_replay(
                 this.loaded.version.recipe,
-                this.loaded.version.decls,
+                decls,
                 captures,
                 // Inputs/secrets stay empty in the hub IDE: the read +
                 // replay + light-authoring scope (per the roadmap) has
@@ -446,6 +463,30 @@ export class HubStudioService implements StudioService {
     ): Promise<PackageVersion> {
         return this.fetchJson<PackageVersion>(
             `${this.hubUrl}/v1/packages/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/versions`,
+            {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+            },
+        );
+    }
+    getTypeVersion(
+        author: string,
+        name: string,
+        version: number | "latest",
+    ): Promise<TypeVersion> {
+        return this.fetchJson<TypeVersion>(
+            `${this.hubUrl}/v1/types/${encodeURIComponent(author)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
+        );
+    }
+    publishTypeVersion(
+        author: string,
+        name: string,
+        payload: PublishTypePayload,
+    ): Promise<TypeVersion> {
+        return this.fetchJson<TypeVersion>(
+            `${this.hubUrl}/v1/types/${encodeURIComponent(author)}/${encodeURIComponent(name)}/versions`,
             {
                 method: "POST",
                 credentials: "include",

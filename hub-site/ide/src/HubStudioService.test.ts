@@ -90,7 +90,7 @@ describe("HubStudioService", () => {
                 category: "",
                 tags: [],
                 recipe: "",
-                decls: [],
+                type_refs: [],
                 fixtures: [],
                 snapshot: null,
                 base_version: 1,
