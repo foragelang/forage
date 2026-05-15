@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use forage_core::workspace::{fixtures_path, snapshot_path};
+use forage_core::workspace::{Workspace, fixtures_path, snapshot_path};
 
 use crate::client::HubClient;
 use crate::error::{HubError, HubResult};
@@ -297,6 +297,167 @@ pub async fn publish_from_workspace(
     };
     write_meta(&recipe_dir, &meta)?;
     Ok(resp)
+}
+
+// --- Recipe-name-keyed publish (Phase 6+) ---------------------------
+
+/// Per-workspace directory holding `forage publish` sidecars in the
+/// recipe-name-keyed layout. Sits inside `.forage/` so the source scan
+/// already skips it.
+const RECIPE_META_DIR: &str = ".forage/sync";
+
+/// Sidecar path for a recipe-name-keyed `forage publish`.
+/// `<workspace>/.forage/sync/<recipe-name>.json`.
+pub fn recipe_meta_path(workspace_root: &Path, recipe_name: &str) -> PathBuf {
+    workspace_root
+        .join(RECIPE_META_DIR)
+        .join(format!("{recipe_name}.json"))
+}
+
+pub fn read_recipe_meta(workspace_root: &Path, recipe_name: &str) -> HubResult<Option<ForageMeta>> {
+    let path = recipe_meta_path(workspace_root, recipe_name);
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(HubError::Io(io::Error::new(
+                e.kind(),
+                format!("read {}: {e}", path.display()),
+            )));
+        }
+    };
+    let meta: ForageMeta = serde_json::from_str(&raw)?;
+    Ok(Some(meta))
+}
+
+pub fn write_recipe_meta(
+    workspace_root: &Path,
+    recipe_name: &str,
+    meta: &ForageMeta,
+) -> HubResult<()> {
+    let path = recipe_meta_path(workspace_root, recipe_name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string_pretty(meta)?;
+    fs::write(path, body)?;
+    Ok(())
+}
+
+/// Assemble a publish artifact keyed on the recipe's header name. The
+/// recipe file is the one `Workspace::recipe_by_name(recipe_name)`
+/// returns; the `decls` bundle every other workspace `.forage` file
+/// that contains at least one `share`d declaration (so file-scoped
+/// helpers stay file-scoped and aren't shipped to the hub); fixtures
+/// and snapshot come off the workspace's `_fixtures/<recipe>.jsonl` /
+/// `_snapshots/<recipe>.json`; `base_version` comes from the per-recipe
+/// sidecar in `.forage/sync/`.
+pub fn assemble_recipe_publish(
+    workspace: &Workspace,
+    recipe_name: &str,
+    description: String,
+    category: String,
+    tags: Vec<String>,
+) -> HubResult<PublishRequest> {
+    let recipe_ref = workspace.recipe_by_name(recipe_name).ok_or_else(|| {
+        HubError::Generic(format!(
+            "no recipe named {recipe_name:?} in workspace {}",
+            workspace.root.display()
+        ))
+    })?;
+    let recipe = fs::read_to_string(recipe_ref.path).map_err(|e| {
+        HubError::Io(io::Error::new(
+            e.kind(),
+            format!("read {}: {e}", recipe_ref.path.display()),
+        ))
+    })?;
+
+    let decls = collect_shared_decls(workspace, recipe_ref.path)?;
+    let fixtures = read_fixtures(&workspace.root, recipe_name)?;
+    let snapshot = read_snapshot(&workspace.root, recipe_name)?;
+    let meta = read_recipe_meta(&workspace.root, recipe_name)?;
+    let base_version = meta.map(|m| m.base_version);
+
+    Ok(PublishRequest {
+        description,
+        category,
+        tags,
+        recipe,
+        decls,
+        fixtures,
+        snapshot,
+        base_version,
+    })
+}
+
+/// Recipe-name-keyed counterpart to [`publish_from_workspace`]: looks
+/// up the recipe in the workspace, POSTs to `<author>/<recipe_name>`,
+/// and updates the per-recipe sidecar with the freshly-stamped version.
+pub async fn publish_recipe_from_workspace(
+    client: &HubClient,
+    workspace: &Workspace,
+    recipe_name: &str,
+    author: &str,
+    description: String,
+    category: String,
+    tags: Vec<String>,
+) -> HubResult<PublishResponse> {
+    let payload = assemble_recipe_publish(workspace, recipe_name, description, category, tags)?;
+    let resp = client
+        .publish_version(author, recipe_name, &payload)
+        .await?;
+    let existing = read_recipe_meta(&workspace.root, recipe_name)?;
+    let meta = ForageMeta {
+        origin: ForageMeta::pretty_origin(author, recipe_name, resp.version),
+        author: author.to_string(),
+        slug: recipe_name.to_string(),
+        base_version: resp.version,
+        forked_from: existing.and_then(|m| m.forked_from),
+    };
+    write_recipe_meta(&workspace.root, recipe_name, &meta)?;
+    Ok(resp)
+}
+
+/// Walk the workspace and bundle every `.forage` file other than the
+/// focal recipe that contains at least one `share`d type/enum/fn.
+/// Files with only file-local declarations stay home — they're invisible
+/// to the catalog anyway and have no business in the publish artifact.
+fn collect_shared_decls(
+    workspace: &Workspace,
+    focal_path: &Path,
+) -> HubResult<Vec<PackageFile>> {
+    let mut out = Vec::new();
+    for entry in &workspace.files {
+        if entry.path == focal_path {
+            continue;
+        }
+        let Ok(parsed) = entry.parsed.as_ref() else {
+            // A broken sibling file is surfaced via `Workspace::broken()`;
+            // skipping it here lets the publish proceed against the
+            // healthy files of the workspace.
+            continue;
+        };
+        let any_shared = parsed.types.iter().any(|t| t.shared)
+            || parsed.enums.iter().any(|e| e.shared)
+            || parsed.functions.iter().any(|f| f.shared);
+        if !any_shared {
+            continue;
+        }
+        let rel = entry
+            .path
+            .strip_prefix(&workspace.root)
+            .unwrap_or(&entry.path);
+        let name = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        let source = fs::read_to_string(&entry.path).map_err(|e| {
+            HubError::Io(io::Error::new(
+                e.kind(),
+                format!("read {}: {e}", entry.path.display()),
+            ))
+        })?;
+        out.push(PackageFile { name, source });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 // --- Sidecar I/O ----------------------------------------------------
