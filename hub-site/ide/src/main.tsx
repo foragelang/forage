@@ -46,10 +46,11 @@ async function boot() {
                 );
                 service.setLoaded({ author, slug, version: versionArtifact });
                 // Seed the editor session: emulate the workspace-open +
-                // file-open flow Studio's sidebar drives.
+                // file-open flow Studio's sidebar drives. Recipes are
+                // flat at the workspace root: `<slug>.forage`.
                 await useStudio
                     .getState()
-                    .setActiveFilePath(`${slug}/recipe.forage`);
+                    .setActiveFilePath(`${slug}.forage`);
             } catch (e) {
                 console.error("failed to load package", e);
             }

@@ -116,17 +116,18 @@ export class HubStudioService implements StudioService {
         if (!loaded) {
             return Promise.resolve({ kind: "folder", name: "ide", path: "", children: [] });
         }
+        const recipePath = `${loaded.slug}.forage`;
         const children: FileNode[] = [
             {
                 kind: "file",
-                name: "recipe.forage",
-                path: `${loaded.slug}/recipe.forage`,
+                name: recipePath,
+                path: recipePath,
                 file_kind: "recipe",
             },
             ...loaded.version.decls.map((d): FileNode => ({
                 kind: "file",
                 name: d.name,
-                path: `${loaded.slug}/${d.name}`,
+                path: d.name,
                 file_kind: "declarations",
             })),
         ];
@@ -141,12 +142,10 @@ export class HubStudioService implements StudioService {
         if (!this.loaded) {
             return Promise.reject(new Error(`no package loaded`));
         }
-        if (path === `${this.loaded.slug}/recipe.forage`) {
+        if (path === `${this.loaded.slug}.forage`) {
             return Promise.resolve(this.loaded.version.recipe);
         }
-        const decl = this.loaded.version.decls.find(
-            (d) => `${this.loaded!.slug}/${d.name}` === path,
-        );
+        const decl = this.loaded.version.decls.find((d) => d.name === path);
         if (!decl) return Promise.reject(new Error(`no such file: ${path}`));
         return Promise.resolve(decl.source);
     }
@@ -158,12 +157,10 @@ export class HubStudioService implements StudioService {
         if (!this.loaded) {
             return Promise.reject(new Error(`no package loaded`));
         }
-        if (path === `${this.loaded.slug}/recipe.forage`) {
+        if (path === `${this.loaded.slug}.forage`) {
             this.loaded.version.recipe = source;
         } else {
-            const decl = this.loaded.version.decls.find(
-                (d) => `${this.loaded!.slug}/${d.name}` === path,
-            );
+            const decl = this.loaded.version.decls.find((d) => d.name === path);
             if (!decl) return Promise.reject(new Error(`no such file: ${path}`));
             decl.source = source;
         }
