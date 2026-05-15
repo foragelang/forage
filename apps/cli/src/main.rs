@@ -277,6 +277,12 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
 
 async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
     let recipe = load_recipe(recipe_dir)?;
+    if recipe.engine_kind().is_none() {
+        bail!(
+            "`forage test` requires a file with a `recipe \"<name>\" engine <kind>` header; \
+             a header-less declarations file can't be run"
+        );
+    }
     let inputs = load_inputs(recipe_dir)?;
     let secrets = load_secrets_from_env(&recipe);
     let captures = load_captures(recipe_dir)?;
