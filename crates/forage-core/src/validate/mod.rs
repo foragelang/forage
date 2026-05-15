@@ -31,14 +31,22 @@ pub struct WorkspaceFileRef<'a> {
     pub file: &'a ForageFile,
 }
 
-/// Walk every file in the workspace and emit `DuplicateSharedDeclaration`
-/// whenever two files declare a `share`d type/enum/fn with the same
-/// name. The check is symmetric — both colliding files surface the
-/// diagnostic. File-local (non-`share`d) declarations never participate.
+/// Walk every file in the workspace and emit cross-file collision
+/// diagnostics:
 ///
-/// Returns a map keyed by the file path that owns each issue. Callers
-/// (the LSP docstore, Studio's per-file save) consume only the slice
-/// matching the file they're publishing diagnostics for.
+/// - `DuplicateSharedDeclaration` whenever two files declare a `share`d
+///   type/enum/fn with the same name. File-local (non-`share`d)
+///   declarations never participate.
+/// - `DuplicateRecipeName` whenever two files declare a recipe with the
+///   same header name. The recipe-name namespace is flat across the
+///   workspace; `Workspace::recipe_by_name` resolves to the first match
+///   in path order, but every duplicate file surfaces a diagnostic so
+///   the user can find and resolve the collision.
+///
+/// Both checks are symmetric — every colliding file surfaces its own
+/// diagnostic. Returns a map keyed by the file path that owns each
+/// issue. Callers (the LSP docstore, Studio's per-file save) consume
+/// only the slice matching the file they're publishing diagnostics for.
 pub fn validate_workspace_shared(
     files: &[WorkspaceFileRef<'_>],
 ) -> std::collections::HashMap<std::path::PathBuf, Vec<ValidationIssue>> {
@@ -51,6 +59,7 @@ pub fn validate_workspace_shared(
     let mut types: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
     let mut enums: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
     let mut fns: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
+    let mut recipes: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
 
     for entry in files {
         for t in &entry.file.types {
@@ -76,17 +85,48 @@ pub fn validate_workspace_shared(
                     .push((entry.path.to_path_buf(), f.span.clone()));
             }
         }
+        // Only the first header per file participates in the cross-file
+        // check; same-file duplicates are the `DuplicateRecipeHeader`
+        // rule's responsibility, not this pass.
+        if let Some(header) = entry.file.recipe_header() {
+            recipes
+                .entry(header.name.as_str())
+                .or_default()
+                .push((entry.path.to_path_buf(), header.span.clone()));
+        }
     }
 
     let mut out: HashMap<PathBuf, Vec<ValidationIssue>> = HashMap::new();
-    emit_share_collisions("type", types, &mut out);
-    emit_share_collisions("enum", enums, &mut out);
-    emit_share_collisions("fn", fns, &mut out);
+    emit_collisions(
+        ValidationCode::DuplicateSharedDeclaration,
+        |name, others| format!("share type '{name}' is also declared in: {others}"),
+        types,
+        &mut out,
+    );
+    emit_collisions(
+        ValidationCode::DuplicateSharedDeclaration,
+        |name, others| format!("share enum '{name}' is also declared in: {others}"),
+        enums,
+        &mut out,
+    );
+    emit_collisions(
+        ValidationCode::DuplicateSharedDeclaration,
+        |name, others| format!("share fn '{name}' is also declared in: {others}"),
+        fns,
+        &mut out,
+    );
+    emit_collisions(
+        ValidationCode::DuplicateRecipeName,
+        |name, others| format!("recipe '{name}' is also declared in: {others}"),
+        recipes,
+        &mut out,
+    );
     out
 }
 
-fn emit_share_collisions(
-    kind_word: &str,
+fn emit_collisions(
+    code: ValidationCode,
+    message: impl Fn(&str, &str) -> String,
     sites_by_name: std::collections::HashMap<&str, Vec<(std::path::PathBuf, Span)>>,
     out: &mut std::collections::HashMap<std::path::PathBuf, Vec<ValidationIssue>>,
 ) {
@@ -102,11 +142,8 @@ fn emit_share_collisions(
                 .collect();
             out.entry(path.clone()).or_default().push(ValidationIssue {
                 severity: Severity::Error,
-                code: ValidationCode::DuplicateSharedDeclaration,
-                message: format!(
-                    "share {kind_word} '{name}' is also declared in: {}",
-                    others.join(", "),
-                ),
+                code,
+                message: message(name, &others.join(", ")),
                 span: span.clone(),
             });
         }
@@ -214,6 +251,11 @@ pub enum ValidationCode {
     /// Anchored on the file being validated; the cross-file pass that
     /// detected the conflict is the one that emits this issue.
     DuplicateSharedDeclaration,
+    /// Two recipes across the workspace declare the same header name.
+    /// The recipe-name namespace is flat workspace-wide;
+    /// `Workspace::recipe_by_name` resolves to the first match in path
+    /// order, but each colliding file gets its own diagnostic.
+    DuplicateRecipeName,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -2148,5 +2190,73 @@ emit Item { }
         ]);
         assert!(by_path.get(&path_a).is_some_and(|v| v.len() == 1));
         assert!(by_path.get(&path_b).is_some_and(|v| v.len() == 1));
+    }
+
+    /// Two files declaring `recipe "dup"` is a cross-file collision —
+    /// the recipe namespace is flat across the workspace. Both files
+    /// get a `DuplicateRecipeName` diagnostic anchored at their header.
+    #[test]
+    fn duplicate_recipe_name_across_files_flagged() {
+        let src_a = "recipe \"dup\"\nengine http\n";
+        let src_b = "recipe \"dup\"\nengine http\n";
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let by_path = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+        ]);
+        assert!(
+            by_path.get(&path_a).is_some_and(|v| v
+                .iter()
+                .any(|i| i.code == ValidationCode::DuplicateRecipeName)),
+            "expected DuplicateRecipeName on file A; got {by_path:?}",
+        );
+        assert!(
+            by_path.get(&path_b).is_some_and(|v| v
+                .iter()
+                .any(|i| i.code == ValidationCode::DuplicateRecipeName)),
+            "expected DuplicateRecipeName on file B; got {by_path:?}",
+        );
+    }
+
+    /// Distinct recipe names across files don't collide. A header-less
+    /// file alongside a recipe file is also fine.
+    #[test]
+    fn distinct_recipe_names_across_files_do_not_collide() {
+        let src_a = "recipe \"alpha\"\nengine http\n";
+        let src_b = "recipe \"beta\"\nengine http\n";
+        let src_c = "type Shared { id: String }\n";
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let file_c = parse(src_c).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let path_c = std::path::PathBuf::from("/ws/c.forage");
+        let by_path = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+            WorkspaceFileRef {
+                path: &path_c,
+                file: &file_c,
+            },
+        ]);
+        assert!(
+            by_path.is_empty(),
+            "distinct recipe names + header-less file must not collide; got {by_path:?}",
+        );
     }
 }
