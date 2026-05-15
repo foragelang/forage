@@ -10,7 +10,7 @@ use tauri::{AppHandle, Listener, WebviewUrl, WebviewWindowBuilder};
 
 use forage_browser::{FETCH_INTERCEPT_JS, SCROLL_TO_BOTTOM_JS, run_browser_replay};
 use forage_core::ast::{BrowserPaginateUntil, BrowserPaginationMode, ForageFile};
-use forage_core::{EvalValue, Snapshot};
+use forage_core::{EvalValue, Snapshot, TypeCatalog};
 use forage_replay::{BrowserCapture, Capture};
 
 /// One capture emitted by the JS shim.
@@ -48,6 +48,7 @@ impl Default for LiveRunOptions {
 pub async fn run_live(
     app: &AppHandle,
     recipe: &ForageFile,
+    catalog: &TypeCatalog,
     inputs: indexmap::IndexMap<String, EvalValue>,
     secrets: indexmap::IndexMap<String, String>,
     opts: LiveRunOptions,
@@ -206,7 +207,7 @@ pub async fn run_live(
     }
 
     // Route through the replay engine.
-    run_browser_replay(recipe, &restitched, inputs, secrets).map_err(|e| format!("{e}"))
+    run_browser_replay(recipe, catalog, &restitched, inputs, secrets).map_err(|e| format!("{e}"))
 }
 
 fn render_url(

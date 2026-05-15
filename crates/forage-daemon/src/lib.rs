@@ -97,6 +97,7 @@ pub trait LiveBrowserDriver: Send + Sync {
     async fn run_live(
         &self,
         recipe: &ForageFile,
+        catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
         progress: Arc<dyn ProgressSink>,

@@ -232,7 +232,7 @@ async fn execute(
             };
             let engine = Engine::new(&transport).with_progress(sink.clone());
             engine
-                .run(&recipe, inputs, secrets)
+                .run(&recipe, &catalog, inputs, secrets)
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("engine: {e}"),
@@ -254,7 +254,7 @@ async fn execute(
                 });
             };
             driver
-                .run_live(&recipe, inputs, secrets, sink.clone())
+                .run_live(&recipe, &catalog, inputs, secrets, sink.clone())
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("browser: {e}"),

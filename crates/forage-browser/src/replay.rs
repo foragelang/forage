@@ -10,19 +10,28 @@ use regex::Regex;
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot};
+use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot, TypeCatalog};
 use forage_replay::{BrowserCapture, Capture};
 
 use crate::error::{BrowserError, BrowserResult};
 
 pub struct ReplayEngine<'r> {
     pub recipe: &'r ForageFile,
+    pub catalog: &'r TypeCatalog,
     pub captures: &'r [Capture],
 }
 
 impl<'r> ReplayEngine<'r> {
-    pub fn new(recipe: &'r ForageFile, captures: &'r [Capture]) -> Self {
-        Self { recipe, captures }
+    pub fn new(
+        recipe: &'r ForageFile,
+        catalog: &'r TypeCatalog,
+        captures: &'r [Capture],
+    ) -> Self {
+        Self {
+            recipe,
+            catalog,
+            captures,
+        }
     }
 
     pub fn run(
@@ -40,10 +49,11 @@ impl<'r> ReplayEngine<'r> {
         let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
-        // Stamp the recipe's type catalog onto the snapshot so JSON-LD
-        // output and hub indexers can read alignment metadata without
-        // re-resolving the recipe source.
-        snapshot.set_record_types(&self.recipe.types);
+        // Stamp every type the recipe could emit onto the snapshot so
+        // JSON-LD output and hub indexers can read alignment metadata
+        // for workspace-shared and hub-dep types too — not just the
+        // ones declared in the recipe file itself.
+        snapshot.set_record_types(self.catalog.types_sorted());
 
         // Top-level body (e.g. Jane's `emit Dispensary` before captures).
         for s in &self.recipe.body {
@@ -122,11 +132,12 @@ impl<'r> ReplayEngine<'r> {
 
 pub fn run_browser_replay(
     recipe: &ForageFile,
+    catalog: &TypeCatalog,
     captures: &[Capture],
     inputs: IndexMap<String, EvalValue>,
     secrets: IndexMap<String, String>,
 ) -> BrowserResult<Snapshot> {
-    ReplayEngine::new(recipe, captures).run(inputs, secrets)
+    ReplayEngine::new(recipe, catalog, captures).run(inputs, secrets)
 }
 
 fn run_statement(
@@ -243,13 +254,16 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = TypeCatalog::from_file(&recipe);
         let cap = Capture::Browser(BrowserCapture::Match {
             url: "https://example.com/api/items?p=1".into(),
             method: "GET".into(),
             status: 200,
             body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
         });
-        let snap = run_browser_replay(&recipe, &[cap], IndexMap::new(), IndexMap::new()).unwrap();
+        let snap =
+            run_browser_replay(&recipe, &catalog, &[cap], IndexMap::new(), IndexMap::new())
+                .unwrap();
         assert_eq!(snap.records.len(), 3);
     }
 
@@ -276,6 +290,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = TypeCatalog::from_file(&recipe);
         let cap = Capture::Browser(BrowserCapture::Document {
             url: "https://letterboxd.com/films/popular".into(),
             html: r#"
@@ -284,7 +299,9 @@ mod tests {
             "#
             .into(),
         });
-        let snap = run_browser_replay(&recipe, &[cap], IndexMap::new(), IndexMap::new()).unwrap();
+        let snap =
+            run_browser_replay(&recipe, &catalog, &[cap], IndexMap::new(), IndexMap::new())
+                .unwrap();
         assert_eq!(snap.records.len(), 2);
         let titles: Vec<String> = snap
             .records

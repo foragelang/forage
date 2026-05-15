@@ -114,10 +114,12 @@ impl Snapshot {
         }
     }
 
-    /// Populate the type catalog from a recipe's `RecipeType` list.
-    /// Engines call this at run boundary so the snapshot carries the
-    /// alignment metadata downstream consumers (JSON-LD output, hub
-    /// indexers) need.
+    /// Populate the type catalog from every type the recipe could
+    /// emit. Engines call this at run boundary with the full resolved
+    /// `TypeCatalog` (file-local plus workspace-shared plus hub-dep)
+    /// so the snapshot carries alignment metadata for any type a `share
+    /// type` lets the recipe reference, not just the ones declared in
+    /// the recipe file itself.
     pub fn set_record_types<'a>(&mut self, types: impl IntoIterator<Item = &'a RecipeType>) {
         self.record_types.clear();
         for ty in types {

@@ -399,7 +399,7 @@ async fn run(
     output: OutputFormat,
 ) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    validate_resolved(&resolved)?;
+    let catalog = validate_resolved(&resolved)?;
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
@@ -409,7 +409,7 @@ async fn run(
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
-                .run(&resolved.file, inputs, secrets)
+                .run(&resolved.file, &catalog, inputs, secrets)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
@@ -417,13 +417,13 @@ async fn run(
             let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
             let engine = Engine::new(&transport);
             engine
-                .run(&resolved.file, inputs, secrets)
+                .run(&resolved.file, &catalog, inputs, secrets)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, true) => {
             let captures = load_captures_for(&resolved)?;
-            run_browser_replay(&resolved.file, &captures, inputs, secrets)
+            run_browser_replay(&resolved.file, &catalog, &captures, inputs, secrets)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, false) => {
@@ -454,7 +454,7 @@ async fn run(
 
 async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    validate_resolved(&resolved)?;
+    let catalog = validate_resolved(&resolved)?;
     let _engine_kind = resolved.engine_kind()?; // surface header-less files early
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
@@ -462,7 +462,7 @@ async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Res
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     let produced = engine
-        .run(&resolved.file, inputs, secrets)
+        .run(&resolved.file, &catalog, inputs, secrets)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -499,7 +499,7 @@ async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Res
 
 async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    validate_resolved(&resolved)?;
+    let catalog = validate_resolved(&resolved)?;
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
@@ -515,7 +515,7 @@ async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
     let transport = RecordingTransport::new(live);
     let engine = Engine::new(&transport);
     let snapshot = engine
-        .run(&resolved.file, inputs, secrets)
+        .run(&resolved.file, &catalog, inputs, secrets)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -588,10 +588,14 @@ impl forage_http::Transport for RecordingTransport {
     }
 }
 
-/// Validate the resolved recipe against the workspace catalog (or its
-/// own file-local catalog in lonely-recipe mode). Surfaces validator
-/// errors and bails before any engine runs.
-fn validate_resolved(resolved: &ResolvedRecipe) -> Result<()> {
+/// Build the recipe's `TypeCatalog` (merged with workspace `share`d
+/// declarations and hub-dep types when a workspace surrounds the file;
+/// file-local otherwise), then validate against it. Returns the catalog
+/// so engine call sites can reuse it without rebuilding — engines need
+/// it to stamp `Snapshot.record_types` with alignments for every type
+/// the recipe could emit, not just the ones declared in the recipe
+/// file.
+fn validate_resolved(resolved: &ResolvedRecipe) -> Result<forage_core::TypeCatalog> {
     let catalog = match &resolved.workspace {
         Some(ws) => ws
             .catalog(&resolved.file, |p| std::fs::read_to_string(p))
@@ -605,7 +609,7 @@ fn validate_resolved(resolved: &ResolvedRecipe) -> Result<()> {
         }
         bail!("recipe failed validation");
     }
-    Ok(())
+    Ok(catalog)
 }
 
 fn load_inputs(path: Option<&Path>) -> Result<IndexMap<String, EvalValue>> {

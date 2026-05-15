@@ -167,6 +167,15 @@ impl TypeCatalog {
         self.enums.get(name)
     }
 
+    /// Catalog types in name-sorted order. Engines stamp the snapshot's
+    /// `record_types` from this so the wire output stays stable
+    /// regardless of which file declared a given type or in what order.
+    pub fn types_sorted(&self) -> Vec<&RecipeType> {
+        let mut out: Vec<&RecipeType> = self.types.values().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
     /// Build a catalog from one file's local types — what lonely-file
     /// mode uses when no workspace surrounds the file.
     pub fn from_file(file: &ForageFile) -> Self {

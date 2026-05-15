@@ -19,7 +19,7 @@ use crate::transport::{HttpRequest, HttpResponse, Transport};
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot};
+use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot, TypeCatalog};
 
 /// Engine knobs.
 #[derive(Debug, Clone)]
@@ -83,6 +83,7 @@ impl<'t> Engine<'t> {
     pub async fn run(
         &self,
         recipe: &ForageFile,
+        catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
@@ -99,7 +100,7 @@ impl<'t> Engine<'t> {
             replay: false,
         });
 
-        self.run_inner(recipe, inputs, secrets)
+        self.run_inner(recipe, catalog, inputs, secrets)
             .await
             .inspect(|snap| {
                 debug!(
@@ -130,6 +131,7 @@ impl<'t> Engine<'t> {
     async fn run_inner(
         &self,
         recipe: &ForageFile,
+        catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
@@ -138,11 +140,12 @@ impl<'t> Engine<'t> {
         let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
-        // Stamp the recipe's type catalog onto the snapshot at run
-        // boundary so downstream consumers (JSON-LD output, hub
-        // indexers) carry alignment metadata without re-resolving the
-        // recipe source.
-        snapshot.set_record_types(&recipe.types);
+        // Stamp every type the recipe could emit onto the snapshot at
+        // run boundary so downstream consumers (JSON-LD output, hub
+        // indexers) carry alignment metadata for workspace-shared and
+        // hub-dep types too — not just the ones declared in the recipe
+        // file itself.
+        snapshot.set_record_types(catalog.types_sorted());
         // Default `$page` so recipes that use `{$page}` outside a paginated
         // step (or before the first request) still have it bound. The
         // engine overwrites this inside each `run_step` iteration.
@@ -647,6 +650,13 @@ mod tests {
     use forage_core::parse;
     use forage_replay::{Capture, HttpExchange};
 
+    /// Build a lonely-file catalog for tests that don't go through the
+    /// workspace loader. Real call sites (CLI, daemon, Studio) get the
+    /// merged catalog from `Workspace::catalog`.
+    fn lonely_catalog(recipe: &ForageFile) -> TypeCatalog {
+        TypeCatalog::from_file(recipe)
+    }
+
     #[tokio::test]
     async fn runs_one_step_recipe_against_replay() {
         let src = r#"
@@ -662,6 +672,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let exchange = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -674,7 +685,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -707,6 +718,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let page1 = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -728,7 +740,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![page1, page2]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 4);
@@ -796,6 +808,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let transport = RecordingTransport {
             seen: Mutex::new(Vec::new()),
             pages: vec![
@@ -807,7 +820,7 @@ mod tests {
         };
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -844,6 +857,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let exchange = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -857,7 +871,7 @@ mod tests {
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -917,11 +931,12 @@ mod tests {
             emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let transport = ReplayTransport::new(vec![]);
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let err = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1078,7 +1093,7 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         };
         let snap = Engine::new(&transport)
-            .run(&recipe, inputs, IndexMap::new())
+            .run(&recipe, &catalog, inputs, IndexMap::new())
             .await
             .expect("run ok");
 
@@ -1149,10 +1164,11 @@ mod tests {
             emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let transport = ReplayTransport::new(vec![]);
         let engine = Engine::new(&transport);
         let err = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1184,6 +1200,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let first = Capture::Http(HttpExchange {
             url: "https://api.example.com/a".into(),
             method: "GET".into(),
@@ -1211,7 +1228,10 @@ mod tests {
 
         let mut secrets = IndexMap::new();
         secrets.insert("token".to_string(), "shhh".to_string());
-        let snap = engine.run(&recipe, IndexMap::new(), secrets).await.unwrap();
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), secrets)
+            .await
+            .unwrap();
         assert_eq!(snap.records.len(), 1);
 
         let seen = dbg.seen_steps.lock().unwrap();
@@ -1264,6 +1284,7 @@ mod tests {
             emit T { x ← "hi" }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         // An empty ReplayTransport would error on any fetch — if the engine
         // honors Stop, we never call it, so the test passes; if it doesn't,
         // we get NoFixture, not a debugger error, which would fail the assertion.
@@ -1272,7 +1293,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -1304,6 +1325,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let cap = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -1318,7 +1340,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 3);
@@ -1365,6 +1387,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let cap = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -1383,7 +1406,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -1415,6 +1438,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
         let exchange = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
             method: "GET".into(),
@@ -1427,7 +1451,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
             .await
             .unwrap();
 
@@ -1469,5 +1493,93 @@ mod tests {
             product_ref_2.get("_ref"),
             Some(&JSONValue::String("rec-2".into())),
         );
+    }
+
+    /// A type declared `share` in a sibling workspace file (and thus
+    /// absent from the focal recipe's `types` list) still has to land in
+    /// the snapshot's `record_types` with its alignments — downstream
+    /// consumers (JSON-LD writers, hub indexers) read alignment metadata
+    /// off the snapshot, not off the recipe source. The fix routes the
+    /// catalog (not just `recipe.types`) into `set_record_types`.
+    #[tokio::test]
+    async fn workspace_shared_type_alignment_lands_in_snapshot() {
+        use tempfile::tempdir;
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+        // Sibling decl file: shares a type with an alignment.
+        std::fs::write(
+            root.join("cannabis.forage"),
+            "share type Product aligns schema.org/Product {\n\
+             \x20   id: String aligns schema.org/identifier\n\
+             }\n",
+        )
+        .unwrap();
+        // Focal recipe: emits the shared Product but doesn't redeclare
+        // it locally.
+        let recipe_path = root.join("rec.forage");
+        std::fs::write(
+            &recipe_path,
+            r#"recipe "rec"
+engine http
+step list {
+    method "GET"
+    url "https://api.example.com/items"
+}
+for $i in $list.items[*] {
+    emit Product { id ← $i.id }
+}
+"#,
+        )
+        .unwrap();
+        let ws = forage_core::workspace::load(root).unwrap();
+        let recipe = forage_core::parse(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let catalog = ws
+            .catalog(&recipe, |p| std::fs::read_to_string(p))
+            .unwrap();
+
+        let exchange = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![exchange]);
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .await
+            .unwrap();
+
+        // The recipe emitted one Product record.
+        assert_eq!(snap.records.len(), 1);
+        assert_eq!(snap.records[0].type_name, "Product");
+
+        // The workspace-shared Product is present in record_types with
+        // both type-level and field-level alignments — even though
+        // `recipe.types` is empty.
+        assert!(recipe.types.is_empty(), "focal recipe declares no types");
+        let product = snap
+            .record_types
+            .get("Product")
+            .expect("Product RecordType from workspace catalog");
+        assert_eq!(product.alignments.len(), 1);
+        assert_eq!(product.alignments[0].ontology, "schema.org");
+        assert_eq!(product.alignments[0].term, "Product");
+        let id_field = product
+            .fields
+            .iter()
+            .find(|f| f.name == "id")
+            .expect("id field");
+        let id_alignment = id_field.alignment.as_ref().expect("id alignment");
+        assert_eq!(id_alignment.ontology, "schema.org");
+        assert_eq!(id_alignment.term, "identifier");
     }
 }

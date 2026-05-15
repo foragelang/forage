@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use forage_core::{EvalValue, ForageFile, Snapshot};
+use forage_core::{EvalValue, ForageFile, Snapshot, TypeCatalog};
 use forage_daemon::{BrowserDriverError, LiveBrowserDriver};
 use forage_http::ProgressSink;
 use indexmap::IndexMap;
@@ -43,6 +43,7 @@ impl LiveBrowserDriver for StudioLiveBrowserDriver {
     async fn run_live(
         &self,
         recipe: &ForageFile,
+        catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
         _progress: Arc<dyn ProgressSink>,
@@ -54,6 +55,7 @@ impl LiveBrowserDriver for StudioLiveBrowserDriver {
         run_live(
             &self.app,
             recipe,
+            catalog,
             inputs,
             secrets,
             LiveRunOptions::default(),

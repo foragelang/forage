@@ -4,7 +4,7 @@
 //! records. Any future implementation that wants to claim parity has
 //! to clear the same snapshots.
 
-use forage_core::{EvalValue, parse};
+use forage_core::{EvalValue, TypeCatalog, parse};
 use forage_http::engine::Engine;
 use forage_http::transport::ReplayTransport;
 use forage_replay::{Capture, HttpExchange};
@@ -31,6 +31,7 @@ async fn fixtures_match_run_snapshots() {
                 continue;
             }
         };
+        let catalog = TypeCatalog::from_file(&recipe);
 
         let inputs: IndexMap<String, EvalValue> = snapshot
             .inputs
@@ -56,7 +57,7 @@ async fn fixtures_match_run_snapshots() {
 
         let transport = ReplayTransport::new(captures);
         let engine = Engine::new(&transport);
-        let snap = match engine.run(&recipe, inputs, IndexMap::new()).await {
+        let snap = match engine.run(&recipe, &catalog, inputs, IndexMap::new()).await {
             Ok(s) => s,
             Err(e) => {
                 failures.push(format!("{}: run: {e}", r.file));

@@ -483,7 +483,7 @@ pub async fn run_recipe(
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, inputs, secrets) => r.map_err(|e| format!("{e}")),
+                r = engine.run(&recipe, &catalog, inputs, secrets) => r.map_err(|e| format!("{e}")),
             }
         }
         (EngineKind::Http, false) => {
@@ -495,16 +495,25 @@ pub async fn run_recipe(
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, inputs, secrets) => r.map_err(|e| format!("{e}")),
+                r = engine.run(&recipe, &catalog, inputs, secrets) => r.map_err(|e| format!("{e}")),
             }
         }
         (EngineKind::Browser, true) => {
-            run_browser_replay(&recipe, &captures, inputs, secrets).map_err(|e| format!("{e}"))
+            run_browser_replay(&recipe, &catalog, &captures, inputs, secrets)
+                .map_err(|e| format!("{e}"))
         }
         (EngineKind::Browser, false) => {
             // Open a Tauri WebviewWindow + inject the shim; collect
             // captures; route through the replay engine.
-            run_browser_live(&app, &recipe, inputs, secrets, LiveRunOptions::default()).await
+            run_browser_live(
+                &app,
+                &recipe,
+                &catalog,
+                inputs,
+                secrets,
+                LiveRunOptions::default(),
+            )
+            .await
         }
     };
 

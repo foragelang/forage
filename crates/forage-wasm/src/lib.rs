@@ -362,7 +362,7 @@ pub async fn run_replay_inner(
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     engine
-        .run(&recipe, inputs, secrets)
+        .run(&recipe, &catalog, inputs, secrets)
         .await
         .map_err(|e| ReplayError::Run(e.to_string()))
 }
