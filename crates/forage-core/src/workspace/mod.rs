@@ -1,7 +1,18 @@
 //! Workspace loader: discovers a `forage.toml`, scans the directory tree
-//! for `.forage` files, parses each, and merges shared `type`/`enum`
-//! declarations (workspace-local plus cached hub deps) into a single
-//! `TypeCatalog`.
+//! for `.forage` files, parses each, and merges `share`d
+//! `type`/`enum` declarations from every sibling file (plus cached hub
+//! deps) into a single `TypeCatalog` for one focal file.
+//!
+//! Visibility is per declaration: `share type Foo { … }` joins the
+//! workspace-wide catalog; a bare `type Foo { … }` stays file-scoped.
+//! The focal file always contributes both its file-local and `share`d
+//! declarations, so a recipe can see anything it declared at home plus
+//! anything other files chose to publish.
+//!
+//! Cross-file `share` collisions are surfaced by
+//! `validate_workspace_shared` in the validator, not by the catalog —
+//! the catalog merges last-writer-wins so the focal file's own types
+//! always shadow any same-name `share`d type from elsewhere.
 //!
 //! Discovery is an ancestor walk from a starting path. If no marker is
 //! found, callers fall back to lonely-file mode — the file sees no
@@ -122,14 +133,16 @@ impl TypeCatalog {
     /// mode uses when no workspace surrounds the file.
     pub fn from_file(file: &ForageFile) -> Self {
         let mut cat = Self::default();
-        cat.merge_file_local(file);
+        cat.merge_all(file);
         cat
     }
 
-    /// Merge a parsed file's types and enums into the catalog. Last
-    /// writer wins per name; callers that need conflict detection
-    /// should route through `Workspace::catalog`, which tracks origins.
-    pub fn merge_file(&mut self, file: &ForageFile) {
+    /// Merge every type and enum declared in `file` into the catalog,
+    /// last-writer-wins per name. Used for the focal file (which sees
+    /// both its file-local and `share`d decls) and for hub-dep packages
+    /// (where the `share` flag isn't author-controlled yet — see
+    /// `scan_package_declarations`).
+    pub fn merge_all(&mut self, file: &ForageFile) {
         for t in &file.types {
             self.types.insert(t.name.clone(), t.clone());
         }
@@ -138,12 +151,19 @@ impl TypeCatalog {
         }
     }
 
-    fn merge_file_local(&mut self, file: &ForageFile) {
+    /// Merge only the `share`d types and enums from `file`. Used when
+    /// folding a non-focal sibling into the workspace catalog: a bare
+    /// `type Foo { … }` stays private to its declaring file.
+    pub fn merge_shared(&mut self, file: &ForageFile) {
         for t in &file.types {
-            self.types.insert(t.name.clone(), t.clone());
+            if t.shared {
+                self.types.insert(t.name.clone(), t.clone());
+            }
         }
         for e in &file.enums {
-            self.enums.insert(e.name.clone(), e.clone());
+            if e.shared {
+                self.enums.insert(e.name.clone(), e.clone());
+            }
         }
     }
 }
@@ -158,7 +178,7 @@ pub enum WorkspaceError {
         #[source]
         source: ManifestError,
     },
-    #[error("declarations file at {path} failed to parse: {source}")]
+    #[error("workspace file at {path} failed to parse: {source}")]
     Parse {
         path: PathBuf,
         #[source]
@@ -172,16 +192,6 @@ pub enum WorkspaceError {
     },
     #[error("expected a recipe at {path} but found a header-less declarations file")]
     ExpectedRecipe { path: PathBuf },
-    #[error(
-        "type '{name}' is declared in multiple workspace declarations files: {}",
-        paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
-    )]
-    DuplicateType { name: String, paths: Vec<PathBuf> },
-    #[error(
-        "enum '{name}' is declared in multiple workspace declarations files: {}",
-        paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
-    )]
-    DuplicateEnum { name: String, paths: Vec<PathBuf> },
 }
 
 /// Walk ancestors of `start` looking for a `forage.toml`. Returns
@@ -329,13 +339,6 @@ impl Workspace {
             .filter(|f| matches!(f.kind, WorkspaceFileKind::Recipe { .. }))
     }
 
-    /// All declarations-file entries in the workspace, in path order.
-    pub fn declarations(&self) -> impl Iterator<Item = &WorkspaceFileEntry> {
-        self.files
-            .iter()
-            .filter(|f| matches!(f.kind, WorkspaceFileKind::Declarations))
-    }
-
     /// All `.forage` files that failed to parse, in path order. Used by
     /// the daemon's recipe-status surface to flag unparseable files in
     /// the editor without aborting workspace load.
@@ -345,76 +348,62 @@ impl Workspace {
             .filter(|f| matches!(f.kind, WorkspaceFileKind::Broken { .. }))
     }
 
-    /// Build a merged `TypeCatalog` for validating one file in this
+    /// Build a merged `TypeCatalog` for validating `file` in this
     /// workspace.
     ///
-    /// Merge order: workspace declarations files → cached hub-dep
-    /// declarations files → file-local declarations (last writer wins
-    /// in the final pass, so a file can shadow a shared type by
-    /// redeclaring it).
+    /// Merge order:
+    /// 1. `share`d types/enums from every other workspace file. Files
+    ///    contribute only what they `share`; bare `type Foo { … }` stays
+    ///    private to its declaring file.
+    /// 2. Cached hub-dep declarations (currently treated as all-visible
+    ///    — see `scan_package_declarations`).
+    /// 3. Every type/enum in the focal `file`, file-local and `share`d
+    ///    alike — a file always sees everything it declared at home.
     ///
-    /// Two workspace-level declarations files declaring the same name
-    /// is a hard error — the namespace would be ambiguous and the user
-    /// has to choose.
+    /// Last writer wins per name, so step 3 lets a focal file shadow a
+    /// `share`d type from elsewhere by redeclaring it locally. Cross-file
+    /// `share` collisions are surfaced by `validate_workspace_shared`
+    /// in the validator (the catalog itself is silent about them so the
+    /// LSP gets one diagnostic per collision instead of two).
     ///
-    /// `read` controls how shared declarations files are loaded. Pass
-    /// `read_to_string`-backed [`Workspace::catalog_from_disk`] to read
-    /// straight off disk; pass a closure that prefers live buffer
-    /// contents (LSP, Studio) when an editor has unsaved edits.
+    /// `read` controls how sibling files are loaded. Pass an
+    /// `fs::read_to_string`-backed closure ([`Workspace::catalog_from_disk`])
+    /// to read straight off disk; pass a closure that prefers live
+    /// buffer contents (LSP, Studio) when an editor has unsaved edits.
+    ///
+    /// The focal file is identified by content, not path: any sibling
+    /// whose `share`d decls overlap with the focal will simply be
+    /// overwritten by step 3, so identifying the focal precisely doesn't
+    /// matter for correctness.
     pub fn catalog<R>(&self, file: &ForageFile, read: R) -> Result<TypeCatalog, WorkspaceError>
     where
         R: Fn(&Path) -> io::Result<String>,
     {
         let mut cat = TypeCatalog::default();
-        let mut type_origins: HashMap<String, PathBuf> = HashMap::new();
-        let mut enum_origins: HashMap<String, PathBuf> = HashMap::new();
 
-        // 1. Workspace declarations files. Intra-file duplicates are
-        //    the per-file validator's concern (`DuplicateType` /
-        //    `DuplicateEnum`); the workspace catalog only flags
-        //    *cross-file* collisions so the LSP gets one diagnostic per
-        //    issue instead of doubling up.
-        for entry in self.declarations() {
-            let decls = read_declarations(&entry.path, &read)?;
-            let mut local_type_names: std::collections::HashSet<&str> =
-                std::collections::HashSet::new();
-            let mut local_enum_names: std::collections::HashSet<&str> =
-                std::collections::HashSet::new();
-            for t in &decls.types {
-                if !local_type_names.insert(t.name.as_str()) {
-                    continue;
-                }
-                if let Some(prev) = type_origins.get(&t.name) {
-                    return Err(WorkspaceError::DuplicateType {
-                        name: t.name.clone(),
-                        paths: vec![prev.clone(), entry.path.clone()],
-                    });
-                }
-                type_origins.insert(t.name.clone(), entry.path.clone());
-                cat.types.insert(t.name.clone(), t.clone());
+        // 1. Every other workspace file contributes its `share`d
+        //    declarations. Broken files are skipped here — they're
+        //    already surfaced via `Workspace::broken()` for the daemon's
+        //    status UI.
+        for entry in &self.files {
+            if !matches!(
+                entry.kind,
+                WorkspaceFileKind::Recipe { .. } | WorkspaceFileKind::Declarations
+            ) {
+                continue;
             }
-            for e in &decls.enums {
-                if !local_enum_names.insert(e.name.as_str()) {
-                    continue;
-                }
-                if let Some(prev) = enum_origins.get(&e.name) {
-                    return Err(WorkspaceError::DuplicateEnum {
-                        name: e.name.clone(),
-                        paths: vec![prev.clone(), entry.path.clone()],
-                    });
-                }
-                enum_origins.insert(e.name.clone(), entry.path.clone());
-                cat.enums.insert(e.name.clone(), e.clone());
-            }
+            let parsed = read_workspace_file(&entry.path, &read)?;
+            cat.merge_shared(&parsed);
         }
 
-        // 2. Cached hub-dep declarations files. Each dep is a package
-        //    directory under the cache root; we treat every `.forage`
-        //    file inside it that has no recipe header as a shared
-        //    declarations file. Collisions between deps shadow earlier
-        //    deps in iteration order — TOML preserves insertion in
-        //    BTreeMap by key, which is sorted, so behavior is
-        //    deterministic.
+        // 2. Cached hub-dep declarations. Each dep is a package directory
+        //    under the cache root; every header-less `.forage` file
+        //    inside it contributes its types. Hub-deps don't yet have
+        //    author-controlled `share` markers (the typed-hub program
+        //    will revisit this), so all package-level types are visible
+        //    to consumers. Collisions between deps shadow earlier deps
+        //    in iteration order — `manifest.deps` is a BTreeMap keyed by
+        //    slug, so iteration is deterministic.
         for (slug, version) in &self.manifest.deps {
             let Some(pkg) = crate::workspace::resolve_dep(slug, *version) else {
                 continue;
@@ -422,8 +411,10 @@ impl Workspace {
             scan_package_declarations(&pkg, &mut cat)?;
         }
 
-        // 3. File-local declarations.
-        cat.merge_file_local(file);
+        // 3. Focal file: every type/enum, file-local plus `share`d.
+        //    Overwrites any same-name `share`d entry from step 1, which
+        //    is what gives the focal file file-local precedence.
+        cat.merge_all(file);
         Ok(cat)
     }
 
@@ -447,34 +438,17 @@ impl Workspace {
     }
 }
 
-/// Read and parse a header-less declarations file, returning its
-/// `ForageFile`. Files with a recipe header are treated as empty for
-/// catalog-merge purposes — `scan_dir` already classified them, so this
-/// path only sees declarations files in well-formed workspaces.
-fn read_declarations<R>(path: &Path, read: &R) -> Result<ForageFile, WorkspaceError>
+/// Read and parse a workspace file, returning its `ForageFile`. Used
+/// when folding sibling `share`d declarations into the focal catalog.
+fn read_workspace_file<R>(path: &Path, read: &R) -> Result<ForageFile, WorkspaceError>
 where
     R: Fn(&Path) -> io::Result<String>,
 {
     let src = read(path)?;
-    let file = parse(&src).map_err(|source| WorkspaceError::Parse {
+    parse(&src).map_err(|source| WorkspaceError::Parse {
         path: path.to_path_buf(),
         source,
-    })?;
-    if file.recipe_header().is_some() {
-        return Ok(ForageFile {
-            recipe_headers: Vec::new(),
-            types: Vec::new(),
-            enums: Vec::new(),
-            inputs: Vec::new(),
-            secrets: Vec::new(),
-            functions: Vec::new(),
-            auth: None,
-            browser: None,
-            body: Vec::new(),
-            expectations: Vec::new(),
-        });
-    }
-    Ok(file)
+    })
 }
 
 fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), WorkspaceError> {
@@ -496,9 +470,14 @@ fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), Wo
         // Only header-less files contribute shared declarations from a
         // hub package. Recipe-bearing files inside a published package
         // are runnable inheritances; their types are file-local.
+        //
+        // TODO(typed-hub): hub-deps don't yet emit `share` markers, so
+        // every type in a header-less package file is treated as
+        // workspace-visible. The typed-hub program will revisit this so
+        // hub packages declare their exports explicitly.
         if let Ok(file) = parse(&src) {
             if file.recipe_header().is_none() {
-                cat.merge_file(&file);
+                cat.merge_all(&file);
             }
         }
     }
@@ -611,14 +590,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_merges_workspace_decls_with_recipe_local() {
+    fn catalog_merges_shared_decls_with_recipe_local() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("cannabis.forage"),
-            "type Dispensary { id: String, name: String }\n\
-             type Product { id: String }\n",
+            "share type Dispensary { id: String, name: String }\n\
+             share type Product { id: String }\n",
         );
         let recipe_path = root.join("rec").join("recipe.forage");
         // Recipe-local override of Product adds a `terpenes` field.
@@ -701,8 +680,11 @@ mod tests {
         }
     }
 
+    /// Two sibling files each declaring a bare `type Product` is no
+    /// longer an error at the catalog level — each is private to its
+    /// file. The focal recipe sees no `Product` from either.
     #[test]
-    fn duplicate_type_across_decls_files_errors() {
+    fn duplicate_bare_types_across_files_do_not_collide() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
@@ -711,14 +693,13 @@ mod tests {
         let recipe_path = root.join("r").join("recipe.forage");
         write(&recipe_path, "recipe \"r\"\nengine http\n");
         let ws = load(root).unwrap();
-        let err = ws.catalog_from_disk(&recipe_path).expect_err("should fail");
-        match err {
-            WorkspaceError::DuplicateType { name, paths } => {
-                assert_eq!(name, "Product");
-                assert_eq!(paths.len(), 2);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let cat = ws
+            .catalog_from_disk(&recipe_path)
+            .expect("bare-type duplicates across files don't error");
+        assert!(
+            cat.ty("Product").is_none(),
+            "neither file's bare Product should leak into the recipe",
+        );
     }
 
     /// Round-trip a non-trivial catalog through `SerializableCatalog`
@@ -732,9 +713,9 @@ mod tests {
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("cannabis.forage"),
-            "type Dispensary { id: String, name: String? }\n\
-             type Product { id: String, terpenes: String? }\n\
-             enum MenuType { RECREATIONAL, MEDICAL }\n",
+            "share type Dispensary { id: String, name: String? }\n\
+             share type Product { id: String, terpenes: String? }\n\
+             share enum MenuType { RECREATIONAL, MEDICAL }\n",
         );
         let recipe_path = root.join("rec").join("recipe.forage");
         write(

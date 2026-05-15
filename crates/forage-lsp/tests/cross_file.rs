@@ -1,6 +1,6 @@
-//! Cross-file LSP smoke: a recipe that references a type declared in a
-//! sibling declarations file validates clean, and editing the shared
-//! declarations file republishes diagnostics for the recipe.
+//! Cross-file LSP smoke: a recipe that references a `share`d type
+//! declared in a sibling file validates clean, and editing the sharing
+//! file republishes diagnostics for the recipe.
 //!
 //! Drives `DocStore` directly — the tower-lsp server hands off to the
 //! same `upsert` / `refresh_workspace` calls, so testing the store
@@ -20,7 +20,7 @@ fn write(path: &Path, body: &str) {
 }
 
 #[test]
-fn recipe_resolves_type_declared_in_sibling_declarations_file() {
+fn recipe_resolves_share_type_declared_in_sibling_file() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(
@@ -28,7 +28,7 @@ fn recipe_resolves_type_declared_in_sibling_declarations_file() {
         "description = \"\"\ncategory = \"\"\ntags = []\n",
     );
     let shared_path = root.join("shared.forage");
-    write(&shared_path, "type Item { id: String }\n");
+    write(&shared_path, "share type Item { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
     write(
         &recipe_path,
@@ -60,12 +60,12 @@ for $x in $list.items[*] {
         .collect();
     assert!(
         errors.is_empty(),
-        "recipe with cross-file type ought to validate clean; got: {errors:?}"
+        "recipe with cross-file share type ought to validate clean; got: {errors:?}"
     );
 }
 
 #[test]
-fn editing_declarations_file_revalidates_dependent_recipe() {
+fn editing_share_decl_revalidates_dependent_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(
@@ -73,7 +73,7 @@ fn editing_declarations_file_revalidates_dependent_recipe() {
         "description = \"\"\ncategory = \"\"\ntags = []\n",
     );
     let shared_path = root.join("shared.forage");
-    write(&shared_path, "type Item { id: String }\n");
+    write(&shared_path, "share type Item { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
     write(
         &recipe_path,
@@ -102,11 +102,11 @@ for $x in $list.items[*] {
         fs::read_to_string(&recipe_path).unwrap(),
     );
 
-    // Now edit the declarations file: rename `Item` → `Renamed`. The
+    // Now edit the sharing file: rename `Item` → `Renamed`. The
     // recipe's `emit Item { … }` should now fail validation. The LSP
-    // server normally fires `refresh_workspace` after the
-    // declarations file edit; the test calls it explicitly.
-    let edited = "type Renamed { id: String }\n";
+    // server normally fires `refresh_workspace` after a workspace
+    // edit; the test calls it explicitly.
+    let edited = "share type Renamed { id: String }\n";
     fs::write(&shared_path, edited).unwrap();
     store.upsert(shared_uri, edited.into());
 
@@ -131,53 +131,86 @@ for $x in $list.items[*] {
     );
 }
 
-/// When the workspace catalog itself can't be built — typically because
-/// two declarations files declare the same type — the recipe must
-/// surface that as a diagnostic instead of silently falling back to its
-/// own recipe-local types. The user has to see the conflict to fix it.
+/// Two files declaring `share type Item { … }` collide at the
+/// workspace level — `DuplicateSharedDeclaration` fires on both
+/// sharing files. The conflict surfaces on the colliding files
+/// themselves, not on a dependent recipe (the recipe gets one of the
+/// two `Item` definitions and validates against it).
 #[test]
-fn workspace_error_surfaces_as_diagnostic_on_dependent_recipe() {
+fn duplicate_share_type_across_files_surfaces_through_lsp() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(
         &root.join("forage.toml"),
         "description = \"\"\ncategory = \"\"\ntags = []\n",
     );
-    write(&root.join("a.forage"), "type Item { id: String }\n");
-    write(&root.join("b.forage"), "type Item { id: String }\n");
-    let recipe_path = root.join("rec").join("recipe.forage");
-    write(
-        &recipe_path,
-        r#"recipe "rec"
-engine http
-step list {
-    method "GET"
-    url "https://example.com"
-}
-"#,
-    );
+    let a_path = root.join("a.forage");
+    let b_path = root.join("b.forage");
+    write(&a_path, "share type Item { id: String }\n");
+    write(&b_path, "share type Item { id: String }\n");
 
     let store = DocStore::new();
-    let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
-    let diags = store.upsert(recipe_uri, fs::read_to_string(&recipe_path).unwrap());
-    let errors: Vec<_> = diags
+    let a_uri = Url::from_file_path(&a_path).unwrap();
+    let b_uri = Url::from_file_path(&b_path).unwrap();
+
+    // Opening A surfaces the collision against B (read from disk by
+    // the cross-file pass).
+    let a_diags = store.upsert(a_uri.clone(), fs::read_to_string(&a_path).unwrap());
+    let a_dup: Vec<_> = a_diags
         .iter()
-        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        .filter(|d| {
+            d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("share type 'Item'")
+        })
         .collect();
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("Item") && d.message.to_lowercase().contains("multiple")),
-        "expected duplicate-type workspace error to surface as a diagnostic; got: {diags:?}"
+    assert_eq!(
+        a_dup.len(),
+        1,
+        "expected DuplicateSharedDeclaration on a.forage; got {a_diags:?}",
     );
+
+    // Opening B reciprocates.
+    let b_diags = store.upsert(b_uri.clone(), fs::read_to_string(&b_path).unwrap());
+    let b_dup: Vec<_> = b_diags
+        .iter()
+        .filter(|d| {
+            d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("share type 'Item'")
+        })
+        .collect();
+    assert_eq!(
+        b_dup.len(),
+        1,
+        "expected DuplicateSharedDeclaration on b.forage; got {b_diags:?}",
+    );
+
+    // refresh_workspace republishes both — confirm both still carry
+    // the collision, matching the LSP server's did_change fan-out.
+    let ws_root = forage_core::workspace::discover(&a_path)
+        .expect("workspace")
+        .root;
+    let refreshed = store.refresh_workspace(&ws_root);
+    for (uri, diags) in refreshed {
+        let dup: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("share type 'Item'")
+            })
+            .collect();
+        assert_eq!(
+            dup.len(),
+            1,
+            "expected DuplicateSharedDeclaration on {uri}; got {diags:?}",
+        );
+    }
 }
 
-/// Live-buffer reads: when a sibling declarations file has unsaved
-/// edits in the editor, the LSP must validate the dependent recipe
-/// against the in-memory buffer rather than re-reading stale disk
-/// content.
+/// Live-buffer reads: when a sibling file has unsaved edits in the
+/// editor, the LSP must validate the dependent recipe against the
+/// in-memory buffer rather than re-reading stale disk content.
 #[test]
-fn catalog_uses_live_buffer_for_unsaved_declarations() {
+fn catalog_uses_live_buffer_for_unsaved_share_decls() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(
@@ -186,7 +219,7 @@ fn catalog_uses_live_buffer_for_unsaved_declarations() {
     );
     let shared_path = root.join("shared.forage");
     // Disk says `OldName`, but the editor will hold `NewName`.
-    write(&shared_path, "type OldName { id: String }\n");
+    write(&shared_path, "share type OldName { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
     write(
         &recipe_path,
@@ -203,11 +236,11 @@ for $x in $list.items[*] {
     );
 
     let store = DocStore::new();
-    // Open the declarations buffer with the *new* name — disk still
-    // has the old name, but we expect the recipe validator to see the
-    // live buffer.
+    // Open the sharing buffer with the *new* name — disk still has
+    // the old name, but the recipe validator should see the live
+    // buffer.
     let shared_uri = Url::from_file_path(&shared_path).unwrap();
-    store.upsert(shared_uri, "type NewName { id: String }\n".into());
+    store.upsert(shared_uri, "share type NewName { id: String }\n".into());
 
     let recipe_uri = Url::from_file_path(&recipe_path).unwrap();
     let diags = store.upsert(recipe_uri, fs::read_to_string(&recipe_path).unwrap());
@@ -258,11 +291,10 @@ fn declarations_file_validates_its_own_duplicates() {
 /// Two files in the same workspace both declare `share fn upper(...)`.
 /// The cross-file pass must surface `DuplicateSharedDeclaration` on
 /// both of them — the LSP's per-file diagnostics carry workspace-wide
-/// share collisions, not just file-local validator output. Use a `fn`
-/// (not a `type`) so the workspace's type-catalog dedup doesn't
-/// pre-empt the share-collision check.
+/// share collisions, not just file-local validator output. Covers the
+/// fn namespace; the `share type` case is covered separately.
 #[test]
-fn duplicate_share_decl_across_files_surfaces_through_lsp() {
+fn duplicate_share_fn_across_files_surfaces_through_lsp() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(

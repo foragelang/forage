@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use forage_core::workspace::{
-    self, MANIFEST_NAME, TypeCatalog, Workspace, WorkspaceError, WorkspaceFileKind, discover,
+    self, MANIFEST_NAME, TypeCatalog, Workspace, WorkspaceFileKind, discover,
 };
 use forage_core::{parse, validate};
 
@@ -26,13 +26,13 @@ fn workspace_in(tmp: &tempfile::TempDir) -> &Path {
 }
 
 #[test]
-fn declarations_file_parses_and_contributes_types() {
+fn share_decls_reach_focal_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(
         &root.join("cannabis.forage"),
-        "type Dispensary { id: String, name: String }\n\
-         enum MenuType { Recreational, Medical }\n",
+        "share type Dispensary { id: String, name: String }\n\
+         share enum MenuType { Recreational, Medical }\n",
     );
     let recipe_path = root.join("trilogy").join("recipe.forage");
     write(
@@ -53,7 +53,7 @@ fn recipe_local_overrides_shared_type() {
     let root = workspace_in(&tmp);
     write(
         &root.join("cannabis.forage"),
-        "type Product { id: String, name: String }\n",
+        "share type Product { id: String, name: String }\n",
     );
     let recipe_path = root.join("sweed").join("recipe.forage");
     write(
@@ -68,8 +68,11 @@ fn recipe_local_overrides_shared_type() {
     assert!(product.fields.iter().any(|f| f.name == "terpenes"));
 }
 
+/// Bare `type Foo` declared in two sibling files is no longer a
+/// catalog-level error — each is file-scoped to its file. The focal
+/// recipe sees neither.
 #[test]
-fn duplicate_across_declarations_files_is_error() {
+fn duplicate_bare_types_across_files_are_not_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(&root.join("a.forage"), "type Product { id: String }\n");
@@ -77,16 +80,10 @@ fn duplicate_across_declarations_files_is_error() {
     let recipe_path = root.join("r").join("recipe.forage");
     write(&recipe_path, "recipe \"r\"\nengine http\n");
     let ws = workspace::load(root).unwrap();
-    let err = ws
+    let catalog = ws
         .catalog_from_disk(&recipe_path)
-        .expect_err("duplicate must fail");
-    match err {
-        WorkspaceError::DuplicateType { name, paths } => {
-            assert_eq!(name, "Product");
-            assert_eq!(paths.len(), 2);
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+        .expect("bare-type duplicates are file-local, not a catalog error");
+    assert!(catalog.ty("Product").is_none());
 }
 
 #[test]

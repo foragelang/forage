@@ -323,8 +323,14 @@ pub async fn run_replay_inner(
 ) -> Result<Snapshot, ReplayError> {
     let recipe = core_parse(recipe_source).map_err(|e| ReplayError::Parse(e.to_string()))?;
 
-    // Catalog merge order matches Workspace::catalog: shared decls
-    // first, file-local last so a recipe can shadow shared names.
+    // Catalog merge order matches Workspace::catalog: workspace-level
+    // decl files first, recipe-local last so the recipe shadows
+    // anything that collides by name.
+    //
+    // TODO(typed-hub): like the hub-cache path in workspace::catalog,
+    // wasm replay receives decl-file contents without `share` markers
+    // and treats every type/enum as visible. The typed-hub program
+    // will make exports explicit on this entry point too.
     let mut catalog = TypeCatalog::default();
     for f in decl_files {
         let parsed = core_parse(&f.source).map_err(|e| ReplayError::Decl {
@@ -336,15 +342,9 @@ pub async fn run_replay_inner(
                 name: f.name.clone(),
             });
         }
-        catalog.merge_file(&parsed);
+        catalog.merge_all(&parsed);
     }
-    let recipe_catalog = TypeCatalog::from_file(&recipe);
-    for (k, v) in recipe_catalog.types {
-        catalog.types.insert(k, v);
-    }
-    for (k, v) in recipe_catalog.enums {
-        catalog.enums.insert(k, v);
-    }
+    catalog.merge_all(&recipe);
 
     let report = core_validate(&recipe, &catalog);
     if report.has_errors() {
