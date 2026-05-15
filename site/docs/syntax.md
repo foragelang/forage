@@ -84,6 +84,17 @@ input categoryIds: [Int]
 
 Reference an input anywhere a value is expected as `$input.fieldName`. `input` declarations are recipe-local — they don't take `share`.
 
+## Outputs
+
+A recipe declares the set of types it emits with a top-level `output` clause. Single-type recipes use `output T`; multi-type recipes declare a sum with `|`:
+
+```forage
+output Product                                   // single-type
+output Product | Variant | PriceObservation      // multi-type sum
+```
+
+Every `emit X { … }` must reference a type listed in the `output` clause; the validator rejects mismatches. The clause sits alongside the header and other top-level forms.
+
 ## Auth
 
 Auth strategies are named, fixed primitives. Pick one (or none); the engine knows how to apply it.

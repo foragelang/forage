@@ -81,6 +81,7 @@ top_level_form       := recipe_header
                       | type_decl
                       | enum_decl
                       | input_decl
+                      | output_decl
                       | secret_decl
                       | fn_decl
                       | auth_block
@@ -91,6 +92,8 @@ top_level_form       := recipe_header
 recipe_header        := 'recipe' STRING 'engine' engine_kind
 
 engine_kind          := 'http' | 'browser'
+
+output_decl          := 'output' ( TypeName ( '|' TypeName )* )?
 ```
 
 Top-level forms appear flat at the file root — no surrounding `{ }`
@@ -99,9 +102,22 @@ block. Validator-enforced constraints (not parser-enforced):
 - **At most one `recipe_header` per file.** A second header is a
   validator error.
 - **Recipe-context forms require a header.** `auth_block`,
-  `browser_block`, `expect_block`, and `statement`s are only
-  meaningful inside a recipe; if any appear in a file with no
-  `recipe_header`, the validator rejects.
+  `browser_block`, `expect_block`, `output_decl`, and `statement`s
+  are only meaningful inside a recipe; if any appear in a file with
+  no `recipe_header`, the validator rejects (`OutputWithoutHeader`
+  for output specifically; `RecipeContextWithoutHeader` for the
+  rest).
+- **`output_decl` is at most one per file.** A second `output` clause
+  is a parse error.
+- **`output_decl` must list at least one type.** `output` with no
+  TypeName parses but the validator emits `EmptyOutput`. Every
+  type listed must resolve through the type catalog; unknown
+  names surface as `UnknownType`. Every `emit T { … }` whose `T`
+  is not in the declared list is rejected with `MissingFromOutput`.
+  Listed types with no corresponding `emit` warn as
+  `UnusedInOutput`. The output clause is optional in the AST today
+  (pre-migration recipes parse without it); the validator skips the
+  emit-vs-output check entirely when the clause is absent.
 - **Order is free.** The header may appear anywhere among the other
   forms; the parser collects each kind into its slot on the
   `ForageFile` AST regardless of position.
@@ -458,8 +474,8 @@ categories:
 
 - **Reserved at top level** as statement / declaration heads or
   modifiers: `recipe`, `engine`, `share`, `type`, `enum`, `fn`,
-  `input`, `secret`, `auth`, `browser`, `step`, `for`, `in`, `emit`,
-  `as`, `case`, `of`, `let`, `expect`.
+  `input`, `output`, `secret`, `auth`, `browser`, `step`, `for`,
+  `in`, `emit`, `as`, `case`, `of`, `let`, `expect`.
 - **Reserved inside structured forms** as field keys:
   `method`, `url`, `headers`, `body`, `json`, `form`, `raw`,
   `extract`, `regex`, `groups`, `paginate`, `pageWithTotal`,

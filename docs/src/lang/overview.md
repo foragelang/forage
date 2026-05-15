@@ -9,6 +9,7 @@ recipe's identity is the string in its header.
 ```forage
 recipe "<name>"
 engine <http | browser>
+output Product
 
 // File-scoped helper type.
 type LocalPanel { id: String }

@@ -150,3 +150,31 @@ order of declarations in a recipe doesn't matter:
 type Product { category: Category }   // OK even though Category is below
 type Category { name: String }
 ```
+
+## Recipe output signature
+
+A recipe declares the set of types it emits with a top-level `output`
+clause. Single-type recipes use `output T`; recipes that emit several
+types declare a sum with `|`:
+
+```forage
+recipe "products-and-prices"
+engine http
+output Product | Variant | PriceObservation
+
+type Product { /* … */ }
+type Variant { /* … */ }
+type PriceObservation { /* … */ }
+```
+
+Every `emit X { … }` in the recipe body must reference a type listed in
+the `output` clause; the validator rejects mismatches with
+`MissingFromOutput`. Types listed but never emitted surface as
+`UnusedInOutput` warnings. The output declaration is what the hub
+indexes — `producers_of(Product)` resolves against the declared
+signature, not the runtime emit set.
+
+The clause is optional in the AST today; pre-migration recipes still
+parse and validate without one. Future sub-plans tighten the
+constraint when composition (`recipeA | recipeB`) lands and the
+output signature becomes load-bearing for type-checking pipes.
