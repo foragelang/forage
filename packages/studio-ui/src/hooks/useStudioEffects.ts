@@ -178,6 +178,7 @@ export function useStudioEffects() {
                     runCounts: {},
                     paused: null,
                 });
+                useStudio.getState().resetNotebook();
                 qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
                 qc.removeQueries({
                     predicate: (q) =>

@@ -69,6 +69,13 @@ export class FakeStudioService implements StudioService {
     runRecipe(name: string, flags?: unknown) {
         return this.call("runRecipe", [name, flags]);
     }
+    runNotebook(args: unknown) { return this.call("runNotebook", [args]); }
+    composeNotebookSource(name: string, stages: string[]) {
+        return this.call("composeNotebookSource", [name, stages]);
+    }
+    saveNotebook(name: string, stages: string[]) {
+        return this.call("saveNotebook", [name, stages]);
+    }
     cancelRun() { return this.call("cancelRun", []); }
     debugResume(action: string) { return this.call("debugResume", [action]); }
     setPauseIterations(enabled: boolean) {

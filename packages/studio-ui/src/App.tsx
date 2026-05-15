@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Sidebar } from "@/components/Sidebar";
 import { DeploymentView } from "@/components/Deployment/DeploymentView";
 import { EditorView } from "@/components/EditorView";
+import { NotebookView } from "@/components/Notebook/NotebookView";
 import { BootSplash, Welcome } from "@/components/Welcome";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { useStudioEffects } from "@/hooks/useStudioEffects";
@@ -36,7 +37,9 @@ function StudioShell() {
         <SidebarProvider defaultOpen>
             <Sidebar />
             <SidebarInset className="min-h-0">
-                {view === "editor" ? <EditorView /> : <DeploymentView />}
+                {view === "editor" && <EditorView />}
+                {view === "deployment" && <DeploymentView />}
+                {view === "notebook" && <NotebookView />}
             </SidebarInset>
         </SidebarProvider>
     );

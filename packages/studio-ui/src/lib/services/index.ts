@@ -10,6 +10,7 @@ export {
     type DeviceStart,
     type ForkedFrom,
     type ListVersionsItem,
+    type NotebookSaveOutcome,
     type PackageFixture,
     type PackageListing,
     type PackageMetadata,

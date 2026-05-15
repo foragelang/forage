@@ -17,6 +17,7 @@ import type { FileNode } from "../../bindings/FileNode";
 import type { Health } from "../../bindings/Health";
 import type { HoverInfo } from "../../bindings/HoverInfo";
 import type { LanguageDictionary } from "../../bindings/LanguageDictionary";
+import type { NotebookSaveOutcome } from "../../bindings/NotebookSaveOutcome";
 import type { PausePayload } from "../../bindings/PausePayload";
 import type { ProgressUnit } from "../../bindings/ProgressUnit";
 import type { PublishError } from "../../bindings/PublishError";
@@ -238,6 +239,7 @@ export type {
     Health,
     HoverInfo,
     LanguageDictionary,
+    NotebookSaveOutcome,
     PausePayload,
     ProgressUnit,
     PublishError,
@@ -311,6 +313,22 @@ export interface StudioService {
     setBreakpoints(steps: string[]): Promise<void>;
     setRecipeBreakpoints(name: string, steps: string[]): Promise<void>;
     loadRecipeBreakpoints(name: string): Promise<string[]>;
+
+    // ── Notebook ────────────────────────────────────────────────────
+    /// Run a composition chain of `stages` through the daemon. The
+    /// run is always ephemeral; persistence happens by way of
+    /// `notebookSave` + `publishRecipe`.
+    runNotebook(args: {
+        name: string;
+        stages: string[];
+        flags?: RunRecipeFlags;
+    }): Promise<RunOutcome>;
+    /// Render the `.forage` source a `notebookSave` would write,
+    /// without touching disk. Used to power the publish-preview pane.
+    composeNotebookSource(name: string, stages: string[]): Promise<string>;
+    /// Write the notebook out as a workspace recipe file. Returns the
+    /// path + the synthesized source so the editor can switch onto it.
+    saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome>;
 
     // ── Daemon — Studio only ────────────────────────────────────────
     daemonStatus(): Promise<DaemonStatus>;

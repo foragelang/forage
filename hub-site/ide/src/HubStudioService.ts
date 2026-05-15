@@ -17,6 +17,7 @@ import {
     type DeeplinkClonePayload,
     type DeviceStart,
     type ListVersionsItem,
+    type NotebookSaveOutcome,
     type PackageListing,
     type PackageMetadata,
     type PackageQuery,
@@ -310,6 +311,17 @@ export class HubStudioService implements StudioService {
                 daemon_warning: null,
             };
         }
+    }
+    runNotebook(): Promise<RunOutcome> {
+        // The hub IDE has no daemon to compose deployed recipes
+        // through. Notebooks are a Studio-only surface.
+        return Promise.reject(new NotSupportedByService("runNotebook"));
+    }
+    composeNotebookSource(): Promise<string> {
+        return Promise.reject(new NotSupportedByService("composeNotebookSource"));
+    }
+    saveNotebook(): Promise<NotebookSaveOutcome> {
+        return Promise.reject(new NotSupportedByService("saveNotebook"));
     }
     cancelRun(): Promise<void> { return Promise.resolve(); }
     debugResume(_action: DebugAction): Promise<void> { return Promise.resolve(); }

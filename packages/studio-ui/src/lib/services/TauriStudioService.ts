@@ -19,6 +19,7 @@ import {
     type DeeplinkClonePayload,
     type DeviceStart,
     type ListVersionsItem,
+    type NotebookSaveOutcome,
     type PackageListing,
     type PackageMetadata,
     type PackageQuery,
@@ -163,6 +164,23 @@ export class TauriStudioService implements StudioService {
 
     runRecipe(name: string, flags?: RunRecipeFlags): Promise<RunOutcome> {
         return invoke<RunOutcome>("run_recipe", { name, flags: flags ?? null });
+    }
+    runNotebook(args: {
+        name: string;
+        stages: string[];
+        flags?: RunRecipeFlags;
+    }): Promise<RunOutcome> {
+        return invoke<RunOutcome>("notebook_run", {
+            name: args.name,
+            stages: args.stages,
+            flags: args.flags ?? null,
+        });
+    }
+    composeNotebookSource(name: string, stages: string[]): Promise<string> {
+        return invoke<string>("notebook_compose_source", { name, stages });
+    }
+    saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome> {
+        return invoke<NotebookSaveOutcome>("notebook_save", { name, stages });
     }
     cancelRun(): Promise<void> {
         return invoke<void>("cancel_run");

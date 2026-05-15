@@ -16,7 +16,58 @@ import type { StudioService } from "./services/StudioService";
 import { recipeNameOf } from "./path";
 import { recipeStatusesKey } from "./queryKeys";
 
-export type View = "editor" | "deployment";
+export type View = "editor" | "deployment" | "notebook";
+
+/// One stage in a notebook composition. The stage's identity is a
+/// recipe header name — workspace-local or hub-pulled. The frontend
+/// adds a synthetic `id` so React can key list rows stably across
+/// reorders / duplicates of the same recipe (a notebook can compose
+/// the same recipe twice in different positions).
+export type NotebookStage = {
+    /// React-key stable across reorders; not persisted, not sent to
+    /// the backend.
+    id: string;
+    /// The recipe's header name. The backend command keys every
+    /// composition operation on this.
+    name: string;
+    /// `null` when the stage references a workspace-local recipe;
+    /// `@author/name` references carry the author here so the
+    /// type-shaped picker can render the citation chip.
+    author: string | null;
+};
+
+/// Persisted notebook scratchpad. One notebook open at a time —
+/// matching the editor's single-buffer model. A future "open notebook
+/// from a published composition recipe" flow would replace `stages`
+/// with the recipe's parsed composition body and set `name` to its
+/// header name; the same shape covers both authored-here and
+/// imported-from-hub modes.
+export type NotebookState = {
+    /// The recipe header name a "Publish notebook" would carry. The
+    /// editor view's recipe-status surface reads this to gate the
+    /// publish button — names that already exist as workspace recipes
+    /// can't publish without a fresh name.
+    name: string;
+    /// Linear chain of stages, top → bottom. Stage 1 (index 0) is the
+    /// source — it consumes the notebook's own `inputs` (today
+    /// always empty) and emits its declared output type; every
+    /// subsequent stage receives the previous stage's emissions.
+    stages: NotebookStage[];
+    /// Snapshot of the most recent `notebook_run`. Cleared when the
+    /// user mutates `stages` so a stale preview can't hang around
+    /// against a chain it no longer reflects.
+    snapshot: Snapshot | null;
+    /// Free-form error from the most recent run attempt, surfaced in
+    /// the notebook's banner. Cleared on any stage mutation alongside
+    /// `snapshot`.
+    runError: string | null;
+    running: boolean;
+    /// Whether the "Add stage" picker dialog is open. Modal state
+    /// belongs in the store rather than each component's local state
+    /// so menu / keyboard shortcuts can open the picker without
+    /// climbing the React tree.
+    stagePickerOpen: boolean;
+};
 export type InspectorMode = "run" | "history" | "records";
 
 /// An aggregated run of `Emitted` events between two non-emit
@@ -170,6 +221,9 @@ type StudioState = {
     // run's setting doesn't carry over.
     pauseIterations: boolean;
 
+    // ── Notebook scratchpad ─────────────────────────────────────────
+    notebook: NotebookState;
+
     // Actions.
     setView: (v: View) => void;
     setActiveFilePath: (p: string | null) => Promise<void>;
@@ -207,7 +261,53 @@ type StudioState = {
             ephemeral: boolean;
         }>,
     ) => void;
+
+    // ── Notebook actions ────────────────────────────────────────────
+    /// Rename the notebook. The new name becomes the recipe header
+    /// when "Publish notebook" lands the chain as a `.forage` file.
+    setNotebookName: (name: string) => void;
+    /// Append `(name, author)` to the chain. `author` is `null` for
+    /// workspace-local recipes; non-null for hub-pulled references.
+    addNotebookStage: (name: string, author: string | null) => void;
+    /// Remove the stage at `index`. No-op when the index is out of
+    /// range. Removing any stage clears `snapshot` — the prior
+    /// preview no longer corresponds to the new chain.
+    removeNotebookStage: (index: number) => void;
+    /// Swap the stages at `from` and `to`. The chain runs top to
+    /// bottom, so reordering changes which recipe feeds which.
+    moveNotebookStage: (from: number, to: number) => void;
+    /// Start of a notebook run — flips `running` true and clears any
+    /// prior snapshot/error so the inspector shows a fresh state.
+    notebookRunBegin: () => void;
+    /// End of a notebook run with the resulting snapshot or error.
+    notebookRunFinish: (
+        result: { snapshot: Snapshot } | { error: string },
+    ) => void;
+    /// Clear the entire notebook back to "fresh notebook" defaults.
+    /// Used by "New notebook" and at workspace close.
+    resetNotebook: () => void;
+    openStagePicker: () => void;
+    closeStagePicker: () => void;
 };
+
+/// Fresh-notebook shape. Used both at boot and by `resetNotebook`.
+const EMPTY_NOTEBOOK: NotebookState = {
+    name: "untitled-notebook",
+    stages: [],
+    snapshot: null,
+    runError: null,
+    running: false,
+    stagePickerOpen: false,
+};
+
+/// Stable per-stage React key. The notebook can compose the same
+/// recipe twice; identifying stages by `name` alone would make those
+/// rows share a key and confuse list reconciliation on drag-reorder.
+let nextStageId = 0;
+function freshStageId(): string {
+    nextStageId += 1;
+    return `stage-${nextStageId}`;
+}
 
 /// Look up the recipe header name for a workspace-relative `path`
 /// against the recipe-statuses query cache. Returns null when the
@@ -375,6 +475,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         replay: true,
         ephemeral: true,
     },
+    notebook: EMPTY_NOTEBOOK,
 
     setView: (v) => set({ view: v }),
     setActiveRunId: (id) => set({ activeRunId: id }),
@@ -634,6 +735,90 @@ export const useStudio = create<StudioState>((set, get) => ({
     setRunFlags: (patch) =>
         set((state) => ({
             runFlags: { ...state.runFlags, ...patch },
+        })),
+
+    // ── Notebook actions ────────────────────────────────────────────
+    setNotebookName: (name) =>
+        set((state) => ({ notebook: { ...state.notebook, name } })),
+    addNotebookStage: (name, author) =>
+        set((state) => ({
+            notebook: {
+                ...state.notebook,
+                stages: [
+                    ...state.notebook.stages,
+                    { id: freshStageId(), name, author },
+                ],
+                snapshot: null,
+                runError: null,
+            },
+        })),
+    removeNotebookStage: (index) =>
+        set((state) => {
+            if (index < 0 || index >= state.notebook.stages.length) {
+                return {};
+            }
+            const next = state.notebook.stages.slice();
+            next.splice(index, 1);
+            return {
+                notebook: {
+                    ...state.notebook,
+                    stages: next,
+                    snapshot: null,
+                    runError: null,
+                },
+            };
+        }),
+    moveNotebookStage: (from, to) =>
+        set((state) => {
+            const len = state.notebook.stages.length;
+            if (
+                from === to ||
+                from < 0 ||
+                from >= len ||
+                to < 0 ||
+                to >= len
+            ) {
+                return {};
+            }
+            const next = state.notebook.stages.slice();
+            const [moved] = next.splice(from, 1);
+            if (!moved) return {};
+            next.splice(to, 0, moved);
+            return {
+                notebook: {
+                    ...state.notebook,
+                    stages: next,
+                    snapshot: null,
+                    runError: null,
+                },
+            };
+        }),
+    notebookRunBegin: () =>
+        set((state) => ({
+            notebook: {
+                ...state.notebook,
+                running: true,
+                snapshot: null,
+                runError: null,
+            },
+        })),
+    notebookRunFinish: (result) =>
+        set((state) => ({
+            notebook: {
+                ...state.notebook,
+                running: false,
+                snapshot: "snapshot" in result ? result.snapshot : null,
+                runError: "error" in result ? result.error : null,
+            },
+        })),
+    resetNotebook: () => set({ notebook: EMPTY_NOTEBOOK }),
+    openStagePicker: () =>
+        set((state) => ({
+            notebook: { ...state.notebook, stagePickerOpen: true },
+        })),
+    closeStagePicker: () =>
+        set((state) => ({
+            notebook: { ...state.notebook, stagePickerOpen: false },
         })),
 }));
 

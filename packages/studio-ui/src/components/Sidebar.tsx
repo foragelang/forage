@@ -19,6 +19,7 @@ import {
     Folder,
     FolderOpen,
     Layers,
+    Network,
     Play,
     Plus,
     Settings,
@@ -190,6 +191,7 @@ export function Sidebar() {
             <SidebarContent>
                 <RunsSection runs={runs.data ?? []} loading={runs.isLoading} />
                 <RecipesSection onNewRecipe={onNewRecipe} />
+                <NotebookSection />
                 <DepsSection deps={deps} />
                 <FilesSection
                     files={fileChildren}
@@ -591,6 +593,50 @@ function RecipeRow({
 }
 
 // ── deps section ─────────────────────────────────────────────────────
+
+// ── notebook section ─────────────────────────────────────────────────
+//
+// The notebook is a single per-workspace scratchpad — there's exactly
+// one notebook open at a time, matching the editor's single-buffer
+// model. The sidebar row is the navigation affordance into that
+// surface; the notebook's own header carries the rename / run /
+// publish controls.
+
+function NotebookSection() {
+    const active = useStudio((s) => s.view === "notebook");
+    const stageCount = useStudio((s) => s.notebook.stages.length);
+    return (
+        <SidebarGroup className="py-1">
+            <SidebarGroupLabel>Notebook</SidebarGroupLabel>
+            <SidebarMenu>
+                <SidebarMenuItem
+                    className={cn(
+                        "group/notebook flex items-center gap-0 rounded-sm",
+                        "hover:bg-sidebar-accent",
+                        active && "bg-sidebar-accent",
+                    )}
+                >
+                    <button
+                        type="button"
+                        onClick={() => useStudio.getState().setView("notebook")}
+                        className={cn(
+                            "min-w-0 flex-1 flex items-center gap-2 px-2 h-7 text-left",
+                            "text-sm text-sidebar-foreground",
+                        )}
+                    >
+                        <Network className="size-3.5 shrink-0 text-chart-2" />
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                            scratchpad
+                        </span>
+                        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                            {stageCount}
+                        </span>
+                    </button>
+                </SidebarMenuItem>
+            </SidebarMenu>
+        </SidebarGroup>
+    );
+}
 
 function DepsSection({ deps }: { deps: Dep[] }) {
     return (
