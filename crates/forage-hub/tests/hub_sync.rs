@@ -370,6 +370,7 @@ async fn assemble_request_matches_disk_state() {
             fields: IndexMap::new(),
         }],
         diagnostic: forage_core::DiagnosticReport::default(),
+        record_types: IndexMap::new(),
     };
     std::fs::create_dir_all(ws_root.join("_snapshots")).unwrap();
     std::fs::write(

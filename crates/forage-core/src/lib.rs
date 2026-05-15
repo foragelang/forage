@@ -19,7 +19,9 @@ pub use error::{ForageError, ForageResult};
 pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
 pub use parse::parse;
 pub use progress::{ProgressUnit, infer_progress_unit};
-pub use snapshot::{DiagnosticReport, Record, RuntimeDiagnostic, Snapshot};
+pub use snapshot::{
+    DiagnosticReport, Record, RecordType, RecordTypeField, RuntimeDiagnostic, Snapshot,
+};
 pub use source::{LineMap, Position, Range};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
 pub use workspace::{

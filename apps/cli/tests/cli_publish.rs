@@ -90,7 +90,8 @@ async fn publish_keys_artifact_on_recipe_header_name() {
     fs::write(
         ws.join("_snapshots").join("amazon-products.json"),
         "{\"records\":[],\"diagnostic\":{\"stall_reason\":null,\"unmet_expectations\":[],\
-         \"unfired_capture_rules\":[],\"unmatched_captures\":[],\"unhandled_affordances\":[]}}",
+         \"unfired_capture_rules\":[],\"unmatched_captures\":[],\"unhandled_affordances\":[]},\
+         \"record_types\":{}}",
     )
     .unwrap();
 

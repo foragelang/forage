@@ -40,6 +40,10 @@ impl<'r> ReplayEngine<'r> {
         let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
+        // Stamp the recipe's type catalog onto the snapshot so JSON-LD
+        // output and hub indexers can read alignment metadata without
+        // re-resolving the recipe source.
+        snapshot.set_record_types(&self.recipe.types);
 
         // Top-level body (e.g. Jane's `emit Dispensary` before captures).
         for s in &self.recipe.body {

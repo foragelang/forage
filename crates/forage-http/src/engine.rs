@@ -138,6 +138,11 @@ impl<'t> Engine<'t> {
         let evaluator = Evaluator::new(&registry);
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
+        // Stamp the recipe's type catalog onto the snapshot at run
+        // boundary so downstream consumers (JSON-LD output, hub
+        // indexers) carry alignment metadata without re-resolving the
+        // recipe source.
+        snapshot.set_record_types(&recipe.types);
         // Default `$page` so recipes that use `{$page}` outside a paginated
         // step (or before the first request) still have it bound. The
         // engine overwrites this inside each `run_step` iteration.

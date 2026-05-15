@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::ast::{ComparisonOp, Expectation, ExpectationKind, JSONValue};
+use crate::ast::{AlignmentUri, ComparisonOp, Expectation, ExpectationKind, JSONValue, RecipeType};
 use crate::source::LineMap;
 
 /// One emitted record — a synthetic `_id`, a type name, and the bound
@@ -37,13 +37,72 @@ pub struct Record {
     pub fields: IndexMap<String, JSONValue>,
 }
 
+/// Per-type metadata carried alongside the emitted records. The
+/// catalog tells downstream consumers (JSON-LD writers, hub indexers)
+/// what each emitted record's type is aligned with — without needing
+/// to re-resolve the recipe source. Keyed by the type's name; one
+/// entry per `type` declared in the recipe.
+///
+/// The runtime does not transform values across alignments — this is
+/// strictly index data. Sub-plan 8 (JSON-LD output) reads it to build
+/// `@context` and `@type` on serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RecordType {
+    pub name: String,
+    pub alignments: Vec<AlignmentUri>,
+    pub fields: Vec<RecordTypeField>,
+}
+
+/// One field's projection of the recipe type into the snapshot. Carries
+/// the field's name and its optional ontology alignment so JSON-LD
+/// output can map each field key to its term.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RecordTypeField {
+    pub name: String,
+    pub alignment: Option<AlignmentUri>,
+}
+
+impl RecordType {
+    /// Project a `RecipeType` (AST) into a `RecordType` (snapshot).
+    /// Drops source-position info; keeps only what downstream consumers
+    /// need to interpret records.
+    pub fn from_recipe_type(ty: &RecipeType) -> Self {
+        Self {
+            name: ty.name.clone(),
+            alignments: ty.alignments.iter().map(strip_span).collect(),
+            fields: ty
+                .fields
+                .iter()
+                .map(|f| RecordTypeField {
+                    name: f.name.clone(),
+                    alignment: f.alignment.as_ref().map(strip_span),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn strip_span(uri: &AlignmentUri) -> AlignmentUri {
+    AlignmentUri {
+        ontology: uri.ontology.clone(),
+        term: uri.term.clone(),
+        span: 0..0,
+    }
+}
+
 /// Snapshot of a run: every emitted record, in emission order, plus
-/// the diagnostic envelope.
+/// the diagnostic envelope and per-type alignment metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Snapshot {
     pub records: Vec<Record>,
     pub diagnostic: DiagnosticReport,
+    /// Type catalog snapshotted at run boundary. Keyed by type name in
+    /// declaration order; empty when no types are declared in the
+    /// recipe.
+    pub record_types: IndexMap<String, RecordType>,
 }
 
 impl Snapshot {
@@ -51,6 +110,19 @@ impl Snapshot {
         Self {
             records: Vec::new(),
             diagnostic: DiagnosticReport::default(),
+            record_types: IndexMap::new(),
+        }
+    }
+
+    /// Populate the type catalog from a recipe's `RecipeType` list.
+    /// Engines call this at run boundary so the snapshot carries the
+    /// alignment metadata downstream consumers (JSON-LD output, hub
+    /// indexers) need.
+    pub fn set_record_types<'a>(&mut self, types: impl IntoIterator<Item = &'a RecipeType>) {
+        self.record_types.clear();
+        for ty in types {
+            self.record_types
+                .insert(ty.name.clone(), RecordType::from_recipe_type(ty));
         }
     }
 
@@ -272,6 +344,84 @@ mod tests {
         let back: Record = serde_json::from_str(&j).unwrap();
         assert_eq!(back.id, "rec-7");
         assert_eq!(back.type_name, "Variant");
+    }
+
+    #[test]
+    fn record_types_round_trip_alignment_metadata() {
+        use crate::ast::{FieldType, RecipeField};
+
+        let recipe_type = crate::ast::RecipeType {
+            name: "Product".into(),
+            fields: vec![
+                RecipeField {
+                    name: "name".into(),
+                    ty: FieldType::String,
+                    optional: false,
+                    alignment: Some(AlignmentUri {
+                        ontology: "schema.org".into(),
+                        term: "name".into(),
+                        span: 0..0,
+                    }),
+                },
+                RecipeField {
+                    name: "price".into(),
+                    ty: FieldType::Double,
+                    optional: false,
+                    alignment: Some(AlignmentUri {
+                        ontology: "schema.org".into(),
+                        term: "offers.price".into(),
+                        span: 0..0,
+                    }),
+                },
+            ],
+            shared: false,
+            alignments: vec![
+                AlignmentUri {
+                    ontology: "schema.org".into(),
+                    term: "Product".into(),
+                    span: 0..0,
+                },
+                AlignmentUri {
+                    ontology: "wikidata".into(),
+                    term: "Q2424752".into(),
+                    span: 0..0,
+                },
+            ],
+            span: 0..0,
+        };
+
+        let mut s = Snapshot::new();
+        s.set_record_types(std::iter::once(&recipe_type));
+
+        let j = serde_json::to_string(&s).unwrap();
+        let back: Snapshot = serde_json::from_str(&j).unwrap();
+
+        let product = back
+            .record_types
+            .get("Product")
+            .expect("Product entry in record_types");
+        assert_eq!(product.alignments.len(), 2);
+        assert_eq!(product.alignments[0].ontology, "schema.org");
+        assert_eq!(product.alignments[0].term, "Product");
+        assert_eq!(product.alignments[1].ontology, "wikidata");
+        assert_eq!(product.alignments[1].term, "Q2424752");
+        assert_eq!(product.fields.len(), 2);
+        assert_eq!(product.fields[0].name, "name");
+        assert_eq!(
+            product.fields[0].alignment.as_ref().unwrap().term,
+            "name"
+        );
+        assert_eq!(product.fields[1].name, "price");
+        assert_eq!(
+            product.fields[1].alignment.as_ref().unwrap().term,
+            "offers.price"
+        );
+    }
+
+    #[test]
+    fn snapshot_with_no_types_has_empty_record_types() {
+        let s = Snapshot::new();
+        assert!(s.record_types.is_empty());
     }
 
     #[test]

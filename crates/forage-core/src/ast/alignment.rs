@@ -13,6 +13,7 @@
 //! more dotted segments (`schema.org/offers.price`).
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::ast::span::Span;
 
@@ -20,10 +21,12 @@ use crate::ast::span::Span;
 /// slash-separated segment (`schema.org`, `wikidata`, …); `term` is
 /// everything after the first `/`, joined by `.`s when the term path
 /// has multiple segments (e.g. `offers.price`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AlignmentUri {
     pub ontology: String,
     pub term: String,
     #[serde(default)]
+    #[ts(skip)]
     pub span: Span,
 }
