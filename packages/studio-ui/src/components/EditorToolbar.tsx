@@ -35,8 +35,16 @@ import { cancelActive, runActive, saveActive } from "@/lib/studioActions";
 export function EditorToolbar() {
     const activeFilePath = useStudio((s) => s.activeFilePath);
     const running = useStudio((s) => s.running);
-    const disabled = !activeFilePath;
     const name = useRecipeNameOf(activeFilePath);
+    const saveDisabled = !activeFilePath;
+    // Run / Replay / Configure operate on a recipe-name keyed surface;
+    // a header-less .forage file (declarations only) has nothing to
+    // run, so the buttons are disabled even though the editor itself
+    // works against the path.
+    const runDisabled = !name;
+    const runDisabledReason = activeFilePath && !name
+        ? "This file declares no recipe."
+        : undefined;
     return (
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
             <SidebarTrigger />
@@ -61,7 +69,7 @@ export function EditorToolbar() {
                     <>
                         <ToolbarButton
                             onClick={() => void saveActive()}
-                            disabled={disabled}
+                            disabled={saveDisabled}
                             label="Save"
                             shortcut={["⌘", "S"]}
                             icon={<Save />}
@@ -69,7 +77,8 @@ export function EditorToolbar() {
                         />
                         <ToolbarButton
                             onClick={() => void runActive(true)}
-                            disabled={disabled}
+                            disabled={runDisabled}
+                            disabledReason={runDisabledReason}
                             label="Replay"
                             shortcut={["⇧", "⌘", "R"]}
                             icon={<RefreshCw />}
@@ -77,7 +86,8 @@ export function EditorToolbar() {
                         />
                         <ToolbarButton
                             onClick={() => void runActive(false)}
-                            disabled={disabled}
+                            disabled={runDisabled}
+                            disabledReason={runDisabledReason}
                             label="Run live"
                             shortcut={["⌘", "R"]}
                             icon={<Play />}
@@ -287,6 +297,12 @@ function describeCadence(r: Run): string {
 function ToolbarButton(props: {
     onClick: () => void;
     disabled?: boolean;
+    /// Shown in the tooltip when the button is disabled — replaces
+    /// the keyboard-shortcut hint so the user sees *why* the action
+    /// isn't available (e.g. "This file declares no recipe.") rather
+    /// than reading the unhelpful shortcut against a greyed-out
+    /// button.
+    disabledReason?: string;
     label: string;
     shortcut: string[];
     icon: React.ReactNode;
@@ -295,22 +311,32 @@ function ToolbarButton(props: {
     return (
         <Tooltip>
             <TooltipTrigger asChild>
-                <Button
-                    size="sm"
-                    variant={props.variant}
-                    onClick={props.onClick}
-                    disabled={props.disabled}
-                >
-                    {props.icon}
-                    {props.label}
-                </Button>
+                {/* When the underlying button is `disabled`, it stops
+                    firing pointer events — which also kills the
+                    Tooltip's hover trigger. Wrapping the disabled
+                    button in a span keeps the tooltip reachable. */}
+                <span className={props.disabled ? "inline-flex" : "contents"}>
+                    <Button
+                        size="sm"
+                        variant={props.variant}
+                        onClick={props.onClick}
+                        disabled={props.disabled}
+                    >
+                        {props.icon}
+                        {props.label}
+                    </Button>
+                </span>
             </TooltipTrigger>
             <TooltipContent>
-                <div className="flex items-center gap-1">
-                    {props.shortcut.map((k) => (
-                        <Kbd key={k}>{k}</Kbd>
-                    ))}
-                </div>
+                {props.disabled && props.disabledReason ? (
+                    <span>{props.disabledReason}</span>
+                ) : (
+                    <div className="flex items-center gap-1">
+                        {props.shortcut.map((k) => (
+                            <Kbd key={k}>{k}</Kbd>
+                        ))}
+                    </div>
+                )}
             </TooltipContent>
         </Tooltip>
     );

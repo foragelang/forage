@@ -59,6 +59,21 @@ export function RecordsPane() {
         });
     }, [types]);
 
+    if (activeFilePath && !name) {
+        return (
+            <div className="flex-1 flex items-center justify-center p-6 text-center">
+                <div className="space-y-2 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">No recipe here.</div>
+                    <div>
+                        This file declares no{" "}
+                        <span className="font-mono">recipe "..."</span> header. Add
+                        one to emit records.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     if (!latest) {
         return (
             <ScrollArea className="flex-1 min-h-0">

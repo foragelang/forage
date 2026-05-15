@@ -60,6 +60,10 @@ export function RunPane() {
     const latest = scheduledRuns[0] ?? null;
     const previous = scheduledRuns[1] ?? null;
 
+    if (activeFilePath && !name) {
+        return <NoRecipePlaceholder />;
+    }
+
     // Static analysis: the outermost-compound emit-bearing for-loop
     // is the recipe's "unit of work" (see
     // crates/forage-core/src/progress.rs). Used to scope the progress
@@ -96,6 +100,23 @@ export function RunPane() {
 }
 
 // ── summary card ─────────────────────────────────────────────────────
+
+/// Inspector empty-state for header-less .forage files. The editor
+/// still opens the buffer (path-based load/save works), but every
+/// run / record affordance keys on a recipe header name — so the
+/// pane has nothing to show beyond pointing the user at the cause.
+function NoRecipePlaceholder() {
+    return (
+        <div className="flex-1 flex items-center justify-center p-6 text-center">
+            <div className="space-y-2 text-sm text-muted-foreground">
+                <div className="font-medium text-foreground">No recipe here.</div>
+                <div>
+                    This file declares no <span className="font-mono">recipe "..."</span> header. Add one to enable runs, history, and records.
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function RunSummaryCard({
     latest,

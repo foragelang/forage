@@ -50,6 +50,21 @@ export function HistoryPane() {
         [runLog, running],
     );
 
+    if (activeFilePath && !name) {
+        return (
+            <div className="flex-1 flex items-center justify-center p-6 text-center">
+                <div className="space-y-2 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">No recipe here.</div>
+                    <div>
+                        This file declares no{" "}
+                        <span className="font-mono">recipe "..."</span> header. Add
+                        one to see run history.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <ScrollArea className="flex-1 min-h-0">
             <div className="flex flex-col gap-3 p-3">
