@@ -163,6 +163,7 @@ pub fn run() {
             commands::trigger_run,
             commands::list_scheduled_runs,
             commands::load_run_records,
+            commands::load_run_jsonld,
             commands::validate_cron_expr,
             commands::deploy_recipe,
             commands::list_deployed_versions,

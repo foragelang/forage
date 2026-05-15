@@ -1698,6 +1698,23 @@ pub fn load_run_records(
         .map_err(|e| e.to_string())
 }
 
+/// Project the scheduled-run's persisted records into a JSON-LD
+/// document using the recipe's type alignments. Studio's run drawer
+/// calls this when the format toggle is set to JSON-LD; the daemon
+/// owns the catalog (and thus the alignment metadata), so the
+/// conversion lives there rather than being re-derived in TypeScript.
+#[tauri::command]
+pub fn load_run_jsonld(
+    state: State<'_, StudioState>,
+    scheduled_run_id: String,
+) -> Result<forage_core::JsonLdDocument, String> {
+    let daemon = require_daemon(&state)?;
+    let snapshot = daemon
+        .load_run_snapshot(&scheduled_run_id)
+        .map_err(|e| e.to_string())?;
+    Ok(snapshot.to_jsonld())
+}
+
 /// Validate a cron expression using the daemon's parser. The frontend
 /// uses this as the gate for the schedule editor's Save button so the
 /// client and server agree on what counts as valid syntax — `cronstrue`

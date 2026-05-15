@@ -328,6 +328,14 @@ export interface StudioService {
         typeName: string,
         limit: number,
     ): Promise<unknown[]>;
+    // Project a scheduled-run's persisted records as a JSON-LD
+    // document. The daemon owns the recipe's type catalog and thus
+    // the alignment metadata — the conversion lives there. The
+    // returned value is the JSON-LD doc as a plain JSON object
+    // (`@context` / `@graph`) so the UI renders it without a
+    // separate parser. Empty document when the run is ephemeral
+    // (no records persisted).
+    loadRunJsonld(scheduledRunId: string): Promise<unknown>;
     validateCron(expr: string): Promise<void>;
 
     // ── Hub publishing / auth (used by Studio's publish flow) ───────

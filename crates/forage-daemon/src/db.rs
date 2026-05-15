@@ -292,6 +292,24 @@ pub(crate) fn insert_scheduled_run(
     Ok(())
 }
 
+/// One row by `id`. Used by snapshot reconstruction — given a
+/// scheduled-run id, the caller needs the `counts` map (which types
+/// were emitted) and the parent `run_id` (for the output store path).
+pub(crate) fn get_scheduled_run(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<ScheduledRun>, DaemonError> {
+    conn.query_row(
+        "SELECT id, run_id, at, trigger, outcome, duration_s, counts_json, diagnostics, stall, recipe_version
+         FROM scheduled_runs WHERE id = ?1",
+        params![id],
+        row_to_scheduled_run,
+    )
+    .optional()
+    .map_err(DaemonError::Sqlite)?
+    .transpose()
+}
+
 /// Most recent first; optional `before` cursor for paging through deep history.
 pub(crate) fn list_scheduled_runs(
     conn: &Connection,

@@ -236,12 +236,15 @@ function DrawerTabs({ scheduled }: { scheduled: ScheduledRun }) {
     );
 }
 
+type RecordsFormat = "json" | "jsonld";
+
 function RecordsTab({ scheduled }: { scheduled: ScheduledRun }) {
     const types = useMemo(
         () => Object.keys(scheduled.counts).sort(),
         [scheduled.counts],
     );
     const [active, setActive] = useState<string | null>(null);
+    const [format, setFormat] = useState<RecordsFormat>("json");
     useEffect(() => {
         setActive((cur) => (cur && types.includes(cur) ? cur : (types[0] ?? null)));
     }, [types]);
@@ -255,24 +258,103 @@ function RecordsTab({ scheduled }: { scheduled: ScheduledRun }) {
     }
     return (
         <div className="space-y-2">
-            <div className="flex flex-wrap gap-1">
-                {types.map((t) => (
-                    <button
-                        key={t}
-                        type="button"
-                        onClick={() => setActive(t)}
-                        className={cn(
-                            "px-2 py-0.5 rounded text-[11px] font-mono",
-                            active === t ? "bg-muted text-foreground" : "text-muted-foreground",
-                        )}
-                    >
-                        {t} · {(scheduled.counts[t] ?? 0).toLocaleString()}
-                    </button>
-                ))}
-            </div>
-            {active && (
-                <RecordsTable scheduledRunId={scheduled.id} typeName={active} />
+            <FormatToggle format={format} onChange={setFormat} />
+            {format === "json" ? (
+                <>
+                    <div className="flex flex-wrap gap-1">
+                        {types.map((t) => (
+                            <button
+                                key={t}
+                                type="button"
+                                onClick={() => setActive(t)}
+                                className={cn(
+                                    "px-2 py-0.5 rounded text-[11px] font-mono",
+                                    active === t
+                                        ? "bg-muted text-foreground"
+                                        : "text-muted-foreground",
+                                )}
+                            >
+                                {t} · {(scheduled.counts[t] ?? 0).toLocaleString()}
+                            </button>
+                        ))}
+                    </div>
+                    {active && (
+                        <RecordsTable scheduledRunId={scheduled.id} typeName={active} />
+                    )}
+                </>
+            ) : (
+                <JsonLdView scheduledRunId={scheduled.id} />
             )}
+        </div>
+    );
+}
+
+function FormatToggle({
+    format,
+    onChange,
+}: {
+    format: RecordsFormat;
+    onChange: (next: RecordsFormat) => void;
+}) {
+    return (
+        <div className="inline-flex rounded border text-[11px] font-mono">
+            {(["json", "jsonld"] as const).map((opt) => (
+                <button
+                    key={opt}
+                    type="button"
+                    onClick={() => onChange(opt)}
+                    className={cn(
+                        "px-2 py-0.5",
+                        format === opt
+                            ? "bg-muted text-foreground"
+                            : "text-muted-foreground",
+                    )}
+                >
+                    {opt === "json" ? "JSON" : "JSON-LD"}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+function JsonLdView({ scheduledRunId }: { scheduledRunId: string }) {
+    const service = useStudioService();
+    const doc = useQuery({
+        queryKey: ["records-jsonld", scheduledRunId],
+        queryFn: () => service.loadRunJsonld(scheduledRunId),
+    });
+    const text = useMemo(() => {
+        if (doc.data === undefined) return "";
+        return JSON.stringify(doc.data, null, 2);
+    }, [doc.data]);
+
+    if (doc.isLoading && doc.data === undefined) {
+        return <div className="text-xs text-muted-foreground">Loading…</div>;
+    }
+    if (doc.error) {
+        return (
+            <div className="text-xs text-destructive">
+                Failed to load: {String(doc.error)}
+            </div>
+        );
+    }
+    return (
+        <div className="space-y-2">
+            <ScrollArea className="max-h-72 rounded border bg-muted/30">
+                <pre className="text-[11px] font-mono p-2 select-text whitespace-pre">
+                    {text}
+                </pre>
+            </ScrollArea>
+            <Button
+                size="sm"
+                variant="ghost"
+                className="w-full"
+                onClick={() => {
+                    void navigator.clipboard.writeText(text);
+                }}
+            >
+                Copy as JSON-LD
+            </Button>
         </div>
     );
 }

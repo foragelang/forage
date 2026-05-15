@@ -124,6 +124,81 @@ async fn output_format_round_trips_through_configure() {
     assert_eq!(updated.output_format, OutputFormat::Json);
 }
 
+/// `load_run_snapshot` walks the output store and stamps the deployed
+/// version's catalog onto the result so callers (notably
+/// `Snapshot::to_jsonld`) see the recipe's alignment metadata. The
+/// rebuilt snapshot's `@context` carries the schema.org IRIs the
+/// recipe declared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_run_snapshot_carries_alignment_catalog() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_root = tmp.path().to_path_buf();
+    let recipe_name = "fixture-aligned";
+    init_workspace(&ws_root, recipe_name, RECIPE_ALIGNED);
+    let mock = common::http_mock::server_returning_items(&[("a", 1.5), ("b", 2.0)]).await;
+    let recipe_path = ws_root.join(format!("{recipe_name}.forage"));
+    rewrite_url(&recipe_path, &mock.url("/items"));
+    let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+    let cfg = RunConfig {
+        cadence: Cadence::Manual,
+        output: ws_root.join(".forage").join("data").join("aligned.sqlite"),
+        enabled: true,
+        inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::Jsonld,
+    };
+    let run = daemon.configure_run(recipe_name, cfg).expect("configure");
+    deploy_disk_recipe(&daemon, &ws_root, recipe_name);
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger");
+    assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
+
+    let snap = daemon
+        .load_run_snapshot(&sr.id)
+        .expect("load_run_snapshot");
+    assert_eq!(snap.records.len(), 2);
+    let item = snap
+        .record_types
+        .get("Item")
+        .expect("Item record type carried");
+    assert_eq!(item.alignments.len(), 1);
+    assert_eq!(item.alignments[0].ontology, "schema.org");
+    assert_eq!(item.alignments[0].term, "Product");
+
+    // The JSON-LD projection inherits the alignments.
+    let doc = snap.to_jsonld();
+    let ctx = doc.context.get("Item").expect("Item @context entry");
+    assert_eq!(ctx.id, "https://schema.org/Product");
+    assert_eq!(
+        ctx.fields.get("id").map(String::as_str),
+        Some("https://schema.org/identifier"),
+    );
+}
+
+const RECIPE_ALIGNED: &str = r#"recipe "fixture-aligned"
+engine http
+
+type Item
+    aligns schema.org/Product
+{
+    id: String     aligns schema.org/identifier
+    weight: Double
+}
+
+step list {
+    method "GET"
+    url    "https://example.test/items"
+}
+
+for $i in $list.items[*] {
+    emit Item {
+        id ← $i.id,
+        weight ← $i.weight
+    }
+}
+"#;
+
 fn rewrite_url(path: &Path, url: &str) {
     let src = std::fs::read_to_string(path).unwrap();
     let replaced = src.replace("https://example.test/items", url);

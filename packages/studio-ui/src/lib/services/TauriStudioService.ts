@@ -224,6 +224,9 @@ export class TauriStudioService implements StudioService {
             limit,
         });
     }
+    loadRunJsonld(scheduledRunId: string): Promise<unknown> {
+        return invoke<unknown>("load_run_jsonld", { scheduledRunId });
+    }
     validateCron(expr: string): Promise<void> {
         return invoke<void>("validate_cron_expr", { expr });
     }

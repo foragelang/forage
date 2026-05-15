@@ -34,8 +34,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use forage_core::ast::JSONValue;
 use forage_core::{
-    EvalValue, ForageFile, RecipeSignatures, RunOptions, SerializableCatalog, Snapshot,
+    EvalValue, ForageFile, Record, RecipeSignatures, RunOptions, SerializableCatalog, Snapshot,
     TypeCatalog,
 };
 use forage_http::{ProgressSink, RunEvent};
@@ -356,6 +357,96 @@ impl Daemon {
         output::load_records(&output, scheduled_run_id, type_name, limit)
     }
 
+    /// Reconstruct a `Snapshot` for one `ScheduledRun` by walking every
+    /// emitted type's table and stamping the catalog's alignment
+    /// metadata. The reconstruction reads from the persistent output
+    /// store, so ephemeral runs (`flags.ephemeral = true`) produce an
+    /// empty snapshot — their records never reached SQLite. Consumers
+    /// that need to render a run's output as JSON-LD call this and
+    /// pass the result through `Snapshot::to_jsonld()`.
+    pub fn load_run_snapshot(
+        &self,
+        scheduled_run_id: &str,
+    ) -> Result<Snapshot, RunError> {
+        let sr = {
+            let conn = self.connection.lock().expect("daemon connection poisoned");
+            db::get_scheduled_run(&conn, scheduled_run_id).map_err(RunError::Daemon)?
+        };
+        let Some(sr) = sr else {
+            return Ok(Snapshot::new());
+        };
+
+        let run = {
+            let conn = self.connection.lock().expect("daemon connection poisoned");
+            db::get_run_by_id(&conn, &sr.run_id).map_err(RunError::Daemon)?
+        };
+        let Some(run) = run else {
+            return Ok(Snapshot::new());
+        };
+
+        // The recipe's catalog gives us alignment metadata for every
+        // emitted type. A ScheduledRun is always tied to a specific
+        // deployed version — we walk that version's catalog so the
+        // snapshot's `record_types` matches what the recipe could
+        // possibly emit, including types with no records this cycle.
+        let catalog: TypeCatalog = match sr.recipe_version {
+            Some(v) => match self.load_deployed(&run.recipe_name, v) {
+                Ok(d) => d.catalog.into(),
+                Err(_) => TypeCatalog::default(),
+            },
+            None => TypeCatalog::default(),
+        };
+
+        // Stamp the snapshot with the effective (extension-flattened)
+        // type shape so JSON-LD output and other consumers see
+        // inherited fields + alignments from every parent in the chain.
+        let effective = catalog.types_sorted_effective();
+        let mut snap = Snapshot::new();
+        snap.set_record_types(effective.iter());
+
+        for type_name in sr.counts.keys() {
+            // Page through all records of this type. The output store's
+            // load_records already caps at the supplied limit; we walk
+            // forever-onwards by upping the limit beyond the counted
+            // total. The counts row tells us how many to expect.
+            let limit = sr.counts.get(type_name).copied().unwrap_or(0);
+            let records = output::load_records(
+                &run.output,
+                scheduled_run_id,
+                type_name,
+                limit,
+            )?;
+            for row in records {
+                let serde_json::Value::Object(mut obj) = row else {
+                    continue;
+                };
+                // Pull `_id` out of the field map so it stamps on the
+                // synthetic record id; the OutputStore stores it as a
+                // regular column.
+                // The output store carries `_id` as a real column —
+                // pull it out so it stamps on the synthetic record id
+                // instead of being treated as a recipe field. Absence
+                // is impossible by schema (every emit writes one) but
+                // we tolerate a missing value rather than panicking.
+                let id = match obj.remove("_id") {
+                    Some(serde_json::Value::String(s)) => s,
+                    _ => String::new(),
+                };
+                let mut fields = indexmap::IndexMap::with_capacity(obj.len());
+                for (k, v) in obj {
+                    fields.insert(k, serde_json_to_json_value(v));
+                }
+                snap.emit(Record {
+                    id,
+                    type_name: type_name.clone(),
+                    fields,
+                });
+            }
+        }
+
+        Ok(snap)
+    }
+
     /// Create-or-update a Run for the given recipe name. The recipe
     /// header name is the canonical key; there is no generated id.
     pub fn configure_run(&self, name: &str, cfg: RunConfig) -> Result<Run, DaemonError> {
@@ -644,6 +735,39 @@ impl ProgressSink for ProgressForwarder {
     fn emit(&self, event: RunEvent) {
         if let Some(host) = &self.host {
             host.emit(event);
+        }
+    }
+}
+
+/// Translate the OutputStore's `serde_json::Value` rows into the
+/// snapshot's `JSONValue`. The output store loads SQLite columns
+/// through `sqlite_value_to_json` which already produces JSON values
+/// of the right shape — this just bridges the type system.
+fn serde_json_to_json_value(v: serde_json::Value) -> JSONValue {
+    match v {
+        serde_json::Value::Null => JSONValue::Null,
+        serde_json::Value::Bool(b) => JSONValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JSONValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                JSONValue::Double(f)
+            } else {
+                // serde_json::Number can also carry u64 above i64::MAX;
+                // round-trip through Double rather than lose the value.
+                JSONValue::Double(n.as_u64().map(|u| u as f64).unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => JSONValue::String(s),
+        serde_json::Value::Array(items) => {
+            JSONValue::Array(items.into_iter().map(serde_json_to_json_value).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = IndexMap::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k, serde_json_to_json_value(v));
+            }
+            JSONValue::Object(out)
         }
     }
 }

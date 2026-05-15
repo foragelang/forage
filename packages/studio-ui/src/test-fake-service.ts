@@ -97,6 +97,7 @@ export class FakeStudioService implements StudioService {
     loadRunRecords(id: string, type: string, limit: number) {
         return this.call("loadRunRecords", [id, type, limit]);
     }
+    loadRunJsonld(id: string) { return this.call("loadRunJsonld", [id]); }
     validateCron(expr: string) { return this.call("validateCron", [expr]); }
 
     // Hub publish / auth
