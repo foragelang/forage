@@ -69,6 +69,20 @@ Selectors are standard CSS3 — anything `scraper`/`cssselect` recognizes.
 Selection on a node-list flat-maps: `nodes | select(".inner")` returns
 all `.inner` descendants of any item in the list.
 
+## Transport-aware
+
+These transforms fetch over the network through the engine's
+transport. Replay (`forage run --replay`) covers them just like
+step-level requests; the sync evaluator path (validator probes,
+template substitution outside `emit`) rejects them with
+`TransformRequiresTransport`. See the [Wikidata reconciliation
+cookbook](../cookbook/wikidata-reconciliation.md) for the full
+pattern.
+
+| Transform | Behavior |
+|---|---|
+| `wikidataEntity(qid)` | GET `Special:EntityData/<qid>.json` and return an object keyed by P-ID, each claim flattened to its first value's scalar form (Q-ID for items, ISO time for dates, signed amount for quantities, `"lat,lon"` for coordinates). `_qid`, `_label`, `_description`, and `_raw` ride alongside. |
+
 ## User-defined transforms
 
 Recipes can declare their own transforms via the top-level `fn` form.

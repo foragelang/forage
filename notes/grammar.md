@@ -640,6 +640,14 @@ in type position only.
 - **`$page` is reserved at runtime** (engine-injected loop var) but
   not at parse time. The validator (`ReservedParam`) rejects fn
   declarations that name `$page`.
+- **Transport-aware transforms.** Most built-ins are pure (string,
+  regex, parsing, HTML walks); a small async category fetches over
+  the engine's transport. Today: `wikidataEntity(qid)`. The full list
+  lives next to the sync built-ins in
+  `crates/forage-core/src/eval/transforms.rs::BUILTIN_TRANSFORMS`.
+  Sync evaluator paths (validator probes, URL/header templates)
+  reject these with `TransformRequiresTransport`; the engine drives
+  them through the async eval path.
 - **Greenfield, not stable.** The grammar evolves; this document is
   re-generated whenever the parser changes. Production rules in the
   parser have doc comments tracking each non-terminal — keep them in
