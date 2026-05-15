@@ -1921,14 +1921,14 @@ for $i in $list.items[*] {
 }
 "#;
 
-    fn write_workspace(root: &Path, slug: &str, recipe_source: &str) {
-        std::fs::create_dir_all(root.join(slug)).unwrap();
+    fn write_workspace(root: &Path, name: &str, recipe_source: &str) {
+        std::fs::create_dir_all(root).unwrap();
         std::fs::write(
             root.join("forage.toml"),
             "description = \"\"\ncategory = \"\"\ntags = []\n",
         )
         .unwrap();
-        std::fs::write(root.join(slug).join("recipe.forage"), recipe_source).unwrap();
+        std::fs::write(root.join(format!("{name}.forage")), recipe_source).unwrap();
     }
 
     fn rewrite_url(path: &Path, url: &str) {
@@ -1936,8 +1936,8 @@ for $i in $list.items[*] {
         std::fs::write(path, src.replace("https://example.test/items", url)).unwrap();
     }
 
-    fn deploy_from_disk(daemon: &Daemon, ws_root: &Path, slug: &str) {
-        let recipe_path = ws_root.join(slug).join("recipe.forage");
+    fn deploy_from_disk(daemon: &Daemon, ws_root: &Path, name: &str) {
+        let recipe_path = ws_root.join(format!("{name}.forage"));
         let source = std::fs::read_to_string(&recipe_path).unwrap();
         let recipe = forage_core::parse(&source).unwrap();
         let workspace = forage_core::workspace::load(ws_root).unwrap();
@@ -1945,7 +1945,7 @@ for $i in $list.items[*] {
             .catalog(&recipe, |p| std::fs::read_to_string(p))
             .unwrap();
         let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        daemon.deploy(slug, source, wire).expect("deploy");
+        daemon.deploy(name, source, wire).expect("deploy");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2008,7 +2008,7 @@ for $i in $list.items[*] {
             })))
             .mount(&mock)
             .await;
-        let recipe_path = ws_root.join(slug).join("recipe.forage");
+        let recipe_path = ws_root.join(format!("{slug}.forage"));
         rewrite_url(&recipe_path, &format!("{}/items", mock.uri()));
 
         let daemon = Daemon::open(ws_root.clone()).expect("open daemon");

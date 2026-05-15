@@ -17,12 +17,11 @@ async fn open_configure_trigger_persist() {
     let ws_root = tmp.path().to_path_buf();
     let recipe_name = "fixture-ok";
 
-    // Recipe + fixtures + workspace marker.
+    // Recipe + workspace marker.
     init_workspace(&ws_root, recipe_name, RECIPE_OK);
-    write_inputs(&ws_root, recipe_name, "{}");
 
     let mock = common::http_mock::server_returning_items(&[("a", 1.5), ("b", 2.0)]).await;
-    let recipe_path = ws_root.join(recipe_name).join("recipe.forage");
+    let recipe_path = ws_root.join(format!("{recipe_name}.forage"));
     rewrite_url(&recipe_path, &mock.url("/items"));
 
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
@@ -71,12 +70,6 @@ async fn open_configure_trigger_persist() {
         .load_records(&sr.id, "Item", 10)
         .expect("load_records");
     assert_eq!(records.len(), 2);
-}
-
-fn write_inputs(ws_root: &Path, dir: &str, body: &str) {
-    let dir = ws_root.join(dir).join("fixtures");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("inputs.json"), body).unwrap();
 }
 
 fn rewrite_url(path: &Path, url: &str) {

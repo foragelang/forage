@@ -86,7 +86,7 @@ async fn interval_run_fires_when_clock_advances() {
 
     let mock = common::http_mock::server_returning_items(&[("a", 1.0)]).await;
     rewrite_url(
-        &ws_root.join(recipe_name).join("recipe.forage"),
+        &ws_root.join(format!("{recipe_name}.forage")),
         &mock.url("/items"),
     );
 

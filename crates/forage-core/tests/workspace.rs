@@ -32,7 +32,7 @@ fn share_decls_reach_focal_recipe() {
         "share type Dispensary { id: String, name: String }\n\
          share enum MenuType { Recreational, Medical }\n",
     );
-    let recipe_path = root.join("trilogy").join("recipe.forage");
+    let recipe_path = root.join("trilogy.forage");
     write(
         &recipe_path,
         "recipe \"trilogy\"\nengine http\n\
@@ -53,7 +53,7 @@ fn recipe_local_overrides_shared_type() {
         &root.join("cannabis.forage"),
         "share type Product { id: String, name: String }\n",
     );
-    let recipe_path = root.join("sweed").join("recipe.forage");
+    let recipe_path = root.join("sweed.forage");
     write(
         &recipe_path,
         "recipe \"sweed\"\nengine http\n\
@@ -78,7 +78,7 @@ fn bare_type_in_sibling_is_invisible_to_recipe() {
         "type LocalThing { id: String }\n\
          share type Dispensary { id: String }\n",
     );
-    let recipe_path = root.join("sweed").join("recipe.forage");
+    let recipe_path = root.join("sweed.forage");
     write(&recipe_path, "recipe \"sweed\"\nengine http\n");
     let ws = workspace::load(root).unwrap();
     let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
@@ -104,7 +104,7 @@ fn share_and_bare_with_same_name_coexist() {
         "share type Product { id: String, name: String }\n",
     );
     write(&root.join("b.forage"), "type Product { id: String }\n");
-    let recipe_path = root.join("r").join("recipe.forage");
+    let recipe_path = root.join("r.forage");
     write(&recipe_path, "recipe \"r\"\nengine http\n");
     let ws = workspace::load(root).unwrap();
     let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
@@ -125,7 +125,7 @@ fn duplicate_bare_types_across_files_are_not_an_error() {
     let root = workspace_in(&tmp);
     write(&root.join("a.forage"), "type Product { id: String }\n");
     write(&root.join("b.forage"), "type Product { id: String }\n");
-    let recipe_path = root.join("r").join("recipe.forage");
+    let recipe_path = root.join("r.forage");
     write(&recipe_path, "recipe \"r\"\nengine http\n");
     let ws = workspace::load(root).unwrap();
     let catalog = ws
@@ -185,14 +185,14 @@ fn recipes_iterator_filters_by_header_presence() {
     let root = workspace_in(&tmp);
     write(&root.join("shared.forage"), "type T { id: String }\n");
     write(
-        &root.join("rec").join("recipe.forage"),
+        &root.join("rec.forage"),
         "recipe \"rec\"\nengine http\n",
     );
     let ws: Workspace = workspace::load(root).unwrap();
     let mut recipes: Vec<&Path> = ws.recipes().map(|r| r.path).collect();
     recipes.sort();
     assert_eq!(recipes.len(), 1);
-    assert!(recipes[0].ends_with("rec/recipe.forage"));
+    assert!(recipes[0].ends_with("rec.forage"));
     // Header-less file is still present in `files` so the catalog can
     // pick up its share declarations; it just doesn't surface in
     // `recipes()`.
@@ -212,12 +212,12 @@ fn recipe_by_name_finds_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(
-        &root.join("alpha").join("recipe.forage"),
+        &root.join("alpha.forage"),
         "recipe \"alpha\"\nengine http\n",
     );
     let ws = workspace::load(root).unwrap();
     let recipe = ws.recipe_by_name("alpha").expect("recipe by name");
-    assert!(recipe.path.ends_with("alpha/recipe.forage"));
+    assert!(recipe.path.ends_with("alpha.forage"));
     assert_eq!(recipe.name(), "alpha");
 }
 
@@ -235,7 +235,7 @@ fn hub_dep_cache_contributes_types() {
         "description = \"\"\ncategory = \"\"\ntags = []\n\
          [deps]\n\"dima/shared-types\" = 3\n",
     );
-    let recipe_path = root.join("rec").join("recipe.forage");
+    let recipe_path = root.join("rec.forage");
     write(&recipe_path, "recipe \"rec\"\nengine http\n");
     let pkg_dir = cache.path().join("dima").join("shared-types").join("3");
     write(

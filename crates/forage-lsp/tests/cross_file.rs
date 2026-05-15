@@ -29,7 +29,7 @@ fn recipe_resolves_share_type_declared_in_sibling_file() {
     );
     let shared_path = root.join("shared.forage");
     write(&shared_path, "share type Item { id: String }\n");
-    let recipe_path = root.join("rec").join("recipe.forage");
+    let recipe_path = root.join("rec.forage");
     write(
         &recipe_path,
         r#"recipe "rec"
@@ -74,7 +74,7 @@ fn editing_share_decl_revalidates_dependent_recipe() {
     );
     let shared_path = root.join("shared.forage");
     write(&shared_path, "share type Item { id: String }\n");
-    let recipe_path = root.join("rec").join("recipe.forage");
+    let recipe_path = root.join("rec.forage");
     write(
         &recipe_path,
         r#"recipe "rec"
@@ -220,7 +220,7 @@ fn catalog_uses_live_buffer_for_unsaved_share_decls() {
     let shared_path = root.join("shared.forage");
     // Disk says `OldName`, but the editor will hold `NewName`.
     write(&shared_path, "share type OldName { id: String }\n");
-    let recipe_path = root.join("rec").join("recipe.forage");
+    let recipe_path = root.join("rec.forage");
     write(
         &recipe_path,
         r#"recipe "rec"

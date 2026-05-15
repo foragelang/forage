@@ -248,7 +248,7 @@ async fn run_once_uses_deployed_source() {
 
     let mock = common::http_mock::server_returning_items(&[("a", 0.1), ("b", 0.2), ("c", 0.3)])
         .await;
-    let recipe_path = ws_root.join(recipe_name).join("recipe.forage");
+    let recipe_path = ws_root.join(format!("{recipe_name}.forage"));
     let src = std::fs::read_to_string(&recipe_path).unwrap();
     let deployed_src = src.replace("https://example.test/items", &mock.url("/items"));
     std::fs::write(&recipe_path, &deployed_src).unwrap();
@@ -382,7 +382,7 @@ async fn scheduled_run_recipe_version_round_trips() {
     init_workspace(&ws_root, recipe_name, RECIPE);
 
     let mock = common::http_mock::server_returning_items(&[("a", 0.1), ("b", 0.2)]).await;
-    let recipe_path = ws_root.join(recipe_name).join("recipe.forage");
+    let recipe_path = ws_root.join(format!("{recipe_name}.forage"));
     let src = std::fs::read_to_string(&recipe_path).unwrap();
     let deployed_src = src.replace("https://example.test/items", &mock.url("/items"));
     std::fs::write(&recipe_path, &deployed_src).unwrap();
