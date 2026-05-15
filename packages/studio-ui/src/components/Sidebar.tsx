@@ -1,7 +1,8 @@
-//! Workspace sidebar — workspace header, Runs, Dependencies, Files,
-//! daemon footer. Ported from `design/Sidebar.v2.tsx` and wired to
-//! the real data sources (TanStack Query for the wire shapes, the
-//! Zustand store for selection).
+//! Workspace sidebar — workspace header, Runs, Recipes, Dependencies,
+//! Files, daemon footer. Recipes addresses each parsed recipe by header
+//! name (the daemon / hub / data-dir identity); Files is the
+//! filesystem view (declarations, fixtures, broken files, hidden data).
+//! Both coexist — clicking either opens the same editor surface.
 //!
 //! Reactive-UI rule: this file does not destructure useStudio; each
 //! subscription is scoped to the field the rendering branch needs.
@@ -162,34 +163,35 @@ export function Sidebar() {
             .sort((a, b) => a.slug.localeCompare(b.slug));
     }, [workspace.data]);
 
+    const onNewRecipe = async () => {
+        try {
+            // `create_recipe` returns the directory it wrote
+            // `recipe.forage` into. The template sets
+            // `recipe "<dir>"` so the listRecipeStatuses join lands
+            // on the first refetch.
+            const dir = await service.createRecipe();
+            await Promise.all([
+                qc.invalidateQueries({ queryKey: ["files"] }),
+                qc.invalidateQueries({ queryKey: recipeStatusesKey() }),
+            ]);
+            await useStudio
+                .getState()
+                .setActiveFilePath(`${dir}/recipe.forage`);
+        } catch (e) {
+            useStudio.getState().setRunError(String(e));
+        }
+    };
+
     return (
         <SidebarRoot collapsible="icon">
             <WorkspaceHeader workspace={workspace.data ?? null} />
             <SidebarContent>
                 <RunsSection runs={runs.data ?? []} loading={runs.isLoading} />
+                <RecipesSection onNewRecipe={onNewRecipe} />
                 <DepsSection deps={deps} />
                 <FilesSection
                     files={fileChildren}
                     loading={files.isLoading}
-                    onNewFile={async () => {
-                        try {
-                            // `create_recipe` returns the directory it
-                            // wrote `recipe.forage` into. The template
-                            // sets `recipe "<dir>"` so the
-                            // listRecipeStatuses join lands on the
-                            // first refetch.
-                            const dir = await service.createRecipe();
-                            await Promise.all([
-                                qc.invalidateQueries({ queryKey: ["files"] }),
-                                qc.invalidateQueries({ queryKey: recipeStatusesKey() }),
-                            ]);
-                            await useStudio
-                                .getState()
-                                .setActiveFilePath(`${dir}/recipe.forage`);
-                        } catch (e) {
-                            useStudio.getState().setRunError(String(e));
-                        }
-                    }}
                 />
             </SidebarContent>
             <DaemonStatusFooter
@@ -431,6 +433,152 @@ function HealthDot({ health }: { health: Health }) {
     return <span className={cn("size-1.5 shrink-0 rounded-full", tone)} />;
 }
 
+// ── recipes section ──────────────────────────────────────────────────
+//
+// The recipes section is the primary affordance: every parsed recipe in
+// the workspace shows up by its header name, addressable independent of
+// where it lives on disk. The files tree below stays as the secondary
+// view for filesystem-shaped browsing (declarations, fixtures, hidden
+// data dirs). Broken recipes and deployed-but-no-source entries don't
+// appear here — only `valid` drafts have a path to open in the editor.
+
+function RecipesSection({ onNewRecipe }: { onNewRecipe: () => void }) {
+    const service = useStudioService();
+    const recipes = useRecipes();
+    const valid = useMemo(
+        () =>
+            (recipes.data ?? []).filter(
+                (r): r is typeof r & { draft: { kind: "valid"; path: string } } =>
+                    r.draft.kind === "valid",
+            ),
+        [recipes.data],
+    );
+    return (
+        <SidebarGroup className="py-1">
+            <SidebarGroupLabel className="flex items-center justify-between">
+                <span>Recipes</span>
+                <div className="flex items-center gap-1">
+                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                        {valid.length}
+                    </span>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                onClick={onNewRecipe}
+                                size="icon-sm"
+                                variant="ghost"
+                                aria-label="New recipe"
+                                className="size-4"
+                            >
+                                <Plus className="size-3" />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>New recipe (⌘N)</TooltipContent>
+                    </Tooltip>
+                </div>
+            </SidebarGroupLabel>
+            <SidebarMenu>
+                {recipes.isLoading && (
+                    <SidebarMenuItem>
+                        <SidebarMenuSkeleton />
+                    </SidebarMenuItem>
+                )}
+                {!recipes.isLoading && valid.length === 0 && (
+                    <div className="px-3 py-2 text-[11px] text-muted-foreground group-data-[collapsible=icon]:hidden">
+                        No recipes — click + to scaffold one, or add a
+                        <span className="font-mono"> recipe "..." </span>
+                        header to a <span className="font-mono">.forage</span> file.
+                    </div>
+                )}
+                {valid.map((r) => (
+                    <RecipeRow
+                        key={r.name}
+                        name={r.name}
+                        path={r.draft.path}
+                        service={service}
+                    />
+                ))}
+            </SidebarMenu>
+        </SidebarGroup>
+    );
+}
+
+function RecipeRow({
+    name,
+    path,
+    service,
+}: {
+    name: string;
+    path: string;
+    service: StudioService;
+}) {
+    // Subscribe to the smallest slice: active boolean derived inline,
+    // not the whole `activeRecipeName` field — keeps the row off the
+    // re-render path when other rows flip selection.
+    const active = useStudio(
+        (s) => s.view === "editor" && s.activeRecipeName === name,
+    );
+    return (
+        <SidebarMenuItem
+            className={cn(
+                "group/recipe flex items-center gap-0 rounded-sm",
+                "hover:bg-sidebar-accent",
+                active && "bg-sidebar-accent",
+            )}
+        >
+            <button
+                type="button"
+                onClick={() => {
+                    useStudio.getState().setView("editor");
+                    // setActiveRecipeName routes both the name and the
+                    // path through the store; we still pass the path
+                    // explicitly so the editor opens even if the
+                    // recipe-statuses cache misses.
+                    void useStudio.getState().setActiveRecipeName(name, path);
+                }}
+                onContextMenu={(e) => {
+                    e.preventDefault();
+                    service.showRecipeContextMenu(name).catch((err) =>
+                        console.warn("context menu failed", err),
+                    );
+                }}
+                className={cn(
+                    "min-w-0 flex-1 flex items-center gap-2 px-2 h-7 text-left",
+                    "text-sm text-sidebar-foreground",
+                )}
+            >
+                <Sprout className="size-3.5 shrink-0 text-success" />
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                    {name}
+                </span>
+            </button>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            service.runRecipe(name, false).catch((err) =>
+                                console.warn("run_recipe failed", err),
+                            );
+                        }}
+                        aria-label="Run live"
+                        className={cn(
+                            "flex h-7 w-6 items-center justify-center shrink-0",
+                            "rounded-sm text-muted-foreground",
+                            "opacity-0 group-hover/recipe:opacity-100",
+                            "hover:bg-sidebar-accent-foreground/10 hover:text-success",
+                        )}
+                    >
+                        <Play className="size-3 fill-current" />
+                    </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Run live</TooltipContent>
+            </Tooltip>
+        </SidebarMenuItem>
+    );
+}
+
 // ── deps section ─────────────────────────────────────────────────────
 
 function DepsSection({ deps }: { deps: Dep[] }) {
@@ -495,11 +643,9 @@ function DepsSection({ deps }: { deps: Dep[] }) {
 function FilesSection({
     files,
     loading,
-    onNewFile,
 }: {
     files: FileNode[];
     loading: boolean;
-    onNewFile: () => void;
 }) {
     const [expanded, setExpanded] = useState<Set<string>>(() => {
         const s = new Set<string>();
@@ -533,22 +679,8 @@ function FilesSection({
 
     return (
         <SidebarGroup className="py-1">
-            <SidebarGroupLabel className="flex items-center justify-between">
+            <SidebarGroupLabel>
                 <span>Files</span>
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <Button
-                            onClick={onNewFile}
-                            size="icon-sm"
-                            variant="ghost"
-                            aria-label="New file"
-                            className="size-4"
-                        >
-                            <Plus className="size-3" />
-                        </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>New recipe (⌘N)</TooltipContent>
-                </Tooltip>
             </SidebarGroupLabel>
             <div className="px-1">
                 {loading && (
