@@ -15,11 +15,6 @@ use forage_core::{
 use forage_http::{Engine, ReplayTransport};
 use forage_lsp::intel::hover_at;
 
-#[wasm_bindgen]
-pub fn forage_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
-
 /// Parse a recipe and return JSON: either the AST or a structured error.
 ///
 /// Shape on success:
