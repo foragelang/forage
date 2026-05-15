@@ -1407,6 +1407,7 @@ name = "forage-core"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "async-trait",
  "chumsky",
  "dirs 5.0.1",
  "forage-test",
@@ -1420,6 +1421,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "ts-rs",

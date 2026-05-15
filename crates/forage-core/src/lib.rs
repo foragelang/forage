@@ -17,7 +17,8 @@ pub mod workspace;
 pub use ast::{ForageFile, RecipeHeader};
 pub use error::{ForageError, ForageResult};
 pub use eval::{
-    EvalError, EvalValue, Evaluator, RunOptions, Scope, TransformRegistry, default_registry,
+    AsyncTransformFn, EvalError, EvalValue, Evaluator, NoTransport, RunOptions, Scope,
+    TransformFuture, TransformRegistry, TransportContext, default_registry,
 };
 pub use parse::parse;
 pub use progress::{ProgressUnit, infer_progress_unit};

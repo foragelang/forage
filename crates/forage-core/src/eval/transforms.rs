@@ -1,10 +1,20 @@
 //! Registry of built-in transforms.
 //!
-//! Each transform: `fn(input: EvalValue, args: &[EvalValue]) -> Result<EvalValue, EvalError>`.
-//! Registered by name; the evaluator's pipe / call forms look up the
-//! function and apply it.
+//! Two categories live side by side:
+//! - **Sync transforms** `fn(EvalValue, &[EvalValue]) -> Result<EvalValue>` —
+//!   pure data shaping (string, regex, HTML, JSON parsing). The
+//!   evaluator's sync path applies them directly.
+//! - **Transport-aware async transforms** `(EvalValue, Vec<EvalValue>, &dyn
+//!   TransportContext) -> BoxFuture<…>` — fetch over the engine's
+//!   `Transport` (so `--replay <fixtures>` covers them just like
+//!   step-level requests). The async eval path resolves them; the sync
+//!   path errors with [`EvalError::TransformRequiresTransport`].
+//!
+//! User-defined `fn`s shadow built-ins by name (validator warns).
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::OnceLock;
 
 use crate::ast::FnDecl;
@@ -14,9 +24,25 @@ use crate::eval::value::EvalValue;
 
 pub type TransformFn = fn(EvalValue, &[EvalValue]) -> Result<EvalValue, EvalError>;
 
+/// Future returned by a transport-aware transform.
+pub type TransformFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<EvalValue, EvalError>> + Send + 'a>>;
+
+/// A transport-aware transform: receives the pipe head, the call args,
+/// and a borrowed transport context to issue fetches through. The
+/// `Vec<EvalValue>` (rather than `&[…]`) frees the future from
+/// borrowing the caller's stack so the dispatch site can move the args
+/// into the future.
+pub type AsyncTransformFn = for<'a> fn(
+    EvalValue,
+    Vec<EvalValue>,
+    &'a dyn crate::eval::TransportContext,
+) -> TransformFuture<'a>;
+
 #[derive(Default)]
 pub struct TransformRegistry {
     table: HashMap<String, TransformFn>,
+    async_table: HashMap<String, AsyncTransformFn>,
     /// User-defined transforms cloned from the recipe at engine boot.
     /// Layered on top of the built-ins: `get_user_fn` is consulted
     /// before the built-in table, so a recipe-level `fn lower($x) { … }`
@@ -30,8 +56,16 @@ impl TransformRegistry {
         self.table.insert(name.into(), f);
     }
 
+    pub fn register_async(&mut self, name: &str, f: AsyncTransformFn) {
+        self.async_table.insert(name.into(), f);
+    }
+
     pub fn get(&self, name: &str) -> Option<TransformFn> {
         self.table.get(name).copied()
+    }
+
+    pub fn get_async(&self, name: &str) -> Option<AsyncTransformFn> {
+        self.async_table.get(name).copied()
     }
 
     pub fn get_user_fn(&self, name: &str) -> Option<&FnDecl> {
@@ -50,6 +84,7 @@ impl TransformRegistry {
         }
         Self {
             table: base.table.clone(),
+            async_table: base.async_table.clone(),
             user_fns,
         }
     }

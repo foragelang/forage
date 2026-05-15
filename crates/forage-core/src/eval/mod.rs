@@ -1,7 +1,9 @@
 //! Forage expression / template / transform evaluator.
 //!
-//! Public surface: `Evaluator::new(registry)` then
-//! `evaluator.eval_extraction(expr, scope) -> Result<EvalValue>`.
+//! Public surface: `Evaluator::new(registry)` then either
+//! `evaluator.eval_extraction(expr, scope)` (sync, for pure transforms)
+//! or `evaluator.eval_extraction_async(expr, scope, &transport)` (async,
+//! routes transport-aware transforms through a [`TransportContext`]).
 
 pub mod error;
 pub mod html;
@@ -11,12 +13,49 @@ pub mod value;
 
 pub use error::EvalError;
 pub use scope::Scope;
-pub use transforms::{TransformFn, TransformRegistry, default_registry};
+pub use transforms::{
+    AsyncTransformFn, TransformFn, TransformFuture, TransformRegistry, default_registry,
+};
 pub use value::{EvalValue, RegexValue};
+
+use std::future::Future;
+use std::pin::Pin;
 
 use indexmap::IndexMap;
 
 use crate::ast::*;
+
+/// Bridge from a transport-aware transform back to the host engine's
+/// HTTP transport. Defined in `forage-core` (no I/O dependencies) so
+/// the language core can declare async transforms without pulling in
+/// `forage-http`; concrete engines implement it by wrapping their
+/// `Transport`. Routing every transform fetch through the same
+/// transport is what lets `--replay <fixtures>` capture wikidata
+/// reconciliation alongside step-level requests.
+#[async_trait::async_trait]
+pub trait TransportContext: Send + Sync {
+    /// Issue a GET against `url`, parse the response body as JSON, and
+    /// hand back the parsed value. Transport-aware transforms call this
+    /// for their network needs; the engine's implementation also threads
+    /// progress events and request/response logging.
+    async fn fetch_json(&self, url: &str) -> Result<EvalValue, EvalError>;
+}
+
+/// Sentinel transport context the sync evaluator paths bind to. Every
+/// transport-aware transform routed through this context fails with
+/// [`EvalError::TransformRequiresTransport`]; that's the diagnostic
+/// surfaced to callers that try to fire `wikidataEntity` from a sync
+/// path. The async engine path replaces it with a live transport.
+pub struct NoTransport;
+
+#[async_trait::async_trait]
+impl TransportContext for NoTransport {
+    async fn fetch_json(&self, _url: &str) -> Result<EvalValue, EvalError> {
+        Err(EvalError::TransformRequiresTransport {
+            name: "<unknown>".into(),
+        })
+    }
+}
 
 /// Knobs the for-loop walker reads off the engine on every run.
 ///
@@ -270,6 +309,9 @@ impl<'r> Evaluator<'r> {
             let provided = 1 + resolved.len();
             return self.apply_user_fn(decl, Some(head), &resolved, provided, scope);
         }
+        if self.registry.get_async(name).is_some() {
+            return Err(EvalError::TransformRequiresTransport { name: name.into() });
+        }
         let f = self
             .registry
             .get(name)
@@ -296,6 +338,9 @@ impl<'r> Evaluator<'r> {
         if let Some(decl) = self.registry.get_user_fn(name) {
             let provided = resolved.len();
             return self.apply_user_fn(decl, None, &resolved, provided, scope);
+        }
+        if self.registry.get_async(name).is_some() {
+            return Err(EvalError::TransformRequiresTransport { name: name.into() });
         }
         let f = self
             .registry
@@ -353,6 +398,228 @@ impl<'r> Evaluator<'r> {
             child.bind(&b.name, v);
         }
         self.eval_extraction(&decl.body.result, &child)
+    }
+
+    /// Async counterpart to `eval_extraction`. Same logic, but the pipe
+    /// and direct-call dispatchers consult the registry's async table
+    /// first and `.await` the resulting future when the call hits a
+    /// transport-aware transform. Sync transforms still dispatch via
+    /// the sync table — there's no behavioural difference for any
+    /// expression that doesn't touch the network.
+    ///
+    /// `transport` is the bridge to the engine's `Transport`. Callers
+    /// that don't have one pass [`NoTransport`]; any transport-aware
+    /// transform reached through that path errors with
+    /// [`EvalError::TransformRequiresTransport`].
+    pub fn eval_extraction_async<'a>(
+        &'a self,
+        expr: &'a ExtractionExpr,
+        scope: &'a Scope,
+        transport: &'a dyn TransportContext,
+    ) -> Pin<Box<dyn Future<Output = Result<EvalValue, EvalError>> + Send + 'a>> {
+        Box::pin(async move {
+            match expr {
+                ExtractionExpr::Path(p) => self.eval_path(p, scope),
+                ExtractionExpr::Literal(j) => Ok(EvalValue::from(j.clone())),
+                ExtractionExpr::Template(t) => self
+                    .render_template_async(t, scope, transport)
+                    .await
+                    .map(EvalValue::String),
+                ExtractionExpr::Pipe(head, calls) => {
+                    let mut v = self.eval_extraction_async(head, scope, transport).await?;
+                    for call in calls {
+                        v = self
+                            .apply_pipe_call_async(&call.name, v, &call.args, scope, transport)
+                            .await?;
+                    }
+                    Ok(v)
+                }
+                ExtractionExpr::Call { name, args } => {
+                    self.apply_direct_call_async(name, args, scope, transport).await
+                }
+                ExtractionExpr::CaseOf { scrutinee, branches } => {
+                    let v = self.eval_path(scrutinee, scope)?;
+                    let label = match &v {
+                        EvalValue::Bool(b) => b.to_string(),
+                        EvalValue::String(s) => s.clone(),
+                        EvalValue::Int(n) => n.to_string(),
+                        EvalValue::Null => "null".into(),
+                        other => format!("{other:?}"),
+                    };
+                    let mut default_arm: Option<&ExtractionExpr> = None;
+                    for (l, arm) in branches {
+                        if l == "_" {
+                            default_arm = Some(arm);
+                            continue;
+                        }
+                        if l == &label {
+                            return self.eval_extraction_async(arm, scope, transport).await;
+                        }
+                    }
+                    if let Some(arm) = default_arm {
+                        return self.eval_extraction_async(arm, scope, transport).await;
+                    }
+                    Err(EvalError::CaseNoMatch { label })
+                }
+                ExtractionExpr::MapTo { path, .. } => self.eval_path(path, scope),
+                ExtractionExpr::BinaryOp { op, lhs, rhs } => {
+                    let l = self.eval_extraction_async(lhs, scope, transport).await?;
+                    let r = self.eval_extraction_async(rhs, scope, transport).await?;
+                    apply_binary(*op, l, r)
+                }
+                ExtractionExpr::Unary { op, operand } => {
+                    let v = self.eval_extraction_async(operand, scope, transport).await?;
+                    apply_unary(*op, v)
+                }
+                ExtractionExpr::StructLiteral { fields } => {
+                    let mut out: IndexMap<String, EvalValue> = IndexMap::new();
+                    for f in fields {
+                        if out.contains_key(&f.field_name) {
+                            return Err(EvalError::DuplicateStructField(f.field_name.clone()));
+                        }
+                        let v = self.eval_extraction_async(&f.expr, scope, transport).await?;
+                        out.insert(f.field_name.clone(), v);
+                    }
+                    Ok(EvalValue::Object(out))
+                }
+                ExtractionExpr::Index { base, index } => {
+                    let b = self.eval_extraction_async(base, scope, transport).await?;
+                    let i = self.eval_extraction_async(index, scope, transport).await?;
+                    apply_index(b, i)
+                }
+                ExtractionExpr::RegexLiteral(lit) => {
+                    let re = crate::parse::parser::build_regex(&lit.pattern, &lit.flags)
+                        .map_err(|e| {
+                            EvalError::Generic(format!("regex /{}/{}: {e}", lit.pattern, lit.flags))
+                        })?;
+                    Ok(EvalValue::Regex(crate::eval::value::RegexValue {
+                        pattern: lit.pattern.clone(),
+                        flags: lit.flags.clone(),
+                        re,
+                    }))
+                }
+            }
+        })
+    }
+
+    /// Async counterpart to `render_template`. Interpolated expressions
+    /// route through `eval_extraction_async` so a template that pipes
+    /// through a transport-aware transform resolves correctly.
+    pub async fn render_template_async(
+        &self,
+        t: &Template,
+        scope: &Scope,
+        transport: &dyn TransportContext,
+    ) -> Result<String, EvalError> {
+        let mut out = String::new();
+        for part in &t.parts {
+            match part {
+                TemplatePart::Literal(s) => out.push_str(s),
+                TemplatePart::Interp(e) => {
+                    let v = self.eval_extraction_async(e, scope, transport).await?;
+                    out.push_str(&stringify(&v));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn apply_pipe_call_async(
+        &self,
+        name: &str,
+        head: EvalValue,
+        args: &[ExtractionExpr],
+        scope: &Scope,
+        transport: &dyn TransportContext,
+    ) -> Result<EvalValue, EvalError> {
+        let mut resolved = Vec::with_capacity(args.len());
+        for a in args {
+            resolved.push(self.eval_extraction_async(a, scope, transport).await?);
+        }
+        if let Some(decl) = self.registry.get_user_fn(name) {
+            let provided = 1 + resolved.len();
+            return self
+                .apply_user_fn_async(decl, Some(head), resolved, provided, scope, transport)
+                .await;
+        }
+        if let Some(f) = self.registry.get_async(name) {
+            return f(head, resolved, transport).await;
+        }
+        let f = self
+            .registry
+            .get(name)
+            .ok_or_else(|| EvalError::UnknownTransform { name: name.into() })?;
+        f(head, &resolved)
+    }
+
+    async fn apply_direct_call_async(
+        &self,
+        name: &str,
+        args: &[ExtractionExpr],
+        scope: &Scope,
+        transport: &dyn TransportContext,
+    ) -> Result<EvalValue, EvalError> {
+        let mut resolved = Vec::with_capacity(args.len());
+        for a in args {
+            resolved.push(self.eval_extraction_async(a, scope, transport).await?);
+        }
+        if let Some(decl) = self.registry.get_user_fn(name) {
+            let provided = resolved.len();
+            return self
+                .apply_user_fn_async(decl, None, resolved, provided, scope, transport)
+                .await;
+        }
+        if let Some(f) = self.registry.get_async(name) {
+            let head = scope.current.clone().unwrap_or(EvalValue::Null);
+            return f(head, resolved, transport).await;
+        }
+        let f = self
+            .registry
+            .get(name)
+            .ok_or_else(|| EvalError::UnknownTransform { name: name.into() })?;
+        let head = scope.current.clone().unwrap_or(EvalValue::Null);
+        f(head, &resolved)
+    }
+
+    fn apply_user_fn_async<'a>(
+        &'a self,
+        decl: &'a crate::ast::FnDecl,
+        head: Option<EvalValue>,
+        args: Vec<EvalValue>,
+        provided: usize,
+        scope: &'a Scope,
+        transport: &'a dyn TransportContext,
+    ) -> Pin<Box<dyn Future<Output = Result<EvalValue, EvalError>> + Send + 'a>> {
+        Box::pin(async move {
+            let expected = decl.params.len();
+            if provided != expected {
+                return Err(EvalError::FnArityMismatch {
+                    name: decl.name.clone(),
+                    expected,
+                    got: provided,
+                });
+            }
+            let mut child = Scope::new()
+                .with_inputs(scope.inputs().clone())
+                .with_secrets(scope.secrets_map().clone());
+            let mut params = decl.params.iter();
+            if let Some(h) = head
+                && let Some(first) = params.next()
+            {
+                child.bind(first, h);
+            }
+            for (p, v) in params.zip(args.into_iter()) {
+                child.bind(p, v);
+            }
+            for b in &decl.body.bindings {
+                let v = self
+                    .eval_extraction_async(&b.value, &child, transport)
+                    .await?;
+                child.bind(&b.name, v);
+            }
+            self.eval_extraction_async(&decl.body.result, &child, transport)
+                .await
+        })
     }
 }
 
@@ -1012,5 +1279,101 @@ mod tests {
             "#,
         );
         assert_eq!(v, EvalValue::String("OTHER".into()));
+    }
+
+    // --- transport-aware transform extension point -------------------------
+
+    /// Mock `TransportContext` for the async-eval tests. Returns a
+    /// fixed JSON object built from the requested URL.
+    struct MockTransport;
+
+    #[async_trait::async_trait]
+    impl super::TransportContext for MockTransport {
+        async fn fetch_json(&self, url: &str) -> Result<EvalValue, EvalError> {
+            let mut obj = indexmap::IndexMap::new();
+            obj.insert("url".to_string(), EvalValue::String(url.into()));
+            obj.insert("ok".to_string(), EvalValue::Bool(true));
+            Ok(EvalValue::Object(obj))
+        }
+    }
+
+    #[tokio::test]
+    async fn async_eval_routes_async_transform_through_transport() {
+        // Registers an async transform that calls the transport directly
+        // and returns the parsed JSON. Exercises the dispatch path used
+        // by every future transport-aware built-in.
+        let mut reg = TransformRegistry::default();
+        reg.register_async("probe", |_head, args, ctx| {
+            Box::pin(async move {
+                let url = match args.first() {
+                    Some(EvalValue::String(s)) => s.clone(),
+                    _ => return Err(EvalError::Generic("probe needs a string url".into())),
+                };
+                ctx.fetch_json(&url).await
+            })
+        });
+        let ev = Evaluator::new(&reg);
+        let call = ExtractionExpr::Call {
+            name: "probe".into(),
+            args: vec![ExtractionExpr::Literal(JSONValue::String(
+                "https://example.test/x".into(),
+            ))],
+        };
+        let scope = Scope::new();
+        let transport = MockTransport;
+        let v = ev
+            .eval_extraction_async(&call, &scope, &transport)
+            .await
+            .unwrap();
+        let EvalValue::Object(o) = v else {
+            panic!("expected object, got {v:?}");
+        };
+        assert_eq!(
+            o.get("url"),
+            Some(&EvalValue::String("https://example.test/x".into())),
+        );
+        assert_eq!(o.get("ok"), Some(&EvalValue::Bool(true)));
+    }
+
+    #[test]
+    fn sync_eval_rejects_async_only_transform() {
+        // The sync path has no transport — invoking a transform that
+        // only exists in the async table must surface a typed error so
+        // callers know to switch to the async API.
+        let mut reg = TransformRegistry::default();
+        reg.register_async("probe", |_h, _a, _c| {
+            Box::pin(async move { Ok(EvalValue::Null) })
+        });
+        let ev = Evaluator::new(&reg);
+        let call = ExtractionExpr::Call {
+            name: "probe".into(),
+            args: vec![],
+        };
+        let err = ev.eval_extraction(&call, &Scope::new()).unwrap_err();
+        assert!(
+            matches!(err, EvalError::TransformRequiresTransport { ref name } if name == "probe"),
+            "got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn async_eval_falls_through_to_sync_transforms() {
+        // Async eval must still dispatch pure transforms — otherwise
+        // every existing recipe breaks the moment the engine switches
+        // over. Pipe `"hi" | upper` through the async path.
+        let reg = default_registry();
+        let ev = Evaluator::new(reg);
+        let expr = ExtractionExpr::Pipe(
+            Box::new(ExtractionExpr::Literal(JSONValue::String("hi".into()))),
+            vec![TransformCall {
+                name: "upper".into(),
+                args: vec![],
+            }],
+        );
+        let v = ev
+            .eval_extraction_async(&expr, &Scope::new(), &NoTransport)
+            .await
+            .unwrap();
+        assert_eq!(v, EvalValue::String("HI".into()));
     }
 }

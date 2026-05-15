@@ -57,6 +57,17 @@ pub enum EvalError {
     /// run (REPL, ad-hoc eval).
     #[error("duplicate field '{0}' in struct literal")]
     DuplicateStructField(String),
+    /// A transport-aware transform (one that fetches over HTTP) was
+    /// invoked through a sync evaluator path. Callers that want to use
+    /// `wikidataEntity` and similar must drive the engine, which threads
+    /// a `TransportContext` through `eval_extraction_async`.
+    #[error("transform '{name}' requires a transport context; use the engine async path")]
+    TransformRequiresTransport { name: String },
+    /// Network or response-parsing failure inside a transport-aware
+    /// transform. Carries the transform name and a short message so the
+    /// recipe author sees which fetch went wrong.
+    #[error("transform '{name}': transport error: {msg}")]
+    TransportError { name: String, msg: String },
     #[error("{0}")]
     Generic(String),
 }

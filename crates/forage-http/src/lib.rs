@@ -29,4 +29,6 @@ pub use debug::{
 pub use engine::{Engine, EngineConfig, PriorRecords};
 pub use error::{HttpError, HttpResult};
 pub use progress::{CaptureSink, FnSink, NoopSink, ProgressHandle, ProgressSink, RunEvent};
-pub use transport::{HttpRequest, HttpResponse, ReplayTransport, Transport};
+pub use transport::{
+    EngineTransportContext, HttpRequest, HttpResponse, ReplayTransport, Transport,
+};

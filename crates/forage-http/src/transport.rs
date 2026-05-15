@@ -5,8 +5,15 @@
 //! `forage_replay::read_jsonl` (disk) or `parse_jsonl` (in-memory
 //! string) and pass it to [`ReplayTransport::new`]. A live
 //! `reqwest`-backed transport lives in `client.rs`.
+//!
+//! `EngineTransportContext` adapts a `&dyn Transport` into a
+//! [`forage_core::TransportContext`] so transport-aware transforms
+//! (`wikidataEntity` and friends) issue their fetches through the same
+//! transport as step-level requests — which is what makes replay
+//! capture them in the same fixture file.
 
 use async_trait::async_trait;
+use forage_core::{EvalError, EvalValue, TransportContext};
 use indexmap::IndexMap;
 
 use crate::error::{HttpError, HttpResult};
@@ -111,5 +118,57 @@ fn strip_origin(u: &str) -> String {
             format!("{}?{}", path, parts.join("&"))
         }
         None => path.to_string(),
+    }
+}
+
+/// Bridge from a `&dyn Transport` to `forage_core::TransportContext`.
+/// Built once per engine run and passed into the async evaluator;
+/// every transport-aware transform's fetch lands on the same transport
+/// the engine uses for step-level requests, which is what makes
+/// `--replay <fixtures>` cover wikidata reconciliation traffic.
+pub struct EngineTransportContext<'t> {
+    transport: &'t dyn Transport,
+    user_agent: String,
+}
+
+impl<'t> EngineTransportContext<'t> {
+    pub fn new(transport: &'t dyn Transport, user_agent: String) -> Self {
+        Self { transport, user_agent }
+    }
+}
+
+#[async_trait]
+impl TransportContext for EngineTransportContext<'_> {
+    async fn fetch_json(&self, url: &str) -> Result<EvalValue, EvalError> {
+        let mut headers: IndexMap<String, String> = IndexMap::new();
+        headers.insert("User-Agent".into(), self.user_agent.clone());
+        headers.insert("Accept".into(), "application/json".into());
+        let req = HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+            headers,
+            body: None,
+        };
+        let resp = self
+            .transport
+            .fetch(req)
+            .await
+            .map_err(|e| EvalError::TransportError {
+                name: "<transform>".into(),
+                msg: e.to_string(),
+            })?;
+        if !(200..400).contains(&resp.status) {
+            return Err(EvalError::TransportError {
+                name: "<transform>".into(),
+                msg: format!("status {} from {}", resp.status, url),
+            });
+        }
+        let body = resp.body_str();
+        let parsed: serde_json::Value =
+            serde_json::from_str(body).map_err(|e| EvalError::TransportError {
+                name: "<transform>".into(),
+                msg: format!("response is not JSON: {e}"),
+            })?;
+        Ok((&parsed).into())
     }
 }

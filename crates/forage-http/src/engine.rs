@@ -15,7 +15,7 @@ use crate::debug::{DebugScope, Debugger, IterationPause, ResumeAction, StepPause
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
 use crate::progress::{NoopSink, ProgressSink, RunEvent};
-use crate::transport::{HttpRequest, HttpResponse, Transport};
+use crate::transport::{EngineTransportContext, HttpRequest, HttpResponse, Transport};
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
@@ -186,6 +186,8 @@ impl<'t> Engine<'t> {
         let registry =
             TransformRegistry::with_user_fns(default_registry(), recipe.functions.clone());
         let evaluator = Evaluator::new(&registry);
+        let transport_ctx =
+            EngineTransportContext::new(self.transport, self.config.user_agent.clone());
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
         // Stamp every type the recipe could emit onto the snapshot at
@@ -223,6 +225,7 @@ impl<'t> Engine<'t> {
             recipe,
             &auth_state,
             &evaluator,
+            &transport_ctx,
             &mut scope,
             &mut snapshot,
             &mut requests_made,
@@ -249,6 +252,7 @@ impl<'t> Engine<'t> {
         recipe: &'a ForageFile,
         auth_state: &'a AuthState,
         evaluator: &'a Evaluator<'a>,
+        transport_ctx: &'a EngineTransportContext<'a>,
         scope: &'a mut Scope,
         snapshot: &'a mut Snapshot,
         requests_made: &'a mut u32,
@@ -279,7 +283,8 @@ impl<'t> Engine<'t> {
                             .await?;
                     }
                     Statement::Emit(em) => {
-                        self.run_emit(em, evaluator, scope, snapshot, emit_counts)?;
+                        self.run_emit(em, evaluator, transport_ctx, scope, snapshot, emit_counts)
+                            .await?;
                     }
                     Statement::ForLoop {
                         variable,
@@ -287,7 +292,9 @@ impl<'t> Engine<'t> {
                         body,
                         ..
                     } => {
-                        let collection_val = evaluator.eval_extraction(collection, scope)?;
+                        let collection_val = evaluator
+                            .eval_extraction_async(collection, scope, transport_ctx)
+                            .await?;
                         let mut items = match collection_val {
                             EvalValue::Array(xs) => xs,
                             EvalValue::NodeList(xs) => {
@@ -332,6 +339,7 @@ impl<'t> Engine<'t> {
                                 recipe,
                                 auth_state,
                                 evaluator,
+                                transport_ctx,
                                 scope,
                                 snapshot,
                                 requests_made,
@@ -520,17 +528,20 @@ impl<'t> Engine<'t> {
         }
     }
 
-    fn run_emit(
+    async fn run_emit(
         &self,
         em: &Emission,
         evaluator: &Evaluator<'_>,
+        transport_ctx: &EngineTransportContext<'_>,
         scope: &mut Scope,
         snapshot: &mut Snapshot,
         emit_counts: &mut IndexMap<String, usize>,
     ) -> HttpResult<()> {
         let mut fields: IndexMap<String, JSONValue> = IndexMap::new();
         for b in &em.bindings {
-            let v = evaluator.eval_extraction(&b.expr, scope)?;
+            let v = evaluator
+                .eval_extraction_async(&b.expr, scope, transport_ctx)
+                .await?;
             fields.insert(b.field_name.clone(), v.into_json());
         }
         let id = snapshot.next_record_id();
