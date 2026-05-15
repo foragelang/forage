@@ -48,8 +48,8 @@ use tokio::task::JoinHandle;
 // and ts-rs generates matching TypeScript from them.
 pub use error::{DaemonError, DeployError, RunError};
 pub use model::{
-    Cadence, DaemonStatus, DeployedVersion, Health, Outcome, Run, RunConfig, ScheduledRun,
-    TimeUnit, Trigger,
+    Cadence, DaemonStatus, DeployedVersion, Health, Outcome, Run, RunConfig, RunFlags,
+    ScheduledRun, TimeUnit, Trigger,
 };
 
 // Drift derivation. The constants and `derive_health` are part of the
@@ -437,9 +437,16 @@ impl Daemon {
         Ok(())
     }
 
-    /// Fire a run manually. Equivalent to `run_once(run_id, Trigger::Manual)`.
-    pub async fn trigger_run(self: &Arc<Self>, run_id: &str) -> Result<ScheduledRun, RunError> {
-        self.run_once(run_id, Trigger::Manual).await
+    /// Fire a run manually with caller-supplied flags. Studio's "Run"
+    /// button passes `RunFlags::dev()` (sampled, replay when fixtures
+    /// exist, ephemeral); scripts that want production-shaped behavior
+    /// pass `RunFlags::prod()`.
+    pub async fn trigger_run(
+        self: &Arc<Self>,
+        run_id: &str,
+        flags: RunFlags,
+    ) -> Result<ScheduledRun, RunError> {
+        self.run_once(run_id, Trigger::Manual, flags).await
     }
 
     /// Create a default Run for `name` if none exists yet. Idempotent:

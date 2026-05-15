@@ -25,7 +25,7 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 
 use crate::error::DaemonError;
-use crate::model::{Cadence, Outcome, Run, TimeUnit};
+use crate::model::{Cadence, Outcome, Run, RunFlags, TimeUnit};
 use crate::{Daemon, ScheduledRun, Trigger};
 
 /// Start the scheduler task. Hold the returned `JoinHandle` to wait on
@@ -89,7 +89,15 @@ async fn run_loop(daemon: Arc<Daemon>) {
             }
             _ = daemon.clock.sleep_until_ms(deadline_ms) => {
                 if let Some((_, run_id)) = plan {
-                    if let Err(e) = daemon.run_once(&run_id, Trigger::Schedule).await {
+                    // Scheduled fires are production runs: live transport,
+                    // full record set, persistent output. The dev preset
+                    // is a Studio "Run" button concern — never the
+                    // scheduler's. Hard-coding `RunFlags::prod()` keeps
+                    // the cadence path honest about what it produces.
+                    if let Err(e) = daemon
+                        .run_once(&run_id, Trigger::Schedule, RunFlags::prod())
+                        .await
+                    {
                         tracing::warn!(
                             run_id = %run_id,
                             error = %e,

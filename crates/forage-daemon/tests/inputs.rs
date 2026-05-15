@@ -3,7 +3,7 @@
 //! `<slug>/recipe.forage`) is gone; the only path is the explicit
 //! field on the row.
 
-use forage_daemon::{Cadence, Daemon, Outcome, RunConfig};
+use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -71,7 +71,10 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Item").copied(), Some(2));
 
@@ -142,7 +145,10 @@ async fn empty_inputs_do_not_fall_back_to_legacy_inputs_file() {
         "fresh configure with empty inputs must persist an empty map",
     );
 
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     // The engine fails on the unbound `$input.tenant`. The exact
     // message is the engine's concern — we only pin the row-level
     // outcome (no leak from the legacy file).

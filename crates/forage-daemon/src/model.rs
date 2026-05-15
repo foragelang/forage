@@ -183,6 +183,55 @@ pub struct RunConfig {
     pub inputs: IndexMap<String, serde_json::Value>,
 }
 
+/// Invocation-level toggles every `run_once` accepts. Three orthogonal
+/// flags that compose freely:
+/// - `sample_limit` caps each top-level `for` at N items so an authoring
+///   loop sees the first records of a real source without paging through
+///   the whole list. `None` = no cap.
+/// - `replay` swaps the live transport for a fixture-backed one when set
+///   to a captures path. `None` = live HTTP / live browser.
+/// - `ephemeral` redirects record writes to an in-memory store so the
+///   run doesn't pollute the persistent `<workspace>/.forage/data/<name>.sqlite`.
+///
+/// `RunFlags::dev()` and `RunFlags::prod()` are presets: dev turns
+/// everything on at a 10-record sample, prod is the empty preset.
+/// Studio's "Run" button passes dev; scheduled fires pass prod.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunFlags {
+    /// Cap each top-level for-loop at this many items. None = no cap.
+    #[ts(type = "number | null")]
+    pub sample_limit: Option<u32>,
+    /// Path to a captures JSONL file to replay against. None = live
+    /// network / live browser.
+    #[ts(type = "string | null")]
+    pub replay: Option<PathBuf>,
+    /// Direct record writes to an in-memory store. The persistent
+    /// `.forage/data/<recipe>.sqlite` is left untouched.
+    pub ephemeral: bool,
+}
+
+impl RunFlags {
+    /// Empty preset — full live run, full records, persisted. The
+    /// scheduler always fires this.
+    pub fn prod() -> Self {
+        Self::default()
+    }
+
+    /// Dev preset — sampled, replayed when fixtures are available,
+    /// ephemeral. The `replay` field stays `None` here because the
+    /// fixture path is a workspace-relative concern; CLI / Studio fill
+    /// it in from `_fixtures/<recipe>.jsonl` before passing the flags
+    /// down.
+    pub fn dev() -> Self {
+        Self {
+            sample_limit: Some(10),
+            replay: None,
+            ephemeral: true,
+        }
+    }
+}
+
 /// Metadata for one frozen deployed version of a recipe. The source
 /// and catalog live on disk under `<daemon_dir>/deployments/<recipe_name>/v<n>/`;
 /// this is the row recorded in the daemon DB and the wire shape Studio

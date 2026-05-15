@@ -2,7 +2,7 @@
 //! composed recipe, verify that records flow upstream → downstream
 //! and the final snapshot lands in the daemon's output store.
 
-use forage_daemon::{Cadence, Daemon, Outcome, RunConfig};
+use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -91,7 +91,7 @@ async fn composition_runs_chain_and_emits_downstream_records() {
         inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run("composed", cfg).expect("configure_run");
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon.trigger_run(&run.id, RunFlags::prod()).await.expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     // The enricher emits one Product per upstream record.
     assert_eq!(sr.counts.get("Product").copied(), Some(2));
@@ -159,7 +159,7 @@ compose "composed" | "enrich-products"
     let run = daemon
         .configure_run("double-composed", cfg)
         .expect("configure_run");
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon.trigger_run(&run.id, RunFlags::prod()).await.expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Product").copied(), Some(2));
 }

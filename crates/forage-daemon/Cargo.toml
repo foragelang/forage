@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 forage-core     = { workspace = true }
 forage-http     = { workspace = true, features = ["native"] }
+forage-browser  = { workspace = true }
+forage-replay   = { workspace = true }
 
 tokio       = { workspace = true }
 serde       = { workspace = true }

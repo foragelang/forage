@@ -258,6 +258,18 @@ impl OutputStore {
         Ok(Self { conn, tables })
     }
 
+    /// In-memory `OutputStore`. The schema lands the same way `open`
+    /// lays it down, but the store evaporates when this value drops —
+    /// nothing touches the persistent `.forage/data/<recipe>.sqlite`.
+    /// The dev-preset / `--ephemeral` invocation path uses this.
+    pub fn ephemeral(tables: Vec<TableDef>) -> Result<Self, RunError> {
+        let conn = Connection::open_in_memory().map_err(|e| RunError::Output(e.to_string()))?;
+        for t in &tables {
+            ensure_table(&conn, t).map_err(|e| RunError::Output(e.to_string()))?;
+        }
+        Ok(Self { conn, tables })
+    }
+
     /// Begin a write transaction. Caller stages every emit through
     /// `WriteTx::write_record`, then `commit` flushes them atomically.
     pub fn begin_tx(&mut self) -> Result<WriteTx<'_>, RunError> {
@@ -455,6 +467,14 @@ pub fn load_records(
     type_name: &str,
     limit: u32,
 ) -> Result<Vec<serde_json::Value>, RunError> {
+    // An ephemeral run leaves no file behind, so the persistent path
+    // a caller asks about may not exist. Treat that as "no records"
+    // rather than a hard error — the caller's mental model is "show me
+    // what this scheduled-run produced," and a missing file faithfully
+    // represents zero persisted records.
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
     let conn = Connection::open(path).map_err(|e| RunError::Output(e.to_string()))?;
     // Discover the column list dynamically — the daemon's `Run` record
     // doesn't carry the recipe-derived schema separately.

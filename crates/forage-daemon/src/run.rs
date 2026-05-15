@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use forage_core::ast::{EngineKind, RecipeBody};
 use forage_core::{EvalValue, ForageFile, Record, RunOptions, TypeCatalog};
-use forage_http::{Engine, LiveTransport, PriorRecords};
+use forage_http::{Engine, LiveTransport, PriorRecords, ReplayTransport};
 use indexmap::IndexMap;
 
 use crate::error::{DaemonError, RunError};
-use crate::model::{Outcome, ScheduledRun, Trigger};
+use crate::model::{Outcome, RunFlags, ScheduledRun, Trigger};
 use crate::output::{OutputStore, derive_schema};
 use crate::{Daemon, ProgressForwarder};
 
@@ -36,6 +36,7 @@ impl Daemon {
         self: &Arc<Self>,
         run_id: &str,
         trigger: Trigger,
+        flags: RunFlags,
     ) -> Result<ScheduledRun, RunError> {
         let started_ms = self.now_ms();
         let scheduled_run_id = ulid::Ulid::new().to_string();
@@ -49,7 +50,7 @@ impl Daemon {
             })?
         };
 
-        let outcome = execute(self, &run, &scheduled_run_id, started_ms).await;
+        let outcome = execute(self, &run, &scheduled_run_id, started_ms, &flags).await;
         let finished_ms = self.now_ms();
         let duration_s = ((finished_ms - started_ms).max(0) as f64) / 1000.0;
         // `recipe_version` is `None` only when the engine never got the
@@ -153,6 +154,7 @@ async fn execute(
     run: &crate::model::Run,
     scheduled_run_id: &str,
     scheduled_at_ms: i64,
+    flags: &RunFlags,
 ) -> Result<RunSuccess, RunFailure> {
     let Some(version) = run.deployed_version else {
         return Err(RunFailure {
@@ -198,7 +200,16 @@ async fn execute(
     let secrets = load_secrets(&recipe);
 
     let tables = derive_schema(&recipe, &catalog);
-    let mut store = match OutputStore::open(&run.output, tables) {
+    // Ephemeral runs land in an in-memory store; persistent runs write
+    // to the configured `Run.output` path. The flag is invocation-level
+    // (scheduled fires never set it), so the persistent table stays
+    // representative of what the recipe actually produces in prod.
+    let store_result = if flags.ephemeral {
+        OutputStore::ephemeral(tables)
+    } else {
+        OutputStore::open(&run.output, tables)
+    };
+    let mut store = match store_result {
         Ok(s) => s,
         Err(e) => {
             return Err(RunFailure {
@@ -218,6 +229,27 @@ async fn execute(
         host: host_progress,
     });
 
+    let engine_options = RunOptions {
+        sample_limit: flags.sample_limit,
+    };
+    // `--replay` loads captures off the supplied JSONL file and feeds
+    // them into a ReplayTransport at every stage. A missing file is a
+    // setup error — the caller asked for replay against a path that
+    // doesn't have captures, so failing the run loudly is more useful
+    // than silently running live.
+    let replay_captures = match flags.replay.as_deref() {
+        Some(path) => match forage_replay::read_jsonl(path) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Err(RunFailure {
+                    message: format!("replay {}: {e}", path.display()),
+                    diagnostics: 0,
+                    version: Some(version),
+                });
+            }
+        },
+        None => None,
+    };
     let snapshot_result = run_stage(
         daemon,
         &recipe,
@@ -227,6 +259,8 @@ async fn execute(
         PriorRecords::default(),
         sink.clone(),
         version,
+        &engine_options,
+        replay_captures.as_deref(),
     )
     .await;
     let snapshot = match snapshot_result {
@@ -267,6 +301,13 @@ async fn execute(
 /// deployment time; inner composition stages resolve their own
 /// versions via `daemon.current_deployed`, but failures still
 /// reference the outer version since that's what was scheduled.
+///
+/// `options` and `replay_captures` are decided once at the outermost
+/// `execute` and apply uniformly to every stage in a composition
+/// chain — sampling caps every stage's top-level for-loop, and replay
+/// (when set) feeds the same fixture stream to every HTTP / browser
+/// stage. Ephemeral output-store routing is realized in `execute`
+/// against the outer `Run.output`, not per-stage.
 #[allow(clippy::too_many_arguments)]
 fn run_stage<'a>(
     daemon: &'a Arc<Daemon>,
@@ -277,22 +318,51 @@ fn run_stage<'a>(
     prior: PriorRecords,
     sink: Arc<dyn forage_http::ProgressSink>,
     version: u32,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<forage_core::Snapshot, RunFailure>> + Send + 'a>>
-{
+    options: &'a RunOptions,
+    replay_captures: Option<&'a [forage_replay::Capture]>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<forage_core::Snapshot, RunFailure>> + Send + 'a>,
+> {
     Box::pin(async move {
         match &recipe.body {
             RecipeBody::Composition(comp) => {
-                run_composition(daemon, recipe, comp, inputs, secrets, sink, version).await
+                run_composition(
+                    daemon,
+                    recipe,
+                    comp,
+                    inputs,
+                    secrets,
+                    sink,
+                    version,
+                    options,
+                    replay_captures,
+                )
+                .await
             }
             RecipeBody::Scraping(_) | RecipeBody::Empty => {
-                run_scraping(daemon, recipe, catalog, inputs, secrets, prior, sink, version).await
+                run_scraping(
+                    daemon,
+                    recipe,
+                    catalog,
+                    inputs,
+                    secrets,
+                    prior,
+                    sink,
+                    version,
+                    options,
+                    replay_captures,
+                )
+                .await
             }
         }
     })
 }
 
 /// Drive a scraping-body recipe against its engine, seeded with any
-/// prior records the composition runtime threaded in.
+/// prior records the composition runtime threaded in. When
+/// `replay_captures` is `Some`, the transport / browser-replay path is
+/// taken instead of live — the same fixture stream is used at every
+/// stage of a composition chain.
 #[allow(clippy::too_many_arguments)]
 async fn run_scraping(
     daemon: &Arc<Daemon>,
@@ -303,6 +373,8 @@ async fn run_scraping(
     prior: PriorRecords,
     sink: Arc<dyn forage_http::ProgressSink>,
     version: u32,
+    options: &RunOptions,
+    replay_captures: Option<&[forage_replay::Capture]>,
 ) -> Result<forage_core::Snapshot, RunFailure> {
     let Some(engine_kind) = recipe.engine_kind() else {
         return Err(RunFailure {
@@ -313,20 +385,31 @@ async fn run_scraping(
     };
     match engine_kind {
         EngineKind::Http => {
-            let transport = LiveTransport::new().map_err(|e| RunFailure {
-                message: format!("http transport: {e}"),
+            let snapshot_result = match replay_captures {
+                Some(captures) => {
+                    let transport = ReplayTransport::new(captures.to_vec());
+                    let engine = Engine::new(&transport).with_progress(sink.clone());
+                    engine
+                        .run_with_prior(recipe, catalog, inputs, secrets, options, prior)
+                        .await
+                }
+                None => {
+                    let transport = LiveTransport::new().map_err(|e| RunFailure {
+                        message: format!("http transport: {e}"),
+                        diagnostics: 0,
+                        version: Some(version),
+                    })?;
+                    let engine = Engine::new(&transport).with_progress(sink.clone());
+                    engine
+                        .run_with_prior(recipe, catalog, inputs, secrets, options, prior)
+                        .await
+                }
+            };
+            snapshot_result.map_err(|e| RunFailure {
+                message: format!("engine: {e}"),
                 diagnostics: 0,
                 version: Some(version),
-            })?;
-            let engine = Engine::new(&transport).with_progress(sink.clone());
-            engine
-                .run_with_prior(recipe, catalog, inputs, secrets, &RunOptions::default(), prior)
-                .await
-                .map_err(|e| RunFailure {
-                    message: format!("engine: {e}"),
-                    diagnostics: 0,
-                    version: Some(version),
-                })
+            })
         }
         EngineKind::Browser => {
             if !prior.records.is_empty() {
@@ -343,32 +426,38 @@ async fn run_scraping(
                     version: Some(version),
                 });
             }
-            let driver = daemon
-                .browser_driver
-                .lock()
-                .expect("driver poisoned")
-                .clone()
-                .ok_or_else(|| RunFailure {
-                    message: "browser engine requires a LiveBrowserDriver — none registered"
-                        .into(),
-                    diagnostics: 0,
-                    version: Some(version),
-                })?;
-            driver
-                .run_live(
-                    recipe,
-                    catalog,
-                    inputs,
-                    secrets,
-                    sink.clone(),
-                    &RunOptions::default(),
+            match replay_captures {
+                Some(captures) => forage_browser::run_browser_replay(
+                    recipe, catalog, captures, inputs, secrets, options,
                 )
-                .await
                 .map_err(|e| RunFailure {
                     message: format!("browser: {e}"),
                     diagnostics: 0,
                     version: Some(version),
-                })
+                }),
+                None => {
+                    let driver = daemon
+                        .browser_driver
+                        .lock()
+                        .expect("driver poisoned")
+                        .clone()
+                        .ok_or_else(|| RunFailure {
+                            message:
+                                "browser engine requires a LiveBrowserDriver — none registered"
+                                    .into(),
+                            diagnostics: 0,
+                            version: Some(version),
+                        })?;
+                    driver
+                        .run_live(recipe, catalog, inputs, secrets, sink.clone(), options)
+                        .await
+                        .map_err(|e| RunFailure {
+                            message: format!("browser: {e}"),
+                            diagnostics: 0,
+                            version: Some(version),
+                        })
+                }
+            }
         }
     }
 }
@@ -379,6 +468,7 @@ async fn run_scraping(
 /// receive only their typed `prior` plus any auto-passthrough inputs
 /// the composition explicitly declares (today, none — the
 /// composition's input is forwarded only to stage 1).
+#[allow(clippy::too_many_arguments)]
 async fn run_composition(
     daemon: &Arc<Daemon>,
     composition_recipe: &ForageFile,
@@ -387,6 +477,8 @@ async fn run_composition(
     secrets: IndexMap<String, String>,
     sink: Arc<dyn forage_http::ProgressSink>,
     version: u32,
+    options: &RunOptions,
+    replay_captures: Option<&[forage_replay::Capture]>,
 ) -> Result<forage_core::Snapshot, RunFailure> {
     let composition_name = composition_recipe
         .recipe_name()
@@ -471,6 +563,8 @@ async fn run_composition(
             prior.clone(),
             sink.clone(),
             version,
+            options,
+            replay_captures,
         )
         .await?;
         // Stage 2+: the recipe consumes the upstream stream and ignores

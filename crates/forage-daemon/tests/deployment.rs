@@ -8,7 +8,7 @@ use std::path::Path;
 
 use forage_core::SerializableCatalog;
 use forage_daemon::{
-    Cadence, Daemon, DeployError, Outcome, RunConfig,
+    Cadence, Daemon, DeployError, Outcome, RunConfig, RunFlags,
 };
 
 mod common;
@@ -253,7 +253,10 @@ async fn run_once_without_deployment_fails_cleanly() {
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Fail);
     assert_eq!(sr.stall.as_deref(), Some("recipe not deployed"));
     // Short-circuit fired before any version was resolved.
@@ -308,7 +311,10 @@ async fn run_once_uses_deployed_source() {
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert_eq!(run.deployed_version, Some(1));
 
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Item").copied(), Some(3));
     // The row records which deployed version executed; without it,
@@ -449,7 +455,10 @@ async fn scheduled_run_recipe_version_round_trips() {
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 
     // First fire: no deployed version → row carries `recipe_version: None`.
-    let pre_deploy = daemon.trigger_run(&run.id).await.expect("trigger pre-deploy");
+    let pre_deploy = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger pre-deploy");
     assert_eq!(pre_deploy.outcome, Outcome::Fail);
     assert_eq!(pre_deploy.recipe_version, None);
 
@@ -464,7 +473,7 @@ async fn scheduled_run_recipe_version_round_trips() {
         )
         .unwrap();
     let post_deploy = daemon
-        .trigger_run(&run.id)
+        .trigger_run(&run.id, RunFlags::prod())
         .await
         .expect("trigger post-deploy");
     assert_eq!(post_deploy.outcome, Outcome::Ok, "stall: {:?}", post_deploy.stall);

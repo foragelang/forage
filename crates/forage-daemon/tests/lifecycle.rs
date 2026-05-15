@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use forage_daemon::{Cadence, Daemon, Health, Outcome, RunConfig, Trigger};
+use forage_daemon::{Cadence, Daemon, Health, Outcome, RunConfig, RunFlags, Trigger};
 
 mod common;
 use common::{deploy_disk_recipe, init_workspace};
@@ -46,7 +46,10 @@ async fn open_configure_trigger_persist() {
     deploy_disk_recipe(&daemon, &ws_root, recipe_name);
 
     // Trigger; expect Ok outcome with two emitted records.
-    let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.trigger, Trigger::Manual);
     assert_eq!(sr.counts.get("Item").copied(), Some(2));

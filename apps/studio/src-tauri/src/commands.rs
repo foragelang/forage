@@ -1578,9 +1578,20 @@ pub fn remove_run(state: State<'_, StudioState>, run_id: String) -> Result<(), S
 pub async fn trigger_run(
     state: State<'_, StudioState>,
     run_id: String,
+    flags: Option<forage_daemon::RunFlags>,
 ) -> Result<ScheduledRun, String> {
     let daemon = require_daemon(&state)?;
-    daemon.trigger_run(&run_id).await.map_err(|e| e.to_string())
+    // Deployment-view "Run now" passes `None` to mean "production
+    // trigger" — same shape the scheduler fires. Studio's editor "Run"
+    // button goes through `run_recipe`, which builds the dev preset
+    // itself. The optional `flags` argument lets a future call site
+    // (e.g. a record-button or a sampling toggle next to the run list)
+    // override without forking the command.
+    let flags = flags.unwrap_or_else(forage_daemon::RunFlags::prod);
+    daemon
+        .trigger_run(&run_id, flags)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1952,7 +1963,7 @@ mod tests {
     //! cover the rest of the surface.
     use std::path::Path;
 
-    use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, Trigger};
+    use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags, Trigger};
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2079,7 +2090,10 @@ for $i in $list.items[*] {
         let run = daemon.configure_run(slug, cfg).expect("configure_run");
         deploy_from_disk(&daemon, &ws_root, slug);
 
-        let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+        let sr = daemon
+            .trigger_run(&run.id, RunFlags::prod())
+            .await
+            .expect("trigger_run");
         assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
         assert_eq!(sr.trigger, Trigger::Manual);
         assert_eq!(sr.counts.get("Item").copied(), Some(2));
@@ -2294,7 +2308,10 @@ for $i in $list.items[*] {
         let run = daemon.configure_run("bar", cfg).expect("configure_run");
         assert_eq!(run.recipe_name, "bar");
 
-        let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+        let sr = daemon
+            .trigger_run(&run.id, RunFlags::prod())
+            .await
+            .expect("trigger_run");
         assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
         assert_eq!(sr.counts.get("Item").copied(), Some(2));
 
