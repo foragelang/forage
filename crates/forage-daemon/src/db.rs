@@ -25,21 +25,18 @@ use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun,
 const SCHEMA_VERSION: i64 = 4;
 
 /// Open the daemon DB and apply any pending schema migrations.
-/// Returns the connection plus the pre-migration `schema_version` so
-/// the caller can run data-layer fixups gated on the same transition
-/// the schema step gated on.
-pub(crate) fn open_connection(daemon_dir: &Path) -> Result<(Connection, i64), DaemonError> {
+pub(crate) fn open_connection(daemon_dir: &Path) -> Result<Connection, DaemonError> {
     std::fs::create_dir_all(daemon_dir)?;
     let db_path = daemon_dir.join("daemon.sqlite");
     let conn = Connection::open(&db_path).map_err(DaemonError::Sqlite)?;
-    let pre = apply_migrations(&conn)?;
-    Ok((conn, pre))
+    apply_migrations(&conn)?;
+    Ok(conn)
 }
 
 /// Apply pending migrations against `conn`. Idempotent: the `_meta`
 /// row gates each step, so running this against a fully-current DB is
-/// a no-op. Returns the pre-migration `schema_version`.
-fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
+/// a no-op.
+fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS _meta (
@@ -123,11 +120,9 @@ fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
     }
 
     // v3: the daemon keys on the recipe's header name (was a
-    // path-derived slug). Rename the legacy columns so the schema
-    // matches the in-memory model; row contents stay untouched here,
-    // and the data-layer one-shot at `Daemon::open` reconciles the
-    // SQLite-file basenames + row keys for any pre-existing
-    // workspaces where the header name and the legacy slug differ.
+    // path-derived slug). Rename the columns so the schema matches the
+    // in-memory model; pre-1.0, any row whose value is still a stale
+    // slug becomes the user's problem at `rm -rf .forage` time.
     if current < 3 {
         conn.execute_batch(
             r#"
@@ -160,7 +155,7 @@ fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
             params![SCHEMA_VERSION.to_string()],
         )?;
     }
-    Ok(current)
+    Ok(())
 }
 
 // --- runs ----------------------------------------------------------------

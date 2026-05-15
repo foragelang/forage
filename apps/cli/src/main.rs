@@ -1,7 +1,5 @@
 //! `forage` — the command-line tool.
 
-mod migrate;
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -173,21 +171,6 @@ enum Command {
     },
     /// Start the Forage Language Server on stdio.
     Lsp,
-    /// Restructure a workspace from the legacy
-    /// `<slug>/recipe.forage` + `<slug>/fixtures/` + `<slug>/snapshot.json`
-    /// shape into the flat `<recipe>.forage` + `_fixtures/` +
-    /// `_snapshots/` shape. Dry-run by default; pass `--apply` to
-    /// mutate the filesystem.
-    Migrate {
-        /// Workspace root (defaults to cwd). Must contain `forage.toml`.
-        #[arg(default_value = ".")]
-        dir: PathBuf,
-        /// Actually mutate the filesystem. Without this flag the
-        /// migration walks the workspace and prints the planned
-        /// actions but changes nothing.
-        #[arg(long)]
-        apply: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -295,23 +278,7 @@ fn main() -> Result<()> {
             rt.block_on(forage_lsp::server::run_stdio());
             Ok(())
         }
-        Command::Migrate { dir, apply } => do_migrate(&dir, apply),
     }
-}
-
-fn do_migrate(dir: &Path, apply: bool) -> Result<()> {
-    let plan = migrate::plan(dir)?;
-    print!("{}", migrate::render_plan(&plan));
-    if !apply {
-        println!(
-            "{} dry-run only; re-run with --apply to mutate the workspace.",
-            "note:".yellow()
-        );
-        return Ok(());
-    }
-    migrate::apply(&plan)?;
-    println!("{}", "migration complete".green());
-    Ok(())
 }
 
 /// A recipe resolved from a CLI string argument. The variant records

@@ -29,4 +29,3 @@ ulid        = { workspace = true }
 [dev-dependencies]
 tempfile     = { workspace = true }
 wiremock     = { workspace = true }
-tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
