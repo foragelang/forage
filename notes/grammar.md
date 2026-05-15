@@ -96,6 +96,12 @@ engine_kind          := 'http' | 'browser'
 output_decl          := 'output' ( TypeName ( '|' TypeName )* )?
 ```
 
+`output_decl` declares the recipe's output signature: `output
+Product` for a single-type recipe; `output Product | Variant |
+PriceObservation` for a multi-type sum. The `|` token is the same
+one used by pipe expressions; the parser disambiguates by context
+(only `TypeName`s are legal in this position).
+
 Top-level forms appear flat at the file root — no surrounding `{ }`
 block. Validator-enforced constraints (not parser-enforced):
 
