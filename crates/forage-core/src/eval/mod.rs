@@ -9,6 +9,7 @@ pub mod error;
 pub mod html;
 pub mod scope;
 pub mod transforms;
+pub mod transforms_async;
 pub mod value;
 
 pub use error::EvalError;

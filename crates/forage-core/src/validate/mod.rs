@@ -373,6 +373,8 @@ pub const BUILTIN_TRANSFORMS: &[&str] = &[
     "attr",
     "html",
     "innerHtml",
+    // --- transport-aware (async) ---
+    "wikidataEntity",
 ];
 
 struct Validator<'a> {

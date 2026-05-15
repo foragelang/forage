@@ -140,6 +140,9 @@ fn build_default() -> TransformRegistry {
     r.register("html", html_fn);
     r.register("innerHtml", inner_html);
 
+    // --- transport-aware (async) ---
+    crate::eval::transforms_async::register_async_builtins(&mut r);
+
     r
 }
 
