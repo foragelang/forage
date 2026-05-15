@@ -65,7 +65,8 @@ Exit codes:
 
 ```sh
 forage run hacker-news
-forage run hacker-news --output json | jq '.records | length'
+forage run hacker-news --format json | jq '.records | length'
+forage run hacker-news --format jsonld | jq '."@graph" | length'
 forage run letterboxd-popular --replay
 forage run hacker-news --sample 5             # top-5 records from live
 forage run hacker-news --mode dev             # sampled + replay against fixtures

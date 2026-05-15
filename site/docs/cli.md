@@ -39,7 +39,7 @@ declare `recipe "bar"` and be run as `forage run bar`.
 Run a `.forage` recipe end-to-end and print the snapshot as JSON.
 
 ```sh
-forage run <recipe> [--replay] [--inputs <path>] [--output pretty|json]
+forage run <recipe> [--replay] [--inputs <path>] [--format pretty|json|jsonld]
 ```
 
 ### Options
@@ -48,7 +48,9 @@ forage run <recipe> [--replay] [--inputs <path>] [--output pretty|json]
   recipes without inputs.
 - `--replay` — replay against `<workspace>/_fixtures/<recipe>.jsonl`
   instead of hitting the network.
-- `--output <pretty|json>` — output format. Default `pretty`.
+- `--format <pretty|json|jsonld>` — output format. Default `pretty`.
+  `jsonld` emits a JSON-LD document driven by the recipe's type
+  alignments (`@context` / `@graph`).
 
 ### Output
 

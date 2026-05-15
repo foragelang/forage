@@ -65,12 +65,15 @@ enum Command {
         /// defaults must supply a value through this file).
         #[arg(long)]
         inputs: Option<PathBuf>,
-        /// Output format.
+        /// Output format. `pretty` (default) prints the per-type
+        /// summary; `json` emits the canonical `Snapshot` wire shape;
+        /// `jsonld` emits `Snapshot::to_jsonld()` for downstream
+        /// vocabularies that expect JSON-LD.
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-        output: OutputFormat,
+        format: OutputFormat,
     },
     /// Run a recipe against `_fixtures/<recipe>.jsonl` and diff against
-    /// `_snapshots/<recipe>.json`.
+    /// `_snapshots/<recipe>.json` (or `.jsonld` when `--format jsonld`).
     Test {
         /// Recipe header name (primary) or path to a `.forage` file
         /// (fallback).
@@ -78,9 +81,13 @@ enum Command {
         /// Path to a JSON object of input bindings.
         #[arg(long)]
         inputs: Option<PathBuf>,
-        /// Write the produced snapshot to `_snapshots/<recipe>.json`.
+        /// Write the produced snapshot to `_snapshots/<recipe>.<ext>`.
         #[arg(long)]
         update: bool,
+        /// Snapshot wire shape. `json` (default) writes / diffs the raw
+        /// `Snapshot`; `jsonld` writes / diffs `Snapshot::to_jsonld()`.
+        #[arg(long, value_enum, default_value_t = TestFormat::Json)]
+        format: TestFormat,
     },
     /// Scaffold `<workspace>/<recipe-name>.forage` at the workspace
     /// root with a `recipe "<recipe-name>" engine http` header.
@@ -214,6 +221,26 @@ enum AuthAction {
 enum OutputFormat {
     Pretty,
     Json,
+    Jsonld,
+}
+
+/// `forage test` snapshot wire shape. The diff/update path needs to
+/// agree with the on-disk extension so `forage test --format jsonld`
+/// against a directory that has both `<recipe>.json` and `<recipe>.jsonld`
+/// picks the right one.
+#[derive(Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
+enum TestFormat {
+    Json,
+    Jsonld,
+}
+
+impl TestFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            TestFormat::Json => "json",
+            TestFormat::Jsonld => "jsonld",
+        }
+    }
 }
 
 /// `--mode dev` / `--mode prod` — preset bundle for the run flag
@@ -262,16 +289,17 @@ fn main() -> Result<()> {
             sample,
             mode,
             inputs,
-            output,
+            format,
         } => {
             let flags = RunCliFlags::resolve(mode, sample, replay, replay_from);
-            rt.block_on(run(&recipe, &flags, inputs.as_deref(), output))
+            rt.block_on(run(&recipe, &flags, inputs.as_deref(), format))
         }
         Command::Test {
             recipe,
             inputs,
             update,
-        } => rt.block_on(test(&recipe, inputs.as_deref(), update)),
+            format,
+        } => rt.block_on(test(&recipe, inputs.as_deref(), update, format)),
         Command::New {
             name,
             engine,
@@ -470,7 +498,7 @@ async fn run(
     recipe_arg: &str,
     flags: &RunCliFlags,
     inputs_path: Option<&Path>,
-    output: OutputFormat,
+    format: OutputFormat,
 ) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
     let catalog = validate_resolved(&resolved)?;
@@ -524,10 +552,14 @@ async fn run(
         }
     };
 
-    match output {
+    match format {
         OutputFormat::Pretty => print_pretty(&snapshot),
         OutputFormat::Json => {
             let j = serde_json::to_string_pretty(&snapshot)?;
+            println!("{j}");
+        }
+        OutputFormat::Jsonld => {
+            let j = serde_json::to_string_pretty(&snapshot.to_jsonld())?;
             println!("{j}");
         }
     }
@@ -541,7 +573,12 @@ async fn run(
     Ok(())
 }
 
-async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Result<()> {
+async fn test(
+    recipe_arg: &str,
+    inputs_path: Option<&Path>,
+    update: bool,
+    format: TestFormat,
+) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
     let catalog = validate_resolved(&resolved)?;
     let _engine_kind = resolved.engine_kind()?; // surface header-less files early
@@ -555,25 +592,29 @@ async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Res
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let snap_path = snapshot_path(&resolved.data_root(), &resolved.name);
+    // The snapshot path's extension agrees with the chosen wire shape so
+    // a recipe with both fixtures (`<recipe>.json` and `<recipe>.jsonld`)
+    // diffs against the right golden.
+    let snap_path = snapshot_path(&resolved.data_root(), &resolved.name)
+        .with_extension(format.extension());
+    let produced_text = match format {
+        TestFormat::Json => serde_json::to_string_pretty(&produced)?,
+        TestFormat::Jsonld => serde_json::to_string_pretty(&produced.to_jsonld())?,
+    };
     if update || !snap_path.exists() {
         if let Some(parent) = snap_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let j = serde_json::to_string_pretty(&produced)?;
-        std::fs::write(&snap_path, &j)?;
+        std::fs::write(&snap_path, &produced_text)?;
         println!("{} {}", "wrote".green(), snap_path.display());
         return Ok(());
     }
-    let raw = std::fs::read_to_string(&snap_path)?;
-    let expected: Snapshot = serde_json::from_str(&raw)?;
-    if expected == produced {
+    let expected_text = std::fs::read_to_string(&snap_path)?;
+    if snapshot_text_matches(format, &expected_text, &produced_text)? {
         println!("{} matches {}", "ok:".green(), snap_path.display());
         return Ok(());
     }
-    let a = serde_json::to_string_pretty(&expected)?;
-    let b = serde_json::to_string_pretty(&produced)?;
-    let diff = similar::TextDiff::from_lines(&a, &b);
+    let diff = similar::TextDiff::from_lines(&expected_text, &produced_text);
     println!("{} snapshot diverged:", "diff:".red());
     for change in diff.iter_all_changes() {
         let sign = match change.tag() {
@@ -584,6 +625,25 @@ async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Res
         print!("{sign}{change}");
     }
     std::process::exit(1);
+}
+
+/// Equality between an on-disk snapshot and the freshly produced one.
+/// Parsing both sides into their canonical types means whitespace /
+/// key-order differences in the on-disk file don't count as diffs —
+/// the diff renderer is for human-readable surfacing only.
+fn snapshot_text_matches(format: TestFormat, expected: &str, produced: &str) -> Result<bool> {
+    Ok(match format {
+        TestFormat::Json => {
+            let a: Snapshot = serde_json::from_str(expected)?;
+            let b: Snapshot = serde_json::from_str(produced)?;
+            a == b
+        }
+        TestFormat::Jsonld => {
+            let a: forage_core::JsonLdDocument = serde_json::from_str(expected)?;
+            let b: forage_core::JsonLdDocument = serde_json::from_str(produced)?;
+            a == b
+        }
+    })
 }
 
 async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {

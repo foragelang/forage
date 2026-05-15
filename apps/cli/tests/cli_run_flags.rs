@@ -72,7 +72,7 @@ fn replay_with_sample_caps_record_count() {
     Command::cargo_bin("forage")
         .unwrap()
         .current_dir(ws)
-        .args(["run", "items", "--replay", "--sample", "5", "--output", "json"])
+        .args(["run", "items", "--replay", "--sample", "5", "--format", "json"])
         .assert()
         .success()
         // Five Item records — the snapshot's `records` array has
@@ -91,7 +91,7 @@ fn mode_dev_expands_to_sample_and_replay() {
     Command::cargo_bin("forage")
         .unwrap()
         .current_dir(ws)
-        .args(["run", "items", "--mode", "dev", "--output", "json"])
+        .args(["run", "items", "--mode", "dev", "--format", "json"])
         .assert()
         .success()
         .stdout(contains(r#""typeName": "Item""#).count(10));
@@ -125,7 +125,7 @@ fn replay_from_overrides_default_fixture_path() {
             "items",
             "--replay-from",
             captures.to_str().unwrap(),
-            "--output",
+            "--format",
             "json",
         ])
         .assert()
@@ -145,7 +145,7 @@ fn mode_dev_explicit_sample_overrides_preset_default() {
         .unwrap()
         .current_dir(ws)
         .args([
-            "run", "items", "--mode", "dev", "--sample", "25", "--output", "json",
+            "run", "items", "--mode", "dev", "--sample", "25", "--format", "json",
         ])
         .assert()
         .success()
@@ -163,7 +163,7 @@ fn mode_prod_is_explicit_no_flags() {
     let assertion = Command::cargo_bin("forage")
         .unwrap()
         .current_dir(ws)
-        .args(["run", "items", "--mode", "prod", "--output", "json"])
+        .args(["run", "items", "--mode", "prod", "--format", "json"])
         .assert()
         .failure();
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
