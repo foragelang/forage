@@ -17,8 +17,10 @@
 
 use std::sync::Arc;
 
-use forage_core::ast::{EngineKind, RecipeBody};
-use forage_core::{EvalValue, ForageFile, Record, RunOptions, TypeCatalog};
+use forage_core::ast::{
+    Composition, EngineKind, RecipeBody, RecipeHeader, RecipeRef, Span,
+};
+use forage_core::{EvalValue, ForageFile, Record, RunOptions, Snapshot, TypeCatalog};
 use forage_http::{Engine, LiveTransport, PriorRecords, ReplayTransport};
 use indexmap::IndexMap;
 
@@ -129,6 +131,109 @@ impl Daemon {
             cb(&scheduled);
         }
         Ok(scheduled)
+    }
+
+    /// Run a notebook composition: walk `stages` in order, feeding the
+    /// emissions of stage N into stage N+1's input. Each stage name
+    /// resolves to its current deployed version through the daemon's
+    /// composition runtime — same path a hub-published composition
+    /// recipe would take, but without a persistent `Run` row.
+    ///
+    /// `name` labels the synthetic composition recipe for diagnostics
+    /// (`compose stage '<name>' …`). `inputs` flow into stage 1 only;
+    /// downstream stages consume the upstream record stream.
+    ///
+    /// Always runs in ephemeral mode — the notebook is a playground;
+    /// the snapshot is returned in-memory and never written to a daemon
+    /// output store. `flags.ephemeral` is therefore irrelevant; the
+    /// `replay` and `sample_limit` flags carry through to every stage.
+    /// Persistence happens through "Publish notebook," which writes the
+    /// composition as a `.forage` recipe and goes through the normal
+    /// deploy + run path.
+    pub async fn run_composition(
+        self: &Arc<Self>,
+        name: &str,
+        stages: Vec<String>,
+        inputs: IndexMap<String, EvalValue>,
+        flags: RunFlags,
+    ) -> Result<Snapshot, RunError> {
+        if stages.is_empty() {
+            return Err(RunError::Engine("composition has zero stages".into()));
+        }
+        let synthetic = synthesize_composition_file(name, &stages);
+
+        let sink: Arc<dyn forage_http::ProgressSink> = Arc::new(ProgressForwarder {
+            host: self
+                .host_progress
+                .lock()
+                .expect("host progress poisoned")
+                .clone(),
+        });
+        let engine_options = RunOptions {
+            sample_limit: flags.sample_limit,
+        };
+        let replay_captures = match flags.replay.as_deref() {
+            Some(path) => Some(
+                forage_replay::read_jsonl(path)
+                    .map_err(|e| RunError::Engine(format!("replay {}: {e}", path.display())))?,
+            ),
+            None => None,
+        };
+        let catalog = TypeCatalog::default();
+        // `version` is the outer-recipe version that inner-stage
+        // failures cite for context. The synthetic composition has no
+        // deployed version, so we pass 0 — every inner failure overrides
+        // this with the inner stage's actual resolved version anyway.
+        let snapshot = run_stage(
+            self,
+            &synthetic,
+            &catalog,
+            inputs,
+            IndexMap::new(),
+            PriorRecords::default(),
+            sink,
+            0,
+            &engine_options,
+            replay_captures.as_deref(),
+        )
+        .await
+        .map_err(|f| RunError::Engine(f.message))?;
+        Ok(snapshot)
+    }
+}
+
+/// Build an in-memory `ForageFile` whose body is a composition over
+/// `stages`. Carries an HTTP engine kind in the header — composition
+/// recipes ignore the header's engine field at run time (each inner
+/// stage carries its own), but the AST requires one.
+fn synthesize_composition_file(name: &str, stages: &[String]) -> ForageFile {
+    let stage_refs: Vec<RecipeRef> = stages
+        .iter()
+        .map(|s| RecipeRef {
+            author: None,
+            name: s.clone(),
+            span: Span::default(),
+        })
+        .collect();
+    ForageFile {
+        recipe_headers: vec![RecipeHeader {
+            name: name.to_string(),
+            engine_kind: EngineKind::Http,
+            span: Span::default(),
+        }],
+        types: Vec::new(),
+        enums: Vec::new(),
+        inputs: Vec::new(),
+        output: None,
+        secrets: Vec::new(),
+        functions: Vec::new(),
+        auth: None,
+        browser: None,
+        body: RecipeBody::Composition(Composition {
+            stages: stage_refs,
+            span: Span::default(),
+        }),
+        expectations: Vec::new(),
     }
 }
 

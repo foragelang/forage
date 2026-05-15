@@ -168,6 +168,9 @@ pub fn run() {
             commands::deploy_recipe,
             commands::list_deployed_versions,
             commands::list_recipe_statuses,
+            commands::notebook_run,
+            commands::notebook_compose_source,
+            commands::notebook_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forage Studio");

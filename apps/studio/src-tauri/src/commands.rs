@@ -2040,6 +2040,174 @@ fn set_close_workspace_enabled(state: &StudioState, enabled: bool) {
     }
 }
 
+// --- Notebook commands ----------------------------------------------------
+//
+// The notebook is a third Studio view that composes deployed recipes
+// into a linear pipeline. Three commands cover the lifecycle:
+//
+// - `notebook_run` walks the chain through `Daemon::run_composition`
+//   without persisting; the returned snapshot drives the inspector.
+// - `notebook_compose_source` renders the synthetic `.forage` source
+//   for a `(name, stages)` pair so the UI can preview / diff the
+//   recipe a publish would create.
+// - `notebook_save` writes that source as a workspace recipe file, at
+//   which point the existing `publish_recipe` / deploy / scheduled-run
+//   surfaces all work against it — the notebook publishes *as a
+//   recipe*, per sub-plan 5's design commitment.
+
+#[tauri::command]
+pub async fn notebook_run(
+    state: State<'_, StudioState>,
+    name: String,
+    stages: Vec<String>,
+    flags: Option<RunRecipeFlags>,
+) -> Result<RunOutcome, String> {
+    let raw_flags = flags.unwrap_or(RunRecipeFlags {
+        sample_limit: None,
+        replay: None,
+        ephemeral: None,
+    });
+    let (sample_limit, replay, _ephemeral) = raw_flags.resolve();
+    // The notebook treats every run as ephemeral. The `ephemeral`
+    // toggle on the toolbar still drives the inspector layout (and the
+    // backend logs), but the daemon never writes notebook records to a
+    // persistent store — that's reserved for "Publish notebook" + the
+    // resulting deployed recipe.
+    tracing::info!(
+        notebook = %name,
+        stage_count = stages.len(),
+        sample_limit = ?sample_limit,
+        replay,
+        "notebook_run",
+    );
+    if stages.is_empty() {
+        return Ok(RunOutcome {
+            ok: false,
+            snapshot: None,
+            error: Some("notebook has no stages".into()),
+            daemon_warning: None,
+        });
+    }
+    let daemon = require_daemon(&state)?;
+
+    // Replay reads each stage's existing `_fixtures/<stage>.jsonl`. A
+    // composed pipeline doesn't have a fixture of its own — the
+    // composition runtime reuses the per-stage fixtures, fed through
+    // the shared replay path. Picking stage 1's fixture (if any) is
+    // the closest analogue to the editor's recipe-keyed lookup.
+    let replay_path = if replay {
+        let ws = require_workspace(&state)?;
+        let stage1 = stages.first().expect("non-empty stages checked above");
+        let p = forage_core::workspace::fixtures_path(&ws.root, stage1);
+        if p.exists() { Some(p) } else { None }
+    } else {
+        None
+    };
+
+    let run_flags = forage_daemon::RunFlags {
+        sample_limit,
+        replay: replay_path,
+        ephemeral: true,
+    };
+
+    match daemon
+        .run_composition(&name, stages, IndexMap::new(), run_flags)
+        .await
+    {
+        Ok(snapshot) => Ok(RunOutcome {
+            ok: true,
+            snapshot: Some(snapshot),
+            error: None,
+            daemon_warning: None,
+        }),
+        Err(e) => Ok(RunOutcome {
+            ok: false,
+            snapshot: None,
+            error: Some(format!("{e}")),
+            daemon_warning: None,
+        }),
+    }
+}
+
+/// Render the `.forage` source a notebook would publish. Pure
+/// function — takes the recipe header name and the ordered stage
+/// names and returns a parseable composition recipe. The frontend
+/// uses this to preview the publish payload and to write the
+/// synthetic file via `notebook_save`.
+#[tauri::command]
+pub fn notebook_compose_source(name: String, stages: Vec<String>) -> String {
+    render_composition_source(&name, &stages)
+}
+
+/// Persist a notebook as a `.forage` recipe file at the workspace
+/// root. The `name` is the recipe header name and also the file
+/// stem (`<workspace>/<name>.forage`). On success the file lands in
+/// the workspace's normal recipe set — the publish flow, the deploy
+/// flow, and the editor view all see it like any other recipe.
+///
+/// Refuses to overwrite an existing recipe file: the user picks a
+/// fresh name (or deletes the prior one) so a notebook save can't
+/// silently clobber an authored recipe.
+#[tauri::command]
+pub fn notebook_save(
+    state: State<'_, StudioState>,
+    name: String,
+    stages: Vec<String>,
+) -> Result<NotebookSaveOutcome, String> {
+    if stages.is_empty() {
+        return Err("notebook has no stages".into());
+    }
+    let ws = require_workspace(&state)?;
+    let source = render_composition_source(&name, &stages);
+    let target = ws.root.join(format!("{name}.forage"));
+    if target.exists() {
+        return Err(format!(
+            "{} already exists; pick a different notebook name or delete the existing recipe first",
+            target.display()
+        ));
+    }
+    std::fs::write(&target, &source).map_err(|e| format!("write {}: {e}", target.display()))?;
+    Ok(NotebookSaveOutcome {
+        path: target,
+        source,
+    })
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct NotebookSaveOutcome {
+    /// Absolute path of the recipe file that was written. The
+    /// frontend uses this to switch the editor view onto the new
+    /// recipe so the user can inspect / edit before publishing.
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    /// The synthesized recipe source — same value
+    /// `notebook_compose_source` would have returned. The frontend
+    /// renders this in the publish-preview pane without re-fetching.
+    pub source: String,
+}
+
+fn render_composition_source(name: &str, stages: &[String]) -> String {
+    let mut body = String::new();
+    body.push_str("recipe \"");
+    body.push_str(name);
+    body.push_str("\"\n");
+    body.push_str("engine http\n\n");
+    if !stages.is_empty() {
+        body.push_str("compose ");
+        for (i, stage) in stages.iter().enumerate() {
+            if i > 0 {
+                body.push_str(" | ");
+            }
+            body.push('"');
+            body.push_str(stage);
+            body.push('"');
+        }
+        body.push('\n');
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     //! Studio-side smoke tests for the daemon wiring. The commands
