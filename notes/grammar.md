@@ -88,6 +88,7 @@ top_level_form       := recipe_header
                       | browser_block
                       | expect_block
                       | statement
+                      | compose_block
 
 recipe_header        := 'recipe' STRING 'engine' engine_kind
 
@@ -297,6 +298,75 @@ values, `body.json` values typed as `STRING`, and `body.raw`.
 An `emit … as $v` introduces `$v` into the enclosing lexical scope
 with type `Ref<TypeName>`. Subsequent statements in the same scope
 can reference `$v`.
+
+## Composition
+
+A recipe's body is one of two kinds:
+
+- **Scraping body** — a sequence of `step` / `for` / `emit`
+  statements that drive the HTTP or browser engine. The historical
+  recipe shape.
+- **Composition body** — a chain of recipe references joined by
+  `|`. Each stage's `output` type matches the next stage's input
+  slot; the runtime walks the chain, feeding each stage's emitted
+  records to the next.
+
+The two kinds are mutually exclusive — a recipe body is either
+statements or a composition, never both. The parser rejects a file
+that declares both; the validator's per-stage checks catch the
+type-shape errors at edit time.
+
+```
+compose_block        := 'compose' recipe_ref ( '|' recipe_ref )+
+
+recipe_ref           := STRING
+```
+
+A `recipe_ref` is a string literal carrying the referenced recipe's
+header name. Workspace-local references use a bare name
+(`"scrape-amazon"`); hub-dep references prefix the author with `@`
+and separate with `/` (`"@upstream/enrich-jobs"`).
+
+Recipe references parse as strings (not bare identifiers) so any
+header name flows through — names commonly contain hyphens.
+Single-stage compositions are rejected: a chain of one recipe isn't
+a composition, it's just calling that recipe.
+
+### Stage signatures
+
+For a `compose A | B`:
+
+- Stage A must declare a typed `output T` — exactly one type
+  (multi-type sums in a composition are reserved for a future
+  extension).
+- Stage B must declare exactly one input slot whose type is
+  `[T]` (the batched form — B sees the entire stream at once) or
+  `T` (the single-record form — B sees one record per upstream
+  emission, currently restricted to upstream stages that emit a
+  single record).
+
+The composition recipe itself declares the `output` it produces —
+typically the same type as the final stage's output — so consumers
+can index the composition by its terminal type without inspecting
+the chain.
+
+Cycles are rejected: a recipe whose composition transitively
+references itself is structurally well-formed but would never
+terminate. The validator's `ComposeCycle` rule walks the
+recipe-signature graph and refuses the chain.
+
+```forage
+recipe "enriched-products"
+engine http
+output Product
+
+compose "scrape-amazon" | "enrich-wikidata"
+```
+
+The `engine <kind>` header rides through unchanged on a composition
+recipe; the engine value is unused at run time (the inner stages
+carry their own engine kinds) but the header is the same on every
+recipe so the hub's index doesn't need a discriminator.
 
 ## Pagination
 

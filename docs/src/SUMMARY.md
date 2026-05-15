@@ -18,6 +18,7 @@
 - [Expressions and templates](./lang/expressions.md)
 - [Transforms](./lang/transforms.md)
 - [Functions](./lang/functions.md)
+- [Composition](./lang/composition.md)
 - [Expectations](./lang/expectations.md)
 - [Progress](./lang/progress.md)
 - [Sharing and dependencies](./lang/imports.md)
