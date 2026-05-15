@@ -46,6 +46,19 @@ export interface TypeFieldAlignment {
     alignment: AlignmentUri | null
 }
 
+// `extends [@author/]Name@vN` parsed off the type source. The hub
+// stores the child's parent pin alongside the source so the
+// discover-by-extension endpoint and the cross-author indexing flow
+// don't need to re-parse the body on every read. `author` is `null`
+// when the publisher wrote `extends Name@vN` (a workspace-local
+// reference); the publish path resolves it to the publishing
+// author's slug so the stored shape is always fully qualified.
+export interface TypeExtensionRef {
+    author: string
+    name: string
+    version: number
+}
+
 // Type metadata. One record per (author, name). Identity at the hub is
 // `@author/Name`; the name segment matches the bare type name from the
 // source (e.g. `Product`, not `product`).
@@ -87,6 +100,9 @@ export interface TypeVersion {
     // no alignment carry `alignment: null` so the hub side has the
     // full field set for indexing.
     field_alignments: TypeFieldAlignment[]
+    // Parent type pin when this type declares `extends`. `null` when
+    // the type is a root (no `extends` clause).
+    extends: TypeExtensionRef | null
     base_version: number | null
     published_at: number
     published_by: string
@@ -280,7 +296,22 @@ export interface PublishTypeRequest {
     source: string
     alignments: AlignmentUri[]
     field_alignments: TypeFieldAlignment[]
+    // Parent type pin when the source declares `extends`. The hub
+    // re-derives the value would-be from the source text on a later
+    // pass, but parse responsibility currently lives client-side
+    // (the publish path already extracts alignments + field
+    // alignments here). `null` for root types.
+    extends: TypeExtensionRef | null
     base_version: number | null
+}
+
+// `GET /v1/discover/extends?type=@author/Name@vN` — every type whose
+// `extends` pin points at the requested parent. Filter shape is the
+// hub-canonical author-qualified name + version pin so a caller can
+// browse "everything that extends @upstream/JobPosting@v1" without
+// guessing how the publisher resolved a workspace-local reference.
+export interface ListExtensionsResponse {
+    items: TypeListing[]
 }
 
 // `POST /v1/packages/:author/:slug/fork` — create `@me/:as` from the

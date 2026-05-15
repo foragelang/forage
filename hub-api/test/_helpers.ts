@@ -108,6 +108,7 @@ export function publishTypeRequest(
         source: `share type ${name} {\n    id: String\n}\n`,
         alignments: [],
         field_alignments: [],
+        extends: null,
         base_version: null,
         ...overrides,
     }

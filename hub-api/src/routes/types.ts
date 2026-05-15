@@ -1,8 +1,10 @@
 import type {
     AlignmentUri,
     Env,
+    ListExtensionsResponse,
     ListTypesResponse,
     PublishTypeRequest,
+    TypeExtensionRef,
     TypeFieldAlignment,
     TypeListing,
     TypeMetadata,
@@ -19,6 +21,9 @@ import {
     indexAddUserType,
     indexAddAligned,
     indexRemoveAligned,
+    indexAddExtends,
+    indexRemoveExtends,
+    listExtendsIndex,
     listTypesIndex,
     ref,
     sha256Hex,
@@ -328,6 +333,7 @@ export async function publishTypeVersion(
         source: payload.source,
         alignments: payload.alignments,
         field_alignments: payload.field_alignments,
+        extends: payload.extends,
         base_version: payload.base_version,
         published_at: now,
         published_by: publishedBy,
@@ -358,6 +364,43 @@ export async function publishTypeVersion(
     // `aligns` clause removes this type from
     // `aligned_with(<ontology>/<term>)`. Adding new ontologies adds it.
     await diffAlignmentIndex(env, author, name, priorAlignments, payload.alignments)
+
+    // Extends index. The discover view always shows the *current
+    // latest* of each child, so the index slot reflects the latest
+    // version's parent pin — when a republish moves the child onto a
+    // new parent version, clear the previous slot first.
+    const previousArtifact = existing !== null
+        ? await getTypeVersion(env, author, name, existing.latest_version)
+        : null
+    const previousExtends = previousArtifact?.extends ?? null
+    if (
+        previousExtends !== null
+        && (
+            payload.extends === null
+            || previousExtends.author !== payload.extends.author
+            || previousExtends.name !== payload.extends.name
+            || previousExtends.version !== payload.extends.version
+        )
+    ) {
+        await indexRemoveExtends(
+            env,
+            previousExtends.author,
+            previousExtends.name,
+            previousExtends.version,
+            author,
+            name,
+        )
+    }
+    if (payload.extends !== null) {
+        await indexAddExtends(
+            env,
+            payload.extends.author,
+            payload.extends.name,
+            payload.extends.version,
+            author,
+            name,
+        )
+    }
 
     return json(
         {
@@ -396,6 +439,91 @@ async function diffAlignmentIndex(
             await indexRemoveAligned(env, a.ontology, a.term, typeAuthor, typeName)
         }
     }
+}
+
+// `GET /v1/discover/extends?type=@author/Name@vN`
+//
+// Lists every type whose latest version's `extends` pin matches the
+// query parameter exactly. Parent pin is part of the index key —
+// `@upstream/JobPosting@v1` and `@upstream/JobPosting@v2` are
+// separate discover responses; the hub doesn't roll them up.
+export async function listExtensions(
+    request: Request,
+    env: Env,
+): Promise<Response> {
+    const url = new URL(request.url)
+    const raw = url.searchParams.get('type')
+    if (raw === null || raw.length === 0) {
+        return jsonError(
+            400,
+            'missing_type',
+            'query parameter `type` is required (shape: @author/Name@vN)',
+            {},
+            request,
+        )
+    }
+    const parsed = parseExtendsQuery(raw)
+    if (typeof parsed === 'string') {
+        return jsonError(400, 'bad_type', parsed, {}, request)
+    }
+
+    const childRefs = await listExtendsIndex(
+        env,
+        parsed.author,
+        parsed.name,
+        parsed.version,
+    )
+    const items: TypeListing[] = []
+    for (const r of childRefs) {
+        const [a, n] = splitRef(r)
+        const meta = await getType(env, a, n)
+        if (meta === null) continue
+        items.push({
+            author: meta.author,
+            name: meta.name,
+            description: meta.description,
+            category: meta.category,
+            tags: meta.tags,
+            created_at: meta.created_at,
+            latest_version: meta.latest_version,
+        })
+    }
+    const body: ListExtensionsResponse = { items }
+    return json(body, 200, request)
+}
+
+// Surface shape on the query is the canonical author-qualified pin —
+// `@author/Name@vN`. Parsing returns the same triple shape stored on
+// `TypeVersion.extends`. Returns a string error message on a bad
+// query (router turns it into a 400 with `bad_type`).
+function parseExtendsQuery(raw: string): TypeExtensionRef | string {
+    const stripped = raw.startsWith('@') ? raw.slice(1) : raw
+    const slash = stripped.indexOf('/')
+    if (slash < 0) {
+        return `expected @author/Name@vN; got ${JSON.stringify(raw)}`
+    }
+    const author = stripped.slice(0, slash)
+    const rest = stripped.slice(slash + 1)
+    const at = rest.lastIndexOf('@')
+    if (at < 0) {
+        return `expected @author/Name@vN; missing version pin in ${JSON.stringify(raw)}`
+    }
+    const name = rest.slice(0, at)
+    const verMarker = rest.slice(at + 1)
+    if (!verMarker.startsWith('v')) {
+        return `version pin must start with 'v' (got ${JSON.stringify(verMarker)})`
+    }
+    const version = parseInt(verMarker.slice(1), 10)
+    if (!Number.isFinite(version) || version < 1) {
+        return `version pin must be a positive integer (got ${JSON.stringify(verMarker)})`
+    }
+    if (!validateSegment(author)) {
+        return `invalid author segment: ${JSON.stringify(author)}`
+    }
+    if (!validateTypeName(name)) {
+        return `invalid parent type name: ${JSON.stringify(name)}`
+    }
+    return { author, name, version }
 }
 
 // --- Validation ----------------------------------------------------------
@@ -469,7 +597,33 @@ function validateTypePublish(
     ) {
         return 'base_version must be null or a non-negative integer'
     }
+    if (payload.extends !== null) {
+        const err = validateExtension(payload.extends)
+        if (err !== null) return `extends: ${err}`
+    }
     return { typeName }
+}
+
+// Author and name segments on the extension target follow the same
+// shape as their identity carriers (`packages.ts::validateSegment`
+// and `validateTypeName` here). The version is an integer >= 1
+// mirroring the publish floor.
+function validateExtension(ext: TypeExtensionRef | undefined): string | null {
+    if (ext === null || typeof ext !== 'object') return 'must be an object or null'
+    if (typeof ext.author !== 'string' || !validateSegment(ext.author)) {
+        return `invalid author: ${JSON.stringify(ext.author)}`
+    }
+    if (typeof ext.name !== 'string' || !validateTypeName(ext.name)) {
+        return `invalid parent type name: ${JSON.stringify(ext.name)}`
+    }
+    if (
+        typeof ext.version !== 'number'
+        || !Number.isInteger(ext.version)
+        || ext.version < 1
+    ) {
+        return `invalid version: ${JSON.stringify(ext.version)} (must be a positive integer)`
+    }
+    return null
 }
 
 function validateAlignment(a: AlignmentUri | undefined): string | null {

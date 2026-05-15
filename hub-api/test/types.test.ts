@@ -329,3 +329,201 @@ describe('listing types', () => {
         expect(filtered.body.items[0].name).toBe('Product')
     })
 })
+
+describe('discover by extension', () => {
+    it('lists every child type that extends a parent pin', async () => {
+        const upstream = await userToken('upstream')
+        const alice = await userToken('alice')
+        const bob = await userToken('bob')
+
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/upstream/JobPosting/versions',
+                upstream,
+                publishTypeRequest('JobPosting'),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/alice/EnhancedJobPosting/versions',
+                alice,
+                publishTypeRequest('EnhancedJobPosting', {
+                    source:
+                        'share type EnhancedJobPosting extends @upstream/JobPosting@v1 {\n'
+                        + '    salaryMin: Int?\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 1 },
+                }),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/bob/RemoteJobPosting/versions',
+                bob,
+                publishTypeRequest('RemoteJobPosting', {
+                    source:
+                        'share type RemoteJobPosting extends @upstream/JobPosting@v1 {\n'
+                        + '    remoteOk: Bool\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 1 },
+                }),
+            ),
+        )
+
+        const res = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@v1'),
+        )
+        expect(res.status).toBe(200)
+        const names = res.body.items
+            .map((x: { author: string; name: string }) => `${x.author}/${x.name}`)
+            .sort()
+        expect(names).toEqual(['alice/EnhancedJobPosting', 'bob/RemoteJobPosting'])
+    })
+
+    it('separates children by parent version', async () => {
+        // A child pinned to v1 must not appear in the v2 discover
+        // response, and vice versa — the index is keyed by version.
+        const upstream = await userToken('upstream')
+        const alice = await userToken('alice')
+        const bob = await userToken('bob')
+
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/upstream/JobPosting/versions',
+                upstream,
+                publishTypeRequest('JobPosting'),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/upstream/JobPosting/versions',
+                upstream,
+                publishTypeRequest('JobPosting', {
+                    source: 'share type JobPosting {\n    id: String\n    title: String\n}\n',
+                    base_version: 1,
+                }),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/alice/V1Ext/versions',
+                alice,
+                publishTypeRequest('V1Ext', {
+                    source:
+                        'share type V1Ext extends @upstream/JobPosting@v1 {\n'
+                        + '    extra: String\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 1 },
+                }),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/bob/V2Ext/versions',
+                bob,
+                publishTypeRequest('V2Ext', {
+                    source:
+                        'share type V2Ext extends @upstream/JobPosting@v2 {\n'
+                        + '    extra: String\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 2 },
+                }),
+            ),
+        )
+
+        const v1 = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@v1'),
+        )
+        const v2 = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@v2'),
+        )
+        expect(v1.body.items.map((x: { name: string }) => x.name)).toEqual(['V1Ext'])
+        expect(v2.body.items.map((x: { name: string }) => x.name)).toEqual(['V2Ext'])
+    })
+
+    it('republishing a child onto a new parent pin clears the old slot', async () => {
+        const upstream = await userToken('upstream')
+        const alice = await userToken('alice')
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/upstream/JobPosting/versions',
+                upstream,
+                publishTypeRequest('JobPosting'),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/upstream/JobPosting/versions',
+                upstream,
+                publishTypeRequest('JobPosting', {
+                    source: 'share type JobPosting {\n    id: String\n    title: String\n}\n',
+                    base_version: 1,
+                }),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/alice/Ext/versions',
+                alice,
+                publishTypeRequest('Ext', {
+                    source:
+                        'share type Ext extends @upstream/JobPosting@v1 {\n'
+                        + '    extra: String\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 1 },
+                }),
+            ),
+        )
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/types/alice/Ext/versions',
+                alice,
+                publishTypeRequest('Ext', {
+                    source:
+                        'share type Ext extends @upstream/JobPosting@v2 {\n'
+                        + '    extra: String\n'
+                        + '    extra2: String\n'
+                        + '}\n',
+                    extends: { author: 'upstream', name: 'JobPosting', version: 2 },
+                    base_version: 1,
+                }),
+            ),
+        )
+
+        const v1 = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@v1'),
+        )
+        const v2 = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@v2'),
+        )
+        expect(v1.body.items).toEqual([])
+        expect(v2.body.items.map((x: { name: string }) => x.name)).toEqual(['Ext'])
+    })
+
+    it('returns an empty list when no children pin the parent', async () => {
+        const res = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/Missing@v1'),
+        )
+        expect(res.status).toBe(200)
+        expect(res.body.items).toEqual([])
+    })
+
+    it('rejects a malformed query', async () => {
+        const noPin = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting'),
+        )
+        expect(noPin.status).toBe(400)
+        expect(noPin.body.error.code).toBe('bad_type')
+
+        const noV = await fetchJson(
+            get('https://hub/v1/discover/extends?type=@upstream/JobPosting@1'),
+        )
+        expect(noV.status).toBe(400)
+
+        const missing = await fetchJson(
+            get('https://hub/v1/discover/extends'),
+        )
+        expect(missing.status).toBe(400)
+        expect(missing.body.error.code).toBe('missing_type')
+    })
+})

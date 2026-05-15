@@ -14,6 +14,7 @@ import {
     getTypeDetail,
     listTypeVersions,
     getTypeVersionArtifact,
+    listExtensions,
     publishTypeVersion,
     validateTypeName,
 } from './routes/types'
@@ -112,6 +113,14 @@ async function route(
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
         if (limit !== null) return limit
         return listCategories(request, env)
+    }
+    // Discover-by-extends: `GET /v1/discover/extends?type=@author/Name@vN`.
+    // Sits alongside the other type-shaped discovery endpoints (the
+    // hub-program's eventual home for `producers_of` and friends).
+    if (path === '/v1/discover/extends' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return listExtensions(request, env)
     }
 
     // ----- Discover (type-shaped) ---------------------------------------

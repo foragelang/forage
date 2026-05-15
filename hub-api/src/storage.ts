@@ -44,6 +44,10 @@ import type {
 //                                          (types whose latest version
 //                                          declares this alignment URI at
 //                                          the type level)
+//   idx:extends:<author>:<name>:<v>      → JSON array of "<author>/<name>"
+//                                          (child types whose latest version
+//                                          pins this exact parent
+//                                          (author, name, version))
 //
 // R2 (only when the version artifact is large):
 //   versions/<author>/<slug>/<n>.json    → PackageVersion JSON
@@ -104,6 +108,14 @@ const IDX_CONSUMERS = (author: string, name: string) =>
     `idx:consumers:${author}/${name}`
 const IDX_ALIGNED = (ontology: string, term: string) =>
     `idx:aligned:${ontology}/${term}`
+// One index slot per parent `(author, name, version)` triple holding
+// the list of `<child_author>/<child_name>` refs that pin this exact
+// parent version. Pinning by version not name means a child that
+// publishes against `@upstream/JobPosting@v1` and one that pins
+// `@v2` show up on different discover responses; the hub doesn't
+// collapse them silently.
+const IDX_EXTENDS = (author: string, name: string, version: number) =>
+    `idx:extends:${author}:${name}:${version}`
 
 const R2_VERSION_KEY = (author: string, slug: string, n: number) =>
     `versions/${author}/${slug}/${n}.json`
@@ -622,6 +634,54 @@ export async function listUserTypesIndex(
     author: string,
 ): Promise<string[]> {
     return listIndex(env, IDX_USER_TYPES(author))
+}
+
+// Index a child type as extending the given parent pin. Idempotent —
+// republishing a child against the same parent keeps the index slot
+// at one entry. The child is stored as `<child_author>/<child_name>`
+// so `discover/extends` can resolve each into a `TypeListing`.
+export async function indexAddExtends(
+    env: Env,
+    parentAuthor: string,
+    parentName: string,
+    parentVersion: number,
+    childAuthor: string,
+    childName: string,
+): Promise<void> {
+    await appendToIndex(
+        env,
+        IDX_EXTENDS(parentAuthor, parentName, parentVersion),
+        ref(childAuthor, childName),
+    )
+}
+
+// Remove a child from a parent's extends index. Used when republishing
+// a child version that changes its parent pin (or drops `extends`
+// entirely): the new publish stamps the new slot, this clears the
+// old one so a discover query against the old parent stops returning
+// the now-stale child.
+export async function indexRemoveExtends(
+    env: Env,
+    parentAuthor: string,
+    parentName: string,
+    parentVersion: number,
+    childAuthor: string,
+    childName: string,
+): Promise<void> {
+    await removeFromIndex(
+        env,
+        IDX_EXTENDS(parentAuthor, parentName, parentVersion),
+        ref(childAuthor, childName),
+    )
+}
+
+export async function listExtendsIndex(
+    env: Env,
+    parentAuthor: string,
+    parentName: string,
+    parentVersion: number,
+): Promise<string[]> {
+    return listIndex(env, IDX_EXTENDS(parentAuthor, parentName, parentVersion))
 }
 
 export async function listIndex(env: Env, key: string): Promise<string[]> {
