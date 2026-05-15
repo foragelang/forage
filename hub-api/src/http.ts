@@ -60,6 +60,23 @@ export function json(body: unknown, status: number = 200, req: Request | null = 
     })
 }
 
+// `application/ld+json` response. Same shape as `json()` but with the
+// JSON-LD media type so clients (and any caching proxies that vary on
+// Content-Type) treat the response as the JSON-LD profile of JSON.
+export function jsonLd(
+    body: unknown,
+    status: number = 200,
+    req: Request | null = null,
+): Response {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: {
+            'Content-Type': 'application/ld+json; charset=utf-8',
+            ...corsHeaders(req),
+        },
+    })
+}
+
 export function jsonError(
     status: number,
     code: string,

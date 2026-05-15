@@ -29,7 +29,8 @@ import {
     splitRef,
 } from '../storage'
 import { identifyCaller, callerCanWrite } from '../auth'
-import { json, jsonError } from '../http'
+import { json, jsonError, jsonLd } from '../http'
+import { alignmentsForRefs, snapshotToJsonLd } from '../jsonld'
 
 // Segment shapes. `author` matches a GitHub login; `slug` matches a
 // package slug. Both are lowercase to keep KV keys deterministic.
@@ -181,6 +182,11 @@ export async function listVersions(
 // --- Single version artifact --------------------------------------------
 
 // `GET /v1/packages/:author/:slug/versions/:n` (n = number | 'latest')
+//
+// Content negotiation: when the request carries `Accept: application/ld+json`
+// the response is the version's `snapshot` projected through the JSON-LD
+// writer, using the alignment metadata bundled with the recipe's
+// `type_refs`. The default is the full atomic artifact as JSON.
 export async function getVersionArtifact(
     request: Request,
     env: Env,
@@ -202,7 +208,38 @@ export async function getVersionArtifact(
     if (artifact === null) {
         return jsonError(404, 'not_found', `unknown version ${author}/${slug}@${n}`, {}, request)
     }
+    if (clientWantsJsonLd(request)) {
+        if (artifact.snapshot === null) {
+            return jsonError(
+                404,
+                'no_snapshot',
+                `version ${author}/${slug}@${n} was published without a snapshot`,
+                {},
+                request,
+            )
+        }
+        const alignments = await alignmentsForRefs(env, artifact.type_refs)
+        const doc = snapshotToJsonLd(artifact.snapshot, alignments)
+        return jsonLd(doc, 200, request)
+    }
     return json(artifact, 200, request)
+}
+
+// Match `application/ld+json` against the request's `Accept` header.
+// Any of:
+//   - `application/ld+json`
+//   - `application/ld+json; profile=...`
+//   - one of multiple comma-separated entries
+// counts; the rest of the parameters / q-values aren't material to the
+// negotiation (the writer always emits the same shape).
+function clientWantsJsonLd(req: Request): boolean {
+    const accept = req.headers.get('Accept')
+    if (accept === null) return false
+    for (const entry of accept.split(',')) {
+        const media = entry.trim().split(';', 1)[0].trim().toLowerCase()
+        if (media === 'application/ld+json') return true
+    }
+    return false
 }
 
 // --- Publish -------------------------------------------------------------
