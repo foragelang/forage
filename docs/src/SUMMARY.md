@@ -44,6 +44,7 @@
 - [Hacker News](./cookbook/hacker-news.md)
 - [GitHub Releases](./cookbook/github-releases.md)
 - [SCOTUS opinions](./cookbook/scotus-opinions.md)
+- [Wikidata reconciliation](./cookbook/wikidata-reconciliation.md)
 
 # Contributing
 - [Building from source](./contributing/build.md)
