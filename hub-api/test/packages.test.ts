@@ -354,4 +354,27 @@ describe('categories', () => {
         expect(cats.body.items).toContain('dispensary')
         expect(cats.body.items).toContain('menu-platform')
     })
+
+    it('drops empty categories from /v1/categories after re-categorize', async () => {
+        const a = await userToken('alice')
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/a/versions',
+                a,
+                publishRequest({ category: 'dispensary' }),
+            ),
+        )
+        // Re-publish v2 under a different category. `dispensary` now
+        // has zero packages and must drop out of the category list.
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/a/versions',
+                a,
+                publishRequest({ category: 'menu-platform', base_version: 1 }),
+            ),
+        )
+        const cats = await fetchJson(get('https://hub/v1/categories'))
+        expect(cats.body.items).toContain('menu-platform')
+        expect(cats.body.items).not.toContain('dispensary')
+    })
 })

@@ -328,7 +328,9 @@ export async function indexAddCategory(
 }
 
 // Remove (author, slug) from the category index. Used when a publish
-// updates a package's category.
+// updates a package's category. If the category goes empty as a
+// result, drop its name from the global category list too so
+// `GET /v1/categories` stops returning phantoms.
 export async function indexRemoveCategory(
     env: Env,
     category: string,
@@ -336,6 +338,10 @@ export async function indexRemoveCategory(
     slug: string,
 ): Promise<void> {
     await removeFromIndex(env, IDX_CATEGORY(category), ref(author, slug))
+    const remaining = await listIndex(env, IDX_CATEGORY(category))
+    if (remaining.length === 0) {
+        await removeFromIndex(env, IDX_CATEGORIES, category)
+    }
 }
 
 export async function listIndex(env: Env, key: string): Promise<string[]> {
