@@ -609,7 +609,7 @@ impl<'r> Evaluator<'r> {
             {
                 child.bind(first, h);
             }
-            for (p, v) in params.zip(args.into_iter()) {
+            for (p, v) in params.zip(args) {
                 child.bind(p, v);
             }
             for b in &decl.body.bindings {
