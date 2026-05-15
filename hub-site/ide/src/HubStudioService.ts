@@ -19,6 +19,7 @@ import {
     type ListVersionsItem,
     type NotebookSaveOutcome,
     type PackageListing,
+    type RecipeSignatureWire,
     type PackageMetadata,
     type PackageQuery,
     type PackageVersion,
@@ -322,6 +323,12 @@ export class HubStudioService implements StudioService {
     }
     saveNotebook(): Promise<NotebookSaveOutcome> {
         return Promise.reject(new NotSupportedByService("saveNotebook"));
+    }
+    listWorkspaceRecipeSignatures(): Promise<RecipeSignatureWire[]> {
+        return Promise.resolve([]);
+    }
+    parseRecipeSignature(): Promise<RecipeSignatureWire | null> {
+        return Promise.reject(new NotSupportedByService("parseRecipeSignature"));
     }
     cancelRun(): Promise<void> { return Promise.resolve(); }
     debugResume(_action: DebugAction): Promise<void> { return Promise.resolve(); }

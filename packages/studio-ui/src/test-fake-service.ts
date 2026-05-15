@@ -76,6 +76,12 @@ export class FakeStudioService implements StudioService {
     saveNotebook(name: string, stages: string[]) {
         return this.call("saveNotebook", [name, stages]);
     }
+    listWorkspaceRecipeSignatures() {
+        return this.call("listWorkspaceRecipeSignatures", []);
+    }
+    parseRecipeSignature(source: string) {
+        return this.call("parseRecipeSignature", [source]);
+    }
     cancelRun() { return this.call("cancelRun", []); }
     debugResume(action: string) { return this.call("debugResume", [action]); }
     setPauseIterations(enabled: boolean) {
@@ -139,6 +145,9 @@ export class FakeStudioService implements StudioService {
     }
     publishVersion(a: string, s: string, payload: unknown) {
         return this.call("publishVersion", [a, s, payload]);
+    }
+    discoverProducers(a: string, n: string) {
+        return this.call("discoverProducers", [a, n]);
     }
     getTypeVersion(a: string, n: string, v: number | "latest") {
         return this.call("getTypeVersion", [a, n, v]);

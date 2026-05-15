@@ -2173,6 +2173,106 @@ pub fn notebook_save(
     })
 }
 
+/// Recipe-shape catalog the notebook's picker reads to filter by
+/// output type. Workspace-only — the hub equivalent is
+/// `discover_hub_recipes_by_output`.
+#[tauri::command]
+pub fn list_workspace_recipe_signatures(
+    state: State<'_, StudioState>,
+) -> Result<Vec<RecipeSignatureWire>, String> {
+    let ws = require_workspace(&state)?;
+    let signatures = ws.recipe_signatures();
+    let mut out: Vec<RecipeSignatureWire> = signatures
+        .iter()
+        .map(|(name, sig)| RecipeSignatureWire {
+            name: name.clone(),
+            inputs: sig
+                .inputs
+                .iter()
+                .map(|i| InputSlotWire {
+                    name: i.name.clone(),
+                    ty: render_field_type(&i.ty),
+                    optional: i.optional,
+                })
+                .collect(),
+            outputs: sig
+                .output
+                .as_ref()
+                .map(|o| o.types.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Parse one recipe source and return its typed-shape projection.
+/// The notebook picker calls this per hub package: every fetched
+/// `PackageVersion.recipe` rides through here so the picker can
+/// render input/output types without re-implementing the parser in
+/// TypeScript. `None` when the source fails to parse; the caller
+/// falls back to listing the recipe without typed metadata.
+#[tauri::command]
+pub fn parse_recipe_signature(source: String) -> Option<RecipeSignatureWire> {
+    let parsed = parse(&source).ok()?;
+    let name = parsed.recipe_name()?.to_string();
+    Some(RecipeSignatureWire {
+        name,
+        inputs: parsed
+            .inputs
+            .iter()
+            .map(|i| InputSlotWire {
+                name: i.name.clone(),
+                ty: render_field_type(&i.ty),
+                optional: i.optional,
+            })
+            .collect(),
+        outputs: parsed
+            .output
+            .as_ref()
+            .map(|o| o.types.clone())
+            .unwrap_or_default(),
+    })
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct RecipeSignatureWire {
+    pub name: String,
+    pub inputs: Vec<InputSlotWire>,
+    /// Declared output types (`output T` → `["T"]`, `output T1 | T2`
+    /// → `["T1", "T2"]`). Empty for recipes that haven't migrated
+    /// to a typed output yet.
+    pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct InputSlotWire {
+    pub name: String,
+    /// Rendered shape: `Product`, `[Product]`, `Product?`. The
+    /// picker matches stage N's output against stage N+1's input by
+    /// this string; the rendering matches the language so the user
+    /// reads the same shape in the picker that they'd write in a
+    /// recipe.
+    pub ty: String,
+    pub optional: bool,
+}
+
+fn render_field_type(ty: &forage_core::ast::FieldType) -> String {
+    use forage_core::ast::FieldType;
+    match ty {
+        FieldType::String => "String".into(),
+        FieldType::Int => "Int".into(),
+        FieldType::Double => "Double".into(),
+        FieldType::Bool => "Bool".into(),
+        FieldType::Array(inner) => format!("[{}]", render_field_type(inner)),
+        FieldType::Record(name) => name.clone(),
+        FieldType::EnumRef(name) => name.clone(),
+        FieldType::Ref(name) => format!("Ref<{name}>"),
+    }
+}
+
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct NotebookSaveOutcome {

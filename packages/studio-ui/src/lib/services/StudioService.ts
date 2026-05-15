@@ -16,8 +16,10 @@ import type { DaemonStatus } from "../../bindings/DaemonStatus";
 import type { FileNode } from "../../bindings/FileNode";
 import type { Health } from "../../bindings/Health";
 import type { HoverInfo } from "../../bindings/HoverInfo";
+import type { InputSlotWire } from "../../bindings/InputSlotWire";
 import type { LanguageDictionary } from "../../bindings/LanguageDictionary";
 import type { NotebookSaveOutcome } from "../../bindings/NotebookSaveOutcome";
+import type { RecipeSignatureWire } from "../../bindings/RecipeSignatureWire";
 import type { PausePayload } from "../../bindings/PausePayload";
 import type { ProgressUnit } from "../../bindings/ProgressUnit";
 import type { PublishError } from "../../bindings/PublishError";
@@ -238,6 +240,7 @@ export type {
     FileNode,
     Health,
     HoverInfo,
+    InputSlotWire,
     LanguageDictionary,
     NotebookSaveOutcome,
     PausePayload,
@@ -247,6 +250,7 @@ export type {
     PublishPreview,
     RecentWorkspace,
     RecipeOutline,
+    RecipeSignatureWire,
     RecipeStatus,
     Run,
     RunConfig,
@@ -329,6 +333,15 @@ export interface StudioService {
     /// Write the notebook out as a workspace recipe file. Returns the
     /// path + the synthesized source so the editor can switch onto it.
     saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome>;
+    /// Recipe-signature index over the active workspace. The picker
+    /// reads this to filter local recipes by output type without
+    /// fetching anything.
+    listWorkspaceRecipeSignatures(): Promise<RecipeSignatureWire[]>;
+    /// Parse one recipe source and project its typed signature. The
+    /// picker fans this out over every fetched hub package's
+    /// `PackageVersion.recipe` to extract its output type for
+    /// type-shaped filtering. `null` when the source fails to parse.
+    parseRecipeSignature(source: string): Promise<RecipeSignatureWire | null>;
 
     // ── Daemon — Studio only ────────────────────────────────────────
     daemonStatus(): Promise<DaemonStatus>;
@@ -423,6 +436,14 @@ export interface StudioService {
         slug: string,
         payload: PublishPayload,
     ): Promise<PackageVersion>;
+    /// Recipes whose latest version emits type `@typeAuthor/typeName`.
+    /// Wraps `GET /v1/discover/producers?type=<author>/<Name>` — the
+    /// notebook picker calls this with the fully-qualified type id of
+    /// the prior stage's output to find compatible downstream stages.
+    discoverProducers(
+        typeAuthor: string,
+        typeName: string,
+    ): Promise<PackageListing[]>;
 
     // ── Hub type discovery / publish ─────────────────────────────────
     getTypeVersion(

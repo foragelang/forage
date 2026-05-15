@@ -20,6 +20,7 @@ import {
     type DeviceStart,
     type ListVersionsItem,
     type NotebookSaveOutcome,
+    type RecipeSignatureWire,
     type PackageListing,
     type PackageMetadata,
     type PackageQuery,
@@ -181,6 +182,12 @@ export class TauriStudioService implements StudioService {
     }
     saveNotebook(name: string, stages: string[]): Promise<NotebookSaveOutcome> {
         return invoke<NotebookSaveOutcome>("notebook_save", { name, stages });
+    }
+    listWorkspaceRecipeSignatures(): Promise<RecipeSignatureWire[]> {
+        return invoke<RecipeSignatureWire[]>("list_workspace_recipe_signatures");
+    }
+    parseRecipeSignature(source: string): Promise<RecipeSignatureWire | null> {
+        return invoke<RecipeSignatureWire | null>("parse_recipe_signature", { source });
     }
     cancelRun(): Promise<void> {
         return invoke<void>("cancel_run");
@@ -392,6 +399,16 @@ export class TauriStudioService implements StudioService {
                 body: JSON.stringify(payload),
             },
         );
+    }
+    async discoverProducers(
+        typeAuthor: string,
+        typeName: string,
+    ): Promise<PackageListing[]> {
+        const t = `${encodeURIComponent(typeAuthor)}/${encodeURIComponent(typeName)}`;
+        const data = await this.fetchJson<ListPackagesResponse>(
+            `${this.hubUrl}/v1/discover/producers?type=${t}`,
+        );
+        return data.items;
     }
     getTypeVersion(
         author: string,
