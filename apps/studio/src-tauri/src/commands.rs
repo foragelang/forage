@@ -524,11 +524,27 @@ pub async fn run_recipe(
             // outcome as a soft warning so the UI can banner it. A
             // silent log line was the old failure mode — the user
             // would see no Run row and have no idea why.
-            let daemon_warning = match daemon.ensure_run(&slug) {
-                Ok(_) => None,
-                Err(e) => {
-                    tracing::warn!(slug = %slug, error = %e, "ensure_run after dev-run failed");
-                    Some(format!("daemon bookkeeping failed: {e}"))
+            let daemon_warning = match recipe.recipe_name() {
+                Some(name) => match daemon.ensure_run(name) {
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!(
+                            recipe_name = %name,
+                            error = %e,
+                            "ensure_run after dev-run failed",
+                        );
+                        Some(format!("daemon bookkeeping failed: {e}"))
+                    }
+                },
+                None => {
+                    tracing::warn!(
+                        slug = %slug,
+                        "ensure_run skipped: dev-run target has no recipe header",
+                    );
+                    Some(
+                        "daemon bookkeeping skipped: file has no recipe header"
+                            .to_string(),
+                    )
                 }
             };
             Ok(RunOutcome {
@@ -1103,6 +1119,33 @@ fn build_catalog_for_slug(
     Ok(forage_core::TypeCatalog::from_file(recipe))
 }
 
+/// Resolve the path-derived slug JS still sends over the wire to the
+/// recipe's header name — the daemon's canonical key as of Phase 4.
+/// The wire shape stays slug-based until Phase 7 reworks the Tauri
+/// commands; in the meantime every recipe-scoped handler translates
+/// here before calling into the daemon.
+///
+/// Matching is keyed on `slug_from_path`, so both legacy
+/// `<slug>/recipe.forage` files and flat `<slug>.forage` files
+/// resolve. The first recipe in path order wins on duplicates — the
+/// validator's `DuplicateRecipeName` rule still surfaces the
+/// collision through the editor diagnostics pipeline.
+fn resolve_recipe_name(
+    ws: &forage_core::workspace::Workspace,
+    slug: &str,
+) -> Result<String, String> {
+    for recipe in ws.recipes() {
+        if let Some(s) = forage_core::workspace::slug_from_path(&ws.root, recipe.path)
+            && s == slug
+        {
+            return Ok(recipe.name().to_string());
+        }
+    }
+    Err(format!(
+        "no recipe with slug '{slug}' found in the active workspace",
+    ))
+}
+
 fn host_of(url: &str) -> String {
     let after_scheme = url.split("//").nth(1).unwrap_or(url);
     after_scheme
@@ -1549,8 +1592,10 @@ pub fn configure_run(
     slug: String,
     cfg: RunConfig,
 ) -> Result<Run, String> {
+    let ws = require_workspace(&state)?;
+    let name = resolve_recipe_name(&ws, &slug)?;
     require_daemon(&state)?
-        .configure_run(&slug, cfg)
+        .configure_run(&name, cfg)
         .map_err(|e| e.to_string())
 }
 
@@ -1608,7 +1653,8 @@ pub async fn validate_cron_expr(expr: String) -> Result<(), String> {
 /// Promote a draft recipe to a frozen deployed version. Reads the
 /// on-disk source for `slug`, resolves its catalog against the
 /// Studio-side workspace (so workspace declarations and cached hub
-/// deps are folded in), and hands the validated pair to the daemon.
+/// deps are folded in), and hands the validated pair to the daemon
+/// keyed on the recipe's header name.
 /// Returns the new `DeployedVersion` row.
 #[tauri::command]
 pub fn deploy_recipe(
@@ -1624,52 +1670,70 @@ pub fn deploy_recipe(
     let source = std::fs::read_to_string(&recipe_path)
         .map_err(|e| format!("read {}: {e}", recipe_path.display()))?;
     let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
+    let recipe_name = recipe
+        .recipe_name()
+        .ok_or_else(|| format!("file at {} has no recipe header", recipe_path.display()))?;
     let catalog = ws
         .catalog(&recipe, |p| std::fs::read_to_string(p))
         .map_err(|e| format!("catalog: {e}"))?;
     let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-    daemon.deploy(&slug, source, wire).map_err(|e| e.to_string())
+    daemon
+        .deploy(recipe_name, source, wire)
+        .map_err(|e| e.to_string())
 }
 
-/// All deployed versions for one slug, newest first. Returns an
-/// empty vec when the slug has never been deployed.
+/// All deployed versions for one recipe, newest first. Returns an
+/// empty vec when the recipe has never been deployed.
 #[tauri::command]
 pub fn list_deployed_versions(
     state: State<'_, StudioState>,
     slug: String,
 ) -> Result<Vec<DeployedVersion>, String> {
+    let ws = require_workspace(&state)?;
+    let name = resolve_recipe_name(&ws, &slug)?;
     require_daemon(&state)?
-        .deployed_versions(&slug)
+        .deployed_versions(&name)
         .map_err(|e| e.to_string())
 }
 
 /// Per-recipe status surface: joins Studio's on-disk view of drafts
 /// (valid, broken, missing) with the daemon's view of deployed
-/// versions. Returns one entry per slug that's known to either side,
-/// alphabetical by slug.
+/// versions. Returns one entry per recipe known to either side,
+/// keyed on the recipe's header name and ordered alphabetically.
+///
+/// The wire shape's `slug` field is the recipe header name now —
+/// Phase 7 renames the field on the wire; for the duration of the
+/// Phase 4 boundary, the value moved over without the field name
+/// catching up.
 #[tauri::command]
 pub fn list_recipe_statuses(
     state: State<'_, StudioState>,
 ) -> Result<Vec<RecipeStatus>, String> {
-    use std::collections::BTreeMap;
-
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
-    let mut by_slug: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
+    build_recipe_statuses(&ws, &daemon)
+}
 
-    // Parsed recipes contribute their path-derived slug + a Valid
-    // draft state. Path-derived because the daemon's `deployed_slugs`
-    // still keys on path-derived slugs (Phase 4 swaps this to recipe
-    // header name across both sides); we keep them aligned so the join
-    // below pairs the correct rows. Header-less files contribute
-    // declarations to the workspace catalog and are visible in the
-    // file tree, but have no slug to surface here.
+/// Pure join of workspace drafts + daemon deployments, factored out
+/// of the Tauri command so tests can drive both sides without
+/// constructing a real `StudioState`.
+fn build_recipe_statuses(
+    ws: &forage_core::workspace::Workspace,
+    daemon: &forage_daemon::Daemon,
+) -> Result<Vec<RecipeStatus>, String> {
+    use std::collections::BTreeMap;
+
+    let mut by_name: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
+
+    // Parsed recipes contribute their header name + a Valid draft
+    // state. Broken files have no header name to key on (the parser
+    // bailed), so they fall back to their file basename — the user
+    // can still locate them in the file tree, and the daemon's view
+    // never references a broken recipe (deploy requires a clean
+    // parse).
     for recipe in ws.recipes() {
-        let Some(slug) = forage_core::workspace::slug_from_path(&ws.root, recipe.path) else {
-            continue;
-        };
-        by_slug.insert(
-            slug,
+        by_name.insert(
+            recipe.name().to_string(),
             (
                 DraftState::Valid {
                     path: recipe.path.to_path_buf(),
@@ -1679,11 +1743,13 @@ pub fn list_recipe_statuses(
         );
     }
     for broken in ws.broken() {
-        let Some(slug) = forage_core::workspace::slug_from_path(&ws.root, broken.path) else {
-            continue;
-        };
-        by_slug.insert(
-            slug,
+        let key = broken
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| broken.path.display().to_string());
+        by_name.insert(
+            key,
             (
                 DraftState::Broken {
                     path: broken.path.to_path_buf(),
@@ -1696,7 +1762,7 @@ pub fn list_recipe_statuses(
 
     let deployments = daemon.deployed_names().map_err(|e| e.to_string())?;
     for dv in deployments {
-        let entry = by_slug.entry(dv.recipe_name.clone()).or_insert((
+        let entry = by_name.entry(dv.recipe_name.clone()).or_insert((
             DraftState::Missing,
             DeployedState::None,
         ));
@@ -1706,10 +1772,10 @@ pub fn list_recipe_statuses(
         };
     }
 
-    Ok(by_slug
+    Ok(by_name
         .into_iter()
-        .map(|(slug, (draft, deployed))| RecipeStatus {
-            slug,
+        .map(|(name, (draft, deployed))| RecipeStatus {
+            slug: name,
             draft,
             deployed,
         })
@@ -2056,6 +2122,108 @@ for $i in $list.items[*] {
             .load_records(&sr.id, "Item", 10)
             .expect("load_records");
         assert_eq!(records.len(), 2);
+    }
+
+    use super::{build_recipe_statuses, resolve_recipe_name};
+    use crate::workspace::{DeployedState, DraftState};
+
+    /// A workspace whose source file basename differs from the
+    /// recipe header (`foo.forage` containing `recipe "bar"`)
+    /// surfaces one status entry keyed on `"bar"`, and a deploy made
+    /// under that header name shows up paired in the same entry.
+    /// Pre-Phase-4 the join would have used the file basename on the
+    /// draft side and the daemon's path-derived slug on the deployed
+    /// side; the same recipe would have appeared as two unrelated
+    /// entries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_recipe_statuses_joins_on_header_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        std::fs::write(
+            ws_root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+        // File basename `foo`; recipe header `bar`.
+        std::fs::write(
+            ws_root.join("foo.forage"),
+            "recipe \"bar\"\nengine http\n",
+        )
+        .unwrap();
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        let workspace = forage_core::workspace::load(&ws_root).expect("load workspace");
+        let recipe = forage_core::parse(&std::fs::read_to_string(ws_root.join("foo.forage")).unwrap())
+            .expect("parse");
+        let catalog = workspace
+            .catalog(&recipe, |p| std::fs::read_to_string(p))
+            .expect("catalog");
+        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+        daemon
+            .deploy("bar", "recipe \"bar\"\nengine http\n".to_string(), wire)
+            .expect("deploy");
+
+        let statuses = build_recipe_statuses(&workspace, &daemon).expect("build_recipe_statuses");
+        assert_eq!(
+            statuses.len(),
+            1,
+            "draft + deployment must collapse into one entry: {statuses:?}",
+        );
+        let status = &statuses[0];
+        assert_eq!(status.slug, "bar", "status keys on the header name");
+        assert!(
+            matches!(status.draft, DraftState::Valid { .. }),
+            "draft side picked up the parsed recipe: {status:?}",
+        );
+        assert!(
+            matches!(status.deployed, DeployedState::Deployed { version: 1, .. }),
+            "deployment side joined under the header name: {status:?}",
+        );
+    }
+
+    /// `resolve_recipe_name` walks the workspace's parsed recipes and
+    /// returns the header name for a file whose path-derived slug
+    /// matches the input. Covers both the legacy `<slug>/recipe.forage`
+    /// shape and the flat `<slug>.forage` shape.
+    #[test]
+    fn resolve_recipe_name_translates_both_shapes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+        // Legacy `<slug>/recipe.forage`: file path slug `legacy`,
+        // header name `legacy-products`.
+        let legacy_dir = root.join("legacy");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(
+            legacy_dir.join("recipe.forage"),
+            "recipe \"legacy-products\"\nengine http\n",
+        )
+        .unwrap();
+        // Flat `<slug>.forage`: file path slug `flat`, header name
+        // `flat-products`.
+        std::fs::write(
+            root.join("flat.forage"),
+            "recipe \"flat-products\"\nengine http\n",
+        )
+        .unwrap();
+
+        let ws = forage_core::workspace::load(root).expect("load workspace");
+        assert_eq!(
+            resolve_recipe_name(&ws, "legacy").unwrap(),
+            "legacy-products",
+        );
+        assert_eq!(
+            resolve_recipe_name(&ws, "flat").unwrap(),
+            "flat-products",
+        );
+        assert!(
+            resolve_recipe_name(&ws, "ghost").is_err(),
+            "missing slug must surface an error",
+        );
     }
 
     use super::{resolve_existing, resolve_new, validate_path};

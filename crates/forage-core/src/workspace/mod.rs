@@ -315,11 +315,12 @@ fn scan_dir(dir: &Path, out: &mut Vec<WorkspaceFileEntry>) -> Result<(), Workspa
     Ok(())
 }
 
-/// Path-derived slug for a `.forage` file inside `root`. Today the
-/// daemon, Studio, and hub still address recipes by slug; Phase 4 swaps
-/// daemon keying to the recipe header name and the slug bridge goes
-/// away. Until then, this helper exists so consumers can compute the
-/// slug uniformly:
+/// Path-derived slug for a `.forage` file inside `root`. The daemon
+/// now keys on the recipe's header name (Phase 4); this helper
+/// survives because the Studio wire still ships path-derived slugs
+/// from JS and the daemon-open migration still needs to map legacy
+/// slug-keyed state to the new keying. Phases 6 / 7 retire the wire
+/// shape, and only after both land can this helper go away.
 ///
 /// - `<root>/<slug>/recipe.forage` → `<slug>` (the legacy Studio layout).
 /// - any other path → the file stem (`<root>/foo.forage` → `foo`).
