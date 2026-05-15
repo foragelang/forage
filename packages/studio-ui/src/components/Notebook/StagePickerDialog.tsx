@@ -180,7 +180,7 @@ function HubResults({
     const parsedTypeId = useMemo(() => parseTypeId(typeFilter), [typeFilter]);
     const sigs = useQuery({
         queryKey: [
-            "notebook.hubSignatures",
+            "notebook.hubProducers",
             parsedTypeId?.author ?? null,
             parsedTypeId?.name ?? null,
             nameFilter,
