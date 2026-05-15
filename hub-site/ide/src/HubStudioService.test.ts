@@ -159,9 +159,9 @@ describe("HubStudioService", () => {
 
     test("runRecipe(live) is rejected — the hub has no transport", async () => {
         const svc = new HubStudioService(HUB);
-        await expect(svc.runRecipe("any", false)).rejects.toBeInstanceOf(
-            NotSupportedByService,
-        );
+        await expect(
+            svc.runRecipe("any", { replay: false, sample_limit: null, ephemeral: null }),
+        ).rejects.toBeInstanceOf(NotSupportedByService);
     });
 
     test("authWhoami returns the login when signed in", async () => {

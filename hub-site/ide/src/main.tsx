@@ -28,7 +28,7 @@ async function boot() {
     await init();
 
     const service = new HubStudioService();
-    installStudioService(service);
+    installStudioService(service, queryClient);
 
     // Path-based routing: `/edit/<author>/<slug>` opens that package.
     // The Cloudflare Pages `_redirects` rule rewrites any sub-path

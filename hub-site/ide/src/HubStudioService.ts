@@ -43,9 +43,11 @@ import type { PausePayload } from "@/bindings/PausePayload";
 import type { ProgressUnit } from "@/bindings/ProgressUnit";
 import type { RecentWorkspace } from "@/bindings/RecentWorkspace";
 import type { RecipeOutline } from "@/bindings/RecipeOutline";
+import type { RecipeStatus } from "@/bindings/RecipeStatus";
 import type { Run } from "@/bindings/Run";
 import type { RunEvent } from "@/bindings/RunEvent";
 import type { RunOutcome } from "@/bindings/RunOutcome";
+import type { RunRecipeFlags } from "@/bindings/RunRecipeFlags";
 import type { ScheduledRun } from "@/bindings/ScheduledRun";
 import type { ValidationOutcome } from "@/bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "@/bindings/WorkspaceInfo";
@@ -127,12 +129,16 @@ export class HubStudioService implements StudioService {
             return Promise.resolve({ kind: "folder", name: "ide", path: "", children: [] });
         }
         const recipePath = `${loaded.slug}.forage`;
+        // All `.forage` files at workspace root classify as
+        // `declarations` (see `FileKind` docstring). The UI joins
+        // back against the parsed recipe index to tell which one is
+        // the recipe.
         const children: FileNode[] = [
             {
                 kind: "file",
                 name: recipePath,
                 path: recipePath,
-                file_kind: "recipe",
+                file_kind: "declarations",
             },
             ...loaded.types.map((t): FileNode => ({
                 kind: "file",
@@ -251,14 +257,23 @@ export class HubStudioService implements StudioService {
     deleteRecipe(): Promise<void> {
         return Promise.reject(new NotSupportedByService("deleteRecipe"));
     }
+    listRecipeStatuses(): Promise<RecipeStatus[]> {
+        // The hub IDE renders one package at a time; there's no
+        // workspace recipe list to join against a daemon, so this
+        // surface is empty by construction. The UI gates draft /
+        // deployed affordances on `capabilities` and won't reach here.
+        return Promise.resolve([]);
+    }
 
     // ── Run (replay only) ───────────────────────────────────────────
 
-    async runRecipe(_slug: string, replay: boolean): Promise<RunOutcome> {
-        if (!replay) {
-            // Live runs need a real network transport; the hub bundle
-            // doesn't include one. Caller should gate on
-            // `capabilities.liveRun` before reaching here.
+    async runRecipe(_name: string, flags?: RunRecipeFlags): Promise<RunOutcome> {
+        // The hub IDE has no network transport — only the in-browser
+        // replay engine. `replay: false` is the only flag value that
+        // can't be served here; absent / true / null all fall through
+        // to fixture replay. Callers should gate on
+        // `capabilities.liveRun` before requesting live.
+        if (flags?.replay === false) {
             throw new NotSupportedByService("runRecipe(live)");
         }
         if (!this.loaded) {
@@ -371,6 +386,12 @@ export class HubStudioService implements StudioService {
     }
     listScheduledRuns(): Promise<ScheduledRun[]> { return Promise.resolve([]); }
     loadRunRecords(): Promise<unknown[]> { return Promise.resolve([]); }
+    loadRunJsonld(): Promise<unknown> {
+        // Scheduled runs don't exist in the hub IDE; there's nothing
+        // to project as a JSON-LD document. Return an empty document
+        // to match the daemon's "ephemeral run" shape.
+        return Promise.resolve({});
+    }
     validateCron(): Promise<void> {
         return Promise.reject(new NotSupportedByService("validateCron"));
     }
@@ -497,6 +518,16 @@ export class HubStudioService implements StudioService {
                 body: JSON.stringify(payload),
             },
         );
+    }
+    async discoverProducers(
+        typeAuthor: string,
+        typeName: string,
+    ): Promise<PackageListing[]> {
+        const t = `${encodeURIComponent(typeAuthor)}/${encodeURIComponent(typeName)}`;
+        const data = await this.fetchJson<ListPackagesResponse>(
+            `${this.hubUrl}/v1/discover/producers?type=${t}`,
+        );
+        return data.items;
     }
     getTypeVersion(
         author: string,
