@@ -226,6 +226,7 @@ impl Parser {
         let mut types: Vec<RecipeType> = Vec::new();
         let mut enums: Vec<RecipeEnum> = Vec::new();
         let mut inputs: Vec<InputDecl> = Vec::new();
+        let mut output: Option<OutputDecl> = None;
         let mut secrets: Vec<String> = Vec::new();
         let mut functions: Vec<FnDecl> = Vec::new();
         let mut auth: Option<AuthStrategy> = None;
@@ -267,6 +268,12 @@ impl Parser {
                     "type" => types.push(self.parse_type_decl_shared(false)?),
                     "enum" => enums.push(self.parse_enum_decl_shared(false)?),
                     "input" => inputs.push(self.parse_input_decl()?),
+                    "output" => {
+                        if output.is_some() {
+                            return Err(self.generic("duplicate output declaration"));
+                        }
+                        output = Some(self.parse_output_decl()?);
+                    }
                     "secret" => {
                         self.bump();
                         let s = self.expect_ident()?;
@@ -306,6 +313,7 @@ impl Parser {
             types,
             enums,
             inputs,
+            output,
             secrets,
             functions,
             auth,
@@ -596,6 +604,34 @@ impl Parser {
             name,
             ty,
             optional,
+            span: self.span_to_here(start),
+        })
+    }
+
+    /// output_decl := 'output' TypeName ('|' TypeName)*
+    ///
+    /// Multi-type output uses the same `|` token as the pipe transform.
+    /// Disambiguated by context: at the top level after `output`, only a
+    /// `TypeName` is legal — so a trailing `|` is unambiguous as a sum
+    /// continuation, not an expression pipe.
+    ///
+    /// The grammar accepts zero types as well (`output` followed by a
+    /// non-TypeName token); the parser does not consume that token and
+    /// returns an empty `types` vec so the validator can fire
+    /// `EmptyOutput`. Authors who type `output\nstep …` get a precise
+    /// diagnostic instead of a parser misdirection into the step body.
+    fn parse_output_decl(&mut self) -> Result<OutputDecl, ParseError> {
+        let start = self.current_span().start;
+        self.expect_keyword("output")?;
+        let mut types = Vec::new();
+        if matches!(self.peek(), Some(Token::TypeName(_))) {
+            types.push(self.expect_typename()?);
+            while self.eat_punct(&Token::Pipe) {
+                types.push(self.expect_typename()?);
+            }
+        }
+        Ok(OutputDecl {
+            types,
             span: self.span_to_here(start),
         })
     }

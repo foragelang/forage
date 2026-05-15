@@ -7,7 +7,7 @@ use crate::ast::browser::BrowserConfig;
 use crate::ast::expr::{Emission, ExtractionExpr};
 use crate::ast::http::HTTPStep;
 use crate::ast::span::Span;
-use crate::ast::types::{InputDecl, RecipeEnum, RecipeType};
+use crate::ast::types::{InputDecl, OutputDecl, RecipeEnum, RecipeType};
 
 /// One parsed `.forage` file. The grammar is flat — a file is a sequence
 /// of top-level forms (`recipe`, `type`, `enum`, `input`, `secret`, `fn`,
@@ -26,6 +26,11 @@ pub struct ForageFile {
     pub types: Vec<RecipeType>,
     pub enums: Vec<RecipeEnum>,
     pub inputs: Vec<InputDecl>,
+    /// Recipe output signature, when declared (`output T` or
+    /// `output T1 | T2 | …`). `None` for header-less files and for
+    /// recipes that haven't been migrated to a typed output yet; the
+    /// validator's emit-vs-output check only fires when this is `Some`.
+    pub output: Option<OutputDecl>,
     /// Top-level `secret <name>` declarations, in source order.
     pub secrets: Vec<String>,
     /// Top-level `fn <name>(...)` declarations, in source order. These are

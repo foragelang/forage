@@ -35,4 +35,4 @@ pub use recipe::{
     LetBinding, RecipeHeader, Statement,
 };
 pub use span::Span;
-pub use types::{FieldType, InputDecl, RecipeEnum, RecipeField, RecipeType};
+pub use types::{FieldType, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType};

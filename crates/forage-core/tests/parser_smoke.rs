@@ -457,3 +457,86 @@ fn fn_with_pipe_body_round_trips_through_ast() {
     assert_eq!(calls[0].name, "upper");
     assert_eq!(calls[1].name, "trim");
 }
+
+#[test]
+fn parses_single_type_output_decl() {
+    let src = r#"
+        recipe "single"
+        engine http
+        output Product
+        type Product { id: String }
+        step list { method "GET" url "https://x.test" }
+        for $p in $list[*] { emit Product { id ← $p.id } }
+    "#;
+    let r = parse(src).expect("parse");
+    let out = r.output.expect("output decl");
+    assert_eq!(out.types, vec!["Product".to_string()]);
+    assert!(out.span.start < out.span.end);
+}
+
+#[test]
+fn parses_multi_type_output_decl() {
+    let src = r#"
+        recipe "multi"
+        engine http
+        output Product | Variant | PriceObservation
+        type Product { id: String }
+        type Variant { id: String }
+        type PriceObservation { id: String }
+        step list { method "GET" url "https://x.test" }
+        for $p in $list[*] {
+            emit Product { id ← $p.id }
+            emit Variant { id ← $p.id }
+            emit PriceObservation { id ← $p.id }
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let out = r.output.expect("output decl");
+    assert_eq!(
+        out.types,
+        vec![
+            "Product".to_string(),
+            "Variant".to_string(),
+            "PriceObservation".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn output_decl_carries_span_to_its_clause() {
+    let src = "recipe \"spans\"\nengine http\noutput Product | Variant\ntype Product { id: String }\ntype Variant { id: String }\n";
+    let r = parse(src).expect("parse");
+    let out = r.output.expect("output decl");
+    let text = &src[out.span.clone()];
+    assert!(text.starts_with("output Product"), "got {text:?}");
+    assert!(text.ends_with("Variant"), "got {text:?}");
+}
+
+#[test]
+fn output_decl_without_types_yields_empty_list() {
+    // `output` alone is accepted by the parser; the validator surfaces
+    // `EmptyOutput`. The next top-level form still parses normally.
+    let src = r#"
+        recipe "empty"
+        engine http
+        output
+        type Item { id: String }
+        step list { method "GET" url "https://x.test" }
+        for $i in $list[*] { emit Item { id ← $i.id } }
+    "#;
+    let r = parse(src).expect("parse");
+    let out = r.output.expect("output decl present even when empty");
+    assert!(out.types.is_empty());
+}
+
+#[test]
+fn duplicate_output_decl_is_a_parse_error() {
+    let src = r#"
+        recipe "dup"
+        engine http
+        output Item
+        output Item
+        type Item { id: String }
+    "#;
+    assert!(parse(src).is_err());
+}
