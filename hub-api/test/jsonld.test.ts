@@ -13,6 +13,7 @@ import {
     resetStorage,
     userToken,
 } from './_helpers'
+import { alignmentIri } from '../src/jsonld'
 
 beforeEach(resetStorage)
 
@@ -290,6 +291,16 @@ describe('GET /v1/packages/:author/:slug/versions/:n with Accept: application/ld
         expect(resp.status).toBe(404)
         const body = (await resp.json()) as { error: { code: string } }
         expect(body.error.code).toBe('no_snapshot')
+    })
+
+    it('lowers a wikidata P-id alignment under the entity base IRI', () => {
+        // The curated table lowers every `wikidata/<term>` alignment
+        // under `/entity/`, including property P-ids. Pinned so a
+        // future split (e.g. moving P-ids to `/prop/direct/`) breaks
+        // loudly on both writers, not silently on one.
+        expect(alignmentIri({ ontology: 'wikidata', term: 'P112' })).toBe(
+            'http://www.wikidata.org/entity/P112',
+        )
     })
 
     it('handles a wikidata Q-id alignment by lowering to the entity IRI', async () => {

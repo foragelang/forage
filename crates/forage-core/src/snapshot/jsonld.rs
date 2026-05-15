@@ -429,6 +429,24 @@ mod tests {
     }
 
     #[test]
+    fn wikidata_pid_alignment_lowers_to_entity_iri() {
+        // The curated table lowers every `wikidata/<term>` alignment
+        // under `/entity/`, including property P-ids. Consumers that
+        // want the `/prop/direct/` base for property-typed fields
+        // rewrite downstream. Pin the choice so a future drift fails
+        // loudly.
+        let pid = AlignmentUri {
+            ontology: "wikidata".into(),
+            term: "P112".into(),
+            span: 0..0,
+        };
+        assert_eq!(
+            alignment_iri(&pid),
+            "http://www.wikidata.org/entity/P112",
+        );
+    }
+
+    #[test]
     fn unknown_ontology_lowers_to_curie() {
         let ty = RecipeType {
             name: "Custom".into(),
