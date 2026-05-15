@@ -31,9 +31,9 @@ Exit codes:
 - `3` — one or more `expect { … }` blocks failed.
 
 ```sh
-forage run recipes/hacker-news
-forage run recipes/hacker-news --output json | jq '.records | length'
-forage run recipes/letterboxd-popular --replay
+forage run ~/Library/Forage/Recipes/hacker-news
+forage run ~/Library/Forage/Recipes/hacker-news --output json | jq '.records | length'
+forage run ~/Library/Forage/Recipes/letterboxd-popular --replay
 ```
 
 ## `forage test <dir>`
@@ -45,8 +45,8 @@ Replay-mode run, then diffs the produced snapshot against
   new golden.
 
 ```sh
-forage test recipes/hacker-news
-forage test recipes/hacker-news --update
+forage test ~/Library/Forage/Recipes/hacker-news
+forage test ~/Library/Forage/Recipes/hacker-news --update
 ```
 
 ## `forage capture <url>`
@@ -66,7 +66,7 @@ URL path, emits one `step` per unique request shape, scaffolds a
 placeholder `Item` type and emit loop.
 
 ```sh
-forage scaffold ~/captures.jsonl --name my-new-recipe > recipes/my-new-recipe/recipe.forage
+forage scaffold ~/captures.jsonl --name my-new-recipe > ~/Library/Forage/Recipes/my-new-recipe/recipe.forage
 ```
 
 ## `forage publish <dir>`
@@ -74,10 +74,10 @@ forage scaffold ~/captures.jsonl --name my-new-recipe > recipes/my-new-recipe/re
 Push a recipe to the Forage hub.
 
 ```sh
-forage publish recipes/hacker-news                    # dry-run
-forage publish recipes/hacker-news --publish          # actually POST
-forage publish recipes/hacker-news --hub https://...  # alternate hub
-forage publish recipes/hacker-news --token $TOKEN     # explicit bearer
+forage publish ~/Library/Forage/Recipes/hacker-news                    # dry-run
+forage publish ~/Library/Forage/Recipes/hacker-news --publish          # actually POST
+forage publish ~/Library/Forage/Recipes/hacker-news --hub https://...  # alternate hub
+forage publish ~/Library/Forage/Recipes/hacker-news --token $TOKEN     # explicit bearer
 ```
 
 Auth source precedence: `--token` flag → `FORAGE_HUB_TOKEN` env →

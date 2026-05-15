@@ -46,7 +46,7 @@ browser {
 ## First run
 
 ```sh
-forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70
+forage run --interactive ~/Library/Forage/Recipes/ebay-sold --input query=polaroid+sx-70
 ```
 
 Studio prefers the menu item **Recipe → Bootstrap session…**.
@@ -67,7 +67,7 @@ Either path:
 ## Subsequent runs
 
 ```sh
-forage run recipes/ebay-sold --input query=polaroid+sx-70
+forage run ~/Library/Forage/Recipes/ebay-sold --input query=polaroid+sx-70
 ```
 
 The engine seeds the cookies + localStorage back into the WebView,

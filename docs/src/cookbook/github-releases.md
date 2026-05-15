@@ -93,7 +93,7 @@ auth.staticHeader {
 Then run with the token in the environment:
 
 ```sh
-FORAGE_SECRET_GITHUBTOKEN=ghp_xxx forage run recipes/github-releases
+FORAGE_SECRET_GITHUBTOKEN=ghp_xxx forage run ~/Library/Forage/Recipes/github-releases
 ```
 
 The token never appears in the recipe text, never appears in

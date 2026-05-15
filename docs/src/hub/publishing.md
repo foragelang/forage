@@ -12,9 +12,9 @@ Two paths to push to `hub.foragelang.com`:
 ## CLI
 
 ```sh
-forage auth login                              # one-time
-forage publish recipes/hacker-news             # dry-run
-forage publish recipes/hacker-news --publish   # POST
+forage auth login                                              # one-time
+forage publish ~/Library/Forage/Recipes/hacker-news            # dry-run
+forage publish ~/Library/Forage/Recipes/hacker-news --publish  # POST
 ```
 
 The dry-run prints the publish envelope (file count, total size, hub

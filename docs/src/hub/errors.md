@@ -81,7 +81,7 @@ catch (e) {
 `forage publish` surfaces the code + message directly:
 
 ```text
-$ forage publish recipes/foo --publish
+$ forage publish ~/Library/Forage/Recipes/foo --publish
 hub HTTP error 403: forbidden — recipe alice/foo is owned by alice
 ```
 

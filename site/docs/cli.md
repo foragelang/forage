@@ -53,10 +53,10 @@ failure.
 
 ```sh
 # Run a Wikipedia recipe with a topic input
-forage run recipes/wikipedia --input topic=Foraging
+forage run ~/Library/Forage/Recipes/wikipedia --input topic=Foraging
 
 # Browser-engine recipe with multiple inputs
-forage run recipes/jane \
+forage run ~/Library/Forage/Recipes/jane \
     --input dispensarySlug=trilogy \
     --input dispensaryName="Trilogy Wellness" \
     --input siteOrigin=https://trilogy.health \
@@ -160,8 +160,8 @@ block with field bindings, and one `expect` clause.
 
 ```sh
 forage capture https://shop.example.com --out shop.jsonl
-forage scaffold shop.jsonl --host shop.example.com > recipes/shop/recipe.forage
-$EDITOR recipes/shop/recipe.forage
+forage scaffold shop.jsonl --host shop.example.com > ~/Library/Forage/Recipes/shop/recipe.forage
+$EDITOR ~/Library/Forage/Recipes/shop/recipe.forage
 ```
 
 The result is a 50%-right skeleton — the URL pattern, type shape,
@@ -181,7 +181,7 @@ forage test <recipe-dir> [--update]
 ### Directory layout
 
 ```
-recipes/<name>/
+<workspace>/<slug>/
     recipe.forage
     fixtures/
         captures.jsonl       # browser engine: response bodies to replay
@@ -206,7 +206,7 @@ The test command:
 
 - `--update` — write the produced snapshot to
   `expected.snapshot.json`. The first run on a new fixture set is
-  typically `forage test recipes/foo --update`; subsequent runs
+  typically `forage test <recipe-dir> --update`; subsequent runs
   without `--update` are the regression gate.
 
 ### Exit codes
@@ -221,16 +221,16 @@ The test command:
 
 ```sh
 # Pin the current behavior as the golden:
-forage test recipes/sweed --update
+forage test ~/Library/Forage/Recipes/sweed --update
 
 # Later, after editing the recipe — see what changed:
-forage test recipes/sweed
+forage test ~/Library/Forage/Recipes/sweed
 ```
 
 When the snapshot drifts:
 
 ```text
-$ forage test recipes/sweed
+$ forage test ~/Library/Forage/Recipes/sweed
 snapshot mismatch: 1 missing, 1 extra
   - missing: Product { externalId=42, name=Old Name, price=12.99 }
   + extra:   Product { externalId=42, name=New Name, price=12.99 }

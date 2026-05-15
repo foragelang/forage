@@ -127,7 +127,8 @@ fn parseSize($s) {
 
 ## Cross-implementation parity
 
-`Tests/shared-recipes/` is the contract any future implementation
-(reborn TS port, Python port, …) holds to. Today the only consumer is
-the Rust core compiled to WebAssembly that powers Studio + the hub
-IDE; the previous TS port was retired in the cannabis-migration push.
+`crates/forage-test/fixtures/` is the contract any future
+implementation (reborn TS port, Python port, …) holds to. Today the
+only consumer is the Rust core compiled to WebAssembly that powers
+Studio + the hub IDE; the previous TS port was retired in the
+cannabis-migration push.

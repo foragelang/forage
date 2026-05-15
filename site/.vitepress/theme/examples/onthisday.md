@@ -26,7 +26,7 @@ for $e in $feed.events[*] {
 ```
 
 ```sh
-forage run recipes/onthisday --input month=05 --input day=10
+forage run ~/Library/Forage/Recipes/onthisday --input month=05 --input day=10
 ```
 
 ```json

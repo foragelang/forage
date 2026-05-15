@@ -12,18 +12,24 @@ mint signed publish requests on your behalf.
 
 ## With the CLI
 
+Recipes live in your workspace — `~/Library/Forage/Recipes/` on macOS,
+`$XDG_DATA_HOME/forage/recipes/` on Linux, `%APPDATA%\Forage\Recipes\`
+on Windows. One `<slug>/recipe.forage` per recipe.
+
 ```sh
-# Author a recipe under recipes/<slug>/ (workspace at recipes/).
-forage scaffold tests/fixtures/captures.jsonl --out recipes/<slug>/recipe.forage
+cd ~/Library/Forage/Recipes
+
+# Scaffold a recipe from captured fixtures.
+forage scaffold <slug>/fixtures/captures.jsonl --out <slug>/recipe.forage
 
 # Run against fixtures to confirm the snapshot.
-forage test recipes/<slug>
+forage test <slug>
 
 # Dry-run to see the publish envelope.
-forage publish recipes/<slug> --dry-run
+forage publish <slug> --dry-run
 
 # Live publish — picks up the next version automatically.
-forage publish recipes/<slug>
+forage publish <slug>
 ```
 
 The CLI runs the parser + validator locally before posting and rejects

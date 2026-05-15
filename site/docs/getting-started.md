@@ -37,17 +37,19 @@ forage-http = { path = "../forage/crates/forage-http" }
 
 ## Write a recipe
 
-Make a new directory under `recipes/` and drop in a `recipe.forage` file:
+Make a new directory in your workspace
+(`~/Library/Forage/Recipes/` on macOS) and drop in a
+`recipe.forage` file:
 
 ```sh
-mkdir -p recipes/hello
-$EDITOR recipes/hello/recipe.forage
+mkdir -p ~/Library/Forage/Recipes/hello
+$EDITOR ~/Library/Forage/Recipes/hello/recipe.forage
 ```
 
 A minimal recipe against a documented JSON endpoint:
 
 ```forage
-// recipes/hello/recipe.forage
+// hello/recipe.forage
 
 recipe "hello"
 engine http
@@ -86,7 +88,7 @@ Four things to notice:
 Use `forage run` to parse, validate, and run the recipe:
 
 ```sh
-.build/debug/forage run recipes/hello/recipe.forage --input userId=1
+.build/debug/forage run ~/Library/Forage/Recipes/hello --input userId=1
 ```
 
 The CLI parses the recipe, validates it against the type catalog, runs the HTTP graph, and prints the resulting snapshot — a JSON list of every emitted record — to stdout.

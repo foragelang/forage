@@ -9,8 +9,8 @@ Fires per fetch/XHR response whose URL matches a regex.
 
 ```forage
 // `prevalenceNormalize`, `parseJaneWeight`, `janeWeightUnit` are
-// user-defined in the recipe (see recipes/jane/recipe.forage); the
-// engine itself ships no cannabis-domain transforms.
+// user-defined inside the recipe; the engine itself ships no
+// cannabis-domain transforms.
 
 captures.match {
     urlPattern: "iheartjane.com/v2/smartpage"

@@ -30,7 +30,7 @@ for $a in $archive[*] {
 ```
 
 ```sh
-forage run recipes/nasa-apod --input start=2025-05-01 --input end=2025-05-03
+forage run ~/Library/Forage/Recipes/nasa-apod --input start=2025-05-01 --input end=2025-05-03
 ```
 
 ```json

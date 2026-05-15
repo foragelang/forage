@@ -53,7 +53,7 @@ expect { records.where(typeName == "Opinion").count >= 1 }
 ## Run it
 
 ```sh
-FORAGE_SECRET_TERM=24 forage run recipes/scotus-opinions
+FORAGE_SECRET_TERM=24 forage run ~/Library/Forage/Recipes/scotus-opinions
 
 • Opinion (42 records)
   [0] date: "11/07/24", docket: "23-715", caseName: "City of …", pdfUrl: "/opinions/24pdf/23-715_…"
@@ -72,9 +72,9 @@ A surprising number of civic-data sites have no API. The HTTP + HTML
 combination handles every one we've come across without resorting to
 the browser engine (which is more expensive and harder to replay):
 
-- `recipes/hacker-news-html` — HN's `news.ycombinator.com` listing.
-- `recipes/scotus-opinions` — this one.
-- `recipes/onthisday` — Wikipedia's "on this day" calendar.
+- `hacker-news-html` — HN's `news.ycombinator.com` listing.
+- `scotus-opinions` — this one.
+- `onthisday` — Wikipedia's "on this day" calendar.
 
 The browser engine is reserved for SPAs that *do* render in JS or
 sites behind bot management.

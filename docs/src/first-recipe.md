@@ -37,7 +37,7 @@ expect { records.where(typeName == "Story").count >= 20 }
 Run it live:
 
 ```sh
-$ forage run recipes/hacker-news
+$ forage run ~/Library/Forage/Recipes/hacker-news
 • Story (30 records)
   [0] title: "Hardware Attestation as Monopoly Enabler", points: 2095, author: "ChuckMcM", comments: 708
   [1] title: "Postmortem: TanStack npm supply-chain compromise", points: 624, author: "varunsharma07", comments: 238

@@ -11,7 +11,7 @@ Milestones prefixed `R1`–`R13` to distinguish from the Swift `M1`–`M11` (now
 When the roadmap is fully landed:
 
 - **One cargo workspace** rooted at the repo, with `~12` library crates and 2 binary apps.
-- **`forage` CLI** installable via Homebrew, `curl | sh`, and `cargo install`. Runs every recipe in `recipes/` identically to the Swift CLI.
+- **`forage` CLI** installable via Homebrew, `curl | sh`, and `cargo install`. Runs every published canonical recipe identically to the Swift CLI.
 - **Forage Studio (Tauri)** signed + notarized for macOS, published to `foragelang.com/download`. Embeds Monaco with a real Forage LSP (autocomplete, hover, diagnostics, go-to-definition, format).
 - **Web IDE at hub.foragelang.com** running `forage-wasm` — full parser/validator/HTTP-runner parity with the native runtime, same source-of-truth Rust code compiled to WebAssembly. `forage-ts` is deleted.
 - **api.foragelang.com / hub.foragelang.com** unchanged in shape (Cloudflare Worker stays TypeScript) but polished — structured error envelopes, OAuth fully wired, ownership-checked publish/delete, rate limiting, smoke tests covering every error path.
@@ -39,7 +39,7 @@ forage/
 │   ├── forage-replay/               # HTTPReplayer + BrowserReplayer (shared fixture types)
 │   ├── forage-lsp/                  # tower-lsp server, reuses forage-core
 │   ├── forage-wasm/                 # wasm-bindgen exports for the web IDE
-│   └── forage-test/                 # shared-recipes test harness, golden snapshots
+│   └── forage-test/                 # parity-fixture loader + bundled .forage vectors
 │
 ├── apps/
 │   ├── cli/                         # `forage` binary, clap-based
@@ -50,8 +50,6 @@ forage/
 │
 ├── hub-api/                         # STAYS TypeScript (Cloudflare Worker)
 ├── hub-site/                        # STAYS VitePress, depends on forage-wasm now
-├── recipes/                         # unchanged — pure .forage files
-├── Tests/shared-recipes/            # historical name kept; vectors load from here
 │
 └── docs/                            # mdbook — language reference, hosted at foragelang.com/docs
 ```
@@ -118,7 +116,7 @@ Build tooling:
 
 - **R1.8 — `forage-core::error`.** Unified error types using `thiserror`; `ParseError`, `ValidationIssue`, `EvalError` carry source spans. `ariadne::Report` rendering. Error envelope serializes to LSP `Diagnostic`.
 
-- **R1.9 — Test vectors.** `Tests/shared-recipes/*.forage` loaded by `forage-test` crate. Each vector has `expected.json` with golden parse output. `cargo test -p forage-core` parses every vector + asserts AST shape + validates + checks expected diagnostics.
+- **R1.9 — Test vectors.** `crates/forage-test/fixtures/*.forage` loaded by the `forage-test` crate. Each vector has `expected.json` with golden parse output. `cargo test -p forage-core` parses every vector + asserts AST shape + validates + checks expected diagnostics.
 
 - **R1.10 — CI green.** Workflow `rust-ci.yml` runs `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`. Cache `~/.cargo` + `target/`.
 
@@ -131,7 +129,7 @@ Build tooling:
 
 ## R2 — forage-http
 
-**Result:** Every HTTP-engine recipe in `recipes/` runs end-to-end against the live network with identical record output to the Swift `HTTPEngine`. Session caching, auth flavors, pagination, retry, rate limit all work.
+**Result:** Every canonical HTTP-engine recipe runs end-to-end against the live network with identical record output to the Swift `HTTPEngine`. Session caching, auth flavors, pagination, retry, rate limit all work.
 
 **Deliverables:**
 
@@ -166,11 +164,11 @@ Build tooling:
 
 - **R2.7 — `forage-http::replay`.** `HTTPReplayer` transport — reads `fixtures/captures.jsonl`, matches URL + method, returns the stored body. Swappable for live `reqwest::Client` in tests.
 
-- **R2.8 — Tests.** Every HTTP recipe in `recipes/` (hacker-news, github-releases, nasa-apod, usgs-earthquakes, onthisday, scotus-opinions, hacker-news-html) has a replay test: load fixtures, run, diff snapshot against `expected.snapshot.json`. Tests run in `cargo test -p forage-http`.
+- **R2.8 — Tests.** Every canonical HTTP recipe (hacker-news, github-releases, nasa-apod, usgs-earthquakes, onthisday, scotus-opinions, hacker-news-html) has a replay test: load fixtures, run, diff snapshot against `expected.snapshot.json`. Tests run in `cargo test -p forage-http`.
 
 **Acceptance:**
 - `cargo test -p forage-http` runs every HTTP recipe via replay and matches expected snapshots byte-for-byte (after canonicalization).
-- Live: `cargo run -p forage-cli -- run recipes/hacker-news` returns the same record types + counts as the Swift CLI.
+- Live: `cargo run -p forage-cli -- run hacker-news` (from the workspace dir) returns the same record types + counts as the Swift CLI.
 
 ---
 
@@ -195,15 +193,15 @@ Build tooling:
 - **R3.7 — Logs.** `tracing` + `tracing-subscriber` with `--verbose` enabling `forage=debug`. Default level `forage=info`.
 
 **Acceptance:**
-- `forage run recipes/hacker-news --replay` prints a clean snapshot matching the Swift CLI output.
-- `forage test recipes/hacker-news` passes against the recipe's expected snapshot.
+- `forage run hacker-news --replay` (from the workspace dir) prints a clean snapshot matching the Swift CLI output.
+- `forage test hacker-news` passes against the recipe's expected snapshot.
 - A malformed recipe surfaces an `ariadne`-rendered error pointing at the broken span.
 
 ---
 
 ## R4 — forage-browser (wry, captures, M10 interactive)
 
-**Result:** Every browser-engine recipe in `recipes/` (`letterboxd-popular`, `ebay-sold`, `trilogy-rec`/`med`) runs identically to Swift. M10 interactive bootstrap works on macOS (visible WKWebView, overlay button, session persistence, headless reuse with `sessionExpiredPattern` detection).
+**Result:** Every canonical browser-engine recipe (`letterboxd-popular`, `ebay-sold`, `trilogy-rec`/`med`) runs identically to Swift. M10 interactive bootstrap works on macOS (visible WKWebView, overlay button, session persistence, headless reuse with `sessionExpiredPattern` detection).
 
 **Deliverables:**
 
@@ -263,9 +261,9 @@ Build tooling:
   - `trilogy-rec` / `trilogy-med` → `Product` + `Variant` + `PriceObservation` records.
 
 **Acceptance:**
-- `forage run recipes/letterboxd-popular` returns ~70 Films on Mac, end-to-end live.
-- `forage run --interactive recipes/ebay-sold --input query=polaroid+sx-70` opens a visible window, accepts the human-solved Akamai challenge, persists the session, returns ~50 sold listings; second run (without `--interactive`) runs headless.
-- `forage run recipes/trilogy-rec --replay` matches snapshot.
+- `forage run letterboxd-popular` (from the workspace dir) returns ~70 Films on Mac, end-to-end live.
+- `forage run --interactive ebay-sold --input query=polaroid+sx-70` opens a visible window, accepts the human-solved Akamai challenge, persists the session, returns ~50 sold listings; second run (without `--interactive`) runs headless.
+- `forage run trilogy-rec --replay` matches snapshot.
 
 ---
 
@@ -331,7 +329,7 @@ Build tooling:
 
 **Acceptance:**
 - `forage auth login` against api.foragelang.com → tokens stored in OS keychain on each platform.
-- `forage publish recipes/hacker-news` → recipe appears on hub.foragelang.com.
+- `forage publish hacker-news` (from the workspace dir) → recipe appears on hub.foragelang.com.
 - A recipe with `import hub://foragelang/zen-leaf-elkridge` runs end-to-end with the imported types unioned.
 
 ---
@@ -600,7 +598,7 @@ Greenfield: the Swift code is in git history. Each Rust counterpart deletes its 
 | R9 ships | `Sources/Forage/**` (Swift core), `Tests/ForageTests/**` (Swift tests), `Package.swift` |
 | R9 ships | `ROADMAP.md` (Swift roadmap) becomes `ROADMAP-history.md`; `ROADMAP-RUST.md` → `ROADMAP.md` |
 
-`recipes/`, `Tests/shared-recipes/`, `notes/`, `hub-api/`, `hub-site/.vitepress/`, `site/.vitepress/` all survive. The repo's shape pivots from "Swift package + apps" to "cargo workspace + apps + TS workers."
+`notes/`, `hub-api/`, `hub-site/.vitepress/`, `site/.vitepress/` all survive. The repo's shape pivots from "Swift package + apps" to "cargo workspace + apps + TS workers."
 
 ---
 

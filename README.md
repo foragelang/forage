@@ -10,26 +10,30 @@ Lives at **foragelang.com**.
 
 ## What you can do today
 
-- Write a `.forage` recipe (see [`recipes/`](./recipes/)) and run it
-  end-to-end via the CLI:
+- Write a `.forage` recipe (one `<slug>/recipe.forage` per recipe in
+  your workspace — `~/Library/Forage/Recipes/` on macOS by convention)
+  and run it end-to-end:
 
   ```sh
-  forage run recipes/hacker-news
-  forage run recipes/letterboxd-popular --replay
+  cd ~/Library/Forage/Recipes
+  forage run hacker-news
+  forage run letterboxd-popular --replay
   ```
+
+  Browse the canonical recipes on [hub.foragelang.com](https://hub.foragelang.com).
 
 - Validate / test recipes with rich diagnostics:
 
   ```sh
-  forage test recipes/hacker-news      # diff vs expected.snapshot.json
-  forage test recipes/hacker-news --update   # snapshot, golden-file workflow
+  forage test hacker-news              # diff vs expected.snapshot.json
+  forage test hacker-news --update     # snapshot, golden-file workflow
   ```
 
 - Sign in to the hub and publish a recipe:
 
   ```sh
   forage auth login                    # GitHub OAuth device-code flow
-  forage publish recipes/hacker-news --publish
+  forage publish hacker-news --publish
   ```
 
 - Get LSP-grade editing in any editor that speaks the protocol:
@@ -54,16 +58,14 @@ crates/
 ├── forage-replay/      # capture types (HTTP + browser) + JSONL format
 ├── forage-lsp/         # tower-lsp server reused by Studio + VS Code
 ├── forage-wasm/        # wasm-bindgen exports for the web IDE
-└── forage-test/        # shared-recipes test harness
+└── forage-test/        # parity fixture loader + bundled .forage vectors
 apps/
 ├── cli/                # `forage` binary
 └── studio/             # Forage Studio (Tauri 2 + React 19 + Monaco)
-recipes/                # bundled platform recipes
 hub-api/                # Cloudflare Worker (api.foragelang.com)
 hub-site/               # VitePress (hub.foragelang.com)
 site/                   # VitePress (foragelang.com)
 docs/                   # mdbook (foragelang.com/docs)
-DESIGN.md               # design plan
 ROADMAP.md              # milestones R1–R13
 ```
 
@@ -110,6 +112,5 @@ cd apps/studio/ui && npm install
 cd .. && cargo tauri dev
 ```
 
-See [`RELEASING.md`](./RELEASING.md) for the release workflow,
-[`ROADMAP.md`](./ROADMAP.md) for milestones, and
-[`DESIGN.md`](./DESIGN.md) for the language design.
+See [`RELEASING.md`](./RELEASING.md) for the release workflow and
+[`ROADMAP.md`](./ROADMAP.md) for milestones.

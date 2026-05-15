@@ -23,8 +23,9 @@ cargo test --workspace                  # ~50 tests across 13 crates
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 
-# Run the CLI:
-./target/debug/forage run recipes/hacker-news
+# Run the CLI against a recipe in your workspace
+# (defaults to ~/Library/Forage/Recipes/ on macOS):
+./target/debug/forage run ~/Library/Forage/Recipes/hacker-news
 
 # Studio dev loop:
 ( cd apps/studio/ui && npm install )
@@ -43,7 +44,7 @@ crates/
 ├── forage-replay/      # capture types + replayer
 ├── forage-lsp/         # tower-lsp server
 ├── forage-wasm/        # wasm-bindgen exports (consumed by the hub IDE)
-└── forage-test/        # shared-recipes harness
+└── forage-test/        # parity-fixture loader + bundled .forage vectors
 apps/
 ├── cli/                # `forage` binary
 └── studio/             # Tauri 2 + React 19 + Monaco
@@ -51,8 +52,6 @@ hub-api/                # Cloudflare Worker (TypeScript)
 hub-site/               # VitePress (Vue)
 site/                   # VitePress homepage
 docs/                   # this mdbook
-recipes/                # in-tree platform recipes
-Tests/shared-recipes/   # cross-implementation parity vectors
 ```
 
 ## Adding a crate

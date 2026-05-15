@@ -7,8 +7,11 @@ runs reproduce the same output without network.
 
 ## Directory layout
 
+Inside your workspace (`~/Library/Forage/Recipes/` on macOS by
+convention) each recipe is one directory:
+
 ```
-recipes/<slug>/
+<slug>/
 ├── recipe.forage
 ├── expected.snapshot.json           # written by `forage test --update`
 └── fixtures/
@@ -43,8 +46,8 @@ the recipe's `urlPattern` regex is the matcher.
 ## `forage test`
 
 ```sh
-forage test recipes/hacker-news            # diff produced vs expected
-forage test recipes/hacker-news --update   # rewrite expected
+forage test ~/Library/Forage/Recipes/hacker-news            # diff produced vs expected
+forage test ~/Library/Forage/Recipes/hacker-news --update   # rewrite expected
 ```
 
 Workflow:

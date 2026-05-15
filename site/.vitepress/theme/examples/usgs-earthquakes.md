@@ -27,7 +27,7 @@ for $f in $feed.features[*] {
 ```
 
 ```sh
-forage run recipes/usgs-earthquakes
+forage run ~/Library/Forage/Recipes/usgs-earthquakes
 ```
 
 ```json

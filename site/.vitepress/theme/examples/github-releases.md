@@ -28,7 +28,7 @@ for $r in $releases[*] {
 ```
 
 ```sh
-forage run recipes/github-releases --input owner=swiftlang --input repo=swift
+forage run ~/Library/Forage/Recipes/github-releases --input owner=swiftlang --input repo=swift
 ```
 
 ```json

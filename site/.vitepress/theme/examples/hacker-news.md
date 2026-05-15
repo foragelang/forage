@@ -27,7 +27,7 @@ for $hit in $front.hits[*] {
 ```
 
 ```sh
-forage run recipes/hacker-news
+forage run ~/Library/Forage/Recipes/hacker-news
 ```
 
 ```json

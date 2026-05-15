@@ -58,12 +58,11 @@ forage/
 │   ├── forage-replay/      # capture types + replayers
 │   ├── forage-lsp/         # language server
 │   ├── forage-wasm/        # wasm-bindgen exports for the web IDE
-│   └── forage-test/        # shared-recipes test harness
+│   └── forage-test/        # parity-fixture loader + bundled .forage vectors
 ├── apps/
 │   ├── cli/                # `forage` binary
 │   └── studio/             # Forage Studio (Tauri)
 ├── hub-api/                # Cloudflare Worker
 ├── hub-site/               # VitePress
-├── docs/                   # this mdbook
-└── recipes/                # in-tree recipes
+└── docs/                   # this mdbook
 ```

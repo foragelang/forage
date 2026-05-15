@@ -88,7 +88,8 @@ authors get the new flavor's affordances immediately.
 - HTTP engine: a `wiremock`-driven integration test that confirms the
   request shape the new flavor produces.
 
-The shared-recipes harness pulls test vectors from `Tests/shared-recipes/`;
-if the new flavor warrants a canonical example for the TS + Rust
-implementations to agree on, add `XX-auth-<flavor>.forage` + the
-matching descriptor in `expected.json`.
+The parity harness pulls test vectors from
+`crates/forage-test/fixtures/`; if the new flavor warrants a canonical
+example for future implementations to agree on, add
+`XX-auth-<flavor>.forage` + the matching descriptor in
+`expected.json`.

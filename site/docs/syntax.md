@@ -189,7 +189,7 @@ Transforms are named, engine-implemented functions chained with `|`. The vocabul
 | `dedup`                                             | Remove duplicates from a list, preserving order.                      |
 | `getField(name)`                                    | Look up a field on an object whose name is computed at runtime.       |
 
-Domain-specific transforms (cannabis weight/prevalence parsers, etc.) live as user-defined functions inside the recipe that needs them — see `recipes/leafbridge/`, `recipes/jane/`, `recipes/sweed/` for end-to-end examples. The engine registry stays generic.
+Domain-specific transforms (cannabis weight/prevalence parsers, etc.) live as user-defined functions inside the recipe that needs them — see the `leafbridge`, `jane`, and `sweed` recipes on [hub.foragelang.com](https://hub.foragelang.com) for end-to-end examples. The engine registry stays generic.
 
 ## case expressions
 
