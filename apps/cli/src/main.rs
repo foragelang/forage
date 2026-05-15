@@ -44,6 +44,22 @@ enum Command {
         /// instead of hitting the network.
         #[arg(long)]
         replay: bool,
+        /// Replay against an explicit captures file. Overrides
+        /// `--replay`'s default fixture lookup.
+        #[arg(long = "replay-from", value_name = "PATH")]
+        replay_from: Option<PathBuf>,
+        /// Cap each top-level `for $x in $arr[*]` iteration at N items.
+        /// Nested loops still run to completion. Useful for a top-of-
+        /// funnel sanity check against a real source.
+        #[arg(long, value_name = "N")]
+        sample: Option<u32>,
+        /// Preset bundles: `dev` = --sample 10 --replay, `prod` = no
+        /// flags. Explicit per-flag values override the preset's
+        /// defaults. The `--ephemeral` flag lives at the daemon /
+        /// Studio layer where output persistence is a real choice;
+        /// `forage run` is already stateless, so it isn't surfaced.
+        #[arg(long, value_enum)]
+        mode: Option<RunMode>,
         /// Path to a JSON object of input bindings. When omitted the
         /// recipe runs with no inputs (any `input` declarations without
         /// defaults must supply a value through this file).
@@ -200,6 +216,19 @@ enum OutputFormat {
     Json,
 }
 
+/// `--mode dev` / `--mode prod` — preset bundle for the run flag
+/// switches. The full three-flag model lives at the daemon (Studio
+/// uses all three); `forage run` is stateless so the `--ephemeral`
+/// half of the dev preset is implicit, and only `--sample` and
+/// `--replay` matter here.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RunMode {
+    /// Sampled at 10, replay against `_fixtures/<recipe>.jsonl`.
+    Dev,
+    /// Live run, no sampling.
+    Prod,
+}
+
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum NewEngine {
     Http,
@@ -229,9 +258,15 @@ fn main() -> Result<()> {
         Command::Run {
             recipe,
             replay,
+            replay_from,
+            sample,
+            mode,
             inputs,
             output,
-        } => rt.block_on(run(&recipe, replay, inputs.as_deref(), output)),
+        } => {
+            let flags = RunCliFlags::resolve(mode, sample, replay, replay_from);
+            rt.block_on(run(&recipe, &flags, inputs.as_deref(), output))
+        }
         Command::Test {
             recipe,
             inputs,
@@ -392,9 +427,48 @@ fn resolve_recipe(arg: &str) -> Result<ResolvedRecipe> {
     }
 }
 
+/// Resolved CLI flags after applying any `--mode` preset. Each field
+/// carries the effective value passed to the engine.
+struct RunCliFlags {
+    sample: Option<u32>,
+    /// `None` = live network, `Some(None)` = replay against the default
+    /// fixtures path, `Some(Some(p))` = replay against `p`.
+    replay: Option<Option<PathBuf>>,
+}
+
+impl RunCliFlags {
+    /// Apply the preset selected by `--mode`, then let explicit per-flag
+    /// values override the preset's defaults. Explicit beats preset
+    /// because the typical user reaches for `--mode dev --sample 50`
+    /// when they want the dev shape with a different sample size.
+    fn resolve(
+        mode: Option<RunMode>,
+        sample: Option<u32>,
+        replay: bool,
+        replay_from: Option<PathBuf>,
+    ) -> Self {
+        let (default_sample, default_replay) = match mode {
+            Some(RunMode::Dev) => (Some(10u32), true),
+            Some(RunMode::Prod) | None => (None, false),
+        };
+        let effective_sample = sample.or(default_sample);
+        let effective_replay = if let Some(p) = replay_from {
+            Some(Some(p))
+        } else if replay || default_replay {
+            Some(None)
+        } else {
+            None
+        };
+        Self {
+            sample: effective_sample,
+            replay: effective_replay,
+        }
+    }
+}
+
 async fn run(
     recipe_arg: &str,
-    replay: bool,
+    flags: &RunCliFlags,
     inputs_path: Option<&Path>,
     output: OutputFormat,
 ) -> Result<()> {
@@ -403,10 +477,20 @@ async fn run(
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
-    let options = RunOptions::default();
-    let snapshot = match (resolved.engine_kind()?, replay) {
-        (EngineKind::Http, true) => {
-            let captures = load_captures_for(&resolved)?;
+    let options = RunOptions {
+        sample_limit: flags.sample,
+    };
+    let captures = match &flags.replay {
+        None => None,
+        Some(None) => Some(load_captures_for(&resolved)?),
+        Some(Some(path)) => Some(
+            forage_replay::read_jsonl(path)
+                .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?,
+        ),
+    };
+
+    let snapshot = match (resolved.engine_kind()?, captures) {
+        (EngineKind::Http, Some(captures)) => {
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
@@ -414,7 +498,7 @@ async fn run(
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
-        (EngineKind::Http, false) => {
+        (EngineKind::Http, None) => {
             let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
             let engine = Engine::new(&transport);
             engine
@@ -422,19 +506,16 @@ async fn run(
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
-        (EngineKind::Browser, true) => {
-            let captures = load_captures_for(&resolved)?;
-            run_browser_replay(
-                &resolved.file,
-                &catalog,
-                &captures,
-                inputs,
-                secrets,
-                &options,
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-        }
-        (EngineKind::Browser, false) => {
+        (EngineKind::Browser, Some(captures)) => run_browser_replay(
+            &resolved.file,
+            &catalog,
+            &captures,
+            inputs,
+            secrets,
+            &options,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?,
+        (EngineKind::Browser, None) => {
             bail!(
                 "browser-engine recipes need a real WebView; \
                  use --replay against _fixtures/<recipe>.jsonl for now, \
