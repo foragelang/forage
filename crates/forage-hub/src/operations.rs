@@ -376,12 +376,10 @@ pub struct PublishPlan {
 ///   shared declaration).
 ///
 /// File-local types (`type Foo { ... }` without `share`) stay inlined
-/// in the recipe source and are not publishable. Same for `share fn`
-/// and `share enum` — they're carried in the recipe `decls` field in
-/// the old shape, but the type-only resource on the hub doesn't model
-/// them yet; they remain inlined in the recipe source for sub-plan 3.
-/// Sub-plans 9 / future passes can introduce fn/enum resources if the
-/// need surfaces.
+/// in the recipe source and are not publishable. `share fn` and `share
+/// enum` are carried in the recipe `decls` field but the type-only
+/// resource on the hub doesn't model them — they ride along in the
+/// recipe source.
 pub fn assemble_publish_plan(
     workspace: &Workspace,
     recipe_name: &str,
@@ -496,9 +494,7 @@ fn collect_referenced_type_names(
 ///
 /// The type publishes inherit the recipe's `description` / `category`
 /// / `tags` so a workspace that doesn't carry per-type metadata still
-/// publishes something coherent. A future iteration may let the user
-/// override per-type metadata; for sub-plan 3 we keep one metadata
-/// triple per publish.
+/// publishes something coherent. One metadata triple per publish.
 pub async fn publish_from_workspace(
     client: &HubClient,
     workspace: &Workspace,

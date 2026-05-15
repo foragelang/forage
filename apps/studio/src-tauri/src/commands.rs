@@ -2053,7 +2053,7 @@ fn set_close_workspace_enabled(state: &StudioState, enabled: bool) {
 // - `notebook_save` writes that source as a workspace recipe file, at
 //   which point the existing `publish_recipe` / deploy / scheduled-run
 //   surfaces all work against it — the notebook publishes *as a
-//   recipe*, per sub-plan 5's design commitment.
+//   recipe*; there is no separate "notebook" hub citizen.
 
 #[tauri::command]
 pub async fn notebook_run(

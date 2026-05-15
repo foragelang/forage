@@ -46,9 +46,8 @@ type Product
 }
 ```
 
-The surface form landed under sub-plan 2 of
-`plans/typed-hub-program.md` — one alignment URI per `aligns` clause,
-stacked between the type name and the opening brace at the type level;
+The surface form: one alignment URI per `aligns` clause, stacked
+between the type name and the opening brace at the type level;
 optional and one-per-field at the field level. Grammar and validator
 rules live in `notes/grammar.md` and `docs/src/lang/types.md`.
 

@@ -2,7 +2,7 @@
 //! The user composes a linear pipeline by stacking recipe stages
 //! top-to-bottom; the chain runs through `notebook_run` and publishes
 //! as a regular recipe through `notebook_save` + the existing publish
-//! flow (per sub-plan 5's design commitment: notebooks ARE recipes).
+//! flow. Notebooks ARE recipes; there is no separate notebook citizen.
 //!
 //! The view is intentionally minimal in this initial cut: a header
 //! with the notebook name + run/publish buttons, a stage column, and

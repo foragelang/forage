@@ -41,9 +41,9 @@ Recipes that need the deeply-nested structure read it from `_raw`.
 
 ## The adapter recipe pattern
 
-Combine `wikidataEntity` with the type-extension shape from sub-plan 9:
-declare a child type that adds the fields reconciliation can populate,
-then write a `input [Parent] -> output Child` recipe that fills those
+Combine `wikidataEntity` with the type-extension shape: declare a
+child type that adds the fields reconciliation can populate, then
+write a `input [Parent] -> output Child` recipe that fills those
 fields from the Wikidata entity.
 
 ```forage
