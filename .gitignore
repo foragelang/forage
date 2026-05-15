@@ -35,8 +35,9 @@ docs/out/
 *.swp
 *.swo
 
-# Claude Code instructions (machine-local, symlinked from agent-instructions/projects/)
+# Agent instructions (machine-local, symlinked from agent-instructions/projects/)
 CLAUDE.md
+AGENTS.md
 .claude/
 .cursor/
 
