@@ -138,3 +138,45 @@ async fn forage_sync_rejects_invalid_spec() {
         .failure()
         .stderr(predicates::str::contains("expected `@author/slug`"));
 }
+
+/// `forage sync alice/zen-leaf` (without the leading `@`) must
+/// round-trip identically to `forage sync @alice/zen-leaf`. The CLI
+/// accepts either form because hub URLs paste in without the `@`;
+/// regressing the bare form would surface only when a user copies
+/// a slug out of a URL bar.
+#[tokio::test]
+async fn forage_sync_accepts_bare_slug_without_at_prefix() {
+    let server = MockServer::start().await;
+    let art = artifact("alice", "zen-leaf");
+    Mock::given(method("GET"))
+        .and(path("/v1/packages/alice/zen-leaf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(package_meta("alice", "zen-leaf")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/packages/alice/zen-leaf/versions/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&art))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/packages/alice/zen-leaf/downloads"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+
+    Command::cargo_bin("forage")
+        .unwrap()
+        .arg("sync")
+        .arg("alice/zen-leaf") // no `@` prefix
+        .arg(ws)
+        .arg("--hub")
+        .arg(server.uri())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("@alice/zen-leaf@v1"));
+
+    assert!(ws.join("zen-leaf").join("recipe.forage").is_file());
+}

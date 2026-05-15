@@ -868,3 +868,34 @@ fn short_json(fields: &IndexMap<String, JSONValue>) -> String {
     }
     parts.join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `forage sync @alice/zen-leaf` and `forage sync alice/zen-leaf`
+    /// MUST parse identically — the `@` prefix is a display nicety,
+    /// not a parser requirement. A regression that silently lost the
+    /// bare form would only surface when a user copy-pasted from a
+    /// hub URL.
+    #[test]
+    fn parse_spec_accepts_at_prefix_and_bare_form() {
+        let (a, s) = parse_spec("@alice/zen-leaf").unwrap();
+        assert_eq!((a.as_str(), s.as_str()), ("alice", "zen-leaf"));
+        let (a, s) = parse_spec("alice/zen-leaf").unwrap();
+        assert_eq!((a.as_str(), s.as_str()), ("alice", "zen-leaf"));
+    }
+
+    #[test]
+    fn parse_spec_rejects_missing_slash() {
+        assert!(parse_spec("alice").is_err());
+        assert!(parse_spec("@alice").is_err());
+    }
+
+    #[test]
+    fn parse_spec_rejects_empty_segments() {
+        assert!(parse_spec("/zen-leaf").is_err());
+        assert!(parse_spec("alice/").is_err());
+        assert!(parse_spec("@/zen-leaf").is_err());
+    }
+}
