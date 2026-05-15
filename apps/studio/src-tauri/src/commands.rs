@@ -442,7 +442,10 @@ pub async fn run_recipe(
     // are set yet (the user might toggle one mid-run). Browser-engine
     // runs go through a separate driver that the v1 debugger doesn't
     // hook into.
-    let debugger: Option<Arc<dyn Debugger>> = if recipe.engine_kind == EngineKind::Http {
+    let engine_kind = recipe
+        .engine_kind()
+        .ok_or_else(|| "recipe source has no recipe header".to_string())?;
+    let debugger: Option<Arc<dyn Debugger>> = if engine_kind == EngineKind::Http {
         let session = Arc::new(crate::state::DebugSession::default());
         state.debug_session.store(Some(session.clone()));
         Some(Arc::new(StudioDebugger {
@@ -453,7 +456,7 @@ pub async fn run_recipe(
         None
     };
 
-    let snapshot: Result<Snapshot, String> = match (recipe.engine_kind, replay) {
+    let snapshot: Result<Snapshot, String> = match (engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
             let mut engine = Engine::new(&transport).with_progress(Arc::clone(&sink));
@@ -1022,7 +1025,7 @@ fn validate_source(source: &str) -> ValidationOutcome {
         Ok(r) => {
             // No filesystem path available here (live-typed buffer);
             // validate against the recipe-local catalog only.
-            let catalog = forage_core::TypeCatalog::from_recipe(&r);
+            let catalog = forage_core::TypeCatalog::from_file(&r);
             let report = validate(&r, &catalog);
             let mut diagnostics: Vec<Diagnostic> = report
                 .issues
@@ -1091,13 +1094,13 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
 fn build_catalog_for_slug(
     workspace_root: &Path,
     slug: &str,
-    recipe: &forage_core::Recipe,
+    recipe: &forage_core::ForageFile,
 ) -> Result<forage_core::TypeCatalog, forage_core::workspace::WorkspaceError> {
     let path = workspace::recipe_path(workspace_root, slug);
     if let Some(ws) = forage_core::workspace::discover(&path) {
         return ws.catalog(recipe, |p| std::fs::read_to_string(p));
     }
-    Ok(forage_core::TypeCatalog::from_recipe(recipe))
+    Ok(forage_core::TypeCatalog::from_file(recipe))
 }
 
 fn host_of(url: &str) -> String {
@@ -1362,7 +1365,7 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
 /// catalog; semantic validation against sibling recipes lands
 /// when the LSP runs cross-file validation on every edit.
 fn validate_declarations_source(source: &str) -> ValidationOutcome {
-    match forage_core::parse::parse_workspace_file(source) {
+    match forage_core::parse::parse(source) {
         Ok(_) => ValidationOutcome {
             ok: true,
             diagnostics: Vec::new(),

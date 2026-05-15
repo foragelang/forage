@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Listener, WebviewUrl, WebviewWindowBuilder};
 
 use forage_browser::{FETCH_INTERCEPT_JS, SCROLL_TO_BOTTOM_JS, run_browser_replay};
-use forage_core::ast::{BrowserPaginateUntil, BrowserPaginationMode, Recipe};
+use forage_core::ast::{BrowserPaginateUntil, BrowserPaginationMode, ForageFile};
 use forage_core::{EvalValue, Snapshot};
 use forage_replay::{BrowserCapture, Capture};
 
@@ -47,7 +47,7 @@ impl Default for LiveRunOptions {
 /// collected captures.
 pub async fn run_live(
     app: &AppHandle,
-    recipe: &Recipe,
+    recipe: &ForageFile,
     inputs: indexmap::IndexMap<String, EvalValue>,
     secrets: indexmap::IndexMap<String, String>,
     opts: LiveRunOptions,
@@ -56,7 +56,10 @@ pub async fn run_live(
         .browser
         .as_ref()
         .ok_or_else(|| "recipe has no browser config".to_string())?;
-    let initial_url = render_url(&recipe.name, &cfg.initial_url, &inputs)?;
+    let recipe_name = recipe
+        .recipe_name()
+        .ok_or_else(|| "browser engine requires a recipe header".to_string())?;
+    let initial_url = render_url(recipe_name, &cfg.initial_url, &inputs)?;
 
     // Captures accumulator + last-activity stamp.
     let captures = Arc::new(Mutex::new(Vec::<Capture>::new()));
@@ -82,7 +85,7 @@ pub async fn run_live(
     });
 
     // Open the webview window with the shim pre-injected.
-    let label = format!("forage-recipe-{}", recipe.name);
+    let label = format!("forage-recipe-{}", recipe_name);
     let window = WebviewWindowBuilder::new(
         app,
         &label,
@@ -92,7 +95,7 @@ pub async fn run_live(
                 .map_err(|e| format!("bad initialURL: {e}"))?,
         ),
     )
-    .title(format!("Forage — {}", recipe.name))
+    .title(format!("Forage — {}", recipe_name))
     .inner_size(1280.0, 800.0)
     .visible(opts.visible)
     .initialization_script(FETCH_INTERCEPT_JS)

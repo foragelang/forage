@@ -182,7 +182,7 @@ pub fn write_breakpoints(
 }
 
 /// Convenience for `forage_keychain` env-style secret resolution.
-pub fn read_secrets_from_env(recipe: &forage_core::Recipe) -> indexmap::IndexMap<String, String> {
+pub fn read_secrets_from_env(recipe: &forage_core::ForageFile) -> indexmap::IndexMap<String, String> {
     let mut out = indexmap::IndexMap::new();
     for s in &recipe.secrets {
         let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
