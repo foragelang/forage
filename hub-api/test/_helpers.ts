@@ -75,7 +75,6 @@ export function publishRequest(
         fixtures: [],
         snapshot: null,
         base_version: null,
-        forked_from: null,
         ...overrides,
     }
 }

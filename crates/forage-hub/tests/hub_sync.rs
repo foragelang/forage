@@ -131,7 +131,6 @@ async fn publish_succeeds_when_base_matches() {
             "fixtures": [],
             "snapshot": null,
             "base_version": 1,
-            "forked_from": null,
         })))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
             "author": author,

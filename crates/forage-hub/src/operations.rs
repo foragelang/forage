@@ -198,8 +198,9 @@ pub async fn fork_from_hub(
 }
 
 /// Walk the on-disk workspace for `slug` and assemble the atomic
-/// publish artifact. Reads the sidecar for `base_version` and
-/// `forked_from`; absent sidecar means "first publish".
+/// publish artifact. Reads the sidecar for `base_version`; absent
+/// sidecar means "first publish". Lineage (`forked_from`) is
+/// server-owned and is not part of the publish request.
 pub fn assemble_publish_request(
     workspace_root: &Path,
     slug: &str,
@@ -220,10 +221,7 @@ pub fn assemble_publish_request(
     let fixtures = read_fixtures(&recipe_dir)?;
     let snapshot = read_snapshot(&recipe_dir)?;
     let meta = read_meta(&recipe_dir)?;
-    let (base_version, forked_from) = match meta {
-        Some(m) => (Some(m.base_version), m.forked_from),
-        None => (None, None),
-    };
+    let base_version = meta.map(|m| m.base_version);
 
     Ok(PublishRequest {
         description,
@@ -234,7 +232,6 @@ pub fn assemble_publish_request(
         fixtures,
         snapshot,
         base_version,
-        forked_from,
     })
 }
 
@@ -600,7 +597,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(req.base_version, None);
-        assert!(req.forked_from.is_none());
     }
 
     #[test]

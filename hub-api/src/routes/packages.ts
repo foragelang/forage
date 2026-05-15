@@ -286,15 +286,6 @@ export async function publishVersion(
                 request,
             )
         }
-        if (payload.forked_from !== null) {
-            return jsonError(
-                400,
-                'forked_from_on_existing',
-                'forked_from can only be set on a v1 publish via the fork endpoint',
-                {},
-                request,
-            )
-        }
     }
 
     const ownerLogin = existing?.owner_login
@@ -324,13 +315,17 @@ export async function publishVersion(
         oldCategory = existing.category
     }
 
+    // `forked_from` is server-owned: it's stamped at fork-creation
+    // time and preserved across subsequent publishes against the
+    // fork. The publish path never accepts it from the caller — the
+    // `PublishRequest` wire type doesn't carry the field at all.
     const meta: PackageMetadata = {
         author,
         slug,
         description: payload.description,
         category: payload.category,
         tags: payload.tags,
-        forked_from: existing?.forked_from ?? payload.forked_from,
+        forked_from: existing?.forked_from ?? null,
         created_at: existing?.created_at ?? now,
         latest_version: nextVersion,
         stars: existing?.stars ?? 0,
@@ -421,22 +416,6 @@ function validatePublish(payload: PublishRequest): string | null {
             || payload.base_version < 0)
     ) {
         return 'base_version must be null or a non-negative integer'
-    }
-    if (payload.forked_from !== null) {
-        const fk = payload.forked_from
-        if (
-            fk === null
-            || typeof fk !== 'object'
-            || typeof fk.author !== 'string'
-            || !SEGMENT_RE.test(fk.author)
-            || typeof fk.slug !== 'string'
-            || !SEGMENT_RE.test(fk.slug)
-            || typeof fk.version !== 'number'
-            || !Number.isInteger(fk.version)
-            || fk.version < 1
-        ) {
-            return 'forked_from must be {author, slug, version} with valid segments'
-        }
     }
     return null
 }

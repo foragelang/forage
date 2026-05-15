@@ -132,8 +132,12 @@ export interface ListPackagesResponse {
 //
 // `description`, `category`, `tags` update the package metadata. They
 // are required on every publish — clients send the canonical values.
-// `forked_from` is set on a v1 publish created by the fork endpoint
-// (the regular publish path rejects non-null `forked_from`).
+//
+// `forked_from` is intentionally absent from this shape. Lineage is
+// server-owned: the fork endpoint stamps `forked_from` on the v1
+// metadata, and it's preserved across subsequent publishes against
+// the fork. Letting the caller pass it would allow synthesizing a
+// fake lineage on a brand-new package.
 export interface PublishRequest {
     description: string
     category: string
@@ -143,7 +147,6 @@ export interface PublishRequest {
     fixtures: PackageFixture[]
     snapshot: PackageSnapshot | null
     base_version: number | null
-    forked_from: ForkedFrom | null
 }
 
 // `POST /v1/packages/:author/:slug/fork` — create `@me/:as` from the

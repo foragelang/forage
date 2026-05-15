@@ -82,6 +82,12 @@ pub struct PackageMetadata {
 /// `POST /v1/packages/:author/:slug/versions` body. The server validates
 /// `base_version == latest_version` (or `None` for first publish) and
 /// returns 409 otherwise.
+///
+/// `forked_from` is intentionally absent — lineage is server-owned.
+/// The fork endpoint stamps `forked_from` on the v1 metadata and the
+/// server preserves it across subsequent publishes against the fork.
+/// Callers that want to know the lineage of a fork they're publishing
+/// against can read it from the `PackageMetadata` response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublishRequest {
     pub description: String,
@@ -92,7 +98,6 @@ pub struct PublishRequest {
     pub fixtures: Vec<PackageFixture>,
     pub snapshot: Option<PackageSnapshot>,
     pub base_version: Option<u32>,
-    pub forked_from: Option<ForkedFrom>,
 }
 
 /// Server's response to a successful publish. Fields mirror what the

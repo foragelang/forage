@@ -138,6 +138,24 @@ describe('publish + retrieve', () => {
         expect(denied.body.error.code).toBe('forbidden')
     })
 
+    it('ignores caller-sent forked_from on direct publish (no lineage spoof)', async () => {
+        // The wire type doesn't carry `forked_from`, but an attacker
+        // can still put extra fields in the JSON body. The server
+        // must drop them: lineage is server-owned, never caller-set.
+        const token = await userToken('alice')
+        const spoofedBody = {
+            ...publishRequest({ base_version: null }),
+            forked_from: { author: 'torvalds', slug: 'linux', version: 1 },
+        }
+        const r = await fetchJson(
+            authedPostJson('https://hub/v1/packages/alice/forge/versions', token, spoofedBody),
+        )
+        expect(r.status).toBe(201)
+        const meta = await fetchJson(get('https://hub/v1/packages/alice/forge'))
+        expect(meta.status).toBe(200)
+        expect(meta.body.forked_from).toBeNull()
+    })
+
     it('rejects unauthenticated publish with 401', async () => {
         const denied = await fetchJson(
             authedPostJson(
