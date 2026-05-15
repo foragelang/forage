@@ -131,11 +131,16 @@ block. Validator-enforced constraints (not parser-enforced):
 ## Type, enum, input, secret
 
 ```
-type_decl            := 'share'? 'type' TypeName '{' field_list '}'
+type_decl            := 'share'? 'type' TypeName type_alignments
+                        '{' field_list '}'
+
+type_alignments      := ( 'aligns' alignment_uri )*
 
 field_list           := ( field ( ';' | ',' )? )*
 
-field                := field_name ':' field_type '?'?
+field                := field_name ':' field_type '?'? field_alignment?
+
+field_alignment      := 'aligns' alignment_uri
 
 field_name           := Ident | Keyword
 
@@ -143,6 +148,13 @@ field_type           := 'String' | 'Int' | 'Double' | 'Bool'
                       | '[' field_type ']'
                       | 'Ref' '<' TypeName '>'
                       | TypeName
+
+alignment_uri        := alignment_path? '/' alignment_path?
+                      | alignment_path
+
+alignment_path       := alignment_segment ( '.' alignment_segment )*
+
+alignment_segment    := Ident | TypeName | Keyword
 
 enum_decl            := 'share'? 'enum' TypeName '{' enum_variants '}'
 
@@ -171,6 +183,39 @@ the workspace. `input` and `secret` are recipe-local by nature —
 Workspace-wide name collisions among `share`d declarations are a
 validator error. Inside a single file, a file-scoped declaration
 overrides a same-name `share`d declaration from elsewhere.
+
+### Alignments
+
+`aligns <ontology>/<term>` clauses attach ontology correspondences to a
+type or field. Type-level alignments sit between the type name and the
+opening `{`; they stack (one alignment per clause, repeatable across
+ontologies). Field-level alignments sit after the field's optional `?`
+marker. Examples:
+
+```
+share type Product
+    aligns schema.org/Product
+    aligns wikidata/Q2424752
+{
+    name:        String   aligns schema.org/name
+    sku:         String   aligns schema.org/gtin
+    price:       Money    aligns schema.org/offers.price
+    description: String?  aligns schema.org/description
+}
+```
+
+`alignment_uri` is `<ontology>/<term>` — the ontology may contain `.`
+(e.g. `schema.org`); the term may also use `.` for path expressions
+(e.g. `offers.price`). The parser is permissive about missing pieces;
+the validator's `MalformedAlignment` rule catches empty ontologies, empty
+terms, and missing `/`. `DuplicateAlignment` fires when one type
+declares the same URI twice.
+
+Alignments are *index data*: the runtime carries them through to the
+snapshot, the hub indexes recipes and types by them, and JSON-LD output
+translates them into `@context` / `@type`. The runtime does not
+synthesize values across alignments. Independent of `share`: a
+file-local type can carry alignments.
 
 ## Function declarations
 

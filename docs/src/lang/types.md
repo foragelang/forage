@@ -177,3 +177,39 @@ signature, not the runtime emit set.
 The clause is optional in the AST; a recipe without an `output`
 declaration parses and validates, and the validator skips the
 emit-vs-output check entirely.
+
+## Alignments
+
+A `type` declaration may carry `aligns <ontology>/<term>` clauses that
+map the hub type to terms in external ontologies (schema.org, wikidata,
+dublin-core, …). Type-level alignments sit between the type name and
+the opening `{`; field-level alignments sit after the field's optional
+`?` marker:
+
+```forage
+share type Product
+    aligns schema.org/Product
+    aligns wikidata/Q2424752
+{
+    name:        String   aligns schema.org/name
+    sku:         String   aligns schema.org/gtin
+    price:       Double   aligns schema.org/offers.price
+    description: String?  aligns schema.org/description
+}
+```
+
+Type-level alignments stack (one ontology per clause, repeatable).
+Field-level alignments are optional — a field with no `aligns` clause
+has no mapping. Independent of `share`: a file-local type can carry
+alignments too, since they're metadata.
+
+The hub uses alignments for type-shaped discovery (`producers_of(T)`,
+`aligned_with(schema:Event)`); JSON-LD output uses them to write
+`@context` and `@type`. The runtime does not transform values across
+alignments — alignment is index data, not semantic translation.
+
+The validator's `MalformedAlignment` rule flags structural problems
+(missing `/`, empty ontology, empty term). `DuplicateAlignment` flags
+the same URI declared twice on one type. Semantic checks (does the term
+actually exist in the named ontology?) are the hub's responsibility,
+not the language's.

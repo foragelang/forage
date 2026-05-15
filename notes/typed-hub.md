@@ -38,15 +38,19 @@ type Product
     aligns schema.org/Product
     aligns wikidata/Q2424752
 {
-    name:        String   ≅ schema:name        / wikidata:P1448
-    sku:         String   ≅ schema:gtin
-    price:       Money    ≅ schema:offers.price
-    description: String?  ≅ schema:description
+    name:        String   aligns schema.org/name
+    sku:         String   aligns schema.org/gtin
+    price:       Money    aligns schema.org/offers.price
+    description: String?  aligns schema.org/description
     // …
 }
 ```
 
-(Syntax illustrative; the surface form is decided in a plan, not here.)
+The surface form landed under sub-plan 2 of
+`plans/typed-hub-program.md` — one alignment URI per `aligns` clause,
+stacked between the type name and the opening brace at the type level;
+optional and one-per-field at the field level. Grammar and validator
+rules live in `notes/grammar.md` and `docs/src/lang/types.md`.
 
 Alignments declare correspondence at two granularities:
 
