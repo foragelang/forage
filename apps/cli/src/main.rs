@@ -9,6 +9,7 @@ use owo_colors::OwoColorize;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::{EngineKind, JSONValue};
+use forage_core::workspace::fixtures_path;
 use forage_core::{EvalValue, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{
@@ -39,7 +40,8 @@ enum Command {
         /// Recipe path. Accepts either a recipe directory
         /// (`<slug>/recipe.forage` is appended) or the recipe file itself.
         recipe_path: PathBuf,
-        /// Replay against `fixtures/captures.jsonl` instead of hitting the network.
+        /// Replay against the workspace's `_fixtures/<recipe>.jsonl`
+        /// instead of hitting the network.
         #[arg(long)]
         replay: bool,
         /// Output format.
@@ -228,7 +230,7 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
         .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\" engine <kind>` header"))?;
     let snapshot = match (engine_kind, replay) {
         (EngineKind::Http, true) => {
-            let captures = load_captures(&recipe_dir).context("loading fixtures/captures.jsonl")?;
+            let captures = load_captures_for(&recipe_file, &recipe)?;
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
@@ -245,14 +247,14 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, true) => {
-            let captures = load_captures(&recipe_dir).context("loading fixtures/captures.jsonl")?;
+            let captures = load_captures_for(&recipe_file, &recipe)?;
             run_browser_replay(&recipe, &captures, inputs, secrets)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, false) => {
             bail!(
                 "browser-engine recipes need a real WebView; \
-                 use --replay against fixtures/captures.jsonl for now, \
+                 use --replay against _fixtures/<recipe>.jsonl for now, \
                  or open the recipe in Forage Studio (R9)"
             );
         }
@@ -276,6 +278,7 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
 }
 
 async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
+    let recipe_file = recipe_dir.join("recipe.forage");
     let recipe = load_recipe(recipe_dir)?;
     if recipe.engine_kind().is_none() {
         bail!(
@@ -285,7 +288,7 @@ async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
     }
     let inputs = load_inputs(recipe_dir)?;
     let secrets = load_secrets_from_env(&recipe);
-    let captures = load_captures(recipe_dir)?;
+    let captures = load_captures_for(&recipe_file, &recipe)?;
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     let produced = engine
@@ -383,23 +386,27 @@ fn load_secrets_from_env(recipe: &forage_core::ForageFile) -> IndexMap<String, S
     out
 }
 
-fn load_captures(dir: &Path) -> Result<Vec<Capture>> {
-    let path = dir.join("fixtures").join("captures.jsonl");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    let mut out = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let c: Capture =
-            serde_json::from_str(line).with_context(|| format!("parsing capture: {line}"))?;
-        out.push(c);
-    }
-    Ok(out)
+/// Resolve the workspace root and recipe name for `recipe_file`, then
+/// read `<root>/_fixtures/<recipe>.jsonl`. Falls back to the recipe
+/// file's parent directory as the root when no `forage.toml` is found
+/// up the tree (lonely-recipe mode), so a single-file workspace still
+/// resolves captures from a sibling `_fixtures/` directory.
+fn load_captures_for(
+    recipe_file: &Path,
+    recipe: &forage_core::ForageFile,
+) -> Result<Vec<Capture>> {
+    let recipe_name = recipe
+        .recipe_name()
+        .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\"` header"))?;
+    let root = match forage_core::workspace::discover(recipe_file) {
+        Some(ws) => ws.root,
+        None => recipe_file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    };
+    let path = fixtures_path(&root, recipe_name);
+    forage_replay::read_jsonl(&path).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn print_pretty(snapshot: &Snapshot) {

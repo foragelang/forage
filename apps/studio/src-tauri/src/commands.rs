@@ -422,8 +422,16 @@ pub async fn run_recipe(
         inputs.insert(k, EvalValue::from(&v));
     }
     let secrets = workspace::read_secrets_from_env(&recipe);
+    // Replay reads the recipe-name-keyed JSONL stream Phase 5 introduced
+    // (`<root>/_fixtures/<recipe>.jsonl`). A header-less file can't run,
+    // so the validator above has already screened those out; the unwrap
+    // is the last-ditch failure mode (deployed source without a header,
+    // which Phase 1 made structurally impossible).
     let captures = if replay {
-        workspace::read_captures(&ws.root, &slug)
+        match recipe.recipe_name() {
+            Some(name) => workspace::read_captures(&ws.root, name),
+            None => Vec::new(),
+        }
     } else {
         Vec::new()
     };

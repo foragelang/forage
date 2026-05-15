@@ -123,26 +123,26 @@ pub fn read_inputs(root: &Path, slug: &str) -> indexmap::IndexMap<String, serde_
     out
 }
 
-pub fn read_captures(root: &Path, slug: &str) -> Vec<forage_replay::Capture> {
-    let path = recipe_dir(root, slug).join("fixtures").join("captures.jsonl");
-    if !path.exists() {
-        return Vec::new();
-    }
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+/// Read `<workspace>/_fixtures/<recipe_name>.jsonl`. Returns an empty
+/// list on a missing file (the workspace hasn't recorded captures for
+/// this recipe yet) and logs other I/O / parse failures at `warn` —
+/// the run pipeline still has something to replay against even when a
+/// fixture is corrupt, but the user gets a structured log line they
+/// can act on.
+pub fn read_captures(root: &Path, recipe_name: &str) -> Vec<forage_replay::Capture> {
+    let path = forage_core::workspace::fixtures_path(root, recipe_name);
+    match forage_replay::read_jsonl(&path) {
+        Ok(captures) => captures,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                recipe_name = %recipe_name,
+                path = %path.display(),
+                "read_captures failed; falling back to empty list",
+            );
+            Vec::new()
         }
-        if let Ok(c) = serde_json::from_str::<forage_replay::Capture>(line) {
-            out.push(c);
-        }
     }
-    out
 }
 
 /// Per-recipe breakpoint persistence. One JSON sidecar at
@@ -256,13 +256,13 @@ pub enum FileNode {
     },
 }
 
-/// File classification rules (DESIGN_HANDOFF.md):
-///   `forage.toml`               → `Manifest`
-///   `<slug>/recipe.forage`      → `Recipe`
-///   `*.forage` at workspace root → `Declarations`
-///   `<slug>/fixtures/*.json`    → `Fixture`
-///   `<slug>/snapshot.json`      → `Snapshot`
-///   everything else             → `Other`
+/// File classification rules:
+///   `forage.toml`                  → `Manifest`
+///   `<slug>/recipe.forage`         → `Recipe`
+///   `*.forage` at workspace root   → `Declarations`
+///   `_fixtures/<recipe>.jsonl`     → `Fixture`
+///   `_snapshots/<recipe>.json`     → `Snapshot`
+///   everything else                → `Other`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -438,8 +438,9 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
         .map(|e| e.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // `.forage` files: recipes live under a folder, declarations sit
-    // at the workspace root.
+    // `.forage` files: recipes live under a folder (legacy
+    // `<slug>/recipe.forage`) or flat at the workspace root (the
+    // post-Phase-1 shape).
     if extension == "forage" {
         if components.len() == 1 {
             return FileKind::Declarations;
@@ -447,19 +448,18 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
         if components.len() == 2 && last == "recipe.forage" {
             return FileKind::Recipe;
         }
-        // A `.forage` file two-deep that isn't `recipe.forage` is
-        // unclassified — the workspace layout doesn't reserve that
-        // slot. Better to surface it as Other than to silently
-        // mis-tag it as a recipe.
         return FileKind::Other;
     }
 
-    // `<slug>/fixtures/<name>.json` — captures / inputs / etc.
-    if extension == "json" {
-        if components.len() == 3 && components[1] == "fixtures" {
+    // Phase 5 data dirs: per-recipe JSONL captures and the published-run
+    // snapshot live next to the workspace root keyed by recipe header
+    // name.
+    if components.len() == 2 {
+        let parent = components[0].as_str();
+        if parent == forage_core::workspace::FIXTURES_DIR && extension == "jsonl" {
             return FileKind::Fixture;
         }
-        if components.len() == 2 && last == "snapshot.json" {
+        if parent == forage_core::workspace::SNAPSHOTS_DIR && extension == "json" {
             return FileKind::Snapshot;
         }
     }
@@ -701,7 +701,9 @@ mod tests {
     }
 
     /// Lay out a synthetic workspace and verify the tree shape and
-    /// per-file classifications match the rules in DESIGN_HANDOFF.md.
+    /// per-file classifications. Captures and snapshots live at
+    /// `_fixtures/<recipe>.jsonl` / `_snapshots/<recipe>.json` — the
+    /// data dirs the workspace loader keeps out of the source scan.
     #[test]
     fn build_file_tree_classifies_and_shapes_workspace() {
         let tmp = tempfile::tempdir().unwrap();
@@ -724,17 +726,18 @@ mod tests {
         fs::write(root.join(".forage").join("daemon.sqlite"), "").unwrap();
         fs::write(root.join(".DS_Store"), "").unwrap();
 
-        // One recipe with fixtures + snapshot.
-        let recipe_dir = root.join("trilogy-rec");
-        fs::create_dir_all(recipe_dir.join("fixtures")).unwrap();
+        // Recipe at the root + its captures and snapshot in the
+        // shared data dirs.
         fs::write(
-            recipe_dir.join("recipe.forage"),
+            root.join("trilogy-rec.forage"),
             "recipe \"trilogy-rec\"\nengine http\n",
         )
         .unwrap();
-        fs::write(recipe_dir.join("fixtures").join("inputs.json"), "{}").unwrap();
-        fs::write(recipe_dir.join("snapshot.json"), "{}").unwrap();
-        fs::write(recipe_dir.join("README.md"), "").unwrap();
+        fs::create_dir_all(root.join("_fixtures")).unwrap();
+        fs::write(root.join("_fixtures").join("trilogy-rec.jsonl"), "").unwrap();
+        fs::create_dir_all(root.join("_snapshots")).unwrap();
+        fs::write(root.join("_snapshots").join("trilogy-rec.json"), "{}").unwrap();
+        fs::write(root.join("README.md"), "").unwrap();
 
         let tree = build_file_tree(root).unwrap();
         let FileNode::Folder { children, .. } = tree else {
@@ -775,52 +778,42 @@ mod tests {
             by_name.get("cannabis.forage").copied(),
             Some(FileKind::Declarations)
         );
-        let recipe_children = folders.get("trilogy-rec").expect("recipe folder");
+        assert_eq!(
+            by_name.get("trilogy-rec.forage").copied(),
+            Some(FileKind::Declarations),
+            "a flat .forage at the root with a header is still classified as Declarations \
+             by the path-based classifier; FileKind doesn't inspect file contents",
+        );
+        assert_eq!(by_name.get("README.md").copied(), Some(FileKind::Other));
 
-        let mut recipe_files: BTreeMap<String, FileKind> = BTreeMap::new();
-        let mut recipe_subfolders: BTreeMap<String, Vec<FileNode>> = BTreeMap::new();
-        for child in recipe_children {
-            match child {
-                FileNode::File {
-                    name, file_kind, ..
-                } => {
-                    recipe_files.insert(name.clone(), *file_kind);
-                }
-                FileNode::Folder { name, children, .. } => {
-                    recipe_subfolders.insert(name.clone(), children.clone());
-                }
-            }
-        }
-        assert_eq!(
-            recipe_files.get("recipe.forage").copied(),
-            Some(FileKind::Recipe)
-        );
-        assert_eq!(
-            recipe_files.get("snapshot.json").copied(),
-            Some(FileKind::Snapshot)
-        );
-        assert_eq!(
-            recipe_files.get("README.md").copied(),
-            Some(FileKind::Other)
-        );
-
-        let fixtures = recipe_subfolders.get("fixtures").expect("fixtures folder");
-        let inputs = fixtures
+        let fixtures = folders.get("_fixtures").expect("_fixtures folder");
+        let fixture_kind = fixtures
             .iter()
             .find_map(|n| match n {
                 FileNode::File {
                     name, file_kind, ..
-                } if name == "inputs.json" => Some(*file_kind),
+                } if name == "trilogy-rec.jsonl" => Some(*file_kind),
                 _ => None,
             })
-            .expect("inputs.json");
-        assert_eq!(inputs, FileKind::Fixture);
+            .expect("trilogy-rec.jsonl");
+        assert_eq!(fixture_kind, FileKind::Fixture);
+
+        let snapshots = folders.get("_snapshots").expect("_snapshots folder");
+        let snapshot_kind = snapshots
+            .iter()
+            .find_map(|n| match n {
+                FileNode::File {
+                    name, file_kind, ..
+                } if name == "trilogy-rec.json" => Some(*file_kind),
+                _ => None,
+            })
+            .expect("trilogy-rec.json");
+        assert_eq!(snapshot_kind, FileKind::Snapshot);
     }
 
     /// FileNode.path is workspace-relative. The frontend derives a
-    /// recipe slug from path shape (`<slug>/recipe.forage` → `<slug>`);
-    /// absolute paths break that derivation and silently disable every
-    /// slug-aware action (Run, Replay, context menu).
+    /// recipe slug from path shape; absolute paths break every
+    /// path-aware action (Run, Replay, context menu) in the UI.
     #[test]
     fn build_file_tree_paths_are_workspace_relative() {
         let tmp = tempfile::tempdir().unwrap();
@@ -831,10 +824,9 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("cannabis.forage"), "").unwrap();
-        let recipe_dir = root.join("trilogy-rec");
-        fs::create_dir_all(recipe_dir.join("fixtures")).unwrap();
-        fs::write(recipe_dir.join("recipe.forage"), "").unwrap();
-        fs::write(recipe_dir.join("fixtures").join("inputs.json"), "{}").unwrap();
+        fs::write(root.join("trilogy-rec.forage"), "").unwrap();
+        fs::create_dir_all(root.join("_fixtures")).unwrap();
+        fs::write(root.join("_fixtures").join("trilogy-rec.jsonl"), "").unwrap();
 
         let tree = build_file_tree(root).unwrap();
         let FileNode::Folder {
@@ -872,15 +864,14 @@ mod tests {
 
         assert_eq!(by_name["forage.toml"], PathBuf::from("forage.toml"));
         assert_eq!(by_name["cannabis.forage"], PathBuf::from("cannabis.forage"));
-        assert_eq!(by_name["trilogy-rec"], PathBuf::from("trilogy-rec"));
         assert_eq!(
-            by_name["recipe.forage"],
-            PathBuf::from("trilogy-rec/recipe.forage")
+            by_name["trilogy-rec.forage"],
+            PathBuf::from("trilogy-rec.forage")
         );
-        assert_eq!(by_name["fixtures"], PathBuf::from("trilogy-rec/fixtures"));
+        assert_eq!(by_name["_fixtures"], PathBuf::from("_fixtures"));
         assert_eq!(
-            by_name["inputs.json"],
-            PathBuf::from("trilogy-rec/fixtures/inputs.json")
+            by_name["trilogy-rec.jsonl"],
+            PathBuf::from("_fixtures/trilogy-rec.jsonl")
         );
     }
 
