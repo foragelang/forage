@@ -1,11 +1,12 @@
 //! Filesystem helpers anchored on a workspace root. The root is whatever
 //! the user opened — there's no longer a single global workspace.
 //!
-//! Recipe-scoped reads (source, inputs, deletes) key on recipe header
-//! name and consult `Workspace::recipe_by_name` to find the underlying
-//! file. The file may live at `<root>/<name>.forage` (the post-Phase-1
-//! flat shape) or at `<root>/<slug>/recipe.forage` (legacy); the
-//! resolver hands back whichever path is on disk.
+//! Recipe-scoped reads (source, deletes) key on the recipe header name
+//! and consult `Workspace::recipe_by_name` to find the underlying file.
+//! Recipes live at `<root>/<name>.forage` (the flat shape every
+//! post-Phase-10 surface expects). A workspace that still carries the
+//! pre-Phase-10 `<root>/<slug>/recipe.forage` shape is rejected at the
+//! command boundary with a `forage migrate` prompt.
 //!
 //! This module also owns the cross-workspace **recents sidecar**: a
 //! JSON file in the OS data dir tracking which workspaces the user has
@@ -43,13 +44,41 @@ pub fn write_empty_manifest(root: &Path) -> io::Result<()> {
 }
 
 /// Resolve a recipe's on-disk file path by header name. Looks the
-/// recipe up in the cached workspace listing — the path comes back
-/// whichever shape the file is in (`<root>/<name>.forage` flat or the
-/// legacy `<root>/<slug>/recipe.forage`).
+/// recipe up in the cached workspace listing.
 pub fn resolve_recipe_path(ws: &Workspace, name: &str) -> Result<PathBuf, String> {
     ws.recipe_by_name(name)
         .map(|r| r.path.to_path_buf())
         .ok_or_else(|| format!("no recipe named {name:?} in workspace at {}", ws.root.display()))
+}
+
+/// User-facing rejection used when an action targets a recipe still
+/// in the legacy `<slug>/recipe.forage` layout. Studio refuses to act
+/// against unmigrated workspaces; the CLI's `forage migrate` is the
+/// one-shot fix.
+pub fn unmigrated_workspace_message(root: &Path) -> String {
+    format!(
+        "this workspace has not been migrated — run `forage migrate {}`",
+        root.display()
+    )
+}
+
+/// True when `recipe_path` is at the pre-Phase-10 legacy layout
+/// (`<root>/<slug>/recipe.forage`): exactly one directory deep under
+/// the root, with the file basename literally `recipe.forage`.
+pub fn is_legacy_recipe_path(root: &Path, recipe_path: &Path) -> bool {
+    let Some(parent) = recipe_path.parent() else {
+        return false;
+    };
+    if parent == root {
+        return false;
+    }
+    if parent.parent() != Some(root) {
+        return false;
+    }
+    recipe_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s == "recipe.forage")
 }
 
 /// Scaffold a new recipe at `<root>/<name>.forage` with a `recipe
@@ -99,15 +128,14 @@ pub fn read_source(ws: &Workspace, name: &str) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
 }
 
-/// Delete the on-disk artifact for the recipe named `name`. Resolves
-/// the file path through the workspace index and removes either:
-///   * the entire `<slug>/` directory if the recipe lives in the legacy
-///     `<root>/<slug>/recipe.forage` shape, taking sibling
-///     `fixtures/` / `snapshot.json` with it.
-///   * just the `<name>.forage` file in the flat shape.
+/// Delete the on-disk file for the recipe named `name`. Resolves the
+/// path through the workspace index and removes `<root>/<name>.forage`.
+/// A recipe still at the legacy `<root>/<slug>/recipe.forage` location
+/// is rejected with the migration prompt — Studio doesn't act against
+/// unmigrated workspaces.
 ///
 /// Refuses anything resolving outside the workspace root — a symlinked
-/// recipe dir pointing at `/etc/passwd` would otherwise let us delete
+/// recipe file pointing at `/etc/passwd` would otherwise let us delete
 /// unrelated content.
 pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
     let path = ws
@@ -119,9 +147,11 @@ pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
                 format!("no recipe named {name:?} in workspace at {}", ws.root.display()),
             )
         })?;
-    let target = legacy_recipe_dir(&ws.root, &path).unwrap_or(path);
+    if is_legacy_recipe_path(&ws.root, &path) {
+        return Err(io::Error::other(unmigrated_workspace_message(&ws.root)));
+    }
 
-    let canonical = target.canonicalize()?;
+    let canonical = path.canonicalize()?;
     let root_canonical = ws.root.canonicalize()?;
     if !canonical.starts_with(&root_canonical) {
         return Err(io::Error::new(
@@ -129,30 +159,7 @@ pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
             format!("recipe path {canonical:?} escapes workspace root {root_canonical:?}"),
         ));
     }
-    if canonical.is_dir() {
-        fs::remove_dir_all(&canonical)
-    } else {
-        fs::remove_file(&canonical)
-    }
-}
-
-/// Returns the parent directory when `recipe_path` looks like the
-/// legacy `<root>/<slug>/recipe.forage` shape (parent is one level
-/// under the root, file is named `recipe.forage`). Returns `None`
-/// otherwise — flat `<root>/<name>.forage` files have no per-recipe
-/// directory to clean up.
-fn legacy_recipe_dir(root: &Path, recipe_path: &Path) -> Option<PathBuf> {
-    let parent = recipe_path.parent()?;
-    if parent == root {
-        return None;
-    }
-    if parent.parent() != Some(root) {
-        return None;
-    }
-    if recipe_path.file_name()?.to_str()? != "recipe.forage" {
-        return None;
-    }
-    Some(parent.to_path_buf())
+    fs::remove_file(&canonical)
 }
 
 /// Read `<workspace>/_fixtures/<recipe_name>.jsonl`. Returns an empty
@@ -290,16 +297,19 @@ pub enum FileNode {
 
 /// File classification rules:
 ///   `forage.toml`                  → `Manifest`
-///   `<slug>/recipe.forage`         → `Recipe`
 ///   `*.forage` at workspace root   → `Declarations`
 ///   `_fixtures/<recipe>.jsonl`     → `Fixture`
 ///   `_snapshots/<recipe>.json`     → `Snapshot`
 ///   everything else                → `Other`
+///
+/// Classification is path-based — the kind doesn't read file contents.
+/// A `.forage` file at the root may be a recipe or a shared-types
+/// declaration; the UI joins it back against the parsed recipe index
+/// to tell the two apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum FileKind {
-    Recipe,
     Declarations,
     Fixture,
     Snapshot,
@@ -468,15 +478,14 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
         .map(|e| e.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // `.forage` files: recipes live under a folder (legacy
-    // `<slug>/recipe.forage`) or flat at the workspace root (the
-    // post-Phase-1 shape).
+    // `.forage` files at the workspace root carry the recipe or
+    // shared-types declarations the toolchain consumes. Anything
+    // deeper (including the legacy `<slug>/recipe.forage` shape) is
+    // unclassified — the UI shows it but action-bound commands
+    // surface the `forage migrate` prompt instead of operating on it.
     if extension == "forage" {
         if components.len() == 1 {
             return FileKind::Declarations;
-        }
-        if components.len() == 2 && last == "recipe.forage" {
-            return FileKind::Recipe;
         }
         return FileKind::Other;
     }
@@ -693,13 +702,12 @@ mod tests {
 
     fn make_legacy_recipe(root: &Path, slug: &str, header_name: &str) {
         let dir = root.join(slug);
-        fs::create_dir_all(dir.join("fixtures")).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("recipe.forage"),
             format!("recipe \"{header_name}\"\nengine http\n"),
         )
         .unwrap();
-        fs::write(dir.join("fixtures").join("inputs.json"), "{}").unwrap();
     }
 
     fn make_flat_recipe(root: &Path, file_stem: &str, header_name: &str) {
@@ -710,21 +718,26 @@ mod tests {
         .unwrap();
     }
 
-    /// A recipe named "to-delete" in the legacy `<slug>/recipe.forage`
-    /// layout takes the whole `<slug>/` dir (including `fixtures/`)
-    /// with it when deleted.
+    /// A recipe whose source file is still at the pre-Phase-10
+    /// `<root>/<slug>/recipe.forage` location is an unmigrated
+    /// workspace. Recipe-scoped commands refuse to act and surface a
+    /// `forage migrate` prompt — Studio doesn't treat a half-shape
+    /// workspace as workable.
     #[test]
-    fn delete_removes_legacy_directory_and_fixtures() {
+    fn delete_unmigrated_recipe_surfaces_migration_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         write_manifest(tmp.path());
         make_legacy_recipe(tmp.path(), "to-delete", "to-delete");
-        assert!(tmp.path().join("to-delete/recipe.forage").exists());
-        assert!(tmp.path().join("to-delete/fixtures/inputs.json").exists());
 
         let ws = forage_core::workspace::load(tmp.path()).unwrap();
-        delete_recipe(&ws, "to-delete").unwrap();
-
-        assert!(!tmp.path().join("to-delete").exists());
+        let err = delete_recipe(&ws, "to-delete").unwrap_err();
+        assert!(
+            err.to_string().contains("forage migrate"),
+            "expected migrate prompt; got {err}"
+        );
+        // The file is left in place — Studio doesn't mutate
+        // unmigrated state.
+        assert!(tmp.path().join("to-delete/recipe.forage").exists());
     }
 
     /// A recipe named "remedy" in the flat `<root>/remedy.forage`
@@ -784,7 +797,7 @@ mod tests {
         write_manifest(tmp.path());
         fs::write(outside.path().join("important.txt"), "DO NOT DELETE").unwrap();
         fs::write(
-            outside.path().join("recipe.forage"),
+            outside.path().join("escapee.forage"),
             "recipe \"escapee\"\nengine http\n",
         )
         .unwrap();
@@ -794,7 +807,7 @@ mod tests {
         let err = delete_recipe(&ws, "escapee").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
         assert!(outside.path().join("important.txt").exists());
-        assert!(outside.path().join("recipe.forage").exists());
+        assert!(outside.path().join("escapee.forage").exists());
     }
 
     /// A fresh workspace's first scaffold lands at
@@ -1053,7 +1066,7 @@ mod tests {
         .unwrap();
         fs::write(root.join("z.forage"), "").unwrap();
         fs::create_dir_all(root.join("a-folder")).unwrap();
-        fs::write(root.join("a-folder").join("recipe.forage"), "").unwrap();
+        fs::write(root.join("a-folder").join("inside.txt"), "").unwrap();
 
         let tree = build_file_tree(root).unwrap();
         let FileNode::Folder { children, .. } = tree else {

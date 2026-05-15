@@ -841,8 +841,6 @@ function FileKindIcon({ node }: { node: FileNode & { kind: "file" } }) {
         return <Settings className="size-3.5 shrink-0 text-muted-foreground" />;
     }
     switch (node.file_kind) {
-        case "recipe":
-            return <Sprout className="size-3.5 shrink-0 text-success" />;
         case "declarations":
             return <Layers className="size-3.5 shrink-0 text-warning" />;
         case "fixture":

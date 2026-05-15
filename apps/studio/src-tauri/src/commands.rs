@@ -1430,11 +1430,12 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, String> {
 /// Validate a file saved under the workspace at `path` (canonical,
 /// inside `root`). The decision tree:
 ///   * non-`.forage` — clean outcome (no diagnostics).
-///   * `<root>/<name>.forage` — workspace-aware validation
-///     (post-greenfield: a `.forage` file may declare a recipe or
-///     just hold shared types, both go through the same validator).
-///   * `<root>/<slug>/recipe.forage` — workspace-aware validation
-///     (legacy shape that still functions).
+///   * `<root>/<name>.forage` — workspace-aware validation. A
+///     `.forage` file may declare a recipe or just hold shared types;
+///     both go through the same validator.
+///   * `<root>/<slug>/recipe.forage` — the pre-Phase-10 legacy
+///     shape. Studio refuses to act against unmigrated workspaces;
+///     the diagnostic points the user at `forage migrate`.
 ///   * any other `.forage` location — unrecognized; surface as a
 ///     diagnostic so the UI doesn't silently treat sidecars as
 ///     declarations.
@@ -1449,7 +1450,7 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
             diagnostics: Vec::new(),
         };
     }
-    let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+    if path.file_name().and_then(|s| s.to_str()).is_none() {
         return ValidationOutcome {
             ok: false,
             diagnostics: vec![Diagnostic {
@@ -1467,22 +1468,37 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let depth = rel.components().count();
 
-    if depth == 1 || (depth == 2 && file_name == "recipe.forage") {
+    if depth == 1 {
         return validate_source_in_workspace(root, source);
     }
 
-    // Any other `.forage` location is a sidecar — neither at the
-    // workspace root nor in a legacy `<slug>/recipe.forage` slot.
-    // classify_file tags it `Other`; validate_path agrees so the UI
-    // doesn't silently treat sidecars as source.
     let r = LineMap::new(source).range(0..0);
+    if workspace::is_legacy_recipe_path(root, path) {
+        return ValidationOutcome {
+            ok: false,
+            diagnostics: vec![Diagnostic {
+                severity: "error",
+                code: "UnmigratedWorkspace".into(),
+                message: workspace::unmigrated_workspace_message(root),
+                start_line: r.start.line,
+                start_col: r.start.character,
+                end_line: r.end.line,
+                end_col: r.end.character,
+            }],
+        };
+    }
+
+    // Any other `.forage` location is a sidecar — neither at the
+    // workspace root nor in a recognized layout. classify_file tags
+    // it `Other`; validate_path agrees so the UI doesn't silently
+    // treat sidecars as source.
     ValidationOutcome {
         ok: false,
         diagnostics: vec![Diagnostic {
             severity: "error",
             code: "UnrecognizedForageFile".into(),
             message: format!(
-                "unrecognized .forage file location: {} — .forage files belong at the workspace root or as <slug>/recipe.forage",
+                "unrecognized .forage file location: {} — .forage files belong at the workspace root",
                 path.display()
             ),
             start_line: r.start.line,
@@ -2301,12 +2317,13 @@ for $i in $list.items[*] {
         assert!(err.contains("empty path"), "unexpected error: {err}");
     }
 
-    /// A sidecar `.forage` file two-deep that isn't named
-    /// `recipe.forage` is unclassified — validate_path must surface
-    /// that as a diagnostic instead of silently treating it as a
-    /// declarations file.
+    /// A sidecar `.forage` file deeper than the workspace root is
+    /// unclassified — validate_path surfaces a diagnostic instead of
+    /// silently treating it as a declarations file. (Distinct from a
+    /// legacy `<slug>/recipe.forage`, which gets the migration
+    /// prompt; see the unmigrated-workspace test below.)
     #[test]
-    fn validate_path_rejects_sidecar_forage_in_recipe_folder() {
+    fn validate_path_rejects_sidecar_forage_in_subfolder() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("trilogy")).unwrap();
@@ -2317,6 +2334,30 @@ for $i in $list.items[*] {
         assert!(!outcome.ok, "sidecar must not validate clean");
         assert_eq!(outcome.diagnostics.len(), 1);
         assert_eq!(outcome.diagnostics[0].code, "UnrecognizedForageFile");
+    }
+
+    /// A `.forage` file at the pre-Phase-10 legacy slot
+    /// (`<root>/<slug>/recipe.forage`) is an unmigrated workspace.
+    /// validate_path surfaces the migration prompt so the UI can route
+    /// the user at `forage migrate` instead of trying to parse against
+    /// a shape Studio no longer supports.
+    #[test]
+    fn validate_path_flags_legacy_recipe_path_as_unmigrated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("legacy")).unwrap();
+        let legacy = root.join("legacy").join("recipe.forage");
+        std::fs::write(&legacy, "recipe \"legacy\"\nengine http\n").unwrap();
+
+        let outcome = validate_path(root, &legacy, "recipe \"legacy\"\nengine http\n");
+        assert!(!outcome.ok, "legacy path must not validate clean");
+        assert_eq!(outcome.diagnostics.len(), 1);
+        assert_eq!(outcome.diagnostics[0].code, "UnmigratedWorkspace");
+        assert!(
+            outcome.diagnostics[0].message.contains("forage migrate"),
+            "expected migrate prompt; got {:?}",
+            outcome.diagnostics[0].message,
+        );
     }
 
     /// Root-level `.forage` files run through workspace-aware

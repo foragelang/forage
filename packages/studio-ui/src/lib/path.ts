@@ -1,12 +1,12 @@
 //! Workspace-relative path helpers.
 //!
 //! The store keeps the active file as a path (e.g.
-//! `trilogy-rec/recipe.forage`). The recipe header name for a path
-//! is whatever the parsed workspace says it is — keyed off the
-//! recipe's `name`, not derived from the directory/filename — so the
-//! lookup is workspace-aware. `recipeNameOf` is that join: given a
-//! file path and the workspace's recipe statuses, find the recipe
-//! header name whose draft sits at that path.
+//! `trilogy-rec.forage`). The recipe header name for a path is
+//! whatever the parsed workspace says it is — keyed off the recipe's
+//! `name`, not derived from the directory/filename — so the lookup
+//! is workspace-aware. `recipeNameOf` is that join: given a file
+//! path and the workspace's recipe statuses, find the recipe header
+//! name whose draft sits at that path.
 
 import type { RecipeStatus } from "@/bindings/RecipeStatus";
 

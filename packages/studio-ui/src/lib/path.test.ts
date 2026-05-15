@@ -35,14 +35,16 @@ describe("recipeNameOf", () => {
     });
 
     test("matches against the workspace-relative path shape that FileNode uses", () => {
-        // Recipes living in the legacy `<dir>/recipe.forage` shape and
-        // the flat `<name>.forage` shape resolve through the same join.
+        // Path matching is exact; the helper joins whatever path the
+        // backend hands it (`RecipeStatus.draft.path`) against the
+        // path argument. Two recipes with distinct file paths each
+        // resolve to their own header name.
         const recipes = [
-            valid("legacy", "legacy/recipe.forage"),
-            valid("flat", "flat.forage"),
+            valid("first", "first.forage"),
+            valid("second", "second.forage"),
         ];
-        expect(recipeNameOf("legacy/recipe.forage", recipes)).toBe("legacy");
-        expect(recipeNameOf("flat.forage", recipes)).toBe("flat");
+        expect(recipeNameOf("first.forage", recipes)).toBe("first");
+        expect(recipeNameOf("second.forage", recipes)).toBe("second");
     });
 
     test("returns null for a path that isn't in the workspace", () => {
