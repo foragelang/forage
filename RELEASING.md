@@ -1,7 +1,39 @@
 # Releasing
 
-Forage ships from `.github/workflows/rust-release.yml`. Tags on `main`
-matching `v*` trigger the workflow.
+Forage ships from `.github/workflows/release.yml`, triggered manually
+via **Actions → Release → Run workflow**. There's no tag-push path: the
+workflow calculates the next tag itself, runs the full CI gate, builds
+all artifacts, then creates and pushes the tag and publishes the
+release.
+
+## Cutting a release
+
+1. Open Actions → **Release** → **Run workflow**.
+2. Optionally enter a specific commit SHA. Empty means HEAD of `main`.
+3. Click **Run workflow**.
+
+The workflow does the rest:
+
+- **calculate-version** — picks `YEAR.MONTH.patch` based on the latest
+  `v<YEAR>.<MONTH>.*` tag. First release of the month is `.0`; each
+  re-dispatch within the same month increments.
+- **ci** — calls `rust-ci.yml` against the release commit. A red CI
+  blocks the release.
+- **build-cli** — five parallel jobs:
+  - `aarch64-apple-darwin`
+  - `x86_64-apple-darwin`
+  - `x86_64-unknown-linux-gnu`
+  - `aarch64-unknown-linux-gnu` (cross-compiled)
+  - `x86_64-pc-windows-msvc`
+- **build-studio** — three parallel jobs:
+  - `aarch64-apple-darwin` (DMG + .app zip)
+  - `x86_64-apple-darwin` (DMG + .app zip)
+  - `x86_64-pc-windows-msvc` (MSI)
+- **release** — assembles every artifact, creates and pushes the
+  `v<VERSION>` tag, then publishes the GitHub Release with
+  auto-generated changelog plus a fixed install-instructions header.
+- **update-homebrew-tap** — bumps `foragelang/homebrew-tap`'s
+  `Formula/forage.rb` (gated; see below).
 
 Each release produces:
 
@@ -10,53 +42,34 @@ Each release produces:
 3. `forage-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` — CLI for x86 Linux.
 4. `forage-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` — CLI for ARM Linux.
 5. `forage-vX.Y.Z-x86_64-pc-windows-msvc.zip` — CLI for Windows.
-6. `*.sha256` files alongside each.
+6. `forage-studio-vX.Y.Z-aarch64-apple-darwin.dmg` (+ `.app.zip`).
+7. `forage-studio-vX.Y.Z-x86_64-apple-darwin.dmg` (+ `.app.zip`).
+8. `forage-studio-vX.Y.Z-x86_64-pc-windows-msvc.msi`.
+9. `*.sha256` files alongside each.
 
-Forage Studio (Tauri) DMG / MSI / AppImage are added once R9's
-sign-and-notarize secrets are configured — `cargo tauri build` runs
-in the same workflow with the platform-appropriate codesigning.
+## How the version is applied
 
-## Cutting a release
+Version files in the repo stay pinned to a `0.1.0` placeholder. The
+release workflow sed/jq-edits them in-place at build time and does not
+commit anything back:
 
-1. Bump versions:
+- `Cargo.toml` — every `version = "0.1.0"` (workspace package + every
+  local-crate pin in `[workspace.dependencies]`).
+- `apps/studio/src-tauri/tauri.conf.json` — `.version`.
+- `packages/studio-ui/package.json` — `.version`.
 
-   - `[workspace.package].version` in `Cargo.toml` (cascades to every crate).
-   - `apps/studio/src-tauri/tauri.conf.json` → `version`.
-   - `apps/studio/ui/package.json` → `version`.
-
-2. Update `CHANGELOG.md` (when it exists) with the section heading
-   matching the tag. The release-notes step in the workflow extracts
-   that section verbatim.
-
-3. Tag + push:
-
-   ```sh
-   git tag -a v0.x.0 -m "release notes"
-   git push origin main v0.x.0
-   ```
-
-4. The workflow runs five parallel `build-cli` jobs (one per target),
-   then a `release` job that assembles the GitHub Release.
-
-5. Verify locally once the artifacts are up:
-
-   ```sh
-   curl -fsSL https://foragelang.com/install.sh | sh
-   forage --version
-   ```
+If you bump these by hand for some reason, keep them all on the same
+placeholder so the sed/jq edits land cleanly.
 
 ## Required secrets for signed/notarized Studio
 
-When R9's release-side wiring lands:
-
 - `APPLE_DEVELOPER_ID_CERT` — base64 .p12 of the Developer ID Application certificate.
 - `APPLE_DEVELOPER_ID_PASSWORD` — passphrase for the .p12.
+- `APPLE_SIGNING_IDENTITY` — the identity string Tauri should pick (e.g. `Developer ID Application: Foragelang LLC (TEAMID)`).
 - `APPLE_API_KEY_ID`, `APPLE_API_KEY_ISSUER_ID`, `APPLE_API_KEY` — App Store Connect API key for `xcrun notarytool`.
-- `APPLE_TEAM_ID` — Apple Developer team identifier.
 
-If any are missing the workflow still publishes; the Mac artifacts are
-ad-hoc signed and Gatekeeper will warn on first launch. The release
-notes call this out automatically.
+If any of these are missing the workflow still publishes; the Mac
+artifacts are ad-hoc signed and Gatekeeper will warn on first launch.
 
 ## Homebrew tap
 
@@ -69,9 +82,7 @@ by the release workflow's `update-homebrew-tap` job, gated on:
 When either is absent the job skips silently; the tap stays where it
 was and you update the formula by hand.
 
-## Pre-flight checks
-
-Before tagging:
+## Pre-flight (run locally if you don't trust CI)
 
 ```sh
 cargo fmt --all -- --check
@@ -79,4 +90,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The Rust CI workflow runs the same checks on every push.
+`rust-ci.yml` runs the same checks on every push, and the release
+workflow re-runs them against the release commit before building any
+artifacts.

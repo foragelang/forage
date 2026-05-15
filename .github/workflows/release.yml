@@ -1,0 +1,410 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit SHA to release (leave blank for HEAD of main)'
+        required: false
+        default: ''
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  calculate-version:
+    name: Calculate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      tag: ${{ steps.calc.outputs.tag }}
+      sha: ${{ steps.calc.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit || github.sha }}
+
+      - name: Calculate next version
+        id: calc
+        run: |
+          YEAR=$(date +%Y)
+          MONTH=$(date +%-m)
+          LATEST=$(git tag -l "v${YEAR}.${MONTH}.*" | sort -V | tail -1)
+          if [[ -z "$LATEST" ]]; then
+            VERSION="${YEAR}.${MONTH}.0"
+          else
+            PATCH=$(echo "$LATEST" | sed "s/v${YEAR}\.${MONTH}\.\([0-9]*\)/\1/")
+            VERSION="${YEAR}.${MONTH}.$((PATCH + 1))"
+          fi
+          SHA=$(git rev-parse HEAD)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "::notice::Releasing v$VERSION from $(git rev-parse --short HEAD)"
+
+  ci:
+    name: CI
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      ref: ${{ inputs.commit || github.sha }}
+
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    needs: [calculate-version, ci]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.calculate-version.outputs.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+
+      - name: Setup Linux build environment
+        if: matrix.os == 'ubuntu-latest'
+        uses: ./.github/actions/setup-linux
+
+      - name: Cross-compile setup for aarch64-linux
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Apply release version
+        shell: bash
+        run: |
+          VERSION="${{ needs.calculate-version.outputs.version }}"
+          # workspace.package.version + every local-crate version pin in
+          # workspace.dependencies all sit on the same `version = "0.1.0"`
+          # placeholder. Bumping them together keeps cargo's path-deps
+          # consistent.
+          sed -i.bak 's/version = "0\.1\.0"/version = "'"$VERSION"'"/g' Cargo.toml
+          rm Cargo.toml.bak
+
+      - name: Build forage CLI
+        run: cargo build --release --bin forage --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          TAG="${{ needs.calculate-version.outputs.tag }}"
+          TGT="${{ matrix.target }}"
+          mkdir -p dist
+          if [[ "$TGT" == *windows* ]]; then
+            cp "target/$TGT/release/forage.exe" dist/
+            (cd dist && 7z a "forage-$TAG-$TGT.zip" forage.exe && rm forage.exe)
+          else
+            cp "target/$TGT/release/forage" dist/
+            (cd dist && tar -czf "forage-$TAG-$TGT.tar.gz" forage && rm forage)
+          fi
+
+      - name: SHA-256
+        shell: bash
+        run: |
+          cd dist
+          for f in forage-*; do
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+          done
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forage-cli-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  build-studio:
+    name: Build Forage Studio (${{ matrix.target }})
+    needs: [calculate-version, ci]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    env:
+      # Lifted to job-level so the codesign `if:` below can read it via
+      # the env context (secrets aren't available in step `if:`).
+      APPLE_DEVELOPER_ID_CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+      APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.calculate-version.outputs.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: studio-${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            packages/studio-ui/package-lock.json
+
+      - name: Install workspace npm deps
+        run: npm ci
+
+      - name: Install Tauri CLI
+        # Pinned to the same minor as `tauri = "2.8"` in src-tauri/Cargo.toml
+        # so the CLI and the linked crate stay in lockstep.
+        run: cargo install tauri-cli@2.8 --locked
+
+      - name: Apply release version
+        shell: bash
+        run: |
+          VERSION="${{ needs.calculate-version.outputs.version }}"
+          sed -i.bak 's/version = "0\.1\.0"/version = "'"$VERSION"'"/g' Cargo.toml
+          rm Cargo.toml.bak
+          jq --arg v "$VERSION" '.version = $v' apps/studio/src-tauri/tauri.conf.json \
+            > apps/studio/src-tauri/tauri.conf.json.tmp
+          mv apps/studio/src-tauri/tauri.conf.json.tmp apps/studio/src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' packages/studio-ui/package.json \
+            > packages/studio-ui/package.json.tmp
+          mv packages/studio-ui/package.json.tmp packages/studio-ui/package.json
+
+      - name: Set up macOS code signing
+        if: matrix.os == 'macos-15' && env.APPLE_DEVELOPER_ID_CERT != ''
+        run: |
+          echo "$APPLE_DEVELOPER_ID_CERT" | base64 -d > /tmp/cert.p12
+          KEYCHAIN=/tmp/forage-build.keychain
+          security create-keychain -p "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_DEVELOPER_ID_PASSWORD" "$KEYCHAIN"
+          rm /tmp/cert.p12
+
+      - name: Build Tauri bundle
+        # cargo tauri build resolves beforeBuildCommand against the
+        # directory above src-tauri (apps/studio), so the working dir
+        # must be apps/studio, not apps/studio/src-tauri.
+        working-directory: apps/studio
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_KEY_ISSUER_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          TAG="${{ needs.calculate-version.outputs.tag }}"
+          TGT="${{ matrix.target }}"
+          BUNDLE="target/$TGT/release/bundle"
+          mkdir -p studio-dist
+
+          if [[ -d "$BUNDLE/dmg" ]]; then
+            for f in "$BUNDLE/dmg"/*.dmg; do
+              [ -f "$f" ] || continue
+              cp "$f" "studio-dist/forage-studio-$TAG-$TGT.dmg"
+            done
+          fi
+          if [[ -d "$BUNDLE/macos" ]]; then
+            for app in "$BUNDLE/macos"/*.app; do
+              [ -d "$app" ] || continue
+              (cd "$BUNDLE/macos" && zip -ryq "${app##*/}.zip" "${app##*/}")
+              mv "$BUNDLE/macos/${app##*/}.zip" "studio-dist/forage-studio-$TAG-$TGT.app.zip"
+            done
+          fi
+          if [[ -d "$BUNDLE/msi" ]]; then
+            for f in "$BUNDLE/msi"/*.msi; do
+              [ -f "$f" ] || continue
+              cp "$f" "studio-dist/forage-studio-$TAG-$TGT.msi"
+            done
+          fi
+          if [[ -d "$BUNDLE/nsis" ]]; then
+            for f in "$BUNDLE/nsis"/*-setup.exe; do
+              [ -f "$f" ] || continue
+              cp "$f" "studio-dist/forage-studio-$TAG-$TGT-setup.exe"
+            done
+          fi
+          ls -la studio-dist/
+
+      - name: SHA-256
+        shell: bash
+        run: |
+          cd studio-dist
+          for f in forage-studio-*; do
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+          done
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forage-studio-${{ matrix.target }}
+          path: studio-dist/
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [calculate-version, build-cli, build-studio]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.calculate-version.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble release
+        run: |
+          mkdir -p release
+          find artifacts -type f \
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' \
+               -o -name '*.msi' -o -name '*.exe' -o -name '*.sha256' \) \
+            -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create git tag
+        run: |
+          TAG="${{ needs.calculate-version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping create"
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email 'github-actions[bot]@users.noreply.github.com'
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.calculate-version.outputs.tag }}
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## Forage `${{ needs.calculate-version.outputs.tag }}`
+
+            **CLI** for macOS (arm64 + x86_64), Linux (x86_64 + arm64), and
+            Windows (x86_64). Install on macOS/Linux:
+
+            ```sh
+            curl -fsSL https://foragelang.com/install.sh | sh
+            ```
+
+            **Forage Studio** for macOS (.dmg) and Windows (.msi). Drag the
+            .app from the DMG to /Applications. If macOS Gatekeeper warns
+            on first launch, right-click → Open (ad-hoc signed) or trust
+            the Developer ID once (signed + notarized).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew-tap:
+    name: Update foragelang/homebrew-tap
+    needs: [calculate-version, release]
+    runs-on: ubuntu-latest
+    if: vars.ENABLE_HOMEBREW_TAP_UPDATE == '1'
+    steps:
+      - name: Generate formula
+        env:
+          TAG: ${{ needs.calculate-version.outputs.tag }}
+          VERSION: ${{ needs.calculate-version.outputs.version }}
+          GH_RELEASE: https://github.com/foragelang/forage/releases/download
+        run: |
+          mkdir -p tap-update/Formula
+          for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+            url="${GH_RELEASE}/${TAG}/forage-${TAG}-${arch}.tar.gz"
+            curl -fsSL -o "/tmp/forage-${TAG}-${arch}.tar.gz" "$url"
+            eval "SHA_${arch//-/_}=$(sha256sum "/tmp/forage-${TAG}-${arch}.tar.gz" | awk '{print $1}')"
+          done
+          cat > tap-update/Formula/forage.rb <<EOF
+          class Forage < Formula
+            desc "Declarative scraping recipes — parser, runner, hub client"
+            homepage "https://foragelang.com"
+            version "${VERSION}"
+            license "Apache-2.0 OR MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${GH_RELEASE}/${TAG}/forage-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_aarch64_apple_darwin}"
+              else
+                url "${GH_RELEASE}/${TAG}/forage-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_x86_64_apple_darwin}"
+              end
+            end
+
+            def install
+              bin.install "forage"
+            end
+
+            test do
+              system "#{bin}/forage", "--version"
+            end
+          end
+          EOF
+          cat tap-update/Formula/forage.rb
+
+      - name: Push formula to foragelang/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.calculate-version.outputs.tag }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/foragelang/homebrew-tap.git" tap
+          cp tap-update/Formula/forage.rb tap/Formula/forage.rb
+          cd tap
+          git config user.name 'forage-release-bot'
+          git config user.email 'noreply@foragelang.com'
+          git add Formula/forage.rb
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "forage ${TAG}"
+            git push
+          fi

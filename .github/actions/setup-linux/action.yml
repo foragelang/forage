@@ -1,0 +1,16 @@
+name: 'Setup Linux Build Environment'
+description: 'Install Linux system deps required by the Tauri/wry stack (WebKitGTK, GTK, AppIndicator, librsvg, libsoup)'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Linux dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libwebkit2gtk-4.1-dev \
+          libgtk-3-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-dev \
+          libsoup-3.0-dev
