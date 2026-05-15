@@ -32,10 +32,10 @@ Both engines target the same record types. Downstream code doesn't care which en
 
 ## Test, replay, refresh
 
-A recipe lives in a directory: the `.forage` file, a folder of captured HTTP fixtures, and a snapshot of the records the recipe is expected to produce. Three modes share one execution path:
+A workspace bundles every recipe in one directory: the `.forage` source files plus `_fixtures/<recipe>.jsonl` (captured HTTP exchanges) and `_snapshots/<recipe>.json` (the records the recipe is expected to produce). Three modes share one execution path:
 
-- **Replay** — HTTP is served from fixtures. Sub-second tests, no network.
-- **Record** — engine hits the live site, overwrites fixtures with fresh responses, then re-runs in replay. The one-command repair flow when a site changes shape.
+- **Replay** — HTTP is served from `_fixtures/<recipe>.jsonl`. Sub-second tests, no network.
+- **Record** — engine hits the live site, overwrites `_fixtures/<recipe>.jsonl` with fresh responses, then re-runs in replay. The one-command repair flow when a site changes shape.
 - **Live** — production. Engine hits the live site, records flow to wherever the consumer wires them.
 
 ## Out of scope
@@ -43,5 +43,5 @@ A recipe lives in a directory: the `.forage` file, a folder of captured HTTP fix
 What Forage *doesn't* do, by design:
 
 - **Substantive access controls.** Recipes don't bypass login walls, paywalls, real CAPTCHAs, or account-required pages. Generic bot-management gates on otherwise-public pages are cleared by the browser engine and are not in this category.
-- **Recipes-as-code.** Recipes can't run arbitrary expressions. Transforms come from a fixed vocabulary; pagination from a named set of strategies. When a recipe needs something the DSL can't express, the fix is to extend the engine in Swift — not to leak a new escape hatch into recipes.
+- **Recipes-as-code.** Recipes can't run arbitrary expressions. Transforms come from a fixed vocabulary; pagination from a named set of strategies. When a recipe needs something the DSL can't express, the fix is to extend the engine in Rust — not to leak a new escape hatch into recipes.
 - **Generic-purpose scraping framework.** Output types are currently scoped to the host consumer's schema. Designed to be lifted later, not yet lifted.

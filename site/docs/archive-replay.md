@@ -1,96 +1,81 @@
 # Archive & replay
 
-Every recipe run can be persisted to disk and replayed later. The archive is the unit of "what this recipe produced against this site on this day"; the replayer is how you iterate the recipe's extraction logic against a frozen response set without re-hitting the network.
+Every recipe run can be persisted to disk and replayed later. Captures
+freeze a particular HTTP / browser trace; snapshots freeze the records
+the recipe extracted from it. Together they're the unit of "what this
+recipe produced against this site on this day," and the basis for
+iterating the recipe's extraction logic without re-hitting the network.
 
-## Archive layout
+## Workspace layout
 
-`Archive.write(...)` writes one run, atomically, under a caller-supplied root:
+Captures and snapshots live alongside source at the workspace root,
+keyed by recipe header name:
 
 ```
-<root>/<slug>/<ISO8601-Z>/
-    snapshot.json
-    diagnostic.json
-    captures.jsonl     # browser-engine only; omitted if empty or nil
-    meta.json
+<workspace>/
+├── forage.toml
+├── <recipe>.forage
+├── _fixtures/
+│   └── <recipe>.jsonl       # capture stream
+└── _snapshots/
+    └── <recipe>.json        # produced records
 ```
 
-- `<slug>` is the recipe / scraper identifier you supplied — typically `recipe.name`.
-- `<ISO8601-Z>` is the run's `observedAt` rendered as a filesystem-safe timestamp (colons → dashes, e.g. `2026-05-10T15-22-03Z`). The substitution preserves lexical ordering — `list(...)` sorts directory names directly and returns newest-first.
-- `snapshot.json` is the produced records, pretty-printed for diffing.
-- `diagnostic.json` is the run's `DiagnosticReport`. See [diagnostics](/docs/diagnostics).
-- `captures.jsonl` is one `Capture` per line, sorted-key JSON. Browser engine only — pass it back through `BrowserReplayer` to re-run.
-- `meta.json` is `ArchiveMeta`: `recipeName`, `inputs`, `runtimeSeconds`, `observedAt`.
+`_fixtures/<recipe>.jsonl` is the JSONL capture stream the replay
+transport consumes. `_snapshots/<recipe>.json` is the golden snapshot
+`forage test` diffs against. The filename matches the recipe's header
+name; multiple scenarios per recipe land as
+`_fixtures/<recipe>/<scenario>.jsonl` subdirs when the need arises.
 
-Writes are atomic. The contents are staged into a sibling `<dir>.writing/` directory and renamed onto the final path only after every file lands. A crash mid-write leaves a stale `.writing/` staging dir, never a half-populated final dir.
+## Capture shape
 
-## Writing a run
+Each line in `_fixtures/<recipe>.jsonl` is one `forage_replay::Capture`:
 
-```swift
-let result = try await runner.run(recipe: recipe, inputs: inputs)
-
-let handle = try Archive.write(
-    root:     archiveRoot,
-    slug:     recipe.name,
-    snapshot: result.snapshot,
-    report:   result.report,
-    captures: browserEngine?.captures,        // nil for HTTP runs
-    meta: ArchiveMeta(
-        recipeName:     recipe.name,
-        inputs:         inputs,
-        runtimeSeconds: elapsed,
-        observedAt:     Date()
-    )
-)
-print("archived: \(handle.directory.path)")
+```jsonl
+{"kind":"http","url":"https://api.example.com/items?page=1","method":"GET","status":200,"response_headers":{},"body":"…"}
+{"kind":"browser","subkind":"match","url":"https://api.iheartjane.com/v2/smartpage?page=1","method":"GET","status":200,"body":"…"}
+{"kind":"browser","subkind":"document","url":"https://letterboxd.com/films/popular/","html":"<html>…</html>"}
 ```
 
-## Listing and reading
+HTTP captures match requests by exact-path + sorted-query-parameter
+comparison, so a fixture recorded as `?page=1&size=50` still matches a
+request issued as `?size=50&page=1`. Browser `captures.match` patterns
+match by the recipe's `urlPattern` regex.
 
-```swift
-let runs = Archive.list(root: archiveRoot, slug: "jane")
-// newest first
+## Recording
 
-if let latest = runs.first {
-    let (snapshot, report, captures, meta) = try Archive.read(latest)
-    // ...
-}
+- **HTTP-engine recipes** — `forage record <recipe>` runs the recipe
+  live against the network and writes the exchange stream to
+  `_fixtures/<recipe>.jsonl`. The same stream is what `forage run
+  --replay` and `forage test` consume on subsequent runs.
+- **Browser-engine recipes** — open the recipe in Forage Studio and
+  click **Capture**; the visible WebView records every fetch / XHR and
+  the post-settle document. Save on close.
+
+## Replaying
+
+`forage run <recipe> --replay` reads `_fixtures/<recipe>.jsonl` and
+feeds the captures through the same evaluator a live run would. The
+HTTP transport is swapped from live `reqwest` to the replay transport;
+browser-engine recipes skip navigation, age-gate dismissal, warmup,
+pagination, settle timer, and hard timeout — they just feed each
+capture through `captures.match` / `captures.document` as a live run
+would.
+
+`forage test <recipe>` is the regression gate: it runs in replay mode
+and diffs the produced snapshot against `_snapshots/<recipe>.json`,
+exiting non-zero on divergence. `--update` overwrites the snapshot —
+the typical first-run flow on a new recipe.
+
+```sh
+forage record sweed                   # capture once, live
+forage test sweed --update            # pin the current behavior as golden
+forage run sweed --replay             # iterate against the frozen captures
+forage test sweed                     # later, after editing the recipe — diff
 ```
-
-`Archive.list` skips `.writing/` staging dirs and any entry whose name doesn't parse as a timestamp.
-
-## Replaying a browser run
-
-`BrowserReplayer` drives a `BrowserEngine` run from captures instead of from a live `WKWebView`. The engine skips navigation, age-gate dismissal, warmup, pagination, the settle timer, and the hard timeout — it just feeds each capture through the same `captures.match` pipeline a live run would. Useful when:
-
-- You're iterating on extraction logic and don't want to re-hit a rate-limited site every change.
-- You're diffing against a known-good run after editing the recipe.
-- You're testing offline.
-
-Construct the replayer from a captures file:
-
-```swift
-let replayer = try BrowserReplayer(capturesFile: handle.directory.appendingPathComponent("captures.jsonl"))
-```
-
-Or directly from an in-memory list:
-
-```swift
-let replayer = BrowserReplayer(captures: someCaptures)
-```
-
-Then pass it into the engine:
-
-```swift
-let engine = BrowserEngine(
-    recipe:   recipe,
-    inputs:   inputs,
-    replayer: replayer
-)
-let result = try await engine.run()
-```
-
-The returned `RunResult` reflects what the *current* recipe extracts from the *frozen* captures — perfect for "did my edit change the snapshot?" diffs.
 
 ::: tip Replay is the loop, not the test
-Replay isn't a substitute for end-to-end live runs — it just gives you a fast iteration cycle. Re-record captures whenever the site shape changes, or your replay results will silently diverge from production.
+Replay isn't a substitute for end-to-end live runs — it gives you a
+fast iteration cycle. Re-record captures whenever the site shape
+changes, or your replay results will silently diverge from production.
 :::

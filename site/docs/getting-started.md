@@ -37,19 +37,23 @@ forage-http = { path = "../forage/crates/forage-http" }
 
 ## Write a recipe
 
-Make a new directory in your workspace
-(`~/Library/Forage/Recipes/` on macOS) and drop in a
-`recipe.forage` file:
+Your workspace is the directory marked by `forage.toml` (typically
+`~/Library/Forage/Recipes/` on macOS). Recipe files sit flat at the
+workspace root — one `.forage` file per recipe, named however you like.
+Scaffold one with `forage new`:
 
 ```sh
-mkdir -p ~/Library/Forage/Recipes/hello
-$EDITOR ~/Library/Forage/Recipes/hello/recipe.forage
+cd ~/Library/Forage/Recipes
+forage new hello
+$EDITOR hello.forage
 ```
 
-A minimal recipe against a documented JSON endpoint:
+`forage new <name>` creates `<workspace>/<name>.forage` with a minimal
+`recipe "<name>" engine http` header. Edit it to match a documented JSON
+endpoint:
 
 ```forage
-// hello/recipe.forage
+// hello.forage
 
 recipe "hello"
 engine http
@@ -79,19 +83,21 @@ for $p in $posts[*] {
 Four things to notice:
 
 - `engine http` — this recipe will run on the HTTP engine, not the browser engine.
-- `type Post { … }` — declares the shape of the records this recipe emits.
-- `input userId: Int` — declares a per-run parameter. You'll supply it on the command line.
+- `type Post { … }` — declares the shape of the records this recipe emits. File-scoped by default; prefix with `share` to publish to the workspace catalog.
+- `input userId: Int` — declares a per-run parameter.
 - `step posts { … }` — names an HTTP request whose response becomes addressable as `$posts`.
 
 ## Run it
 
-Use `forage run` to parse, validate, and run the recipe:
+`forage run` takes a recipe header name and resolves it against the
+surrounding workspace:
 
 ```sh
-.build/debug/forage run ~/Library/Forage/Recipes/hello --input userId=1
+echo '{"userId":1}' > /tmp/hello-inputs.json
+forage run hello --inputs /tmp/hello-inputs.json
 ```
 
-The CLI parses the recipe, validates it against the type catalog, runs the HTTP graph, and prints the resulting snapshot — a JSON list of every emitted record — to stdout.
+The CLI parses the recipe, validates it against the type catalog, runs the HTTP graph, and prints the resulting snapshot — a JSON list of every emitted record — to stdout. `--inputs <path>` points at a JSON object of bindings; omit it for recipes without inputs.
 
 ::: tip Validation runs first
 Unknown types, unbound path variables, missing required fields, and unknown transforms are caught before any HTTP request fires. The error format speaks the DSL's own terms — no stack traces from extraction code.
@@ -99,6 +105,6 @@ Unknown types, unbound path variables, missing required fields, and unknown tran
 
 ## From here
 
-- Read the [syntax reference](/docs/syntax) for the full set of constructs: `enum`, `auth` strategies, `case` expressions, optional chaining, transforms.
+- Read the [syntax reference](/docs/syntax) for the full set of constructs: `enum`, `share`-visibility, `auth` strategies, `case` expressions, optional chaining, transforms.
 - Read [engines & pagination](/docs/engines) when you need to scrape a paginated API or a JS-rendered SPA.
-- Look at the bundled [reference recipes](https://github.com/foragelang/forage/tree/main/recipes) for end-to-end examples that exercise the full DSL.
+- Browse the canonical recipes on [hub.foragelang.com](https://hub.foragelang.com) for end-to-end examples that exercise the full DSL.

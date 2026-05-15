@@ -5,26 +5,29 @@ The Forage hub is a registry at `hub.foragelang.com` (UI) and
 sources plus their shared declarations, replay fixtures, and the
 snapshot the recipe produced against them — and serves them to:
 
-- the `forage` CLI's `publish` / `sync` / `fork` commands;
+- the `forage` CLI's `publish` / `sync` / `fork` / `update` commands;
 - Studio's Publish tab and "Clone from hub" workspace sidebar;
-- recipes that declare `import <author>/<slug>` at the top.
+- workspaces that declare hub packages under `[deps]` in `forage.toml`.
 
 ## Authoring a recipe
 
-A recipe directory is the unit of work — one `.forage` file plus
-optional sibling assets.
+A workspace is the unit of authoring — a directory marked by
+`forage.toml` containing one or more `.forage` files at the root.
 
 ```
-my-recipe/
-├── recipe.forage         # required
-├── shared.forage         # optional: shared types / helpers
-├── fixtures/
-│   └── captures.jsonl    # optional: replayable fixtures
-└── expected.snapshot.json # optional: golden snapshot
+my-workspace/
+├── forage.toml                  # workspace manifest (name, deps)
+├── my-recipe.forage             # recipe "my-recipe" engine http
+├── shared.forage                # share types / enums / fns
+├── _fixtures/
+│   └── my-recipe.jsonl          # optional: replayable fixtures
+└── _snapshots/
+    └── my-recipe.json           # optional: golden snapshot
 ```
 
-`forage.toml` at the workspace root declares the package's
-description, category, and tags.
+The hub-side slug is the recipe's header name. `forage.toml`'s `name`
+declares the author segment as `<author>/<anything>` — the slug portion
+after the slash is decorative.
 
 ## Publishing
 
@@ -35,17 +38,18 @@ forage auth login
 ```
 
 Dry-run is the default — it prints the JSON envelope the CLI *would*
-POST without hitting the network:
+POST without hitting the network. The recipe argument is the header
+name:
 
 ```bash
-forage publish path/to/my-recipe
+forage publish my-recipe
 ```
 
 Pass `--publish` to actually POST. The hub stamps the next available
 version:
 
 ```bash
-forage publish path/to/my-recipe --publish
+forage publish my-recipe --publish
 # published alice/my-recipe v1
 # curl -fsSL https://api.foragelang.com/v1/packages/alice/my-recipe
 ```
@@ -62,16 +66,26 @@ re-pulls, replays your delta, and retries.
 
 ## Sharing declarations across recipes
 
-Recipes reference each other via `import <author>/<slug>` directives
-at the top:
+Within a workspace, mark a declaration `share` to make it visible to
+every other `.forage` file in the workspace:
 
 ```forage
-import alice/cannabis           // shared schema
-import alice/zen-leaf v2        // a specific dispensary recipe
+// cannabis.forage
+share type Product { … }
+share enum MenuType { RECREATIONAL, MEDICAL }
+share fn prevalenceNormalize($x) { … }
 ```
 
-The resolver pulls them from the hub, caches them locally, and unions
-their types / enums / inputs into the importing recipe's catalog.
+Across workspaces, hub packages reference each other via `[deps]` in
+`forage.toml`. `forage update` resolves them, fetches the recipes into
+the local cache, and unions their `share`d declarations into each
+consuming recipe's catalog.
+
+```toml
+# forage.toml
+[deps]
+"alice/cannabis" = "*"
+```
 
 ## Forks
 
@@ -127,7 +141,7 @@ Where `payload.json` matches:
     "tags": ["sweed", "cannabis"],
     "recipe": "recipe \"my-recipe\"\nengine http\n…",
     "decls": [
-        {"name": "shared.forage", "source": "type Item { id: String }\n"}
+        {"name": "shared.forage", "source": "share type Item { id: String }\n"}
     ],
     "fixtures": [
         {"name": "captures.jsonl", "content": "…jsonl content…"}

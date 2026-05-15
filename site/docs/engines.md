@@ -13,22 +13,22 @@ engine browser   // for JS-rendered SPAs
 
 ### HTTP engine
 
-Drives the recipe over `URLSession`. Cheap, fast, deterministic. Use it when the site has documented JSON endpoints or returns server-rendered HTML that you can parse directly. The HTTP engine implements:
+Drives the recipe over `reqwest`. Cheap, fast, deterministic. Use it when the site has documented JSON endpoints or returns server-rendered HTML that you can parse directly. The HTTP engine implements:
 
 - Implicit cookie jar shared across all steps in a run.
 - Polite defaults: rate-limited (~1 req/sec by default), exponential backoff on 429 and 5xx, honest User-Agent.
 - Templated URLs, headers, JSON and form-encoded bodies.
 - `auth.staticHeader` and `auth.htmlPrime` strategies.
-- Two HTTP pagination strategies, below.
-- Transient-error retry only — `URLError.timedOut`, `.notConnectedToInternet`, etc. 404s and parse errors fail fast instead of retrying.
+- Three HTTP pagination strategies (`pageWithTotal`, `untilEmpty`, `cursor`), below.
+- Transient-error retry only — connection timeouts, refused connections, etc. 404s and parse errors fail fast instead of retrying.
 
 ### Browser engine
 
-Drives the recipe through a real `WKWebView` on macOS. The host application is responsible for running an `NSApplication` event loop; the engine runs on the main actor. Use it when the data sits behind:
+Drives the recipe through a real WebView — WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux (via `wry`). The host application owns the event loop; Forage Studio plugs in its own driver so the daemon's scheduler can run browser-engine recipes against Studio's WebView. Use the browser engine when the data sits behind:
 
 - A JavaScript single-page app that constructs requests with session tokens or signatures the page mints itself.
 - Generic bot-management gates (e.g. Cloudflare) on otherwise-public pages — a real browser clears these.
-- Per-session cookies, CSP, or Origin checks that a plain `URLSession` client can't satisfy.
+- Per-session cookies, CSP, or Origin checks that a plain HTTP client can't satisfy.
 
 The browser engine doesn't construct the page's API requests itself. It loads the page, observes the in-flight requests the SPA fires, and either lets the page paginate naturally (scroll mode) or replays a captured seed request with overridden parameters (replay mode).
 
@@ -38,60 +38,19 @@ Neither engine logs in for you, solves real CAPTCHAs, or works against pages tha
 
 ## What an engine returns
 
-Both engines return a `RunResult`:
-
-```swift
-public struct RunResult: Sendable, Hashable {
-    public let snapshot: Snapshot           // emitted records
-    public let report:   DiagnosticReport   // how the run terminated
-}
-```
-
-The snapshot is the produced records; the report is the post-run forensics. A successful HTTP run reports `stallReason == "completed"`. A successful browser run reports `stallReason == "settled"`. Cancelled runs report `stallReason == "cancelled"`. See [Diagnostics](/docs/diagnostics) for the full set of report fields.
+Both engines return a `Snapshot` alongside a `DiagnosticReport`. The snapshot is the produced records; the report is the post-run forensics. A successful HTTP run reports `stallReason == "completed"`. A successful browser run reports `stallReason == "settled"`. Cancelled runs report `stallReason == "cancelled"`. See [Diagnostics](/docs/diagnostics) for the full set of report fields.
 
 ## Live progress
 
-Each engine exposes a `progress` value the consumer reads concurrently with the run. Both are `@MainActor @Observable` so SwiftUI sees per-field updates without `@Published` or polling.
-
-```swift
-public final class HTTPProgress {
-    public enum Phase {
-        case starting, priming
-        case stepping(name: String)
-        case paginating(name: String, page: Int)
-        case done
-        case failed(String)
-    }
-    public var phase:           Phase
-    public var requestsSent:    Int
-    public var recordsEmitted:  Int
-    public var currentURL:      String?
-}
-
-public final class BrowserProgress {
-    public enum Phase {
-        case starting, loading, ageGate, dismissing, warmupClicks
-        case paginating(iteration: Int, maxIterations: Int)
-        case settling, done
-        case failed(String)
-    }
-    public var phase:             Phase
-    public var capturesObserved:  Int
-    public var recordsEmitted:    Int
-    public var currentURL:        String?
-    public var lastObservedURL:   String?
-}
-```
-
-Wire `progress.recordsEmitted` straight into a counter view; the browser engine applies capture rules incrementally, so the count is meaningful *during* the run, not just after it settles.
+Each engine streams progress events while running — phase transitions (starting / stepping / paginating / settling / done / failed), requests sent, records emitted, current URL. Studio wires these to its toolbar counters and per-step run stats; the CLI surfaces them under `--verbose`.
 
 ## Cancellation
 
-Both engines honor `Task.cancel()`. The in-flight `URLSession.data(...)` or pagination loop unwinds, the run terminates, and the diagnostic report carries `stallReason: "cancelled"` with the corresponding `progress.phase: .failed("cancelled")`. The snapshot reflects whatever records the engine had emitted before the cancellation arrived.
+Both engines honor task cancellation. The in-flight request or pagination loop unwinds, the run terminates, and the diagnostic report carries `stallReason: "cancelled"`. The snapshot reflects whatever records the engine had emitted before the cancellation arrived.
 
 ## Pagination
 
-The DSL exposes a small, named set of pagination strategies. The engine handles the loop; the recipe declares which strategy and points at the relevant response paths. New strategies are added to the engine in Swift as real platforms surface them.
+The DSL exposes a small, named set of pagination strategies. The engine handles the loop; the recipe declares which strategy and points at the relevant response paths. New strategies are added to the engine in Rust as real platforms surface them.
 
 ### pageWithTotal
 
