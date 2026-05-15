@@ -95,6 +95,9 @@ A scraping recipe that emits `Company` records can be lifted onto
 
 ```forage
 recipe "scrape-and-enrich"
+engine http
+output EnrichedCompany
+
 compose "scrape-companies" | "wikidata-reconcile"
 ```
 
