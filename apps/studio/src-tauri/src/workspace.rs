@@ -828,6 +828,73 @@ mod tests {
         assert!(outside.path().join("recipe.forage").exists());
     }
 
+    /// A fresh workspace's first scaffold lands at
+    /// `<root>/untitled-1.forage` with a recipe header keyed off the
+    /// same name, and `create_recipe` hands the name back to the
+    /// caller.
+    #[test]
+    fn create_recipe_scaffolds_flat_untitled_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_manifest(root);
+
+        let name = create_recipe(root, None).unwrap();
+        assert_eq!(name, "untitled-1");
+        let path = root.join("untitled-1.forage");
+        assert!(path.is_file(), "scaffolded file must exist: {path:?}");
+        // No legacy directory is created alongside the flat file.
+        assert!(!root.join("untitled-1").exists());
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.starts_with("recipe \"untitled-1\" engine http"),
+            "scaffolded body must declare the matching recipe header: {body:?}"
+        );
+
+        // The workspace scanner finds the new recipe by its header
+        // name; the file stem doubles as the addressable identity.
+        let ws = forage_core::workspace::load(root).unwrap();
+        assert!(ws.recipe_by_name("untitled-1").is_some());
+    }
+
+    /// Successive scaffolds advance the `untitled-N` counter past the
+    /// next-available number, regardless of which earlier names were
+    /// created or removed.
+    #[test]
+    fn create_recipe_picks_next_available_untitled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_manifest(root);
+
+        assert_eq!(create_recipe(root, None).unwrap(), "untitled-1");
+        assert_eq!(create_recipe(root, None).unwrap(), "untitled-2");
+        assert_eq!(create_recipe(root, None).unwrap(), "untitled-3");
+
+        // Removing untitled-2 from the middle of the sequence frees
+        // its slot — the next scaffold reuses it before bumping past
+        // untitled-3.
+        fs::remove_file(root.join("untitled-2.forage")).unwrap();
+        assert_eq!(create_recipe(root, None).unwrap(), "untitled-2");
+        assert_eq!(create_recipe(root, None).unwrap(), "untitled-4");
+    }
+
+    /// A name override scaffolds at `<root>/<name>.forage` directly.
+    /// Refusing to overwrite an existing file means an authored
+    /// recipe can't be silently clobbered by a "New" action.
+    #[test]
+    fn create_recipe_with_name_override_refuses_to_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_manifest(root);
+
+        let name = create_recipe(root, Some("cannabis")).unwrap();
+        assert_eq!(name, "cannabis");
+        assert!(root.join("cannabis.forage").is_file());
+
+        let err = create_recipe(root, Some("cannabis")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
     /// Lay out a synthetic workspace and verify the tree shape and
     /// per-file classifications. Captures and snapshots live at
     /// `_fixtures/<recipe>.jsonl` / `_snapshots/<recipe>.json` — the
