@@ -145,6 +145,24 @@ export function EditorPane() {
         );
     }, [stepNameToLine, breakpoints, paused]);
 
+    // Gutter click → toggle breakpoint on the clicked step. Registered as
+    // an effect rather than inside `onMount` because `stepByLine` is built
+    // from the async `recipeOutline` RPC; an `onMount`-scoped handler
+    // would close over the empty initial map and never see steps land.
+    useEffect(() => {
+        const ed = editorRef.current;
+        const monaco = monacoRef.current;
+        if (!ed || !monaco) return;
+        const disp = ed.onMouseDown((e) => {
+            if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+            const line = e.target.position?.lineNumber;
+            if (!line) return;
+            const name = stepByLine.get(line);
+            if (name) toggleBreakpoint(name);
+        });
+        return () => disp.dispose();
+    }, [stepByLine, toggleBreakpoint]);
+
     // Reveal the paused line so the user doesn't have to scroll to find
     // where the engine stopped. Only fire on the rising edge of `paused`
     // — otherwise we'd fight the user every time decorations re-render.
@@ -248,15 +266,10 @@ export function EditorPane() {
                     onMount={(editor, monaco) => {
                         editorRef.current = editor;
                         monacoRef.current = monaco;
-                        editor.onMouseDown((e) => {
-                            const T = monaco.editor.MouseTargetType;
-                            if (e.target.type !== T.GUTTER_GLYPH_MARGIN) return;
-                            const line = e.target.position?.lineNumber;
-                            if (!line) return;
-                            const name = stepByLine.get(line);
-                            if (name) toggleBreakpoint(name);
-                        });
-                        // Track caret for the status strip below.
+                        // Track caret for the status strip below. The
+                        // gutter click handler is registered in a
+                        // separate effect (below) so it re-binds when
+                        // `stepByLine` changes after the outline arrives.
                         const initial = editor.getPosition();
                         if (initial) {
                             setCursor({ line: initial.lineNumber, column: initial.column });
