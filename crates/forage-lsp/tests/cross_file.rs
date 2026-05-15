@@ -222,9 +222,9 @@ for $x in $list.items[*] {
 }
 
 /// A declarations file with a duplicated type name surfaces a
-/// diagnostic on *its own buffer*, not on a sibling recipe.
-/// Duplicate detection lives in the parser, so the diagnostic
-/// arrives via the parse-error path.
+/// diagnostic on *its own buffer*, not on a sibling recipe. The
+/// validator emits `DuplicateType` for any file that redeclares the
+/// same type name.
 #[test]
 fn declarations_file_validates_its_own_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
@@ -250,8 +250,8 @@ fn declarations_file_validates_its_own_duplicates() {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("Item") && d.message.contains("duplicate declaration")),
-        "expected duplicate-declaration error on declarations file; got: {diags:?}"
+            .any(|d| d.message.contains("Item") && d.message.contains("declared more than once")),
+        "expected DuplicateType error on declarations file; got: {diags:?}"
     );
 }
 

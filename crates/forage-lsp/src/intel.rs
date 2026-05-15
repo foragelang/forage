@@ -13,7 +13,7 @@ use ts_rs::TS;
 use forage_core::ast::FieldType;
 use forage_core::source::LineMap;
 use forage_core::validate::BUILTIN_TRANSFORMS;
-use forage_core::{Recipe, parse};
+use forage_core::parse;
 
 /// Markdown hover payload for the word at (line, col), 0-based.
 #[derive(Debug, Clone, Serialize, TS)]
@@ -135,11 +135,6 @@ pub fn position_for(source: &str, byte_offset: usize) -> (u32, u32) {
     let p = lm.position(byte_offset);
     (p.line, p.character)
 }
-// Silences dead_code on Recipe import in the case where downstream
-// features expand this module.
-#[allow(dead_code)]
-fn _recipe_ty(_r: &Recipe) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;

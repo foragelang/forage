@@ -9,8 +9,8 @@ use forage_core::ast::Statement;
 use forage_core::parse::{KEYWORDS, TYPE_KEYWORDS};
 use forage_core::validate::BUILTIN_TRANSFORMS;
 use forage_core::{
-    EvalValue, LineMap, Snapshot, TypeCatalog, ast::WorkspaceFile, infer_progress_unit,
-    parse as core_parse, parse_workspace_file, validate as core_validate,
+    EvalValue, LineMap, Snapshot, TypeCatalog, infer_progress_unit, parse as core_parse,
+    validate as core_validate,
 };
 use forage_http::{Engine, ReplayTransport};
 use forage_lsp::intel::hover_at;
@@ -74,7 +74,7 @@ pub fn parse_recipe(source: &str) -> JsValue {
 ///   { errors: [...], warnings: [...] }
 #[wasm_bindgen]
 pub fn validate_recipe(recipe_json: &str) -> JsValue {
-    let recipe: forage_core::Recipe = match serde_json::from_str(recipe_json) {
+    let recipe: forage_core::ForageFile = match serde_json::from_str(recipe_json) {
         Ok(r) => r,
         Err(e) => {
             return serde_wasm_bindgen::to_value(&serde_json::json!({
@@ -89,7 +89,7 @@ pub fn validate_recipe(recipe_json: &str) -> JsValue {
     };
     // The wasm IDE has no filesystem reach, so every recipe validates
     // in lonely-recipe mode — the catalog is just its own local types.
-    let catalog = TypeCatalog::from_recipe(&recipe);
+    let catalog = TypeCatalog::from_file(&recipe);
     let report = core_validate(&recipe, &catalog);
     let errors: Vec<_> = report
         .issues
@@ -126,7 +126,7 @@ pub fn validate_recipe(recipe_json: &str) -> JsValue {
 pub fn parse_and_validate(source: &str) -> JsValue {
     match core_parse(source) {
         Ok(recipe) => {
-            let catalog = TypeCatalog::from_recipe(&recipe);
+            let catalog = TypeCatalog::from_file(&recipe);
             let report = core_validate(&recipe, &catalog);
             let issues: Vec<_> = report
                 .issues
@@ -324,23 +324,21 @@ pub async fn run_replay_inner(
     let recipe = core_parse(recipe_source).map_err(|e| ReplayError::Parse(e.to_string()))?;
 
     // Catalog merge order matches Workspace::catalog: shared decls
-    // first, recipe-local last so a recipe can shadow shared names.
+    // first, file-local last so a recipe can shadow shared names.
     let mut catalog = TypeCatalog::default();
     for f in decl_files {
-        let parsed = parse_workspace_file(&f.source).map_err(|e| ReplayError::Decl {
+        let parsed = core_parse(&f.source).map_err(|e| ReplayError::Decl {
             name: f.name.clone(),
             message: e.to_string(),
         })?;
-        match parsed {
-            WorkspaceFile::Declarations(d) => catalog.merge_decls(&d),
-            WorkspaceFile::Recipe(_) => {
-                return Err(ReplayError::NotADeclFile {
-                    name: f.name.clone(),
-                });
-            }
+        if parsed.recipe_header().is_some() {
+            return Err(ReplayError::NotADeclFile {
+                name: f.name.clone(),
+            });
         }
+        catalog.merge_file(&parsed);
     }
-    let recipe_catalog = TypeCatalog::from_recipe(&recipe);
+    let recipe_catalog = TypeCatalog::from_file(&recipe);
     for (k, v) in recipe_catalog.types {
         catalog.types.insert(k, v);
     }

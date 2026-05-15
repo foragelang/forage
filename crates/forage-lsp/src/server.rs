@@ -173,7 +173,7 @@ impl LanguageServer for ForageLsp {
         }
         // Inputs / secrets / types from the parsed recipe (if available).
         self.store.with(&uri, |doc| {
-            if let Some(r) = &doc.recipe {
+            if let Some(r) = &doc.file {
                 for inp in &r.inputs {
                     items.push(CompletionItem {
                         label: format!("$input.{}", inp.name),
@@ -236,9 +236,22 @@ impl LanguageServer for ForageLsp {
         let uri = params.text_document.uri;
         let symbols = self.store.with(&uri, |doc| {
             let mut out: Vec<SymbolInformation> = Vec::new();
-            let Some(r) = &doc.recipe else {
+            let Some(r) = &doc.file else {
                 return out;
             };
+            // Container label: the recipe header name when the file has
+            // one, the file path otherwise so the editor still groups
+            // declarations under something meaningful.
+            let container = r
+                .recipe_name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    doc.path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
             #[allow(deprecated)]
             for ty in &r.types {
                 out.push(SymbolInformation {
@@ -250,7 +263,7 @@ impl LanguageServer for ForageLsp {
                     },
                     tags: None,
                     deprecated: None,
-                    container_name: Some(r.name.clone()),
+                    container_name: Some(container.clone()),
                 });
             }
             #[allow(deprecated)]
@@ -264,7 +277,7 @@ impl LanguageServer for ForageLsp {
                     },
                     tags: None,
                     deprecated: None,
-                    container_name: Some(r.name.clone()),
+                    container_name: Some(container.clone()),
                 });
             }
             #[allow(deprecated)]
@@ -278,7 +291,7 @@ impl LanguageServer for ForageLsp {
                     },
                     tags: None,
                     deprecated: None,
-                    container_name: Some(r.name.clone()),
+                    container_name: Some(container.clone()),
                 });
             }
             // Steps too — they're top-level locatable nodes now.
@@ -294,7 +307,7 @@ impl LanguageServer for ForageLsp {
                         },
                         tags: None,
                         deprecated: None,
-                        container_name: Some(r.name.clone()),
+                        container_name: Some(container.clone()),
                     });
                 }
             }
