@@ -28,8 +28,9 @@ indexmap    = { workspace = true }
 sha2        = { workspace = true }
 
 [dev-dependencies]
-wiremock    = { workspace = true }
-tempfile    = { workspace = true }
-tokio       = { workspace = true }
-indexmap    = { workspace = true }
-forage-core = { workspace = true }
+wiremock     = { workspace = true }
+tempfile     = { workspace = true }
+tokio        = { workspace = true }
+indexmap     = { workspace = true }
+forage-core  = { workspace = true }
+serial_test  = { workspace = true }

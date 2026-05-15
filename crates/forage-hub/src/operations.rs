@@ -102,7 +102,9 @@ pub async fn sync_from_hub(
         )));
     }
 
-    materialize_version(&recipe_dir, &artifact)?;
+    // Workspace sync: decls live at the workspace root so the
+    // workspace loader's root-only declarations rule picks them up.
+    materialize_version(&recipe_dir, workspace_root, &artifact)?;
 
     let forked_from = client
         .get_package(&artifact.author, &artifact.slug)
@@ -155,7 +157,10 @@ pub async fn fetch_to_cache(
         .get_version(author, slug, VersionSpec::Numbered(version))
         .await?;
     let dir = cache_root.join(author).join(slug).join(version.to_string());
-    materialize_version(&dir, &artifact)?;
+    // Dep cache: decls live inside the version-pinned subtree so
+    // `scan_package_declarations` (which walks `cache/<author>/<slug>/
+    // <version>/` recursively) finds them.
+    materialize_version(&dir, &dir, &artifact)?;
     let sha = sha256_hex(&serde_json::to_string(&artifact)?);
     Ok(FetchedPackage { dir, sha256: sha })
 }
@@ -294,32 +299,43 @@ pub fn write_meta(recipe_dir: &Path, meta: &ForageMeta) -> HubResult<()> {
 // --- Materialization -----------------------------------------------
 
 /// Lay the atomic `PackageVersion` artifact out on disk under
-/// `recipe_dir`:
+/// `recipe_dir`, with decls written under `decls_root`:
 ///
 /// - `recipe.forage` ← `artifact.recipe`
-/// - `<decls.name>` files (relative to the *workspace root*) ← `artifact.decls`
+/// - `<decls.name>` files relative to `decls_root` ← `artifact.decls`
 /// - `fixtures/captures.jsonl` ← merged JSONL from `artifact.fixtures[*].content`
 /// - `snapshot.json` ← `artifact.snapshot` (omitted when null)
 ///
-/// The decls live alongside the recipe directory (workspace-shared
-/// declarations) — we resolve each one relative to `recipe_dir`'s
-/// parent so the workspace loader picks them up by its root-only
-/// declarations rule. Decls whose `name` looks like a recipe sibling
-/// (`<dir>/recipe.forage`) are written inside `recipe_dir` instead.
-fn materialize_version(recipe_dir: &Path, artifact: &PackageVersion) -> HubResult<()> {
+/// `decls_root` differs by caller because the two consumers walk decls
+/// from different roots:
+///
+/// - The workspace loader (`Workspace::catalog`) scans root-level
+///   `.forage` files of the workspace itself, so `sync_from_hub` passes
+///   the workspace root (the parent of `<workspace>/<slug>/`).
+/// - The dep-cache loader (`scan_package_declarations`) walks the
+///   version-pinned subtree `<cache>/<author>/<slug>/<version>/`
+///   recursively, so `fetch_to_cache` passes the version directory
+///   itself.
+///
+/// Decls keep their authored relative paths (so a publish that
+/// declared `nested/shared.forage` lands at `<decls_root>/nested/...`).
+/// `sanitize_member` rejects absolute names and `..` segments so a
+/// hostile artifact can't escape the root.
+fn materialize_version(
+    recipe_dir: &Path,
+    decls_root: &Path,
+    artifact: &PackageVersion,
+) -> HubResult<()> {
     fs::create_dir_all(recipe_dir)?;
+    fs::create_dir_all(decls_root)?;
 
     fs::write(recipe_dir.join("recipe.forage"), &artifact.recipe)?;
 
-    let workspace_root = recipe_dir.parent().unwrap_or(recipe_dir);
     for f in &artifact.decls {
         let target = if f.name.contains('/') {
-            // Decls keep their authored path. Sanitize against `..`
-            // and absolute names so a hostile artifact can't escape
-            // the workspace root.
-            sanitize_member(workspace_root, &f.name)?
+            sanitize_member(decls_root, &f.name)?
         } else {
-            workspace_root.join(&f.name)
+            decls_root.join(&f.name)
         };
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
@@ -532,12 +548,37 @@ mod tests {
         let ws = tmp.path();
         let recipe_dir = ws.join("zen-leaf");
         let art = artifact("alice", "zen-leaf", 4);
-        materialize_version(&recipe_dir, &art).unwrap();
+        // Workspace-style call: decls go to the workspace root.
+        materialize_version(&recipe_dir, ws, &art).unwrap();
 
         assert!(recipe_dir.join("recipe.forage").is_file());
         assert!(ws.join("shared.forage").is_file());
         assert!(recipe_dir.join("fixtures").join("captures.jsonl").is_file());
         assert!(recipe_dir.join("snapshot.json").is_file());
+    }
+
+    #[test]
+    fn materialize_dep_cache_keeps_decls_in_version_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let version_dir = tmp.path().join("alice").join("zen-leaf").join("4");
+        let art = artifact("alice", "zen-leaf", 4);
+        // Dep-cache-style call: recipe_dir and decls_root are the same
+        // version-pinned directory, which is what
+        // `scan_package_declarations` walks recursively.
+        materialize_version(&version_dir, &version_dir, &art).unwrap();
+
+        assert!(version_dir.join("recipe.forage").is_file());
+        // shared.forage lands INSIDE the version dir, not in the
+        // parent slug dir.
+        assert!(version_dir.join("shared.forage").is_file());
+        assert!(
+            !version_dir
+                .parent()
+                .unwrap()
+                .join("shared.forage")
+                .exists(),
+            "decls must not leak into the slug-level directory",
+        );
     }
 
     #[test]

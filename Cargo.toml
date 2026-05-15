@@ -98,6 +98,9 @@ dirs         = "5"
 walkdir      = "2"
 tempfile     = "3"
 
+# Test utilities.
+serial_test  = "3.4"
+
 # Logging.
 tracing                  = "0.1"
 tracing-subscriber       = { version = "0.3", features = ["env-filter", "fmt"] }

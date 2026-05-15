@@ -476,8 +476,115 @@ async fn sync_into_same_workspace_at_higher_version_succeeds() {
     assert!(recipe_body.contains("s_new"));
 }
 
+/// Sync a forked recipe (sidecar carries `forked_from` from the
+/// upstream's package metadata), edit it, then publish v2 back. The
+/// hub rejects v2+ publishes that include `forked_from` — this test
+/// asserts the assembler drops the field even though it lives in the
+/// sidecar.
 #[tokio::test]
-async fn fetch_to_cache_writes_decls_under_cache_root() {
+async fn sync_edit_publish_does_not_send_forked_from() {
+    let server = MockServer::start().await;
+    let author = "bob";
+    let slug = "zen-leaf";
+
+    // Step 1: hub-side metadata claims this fork descends from
+    // @alice/zen-leaf v3. sync_from_hub copies that into the sidecar.
+    let mut meta = package_meta(author, slug);
+    meta.forked_from = Some(forage_hub::ForkedFrom {
+        author: "alice".into(),
+        slug: slug.into(),
+        version: 3,
+    });
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/packages/{author}/{slug}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(meta))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/packages/{author}/{slug}/versions/latest")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(artifact_v1(author, slug)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/packages/{author}/{slug}/downloads")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
+        .mount(&server)
+        .await;
+
+    // Step 2: the publish endpoint accepts a body whose top-level keys
+    // are exactly the documented PublishRequest fields — and crucially
+    // NOT `forked_from`. wiremock's `body_json` matcher does an exact
+    // shape comparison: if the assembler ever started smuggling
+    // `forked_from` onto the wire, the body wouldn't match this mock
+    // and the publish would 404, failing the test.
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/packages/{author}/{slug}/versions")))
+        .and(body_json(json!({
+            "description": "edited",
+            "category": "scrape",
+            "tags": ["t"],
+            "recipe": format!(
+                "recipe \"{slug}\"\nengine http\n\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
+            ),
+            "decls": [{"name": "shared.forage", "source": "type Shared { id: String }\n"}],
+            "fixtures": [{"name": "captures.jsonl", "content": "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n"}],
+            "snapshot": null,
+            "base_version": 1,
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "author": author,
+            "slug": slug,
+            "version": 2,
+            "latest_version": 2,
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    let client = HubClient::new(server.uri()).with_token("test-token");
+
+    // Sync — the sidecar should carry forked_from for local display.
+    let outcome = sync_from_hub(&client, ws, author, slug, None).await.unwrap();
+    assert!(
+        outcome.meta.forked_from.is_some(),
+        "sidecar must track lineage for local UI",
+    );
+    let sidecar = read_meta(&ws.join(slug)).unwrap().unwrap();
+    assert!(sidecar.forked_from.is_some());
+
+    // Publish — body_json matcher fails if the body carries any
+    // additional fields (e.g. forked_from). A second publish on the
+    // same fork would re-trigger the regression if it ever returned.
+    let resp = publish_from_workspace(
+        &client,
+        ws,
+        author,
+        slug,
+        "edited".into(),
+        "scrape".into(),
+        vec!["t".into()],
+    )
+    .await
+    .expect("publish should succeed without forked_from on the wire");
+    assert_eq!(resp.version, 2);
+
+    // After publish, the sidecar still tracks lineage — `forked_from`
+    // is local-only state, untouched by the publish round-trip.
+    let after = read_meta(&ws.join(slug)).unwrap().unwrap();
+    assert!(
+        after.forked_from.is_some(),
+        "sidecar lineage must survive the publish",
+    );
+}
+
+/// `fetch_to_cache` writes the version artifact into the layout that
+/// the dep-cache reader (`scan_package_declarations`) walks. The
+/// reader recurses inside `<cache>/<author>/<slug>/<version>/`, so the
+/// writer must place decls there — not in the slug directory one
+/// level up, where the reader would never see them.
+#[tokio::test]
+async fn fetch_to_cache_writes_decls_inside_version_subtree() {
     let server = MockServer::start().await;
     let art = artifact_v1("alice", "zen-leaf");
     Mock::given(method("GET"))
@@ -494,9 +601,85 @@ async fn fetch_to_cache_writes_decls_under_cache_root() {
         .unwrap();
     assert_eq!(fetched.dir, cache.join("alice").join("zen-leaf").join("1"));
     assert!(fetched.dir.join("recipe.forage").is_file());
-    // Decls land alongside the recipe folder so the workspace loader
-    // picks them up — same layout `Workspace::catalog`'s
-    // `scan_package_declarations` walks.
-    assert!(cache.join("alice").join("zen-leaf").join("shared.forage").is_file());
+    // Decls land INSIDE the version subtree so the dep-cache reader
+    // finds them (the reader walks the version dir recursively; it
+    // never looks at the slug directory above it).
+    assert!(fetched.dir.join("shared.forage").is_file());
+    assert!(
+        !cache
+            .join("alice")
+            .join("zen-leaf")
+            .join("shared.forage")
+            .exists(),
+        "decls must not leak into the slug-level directory",
+    );
     assert!(!fetched.sha256.is_empty(), "sha256 must be populated");
+}
+
+/// Round-trip: `fetch_to_cache` writes a version into the cache, then
+/// `Workspace::catalog` loads a recipe whose manifest depends on that
+/// version. The catalog must pick up the cached decls. Serialised
+/// because `FORAGE_HUB_CACHE` is process-global.
+#[tokio::test]
+#[serial_test::serial]
+async fn fetch_to_cache_roundtrips_through_workspace_catalog() {
+    let server = MockServer::start().await;
+    let art = artifact_v1("alice", "zen-leaf");
+    Mock::given(method("GET"))
+        .and(path("/v1/packages/alice/zen-leaf/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&art))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("hub-cache");
+    let ws_root = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws_root).unwrap();
+
+    // Point the workspace loader at our temp cache. `FORAGE_HUB_CACHE`
+    // is process-global; `#[serial_test::serial]` serialises this test
+    // against any other test that touches the same var.
+    let prev = std::env::var("FORAGE_HUB_CACHE").ok();
+    // SAFETY: env mutation is unsafe in Rust 2024; the serial attribute
+    // serialises against other env-var-touching tests in the harness.
+    unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
+
+    let client = HubClient::new(server.uri());
+    forage_hub::fetch_to_cache(&client, &cache, "alice", "zen-leaf", 1)
+        .await
+        .unwrap();
+
+    // Build a workspace that declares the dep at v1, then load the
+    // catalog. The cached decls must show up.
+    std::fs::write(
+        ws_root.join("forage.toml"),
+        "name = \"bob/uses-zen\"\n\
+         description = \"deps zen-leaf shared types\"\n\
+         category = \"scrape\"\n\
+         tags = [\"test\"]\n\
+         [deps]\n\
+         \"alice/zen-leaf\" = 1\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(ws_root.join("uses-zen")).unwrap();
+    std::fs::write(
+        ws_root.join("uses-zen").join("recipe.forage"),
+        "recipe \"uses-zen\"\nengine http\nstep s { method \"GET\" url \"https://example.test\" }\n",
+    )
+    .unwrap();
+
+    let ws = forage_core::workspace::load(&ws_root).unwrap();
+    let recipe_path = ws_root.join("uses-zen").join("recipe.forage");
+    let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
+
+    // SAFETY: see safety comment above.
+    match prev {
+        Some(v) => unsafe { std::env::set_var("FORAGE_HUB_CACHE", v) },
+        None => unsafe { std::env::remove_var("FORAGE_HUB_CACHE") },
+    }
+
+    assert!(
+        catalog.types.contains_key("Shared"),
+        "dep cache decls must be visible in the workspace catalog",
+    );
 }
