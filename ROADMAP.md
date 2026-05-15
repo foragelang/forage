@@ -4,6 +4,17 @@ Soup-to-nuts plan to port Forage from Swift to a Rust workspace. Forage Studio g
 
 Milestones prefixed `R1`–`R13` to distinguish from the Swift `M1`–`M11` (now history).
 
+> **Historical record.** This roadmap captures the rewrite milestones
+> as they were planned and as they shipped. Several surfaces named
+> below — `<slug>/recipe.forage`, `<slug>/fixtures/`, `expected.snapshot.json`,
+> the standalone `Recipe` AST, `import hub://<author>/<slug>` directives —
+> were later collapsed by the `forage-file-simplification` program into
+> the flat `<workspace>/<name>.forage` + `_fixtures/<recipe>.jsonl` +
+> `_snapshots/<recipe>.json` shape. See `notes/grammar.md`,
+> `notes/architectural-invariants.md`, and
+> `plans/forage-file-simplification.md` for the current state; the
+> milestone text below is preserved as-shipped.
+
 ---
 
 ## The endgame
@@ -79,7 +90,11 @@ Build tooling:
 
 - **R1.1 — Workspace scaffold.** Root `Cargo.toml` with `[workspace]` member globs. `rust-toolchain.toml` pinned to stable. Workspace-level `Cargo.toml` declares shared deps (serde, tokio, anyhow, thiserror, tracing). `rustfmt.toml` + `clippy.toml` configured. `.github/workflows/ci.yml` runs `cargo test --workspace` on macOS-latest + ubuntu-latest + windows-latest.
 
-- **R1.2 — `forage-core::ast`.** Full AST module mirroring Swift:
+- **R1.2 — `forage-core::ast`.** Full AST module. *Post-R1.2 the file
+  AST was collapsed by the forage-file-simplification program into a
+  single `ForageFile` with a separate optional `RecipeHeader` (see
+  `notes/grammar.md` for current state); the description below records
+  what landed under R1 and is preserved as historical.*
   - `Recipe { name, engine, types, enums, inputs, secrets, auth, browser?, http_steps, captures, expectations }`.
   - `TypeDef`, `EnumDef`, `InputDecl`, `SecretDecl`.
   - `AuthBlock` enum with `StaticHeader`, `HtmlPrime`, `SessionFormLogin`, `SessionOAuth`, `SessionCookieJar`, `SessionHtmlPrime` variants.
