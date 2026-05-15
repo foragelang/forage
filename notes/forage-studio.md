@@ -15,11 +15,14 @@ existing user folder silently becomes a workspace — no migration.
 Workspace contents:
 
 - `forage.toml` — name + `[deps]` table for hub packages.
-- `<slug>/recipe.forage` — one recipe per directory.
-- `<slug>/fixtures/*.json`, `<slug>/snapshot.json` — fixtures and snapshots
-  for the recipe.
-- `*.forage` at the root — header-less declarations files. They contribute
-  shared `type` / `enum` definitions to every recipe in the workspace.
+- `*.forage` at any depth — source files. A file may contain a recipe
+  header, `share`d declarations, file-scoped declarations, or any
+  combination. File position is organizational, not load-bearing — there
+  is no required folder shape, no header-less convention, no per-recipe
+  subdirectory.
+- `_fixtures/<recipe>.jsonl`, `_snapshots/<recipe>.json` — workspace data
+  keyed by recipe header name. Multiple scenarios per recipe land as
+  `_fixtures/<recipe>/<scenario>.jsonl` subdirs when needed.
 - `.forage/` — runtime state owned by the daemon (DB, output stores).
 
 The workspace is loaded once at `Daemon::open`. Studio doesn't keep its own
@@ -27,10 +30,10 @@ copy — every command path reads through `Daemon::workspace()` so the two views
 can't drift. `Daemon::refresh_workspace()` re-reads from disk; Studio invokes
 it on filesystem events.
 
-A `TypeCatalog` for a recipe is the merge of: every workspace-level
-declarations file + every cached hub-dep declarations file + the recipe's own
-local types (which override on collision). Cross-declarations-file name
-collisions are a hard error.
+A `TypeCatalog` for a recipe is the merge of: every `share`d declaration
+in every `.forage` file in the workspace + every cached hub-dep declaration
++ the recipe's own file-scoped declarations (which override `share`d ones
+on name collision). Workspace-wide `share`d-name collisions are a hard error.
 
 ## Daemon
 
@@ -39,9 +42,9 @@ In-process, per-workspace, lives under `<workspace>/.forage/`:
 - `daemon.sqlite` — `runs` (one row per recipe, with cadence + health) and
   `scheduled_runs` (one row per execution, with outcome, duration, per-type
   counts, stall reason).
-- `data/<slug>.sqlite` — the output store. Tables are derived from the
-  recipe's emit catalog (`type Foo` → table `Foo`). Every row carries
-  `_scheduled_run_id` and `_emitted_at`.
+- `data/<recipe>.sqlite` — the output store, keyed by recipe header
+  name. Tables are derived from the recipe's emit catalog (`type Foo` →
+  table `Foo`). Every row carries `_scheduled_run_id` and `_emitted_at`.
 
 The scheduler is one tokio task that holds a min-heap of next-fire times.
 Cadence is `Manual`, `Interval { every_n, unit }`, or `Cron { expr }`.
@@ -84,14 +87,15 @@ Files:
 
 Recipe-scoped:
 
-- `create_recipe()` — scaffolds `<workspace>/untitled-N/recipe.forage`.
-- `delete_recipe(slug)` — refuses anything that isn't a single segment under
-  the workspace root.
+- `create_recipe()` — scaffolds `<workspace>/untitled-N.forage` with a
+  `recipe "untitled-N" engine http` header.
+- `delete_recipe(name)` — takes a recipe header name, deletes the file that
+  declares it.
 - `validate_recipe(source)` — debounced live validation off the in-memory
   buffer. `save_file` also re-validates after writing.
-- `run_recipe(slug, replay)` — dev runs. Spawns the engine with progress +
-  debugger sinks; on success, calls `daemon.ensure_run(slug)` so the recipe
-  shows up in the Runs sidebar.
+- `run_recipe(name, replay)` — dev runs, keyed by recipe header name.
+  Spawns the engine with progress + debugger sinks; on success, calls
+  `daemon.ensure_run(name)` so the recipe shows up in the Runs sidebar.
 - `cancel_run`, `debug_resume`, `set_breakpoints`, `set_recipe_breakpoints`,
   `load_recipe_breakpoints`, `set_pause_iterations` — debugger plumbing.
 - `recipe_outline`, `recipe_hover`, `language_dictionary` — parser-driven
@@ -108,8 +112,9 @@ Daemon-scoped:
 
 Auth + publishing:
 
-- `publish_recipe(slug, hub_url, dry_run)` — single-recipe hub publish. The
-  full workspace publish path is the CLI's `forage publish`.
+- `publish_recipe(name, hub_url, dry_run)` — single-recipe hub publish, by
+  recipe header name. The full workspace publish path is the CLI's
+  `forage publish`.
 - `auth_whoami`, `auth_start_device_flow`, `auth_poll_device`, `auth_logout`.
 
 Cross-boundary types (`ValidationOutcome`, `RunOutcome`, `Diagnostic`,
@@ -146,9 +151,12 @@ State splits cleanly between two stores:
   `inspectorMode`, the editor buffer + dirty flag, per-step run stats,
   breakpoints, pause payload, run log.
 
-`activeFilePath` is a path within the workspace (e.g. `trilogy-rec/recipe.forage`),
-not a slug. The slug is derived via the `slugOf(path)` helper. There is one
-source of truth for the active file — no parallel `activeSlug`.
+`activeFilePath` is a path within the workspace (e.g. `trilogy-rec.forage`).
+The active recipe is tracked separately as `activeRecipeName` — derived from
+the file's `recipe "..."` header at parse time. The two namespaces stay
+separate by design: a file may contain a recipe whose name differs from the
+file's basename, and the daemon / hub / data dirs all key on the recipe name,
+not the path.
 
 ## Reactive-UI invariants
 
@@ -174,5 +182,6 @@ items through `app.emit("menu:<id>")`. The frontend listens in
 - `menu:run_live` / `menu:run_replay` → `runActive(replay)`
 - `menu:recipe_delete` → `Sidebar`'s pending-handler dispatch (the context
   menu opens via `show_recipe_context_menu`, which builds a one-item NSMenu
-  whose ID is `recipe_delete:<slug>`; selection round-trips back through
-  `on_menu_event` as `menu:recipe_delete` with the slug as payload).
+  whose ID is `recipe_delete:<name>`; selection round-trips back through
+  `on_menu_event` as `menu:recipe_delete` with the recipe header name as
+  payload).

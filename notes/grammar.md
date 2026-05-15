@@ -69,21 +69,16 @@ lexer.
 
 ## Top-level file
 
-A `.forage` file is either a single recipe or a header-less
-declarations file (workspace-root sibling declarations).
+A `.forage` file is a flat sequence of top-level forms. There is
+only one file format — files differ in *content*, not in *kind*. A
+file that includes a `recipe_header` declares a recipe; one that
+doesn't is a pure declarations file. The grammar is the same.
 
 ```
-workspace_file       := recipe | declarations_file
+forage_file          := top_level_form*
 
-declarations_file    := ( type_decl | enum_decl )*
-
-recipe               := 'recipe' STRING
-                        'engine' engine_kind
-                        decl*
-
-engine_kind          := 'http' | 'browser'
-
-decl                 := type_decl
+top_level_form       := recipe_header
+                      | type_decl
                       | enum_decl
                       | input_decl
                       | secret_decl
@@ -92,18 +87,29 @@ decl                 := type_decl
                       | browser_block
                       | expect_block
                       | statement
+
+recipe_header        := 'recipe' STRING 'engine' engine_kind
+
+engine_kind          := 'http' | 'browser'
 ```
 
-A recipe header occupies the top of the file flat — there is no
-surrounding `{ }` block. Every subsequent declaration belongs to
-that recipe. A file may declare exactly one recipe. A declarations
-file is rejected if it contains anything other than `type` / `enum`
-declarations.
+Top-level forms appear flat at the file root — no surrounding `{ }`
+block. Validator-enforced constraints (not parser-enforced):
+
+- **At most one `recipe_header` per file.** A second header is a
+  validator error.
+- **Recipe-context forms require a header.** `auth_block`,
+  `browser_block`, `expect_block`, and `statement`s are only
+  meaningful inside a recipe; if any appear in a file with no
+  `recipe_header`, the validator rejects.
+- **Order is free.** The header may appear anywhere among the other
+  forms; the parser collects each kind into its slot on the
+  `ForageFile` AST regardless of position.
 
 ## Type, enum, input, secret
 
 ```
-type_decl            := 'type' TypeName '{' field_list '}'
+type_decl            := 'share'? 'type' TypeName '{' field_list '}'
 
 field_list           := ( field ( ';' | ',' )? )*
 
@@ -116,7 +122,7 @@ field_type           := 'String' | 'Int' | 'Double' | 'Bool'
                       | 'Ref' '<' TypeName '>'
                       | TypeName
 
-enum_decl            := 'enum' TypeName '{' enum_variants '}'
+enum_decl            := 'share'? 'enum' TypeName '{' enum_variants '}'
 
 enum_variants        := ( variant ( ',' | ';' )? )*
 
@@ -132,10 +138,22 @@ enum reference — the validator resolves it against the type catalog.
 The lexer's `TYPE_KEYWORDS` (`String`/`Int`/`Double`/`Bool`) are
 reserved as keywords; user types are arbitrary uppercase identifiers.
 
+`share` is an optional visibility marker that prefixes `type`,
+`enum`, or `fn`. Without `share`, the declaration is *file-scoped* —
+visible only inside the same file (i.e. to the recipe declared in
+that file, if any). With `share`, the declaration joins the
+*workspace-wide* catalog visible to every other `.forage` file in
+the workspace. `input` and `secret` are recipe-local by nature —
+`share` does not apply.
+
+Workspace-wide name collisions among `share`d declarations are a
+validator error. Inside a single file, a file-scoped declaration
+overrides a same-name `share`d declaration from elsewhere.
+
 ## Function declarations
 
 ```
-fn_decl              := 'fn' Ident '(' param_list? ')'
+fn_decl              := 'share'? 'fn' Ident '(' param_list? ')'
                         '{' fn_body '}'
 
 param_list           := DollarVar ( ',' DollarVar )*
@@ -438,10 +456,10 @@ A complete list of keywords lives in `KEYWORDS` at
 `crates/forage-core/src/parse/token.rs`. The parser uses two
 categories:
 
-- **Reserved at top level** as statement / declaration heads:
-  `recipe`, `engine`, `type`, `enum`, `fn`, `input`, `secret`,
-  `auth`, `browser`, `step`, `for`, `in`, `emit`, `as`, `case`, `of`,
-  `let`, `expect`.
+- **Reserved at top level** as statement / declaration heads or
+  modifiers: `recipe`, `engine`, `share`, `type`, `enum`, `fn`,
+  `input`, `secret`, `auth`, `browser`, `step`, `for`, `in`, `emit`,
+  `as`, `case`, `of`, `let`, `expect`.
 - **Reserved inside structured forms** as field keys:
   `method`, `url`, `headers`, `body`, `json`, `form`, `raw`,
   `extract`, `regex`, `groups`, `paginate`, `pageWithTotal`,
@@ -457,12 +475,27 @@ in type position only.
 
 ## Notes
 
-- **One recipe per file.** Multiple `recipe "..."` headers are a
-  parse error.
-- **Order within a recipe is free** after the header. Types, enums,
-  inputs, secrets, fn declarations, auth, browser config,
-  expectations, and statements can intermix at the top level — the
-  parser collects each kind into its own list on the `Recipe` AST.
+- **At most one recipe per file.** A second `recipe` header is a
+  validator error. Files without a header are pure declarations
+  files; they're valid as long as they don't contain recipe-context
+  forms (auth / browser / expect / statement).
+- **Order is free.** Top-level forms — the recipe header, types,
+  enums, inputs, secrets, fn declarations, auth, browser config,
+  expectations, and statements — can intermix at the file root in
+  any order. The parser collects each kind into its slot on the
+  `ForageFile` AST; ordering is not load-bearing.
+- **`share` visibility.** `share type Foo { … }` makes `Foo`
+  workspace-visible; bare `type Foo { … }` is file-scoped.
+  Workspace-wide `share`d-name collisions are a validator error; a
+  file-scoped declaration overrides a same-name `share`d
+  declaration when both reach the same recipe's catalog.
+- **No filesystem-position semantics.** File location within a
+  workspace is organizational, not load-bearing. A workspace is a
+  flat directory of `.forage` source files plus (optionally)
+  `_fixtures/`, `_snapshots/` data dirs and the hidden `.forage/`
+  runtime store. The `TypeCatalog` walks every `.forage` file in
+  the workspace and pulls in `share`d declarations regardless of
+  where they sit.
 - **Field-position keywords.** `name`, `value`, `headers`, etc. are
   keywords reserved at structured-form sites but accepted as field
   names elsewhere. The parser's `expect_field_name` and
