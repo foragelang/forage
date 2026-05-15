@@ -119,9 +119,10 @@ class FakeStudioService implements StudioService {
     validateCron(expr: string) { return this.call("validateCron", [expr]); }
 
     // Hub publish / auth (Studio side)
-    publishRecipe(slug: string, hubUrl?: string, dryRun?: boolean) {
-        return this.call("publishRecipe", [slug, hubUrl, dryRun]);
-    }
+    publishRecipe(args: unknown) { return this.call("publishRecipe", [args]); }
+    previewPublish(args: unknown) { return this.call("previewPublish", [args]); }
+    syncFromHub(args: unknown) { return this.call("syncFromHub", [args]); }
+    forkFromHub(args: unknown) { return this.call("forkFromHub", [args]); }
     authWhoami(hubUrl?: string) { return this.call("authWhoami", [hubUrl]); }
     authStartDeviceFlow(hubUrl?: string) { return this.call("authStartDeviceFlow", [hubUrl]); }
     authPollDevice(hubUrl: string, deviceCode: string) {
@@ -159,6 +160,7 @@ class FakeStudioService implements StudioService {
     onWorkspaceOpened(): Unsubscribe { return () => {}; }
     onWorkspaceClosed(): Unsubscribe { return () => {}; }
     onMenuEvent(): Unsubscribe { return () => {}; }
+    onDeeplinkClone(): Unsubscribe { return () => {}; }
 
     // Host dialogs
     async confirm(): Promise<boolean> { return false; }

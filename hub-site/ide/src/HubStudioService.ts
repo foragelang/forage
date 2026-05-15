@@ -14,6 +14,7 @@ import {
     NotSupportedByService,
     StaleBaseError,
     type DebugAction,
+    type DeeplinkClonePayload,
     type DeviceStart,
     type ListVersionsItem,
     type PackageListing,
@@ -21,9 +22,12 @@ import {
     type PackageQuery,
     type PackageVersion,
     type PollOutcome,
+    type PublishOutcome,
     type PublishPayload,
+    type PublishPreview,
     type ServiceCapabilities,
     type StudioService,
+    type SyncOutcomeWire,
     type Unsubscribe,
 } from "@/lib/services";
 import type { DaemonStatus } from "@/bindings/DaemonStatus";
@@ -343,10 +347,25 @@ export class HubStudioService implements StudioService {
     // ── Hub publish / auth (no Studio bridge — the IDE uses its own
     //    cookie-based session against hub-api) ──────────────────────
 
-    publishRecipe(): Promise<RunOutcome> {
-        // The hub IDE publishes via `publishVersion` directly; this
-        // method exists for Studio's "publish current recipe" flow.
-        throw new NotSupportedByService("publishRecipe");
+    publishRecipe(): Promise<PublishOutcome> {
+        // Studio's workspace-assembling publish flow doesn't exist in
+        // the hub IDE — there's no local workspace. Use
+        // `publishVersion` instead, which talks straight to hub-api.
+        return Promise.reject(new NotSupportedByService("publishRecipe"));
+    }
+    previewPublish(): Promise<PublishPreview> {
+        return Promise.reject(new NotSupportedByService("previewPublish"));
+    }
+    syncFromHub(): Promise<SyncOutcomeWire> {
+        // The hub IDE has no on-disk workspace to materialize into; a
+        // user's "save" flow is `publishVersion`. CLI / Studio handle
+        // sync.
+        return Promise.reject(new NotSupportedByService("syncFromHub"));
+    }
+    forkFromHub(): Promise<SyncOutcomeWire> {
+        // Use `forkPackage` for in-IDE forking — that one talks to
+        // hub-api directly and returns the new package metadata.
+        return Promise.reject(new NotSupportedByService("forkFromHub"));
     }
     authWhoami(): Promise<string | null> {
         // Hub IDE session lives in cookies — read it through the API
@@ -458,6 +477,11 @@ export class HubStudioService implements StudioService {
     onWorkspaceClosed(_handler: () => void): Unsubscribe { return () => {}; }
     onMenuEvent(_name: string, _handler: (payload?: unknown) => void): Unsubscribe {
         // No native menu on the web.
+        return () => {};
+    }
+    onDeeplinkClone(_handler: (payload: DeeplinkClonePayload) => void): Unsubscribe {
+        // No OS-scheme handler in the browser; the IDE drives package
+        // selection through the URL hash itself.
         return () => {};
     }
 

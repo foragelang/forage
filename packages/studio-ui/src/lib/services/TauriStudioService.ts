@@ -16,6 +16,7 @@ import {
     NotSupportedByService,
     StaleBaseError,
     type DebugAction,
+    type DeeplinkClonePayload,
     type DeviceStart,
     type ListVersionsItem,
     type PackageListing,
@@ -24,11 +25,14 @@ import {
     type PackageVersion,
     type PausePayload,
     type PollOutcome,
+    type PublishOutcome,
     type PublishPayload,
+    type PublishPreview,
     type RunEvent,
     type ScheduledRun,
     type ServiceCapabilities,
     type StudioService,
+    type SyncOutcomeWire,
     type Unsubscribe,
 } from "./StudioService";
 import type { DaemonStatus } from "../../bindings/DaemonStatus";
@@ -51,6 +55,7 @@ const DEBUG_PAUSED_EVENT = "forage:debug-paused";
 const DAEMON_RUN_COMPLETED_EVENT = "forage:daemon-run-completed";
 const WORKSPACE_OPENED_EVENT = "forage:workspace-opened";
 const WORKSPACE_CLOSED_EVENT = "forage:workspace-closed";
+const DEEPLINK_CLONE_EVENT = "forage:deeplink-clone";
 
 const DEFAULT_HUB = "https://api.foragelang.com";
 
@@ -218,11 +223,60 @@ export class TauriStudioService implements StudioService {
 
     // ── Hub publish / auth ──────────────────────────────────────────
 
-    publishRecipe(slug: string, hubUrl?: string, dryRun = true): Promise<RunOutcome> {
-        return invoke<RunOutcome>("publish_recipe", {
-            slug,
-            hubUrl: hubUrl ?? this.hubUrl,
-            dryRun,
+    publishRecipe(args: {
+        author: string;
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+        hubUrl?: string;
+    }): Promise<PublishOutcome> {
+        return invoke<PublishOutcome>("publish_recipe", {
+            author: args.author,
+            slug: args.slug,
+            description: args.description,
+            category: args.category,
+            tags: args.tags,
+            hubUrl: args.hubUrl ?? this.hubUrl,
+        });
+    }
+    previewPublish(args: {
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+    }): Promise<PublishPreview> {
+        return invoke<PublishPreview>("preview_publish", {
+            slug: args.slug,
+            description: args.description,
+            category: args.category,
+            tags: args.tags,
+        });
+    }
+    syncFromHub(args: {
+        author: string;
+        slug: string;
+        version?: number | null;
+        hubUrl?: string;
+    }): Promise<SyncOutcomeWire> {
+        return invoke<SyncOutcomeWire>("sync_from_hub", {
+            author: args.author,
+            slug: args.slug,
+            version: args.version ?? null,
+            hubUrl: args.hubUrl ?? this.hubUrl,
+        });
+    }
+    forkFromHub(args: {
+        upstreamAuthor: string;
+        upstreamSlug: string;
+        as?: string | null;
+        hubUrl?: string;
+    }): Promise<SyncOutcomeWire> {
+        return invoke<SyncOutcomeWire>("fork_from_hub", {
+            upstreamAuthor: args.upstreamAuthor,
+            upstreamSlug: args.upstreamSlug,
+            as: args.as ?? null,
+            hubUrl: args.hubUrl ?? this.hubUrl,
         });
     }
     authWhoami(hubUrl?: string): Promise<string | null> {
@@ -345,6 +399,9 @@ export class TauriStudioService implements StudioService {
     }
     onMenuEvent(name: string, handler: (payload?: unknown) => void): Unsubscribe {
         return listenSync<unknown>(name, handler);
+    }
+    onDeeplinkClone(handler: (payload: DeeplinkClonePayload) => void): Unsubscribe {
+        return listenSync<DeeplinkClonePayload>(DEEPLINK_CLONE_EVENT, handler);
     }
 
     // ── Host dialogs ────────────────────────────────────────────────

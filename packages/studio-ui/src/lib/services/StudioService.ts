@@ -19,6 +19,9 @@ import type { HoverInfo } from "../../bindings/HoverInfo";
 import type { LanguageDictionary } from "../../bindings/LanguageDictionary";
 import type { PausePayload } from "../../bindings/PausePayload";
 import type { ProgressUnit } from "../../bindings/ProgressUnit";
+import type { PublishError } from "../../bindings/PublishError";
+import type { PublishOutcome } from "../../bindings/PublishOutcome";
+import type { PublishPreview } from "../../bindings/PublishPreview";
 import type { RecentWorkspace } from "../../bindings/RecentWorkspace";
 import type { RecipeOutline } from "../../bindings/RecipeOutline";
 import type { Run } from "../../bindings/Run";
@@ -26,6 +29,7 @@ import type { RunConfig } from "../../bindings/RunConfig";
 import type { RunEvent } from "../../bindings/RunEvent";
 import type { RunOutcome } from "../../bindings/RunOutcome";
 import type { ScheduledRun } from "../../bindings/ScheduledRun";
+import type { SyncOutcomeWire } from "../../bindings/SyncOutcomeWire";
 import type { ValidationOutcome } from "../../bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "../../bindings/WorkspaceInfo";
 
@@ -175,6 +179,9 @@ export type {
     LanguageDictionary,
     PausePayload,
     ProgressUnit,
+    PublishError,
+    PublishOutcome,
+    PublishPreview,
     RecentWorkspace,
     RecipeOutline,
     Run,
@@ -182,8 +189,18 @@ export type {
     RunEvent,
     RunOutcome,
     ScheduledRun,
+    SyncOutcomeWire,
     ValidationOutcome,
     WorkspaceInfo,
+};
+
+// Deeplink payload from the OS — `forage://clone/<author>/<slug>` or
+// `forage://clone/<author>/<slug>/<version>`. Fired by the Tauri host
+// after `tauri-plugin-deep-link` parses the URL.
+export type DeeplinkClonePayload = {
+    author: string;
+    slug: string;
+    version: number | null;
 };
 
 // --- The interface itself ----------------------------------------------
@@ -238,7 +255,48 @@ export interface StudioService {
     validateCron(expr: string): Promise<void>;
 
     // ── Hub publishing / auth (used by Studio's publish flow) ───────
-    publishRecipe(slug: string, hubUrl?: string, dryRun?: boolean): Promise<RunOutcome>;
+    // Publish the workspace recipe at `slug` to hub-api under
+    // `@author/slug`. The full atomic artifact (recipe + decls +
+    // fixtures + snapshot + base_version) is assembled by the Tauri
+    // side; the description / category / tags come from the publish
+    // dialog. Rejects with a `PublishError` discriminated union — the
+    // `stale_base` variant carries the integer version pair that the
+    // rebase prompt renders against.
+    publishRecipe(args: {
+        author: string;
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+        hubUrl?: string;
+    }): Promise<PublishOutcome>;
+    // Dry-run of `publishRecipe`: assembles the artifact off-disk and
+    // reports its shape without POSTing. Used by the publish dialog's
+    // preview pane.
+    previewPublish(args: {
+        slug: string;
+        description: string;
+        category: string;
+        tags: string[];
+    }): Promise<PublishPreview>;
+    // Pull `@author/slug` (optionally pinned to a specific version)
+    // into the active workspace. Writes the package files plus a
+    // `.forage-meta.json` sidecar. Mirrors `forage sync` from the CLI.
+    syncFromHub(args: {
+        author: string;
+        slug: string;
+        version?: number | null;
+        hubUrl?: string;
+    }): Promise<SyncOutcomeWire>;
+    // Fork `@upstreamAuthor/upstreamSlug` to `@me/<as>` on the hub and
+    // sync the new fork into the active workspace. `as` defaults to
+    // the upstream slug. Mirrors `forage fork`.
+    forkFromHub(args: {
+        upstreamAuthor: string;
+        upstreamSlug: string;
+        as?: string | null;
+        hubUrl?: string;
+    }): Promise<SyncOutcomeWire>;
     authWhoami(hubUrl?: string): Promise<string | null>;
     authStartDeviceFlow(hubUrl?: string): Promise<DeviceStart>;
     authPollDevice(hubUrl: string, deviceCode: string): Promise<PollOutcome>;
@@ -272,6 +330,11 @@ export interface StudioService {
     onWorkspaceOpened(handler: () => void): Unsubscribe;
     onWorkspaceClosed(handler: () => void): Unsubscribe;
     onMenuEvent(name: string, handler: (payload?: unknown) => void): Unsubscribe;
+    // Fired when the OS hands Studio a `forage://clone/...` URL. The
+    // Tauri host parses the URL and emits the payload; the UI handles
+    // workspace-selection and dispatching to `syncFromHub`. Hub IDE
+    // no-ops (no OS scheme handler in the browser).
+    onDeeplinkClone(handler: (payload: DeeplinkClonePayload) => void): Unsubscribe;
 
     // Show a recipe's context menu (right-click). Native menu in Studio;
     // hub IDE no-ops.
