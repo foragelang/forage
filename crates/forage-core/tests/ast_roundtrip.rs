@@ -44,6 +44,7 @@ fn header_less_forage_file_serializes() {
             }],
             shared: true,
             alignments: vec![],
+            extends: None,
             span: 0..0,
         }],
         enums: vec![],
@@ -81,6 +82,7 @@ fn typed_record_with_optional_field() {
         ],
         shared: false,
         alignments: vec![],
+        extends: None,
         span: 0..0,
     };
     assert!(ty.field("id").is_some());

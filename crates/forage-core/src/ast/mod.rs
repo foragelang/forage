@@ -37,4 +37,6 @@ pub use recipe::{
     ForageFile, LetBinding, RecipeBody, RecipeHeader, RecipeRef, Statement,
 };
 pub use span::Span;
-pub use types::{FieldType, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType};
+pub use types::{
+    FieldType, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType, TypeExtension,
+};

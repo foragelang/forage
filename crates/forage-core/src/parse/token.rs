@@ -19,6 +19,9 @@ pub enum Token {
     /// `[*]` recognized as a single token by the lexer.
     Wildcard,
     Pipe,
+    /// `@` — author qualifier (`@author/Name`) and version marker
+    /// (`Name@v1`) on hub type identities.
+    At,
     /// `←` (left arrow — binding).
     Arrow,
     /// `→` (right arrow — case branch).
@@ -89,6 +92,7 @@ impl Token {
             Token::QDot => "'?.'",
             Token::Wildcard => "'[*]'",
             Token::Pipe => "'|'",
+            Token::At => "'@'",
             Token::Arrow => "'\u{2190}'",
             Token::CaseArrow => "'\u{2192}'",
             Token::Equal => "'='",
@@ -131,6 +135,7 @@ pub const KEYWORDS: &[&str] = &[
     "input",
     "output",
     "aligns",
+    "extends",
     "step",
     "method",
     "url",

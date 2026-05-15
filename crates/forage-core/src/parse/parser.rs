@@ -544,21 +544,37 @@ impl Parser {
 
     // --- type / enum / input ----------------------------------------------
 
-    /// type_decl := 'share'? 'type' TypeName ('aligns' alignment_uri)*
+    /// type_decl := 'share'? 'type' TypeName extends_clause?
+    ///              ('aligns' alignment_uri)*
     ///              '{' field (';'|',')? ... '}'
+    /// extends_clause := 'extends' ('@' Ident '/')? TypeName '@' version
+    /// version := Ident matching `v<positive-int>`
     ///
     /// `share` consumption happens in `parse_forage_file`; this helper
     /// just receives the flag and the head `type` keyword still in the
     /// stream. The span covers the `type` keyword through the closing
     /// brace (the `share` prefix sits outside the recorded span).
     ///
-    /// Type-level `aligns` clauses sit between the type name and the
-    /// opening `{`. Each clause is one ontology alignment; multiple
-    /// clauses (different ontologies) stack.
+    /// The `extends` clause is parsed in two shapes: `extends Name@v1`
+    /// resolves against the workspace's type catalog; `extends
+    /// @author/Name@v1` resolves against a lockfile-pinned hub-cached
+    /// type. Catalog lookup happens at validation time; the parser only
+    /// captures the surface shape.
+    ///
+    /// Type-level `aligns` clauses sit between the type name (or the
+    /// `extends` clause when present) and the opening `{`. Each clause
+    /// is one ontology alignment; multiple clauses (different
+    /// ontologies) stack.
     fn parse_type_decl_shared(&mut self, shared: bool) -> Result<RecipeType, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("type")?;
         let name = self.expect_typename()?;
+        let extends = if self.peek_is_keyword("extends") {
+            self.bump();
+            Some(self.parse_type_extension()?)
+        } else {
+            None
+        };
         let mut alignments = Vec::new();
         while self.peek_is_keyword("aligns") {
             self.bump();
@@ -577,8 +593,73 @@ impl Parser {
             fields,
             shared,
             alignments,
+            extends,
             span: self.span_to_here(start),
         })
+    }
+
+    /// extends_target := ('@' Ident '/')? TypeName '@' version_marker
+    /// version_marker := Ident matching `v<digits>`
+    ///
+    /// Captures the parent type's bare name, the optional author prefix
+    /// (`@alice/`), and the integer extracted from the `@vN` marker.
+    /// Resolution against a workspace or hub-cached parent type is the
+    /// validator's responsibility.
+    fn parse_type_extension(&mut self) -> Result<TypeExtension, ParseError> {
+        let start = self.current_span().start;
+        let author = if self.eat_punct(&Token::At) {
+            let segment = self.expect_ident()?;
+            self.expect_punct(&Token::Slash)?;
+            Some(segment)
+        } else {
+            None
+        };
+        let name = self.expect_typename()?;
+        self.expect_punct(&Token::At)?;
+        let version = self.expect_version_marker()?;
+        Ok(TypeExtension {
+            author,
+            name,
+            version,
+            span: self.span_to_here(start),
+        })
+    }
+
+    /// Consume a `v<positive-int>` ident and return the integer. The
+    /// version-marker syntax mirrors the lockfile and the publish flow,
+    /// where type versions are integers starting at 1.
+    fn expect_version_marker(&mut self) -> Result<u32, ParseError> {
+        let span = self.current_span();
+        let ident = match self.peek().cloned() {
+            Some(Token::Ident(s)) => {
+                self.bump();
+                s
+            }
+            _ => return Err(self.unexpected("version marker like 'v1'")),
+        };
+        let Some(rest) = ident.strip_prefix('v') else {
+            return Err(ParseError::Generic {
+                span,
+                message: format!(
+                    "version marker '{ident}' must start with 'v' (e.g. 'v1')",
+                ),
+            });
+        };
+        let n: u32 = rest.parse().map_err(|_| ParseError::Generic {
+            span: span.clone(),
+            message: format!(
+                "version marker '{ident}' must be 'v' followed by a positive integer",
+            ),
+        })?;
+        if n == 0 {
+            return Err(ParseError::Generic {
+                span,
+                message: format!(
+                    "version marker '{ident}' must be at least 'v1'; types are 1-indexed",
+                ),
+            });
+        }
+        Ok(n)
     }
 
     fn parse_field(&mut self) -> Result<RecipeField, ParseError> {

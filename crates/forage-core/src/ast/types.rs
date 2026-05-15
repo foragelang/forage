@@ -18,14 +18,43 @@ use crate::ast::span::Span;
 /// a file-local type can carry alignments. The hub uses them for
 /// discovery and JSON-LD output; the runtime carries them through to
 /// the snapshot but does not transform values.
+///
+/// `extends` is the optional single-parent extension reference declared
+/// between the type name and the alignments. The child inherits every
+/// field of the parent plus the parent's type-level alignments; the
+/// child can add fields, add type-level alignments, override a parent
+/// field's alignment, or drop a parent field's alignment by
+/// redeclaring the field without one. Field type narrowing is rejected
+/// by the validator (`IncompatibleExtension`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecipeType {
     pub name: String,
     pub fields: Vec<RecipeField>,
     pub shared: bool,
     pub alignments: Vec<AlignmentUri>,
+    pub extends: Option<TypeExtension>,
     /// Source range covering the whole `type Name { … }` block. Default
     /// (`0..0`) when constructed by hand.
+    #[serde(default)]
+    pub span: Span,
+}
+
+/// `extends [@author/]Name@vN` — one-shot reference to a parent type.
+/// `author = None` is a workspace-local reference resolved against the
+/// `TypeCatalog`; `author = Some(...)` is a hub-dep reference, also
+/// resolved against the catalog (the workspace loader pre-folds
+/// lockfile-pinned hub types into the catalog by bare name).
+///
+/// `version` is the parent type's hub version pin. For workspace-local
+/// extension chains, the catalog has no version axis — the integer is
+/// recorded for hub publishes and for cross-author bookkeeping but
+/// doesn't drive resolution. For hub-dep extension, the validator
+/// confirms the lockfile pin matches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeExtension {
+    pub author: Option<String>,
+    pub name: String,
+    pub version: u32,
     #[serde(default)]
     pub span: Span,
 }

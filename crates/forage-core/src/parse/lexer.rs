@@ -84,6 +84,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '|' => self.single(Token::Pipe, start),
+                '@' => self.single(Token::At, start),
                 '=' => self.single(Token::Equal, start),
                 '>' => self.single(Token::Gt, start),
                 '<' => self.single(Token::Lt, start),

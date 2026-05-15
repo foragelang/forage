@@ -389,6 +389,7 @@ mod tests {
                     span: 0..0,
                 },
             ],
+            extends: None,
             span: 0..0,
         };
 

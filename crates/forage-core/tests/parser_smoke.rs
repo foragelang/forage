@@ -525,6 +525,83 @@ fn shared_type_carries_alignments() {
 }
 
 #[test]
+fn type_extends_workspace_local_parent_parses() {
+    // `extends Name@v1` — bare typename, no author prefix — captures
+    // the parent name and version with `author = None` so the
+    // workspace catalog handles resolution.
+    let src = r#"
+        share type Parent { id: String }
+        share type Child extends Parent@v1 {
+            extra: String
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let child = r.types.iter().find(|t| t.name == "Child").unwrap();
+    let ext = child.extends.as_ref().expect("extends populated");
+    assert_eq!(ext.author, None);
+    assert_eq!(ext.name, "Parent");
+    assert_eq!(ext.version, 1);
+}
+
+#[test]
+fn type_extends_hub_dep_parent_parses() {
+    // `extends @author/Name@v1` captures the author prefix so the
+    // validator can confirm against the lockfile pin.
+    let src = r#"
+        share type Child extends @upstream/JobPosting@v3 {
+            salaryMin: Int?
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let child = r.types.iter().find(|t| t.name == "Child").unwrap();
+    let ext = child.extends.as_ref().expect("extends populated");
+    assert_eq!(ext.author.as_deref(), Some("upstream"));
+    assert_eq!(ext.name, "JobPosting");
+    assert_eq!(ext.version, 3);
+}
+
+#[test]
+fn type_extends_then_aligns_then_fields_parses() {
+    // Surface order matches the grammar: extends, then alignments,
+    // then the field block.
+    let src = r#"
+        share type Child
+            extends @upstream/Product@v2
+            aligns schema.org/Product
+            aligns wikidata/Q2424752
+        {
+            extra: String aligns schema.org/sku
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let child = r.types.iter().find(|t| t.name == "Child").unwrap();
+    assert_eq!(child.extends.as_ref().unwrap().version, 2);
+    assert_eq!(child.alignments.len(), 2);
+    assert_eq!(child.fields[0].alignment.as_ref().unwrap().term, "sku");
+}
+
+#[test]
+fn type_extends_version_marker_rejects_non_v_prefix() {
+    let src = r#"
+        share type Child extends Parent@xyz { id: String }
+    "#;
+    let err = parse(src).expect_err("non-v version marker must fail");
+    let msg = err.to_string();
+    assert!(msg.contains("'v'"), "diagnostic mentions 'v' prefix: {msg}");
+}
+
+#[test]
+fn type_extends_version_marker_rejects_v0() {
+    // Hub type versions are 1-indexed; v0 is never written.
+    let src = r#"
+        share type Child extends Parent@v0 { id: String }
+    "#;
+    let err = parse(src).expect_err("v0 version marker must fail");
+    let msg = err.to_string();
+    assert!(msg.contains("v1"), "diagnostic mentions v1 floor: {msg}");
+}
+
+#[test]
 fn type_without_alignments_yields_empty_vectors() {
     let src = r#"
         recipe "plain"
