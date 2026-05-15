@@ -19,6 +19,7 @@ fn empty_file() -> ForageFile {
         browser: None,
         body: RecipeBody::Empty,
         expectations: vec![],
+        source: std::sync::Arc::from(""),
     }
 }
 
@@ -56,6 +57,7 @@ fn header_less_forage_file_serializes() {
         browser: None,
         body: RecipeBody::Empty,
         expectations: vec![],
+        source: std::sync::Arc::from(""),
     };
     let json = serde_json::to_string(&f).unwrap();
     let back: ForageFile = serde_json::from_str(&json).unwrap();

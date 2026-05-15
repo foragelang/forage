@@ -17,6 +17,17 @@ export default defineConfig({
     },
     build: {
         outDir: "dist",
+        rollupOptions: {
+            input: {
+                // Main editor window — `index.html` mounts `App.tsx`.
+                main: path.resolve(__dirname, "index.html"),
+                // Pop-out Response viewer window — separate Tauri
+                // window with its own root and a much smaller React
+                // tree. The `open_response_window` Tauri command
+                // navigates to this entry.
+                response: path.resolve(__dirname, "response.html"),
+            },
+        },
     },
     test: {
         // jsdom for component tests that mount React into a DOM. Pure

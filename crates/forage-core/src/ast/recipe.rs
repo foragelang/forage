@@ -1,5 +1,7 @@
 //! Top-level file shape: `ForageFile`, `RecipeHeader`, statements, expectations.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ast::auth::AuthStrategy;
@@ -49,6 +51,27 @@ pub struct ForageFile {
     pub browser: Option<BrowserConfig>,
     pub body: RecipeBody,
     pub expectations: Vec<Expectation>,
+    /// Original source text the file was parsed from. Carried so the
+    /// engine and debugger can resolve byte-spans to (line, col)
+    /// without callers having to thread the source separately. Skipped
+    /// during serialization — `source` is a parser artifact attached
+    /// to the in-memory AST, not part of the canonical wire shape; any
+    /// AST that round-trips through JSON loses it on the way out and
+    /// gets `""` back on the way in. Callers that need the source on a
+    /// deserialized file re-attach it explicitly.
+    ///
+    /// `Arc<str>` because every clone of the AST is read-only and the
+    /// source is large enough to want to share. A hand-constructed
+    /// `ForageFile` (or one round-tripped through JSON) has
+    /// `source = ""`, which means `LineMap::new(&forage_file.source)`
+    /// gives a degenerate map: every span resolves to `(line=0, col=0)`.
+    /// Tests that exercise the debugger should use `parse(&src)`.
+    #[serde(skip, default = "empty_arc_str")]
+    pub source: Arc<str>,
+}
+
+fn empty_arc_str() -> Arc<str> {
+    Arc::from("")
 }
 
 impl ForageFile {

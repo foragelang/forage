@@ -31,10 +31,11 @@
 //! and leak a daemon scheduler.
 
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use forage_core::Scope;
 use forage_core::workspace::Workspace;
 use forage_daemon::Daemon;
 use forage_http::ResumeAction;
@@ -87,10 +88,14 @@ pub struct StudioState {
     /// prior ⌘O is still resolving) could interleave their close+open
     /// sequences and leak a daemon scheduler.
     pub workspace_switch: tokio::sync::Mutex<()>,
-    /// Step names with breakpoints set. Persists across runs and is read
-    /// on every engine-step pause; the frontend pushes a fresh set via
-    /// `set_breakpoints` whenever the user toggles a gutter marker.
-    pub breakpoints: ArcSwap<HashSet<String>>,
+    /// 0-based source lines with breakpoints set. Persists across runs
+    /// and is read on every engine pause; the frontend pushes a fresh
+    /// set via `set_breakpoints` whenever the user toggles a gutter
+    /// marker. Keyed on the start line of the statement (step / emit /
+    /// for) the engine is about to enter so the gutter click maps
+    /// directly to the engine's pause check — no name lookup, no
+    /// re-parse on the hot path.
+    pub breakpoints: ArcSwap<HashSet<u32>>,
     /// The in-flight debug session, if any. Every run installs one; the
     /// `debug_resume` command and the engine-side `StudioDebugger` pull
     /// it out of here. `None` means no run is in flight.
@@ -114,20 +119,45 @@ impl StudioState {
     }
 }
 
+/// What kind of step the user clicked, encoded as a small enum so the
+/// pause hook can branch on it without round-tripping a string. Kept
+/// in `AtomicU8` rather than `Atomic<StepKind>` (which doesn't exist
+/// stable) so swap-and-clear is cheap. `None` is the "no pending
+/// step-action; pause only on breakpoint" baseline.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    None = 0,
+    Over = 1,
+    In = 2,
+}
+
+impl StepKind {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => StepKind::Over,
+            2 => StepKind::In,
+            _ => StepKind::None,
+        }
+    }
+}
+
 /// Per-run debug coordination. Holds the pending oneshot the engine task
-/// is awaiting on. `before_step` (or `before_iteration`) puts a fresh
-/// sender into `pending` and parks on the receiver; `debug_resume`
-/// takes the sender out and fires it.
+/// is awaiting on. The pause hooks (`before_step` / `before_emit` /
+/// `before_for_loop`) put a fresh sender into `pending` and park on the
+/// receiver; `debug_resume` takes the sender out and fires it.
 ///
-/// `step_over_pending` is set when the user clicks Step Over from a
-/// paused state — the *next* pause must wait regardless of whether it's
-/// on a breakpoint. We swap-clear it inside the pause hook so it's a
-/// one-shot.
+/// `step_kind` is the one-shot the user clicks Step Over / Step In from a
+/// paused state — the *next* pause-able statement waits regardless of
+/// whether it sits on a breakpoint. We swap-clear it inside the pause
+/// hook so it's a single shot per click.
 ///
-/// `pause_iterations` is the user's "pause inside for-loops" toggle.
-/// When true, `before_iteration` waits for the user; when false, it
-/// short-circuits to Continue. Carried inside the session (not on
-/// StudioState) so it resets to the default when a fresh run starts.
+/// `paused_scope` holds a clone of the engine's live `Scope` at the
+/// moment the pause fired. The watch-expression evaluator and the REPL
+/// command pull from this — they can't reach back into the engine task
+/// (it's parked on the oneshot), but they need a real `Scope` to
+/// evaluate against. Cleared on resume so a stale scope can't survive
+/// a continue.
 ///
 /// The oneshot sender lives in `Mutex<Option<…>>` rather than another
 /// `ArcSwapOption` because we need atomic take-and-fire: removing the
@@ -137,6 +167,12 @@ impl StudioState {
 #[derive(Default)]
 pub struct DebugSession {
     pub pending: Mutex<Option<oneshot::Sender<ResumeAction>>>,
-    pub step_over_pending: AtomicBool,
-    pub pause_iterations: AtomicBool,
+    pub step_kind: AtomicU8,
+    pub paused_scope: Mutex<Option<Scope>>,
+    /// Run id minted at `run_recipe` start, used by the studio-side
+    /// `RUN_STEP_RESPONSE_EVENT` / `RUN_BEGIN_EVENT` /
+    /// `RUN_DEBUG_RESUMED_EVENT` events so the frontend can correlate
+    /// pause events with their originating run. Set once at session
+    /// creation; cleared with the session at run end.
+    pub run_id: String,
 }

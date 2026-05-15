@@ -355,10 +355,17 @@ export class HubStudioService implements StudioService {
     }
     cancelRun(): Promise<void> { return Promise.resolve(); }
     debugResume(_action: DebugAction): Promise<void> { return Promise.resolve(); }
-    setPauseIterations(_enabled: boolean): Promise<void> { return Promise.resolve(); }
-    setBreakpoints(_steps: string[]): Promise<void> { return Promise.resolve(); }
-    setRecipeBreakpoints(_slug: string, _steps: string[]): Promise<void> { return Promise.resolve(); }
-    loadRecipeBreakpoints(_slug: string): Promise<string[]> { return Promise.resolve([]); }
+    setBreakpoints(_lines: number[]): Promise<void> { return Promise.resolve(); }
+    setRecipeBreakpoints(_name: string, _lines: number[]): Promise<void> { return Promise.resolve(); }
+    loadRecipeBreakpoints(_name: string): Promise<number[]> { return Promise.resolve([]); }
+    evalWatchExpression(_exprSource: string): Promise<unknown> {
+        // Hub IDE has no engine paused; nothing to evaluate against.
+        return Promise.reject(new NotSupportedByService("evalWatchExpression"));
+    }
+    loadFullStepBody(_runId: string, _stepName: string): Promise<string> {
+        return Promise.reject(new NotSupportedByService("loadFullStepBody"));
+    }
+    openResponseWindow(): Promise<void> { return Promise.resolve(); }
 
     // ── Daemon: hub has none ────────────────────────────────────────
 
@@ -573,6 +580,9 @@ export class HubStudioService implements StudioService {
         // through without pause hooks.
         return () => {};
     }
+    onRunBegin(): Unsubscribe { return () => {}; }
+    onStepResponse(): Unsubscribe { return () => {}; }
+    onDebugResumed(): Unsubscribe { return () => {}; }
     onDaemonRunCompleted(_handler: (run: ScheduledRun) => void): Unsubscribe {
         return () => {};
     }

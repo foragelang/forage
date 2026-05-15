@@ -1,10 +1,16 @@
-/// Tests for `runAppend`'s aggregation behavior — emit events get
-/// rolled into `EmitBurst` log entries; non-emit events close the
-/// current burst.
+/// Tests for the studio store. Covers:
+/// - `runAppend`'s aggregation (emit bursts vs. non-emit events);
+/// - `breakpoint toggle` routing through the right service method;
+/// - `lastResponses` capture + reset lifecycle;
+/// - `watches` add / remove / persistence per active recipe;
+/// - `replTranscript` survival across pause+clear-pause cycles.
 
+import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { RunEvent } from "../bindings/RunEvent";
-import { useStudio, type EmitBurst } from "./store";
+import type { StepResponse } from "../bindings/StepResponse";
+import { FakeStudioService } from "../test-fake-service";
+import { installStudioService, useStudio, type EmitBurst } from "./store";
 
 function resetStore() {
     useStudio.setState({
@@ -179,5 +185,274 @@ describe("runAppend", () => {
                 PriceObservation: 50,
             });
         }
+    });
+});
+
+describe("breakpoint toggle (line-keyed)", () => {
+    let service: FakeStudioService;
+
+    beforeEach(() => {
+        service = new FakeStudioService();
+        useStudio.setState({
+            service,
+            breakpoints: new Set(),
+            activeFilePath: null,
+            activeRecipeName: null,
+        });
+        service.setHandler("setBreakpoints", undefined);
+        service.setHandler("setRecipeBreakpoints", undefined);
+    });
+
+    test("toggleBreakpoint adds a line then removes it", () => {
+        useStudio.getState().toggleBreakpoint(12);
+        expect(useStudio.getState().breakpoints.has(12)).toBe(true);
+        useStudio.getState().toggleBreakpoint(12);
+        expect(useStudio.getState().breakpoints.has(12)).toBe(false);
+    });
+
+    test("toggleBreakpoint without an active recipe calls setBreakpoints", () => {
+        useStudio.getState().toggleBreakpoint(7);
+        const matches = service.calls.filter((c) => c.method === "setBreakpoints");
+        const last = matches[matches.length - 1];
+        expect(last).toBeDefined();
+        expect(last?.args[0]).toEqual([7]);
+    });
+});
+
+function makeStepResponse(over: Partial<StepResponse> = {}): StepResponse {
+    return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body_raw: "{}",
+        body_truncated: false,
+        format: "json",
+        content_type_header: "application/json",
+        ...over,
+    };
+}
+
+describe("lastResponses", () => {
+    beforeEach(() => {
+        useStudio.setState({
+            lastResponses: {},
+            running: false,
+            paused: null,
+            runId: null,
+        });
+    });
+
+    test("setStepResponse stores the entry by step name", () => {
+        const resp = makeStepResponse({ status: 200 });
+        useStudio.getState().setStepResponse("list", resp);
+        expect(useStudio.getState().lastResponses).toEqual({ list: resp });
+    });
+
+    test("a second setStepResponse adds rather than replaces other steps", () => {
+        useStudio.getState().setStepResponse("a", makeStepResponse({ status: 200 }));
+        useStudio.getState().setStepResponse("b", makeStepResponse({ status: 500 }));
+        const got = useStudio.getState().lastResponses;
+        expect(Object.keys(got)).toEqual(["a", "b"]);
+        expect(got.a?.status).toBe(200);
+        expect(got.b?.status).toBe(500);
+    });
+
+    test("re-recording the same step replaces its entry", () => {
+        useStudio.getState().setStepResponse("list", makeStepResponse({ status: 200 }));
+        useStudio.getState().setStepResponse("list", makeStepResponse({ status: 500 }));
+        expect(useStudio.getState().lastResponses.list?.status).toBe(500);
+    });
+
+    test("captures survive a pause + clear-pause cycle", () => {
+        // Recording happens independent of pause state; the pause
+        // payload only carries the scope snapshot. Pausing then
+        // clearing must not wipe lastResponses.
+        useStudio.getState().setStepResponse("list", makeStepResponse());
+        useStudio.getState().debugPause({
+            kind: "step",
+            step: "list",
+            step_index: 0,
+            start_line: 0,
+            scope: {
+                bindings: [],
+                inputs: {},
+                secrets: [],
+                current: null,
+                emit_counts: {},
+                step_responses: {},
+            },
+        });
+        useStudio.getState().debugClearPause();
+        expect(useStudio.getState().lastResponses.list).toBeDefined();
+    });
+
+    test("runBegin clears lastResponses + runId", () => {
+        useStudio.setState({ runId: "previous-run" });
+        useStudio.getState().setStepResponse("list", makeStepResponse());
+        expect(useStudio.getState().lastResponses.list).toBeDefined();
+        useStudio.getState().runBegin();
+        expect(useStudio.getState().lastResponses).toEqual({});
+        expect(useStudio.getState().runId).toBeNull();
+    });
+
+    test("resetRunResponses drops captures + runId", () => {
+        useStudio.setState({ runId: "rid" });
+        useStudio.getState().setStepResponse("list", makeStepResponse());
+        useStudio.getState().resetRunResponses();
+        expect(useStudio.getState().lastResponses).toEqual({});
+        expect(useStudio.getState().runId).toBeNull();
+    });
+});
+
+const WATCH_KEY = (name: string) => `forage:watch-expressions:${name}`;
+
+describe("watches", () => {
+    beforeEach(() => {
+        localStorage.clear();
+        useStudio.setState({
+            activeRecipeName: "trilogy",
+            watches: [],
+        });
+    });
+
+    test("setWatches persists to per-recipe localStorage", () => {
+        useStudio.getState().setWatches(["$list.items | length", "$i.id"]);
+        expect(useStudio.getState().watches).toEqual([
+            "$list.items | length",
+            "$i.id",
+        ]);
+        const raw = localStorage.getItem(WATCH_KEY("trilogy"));
+        expect(raw).not.toBeNull();
+        expect(JSON.parse(raw!)).toEqual([
+            "$list.items | length",
+            "$i.id",
+        ]);
+    });
+
+    test("setWatches with an empty list still persists (clears the sidecar)", () => {
+        useStudio.getState().setWatches(["$a"]);
+        useStudio.getState().setWatches([]);
+        expect(useStudio.getState().watches).toEqual([]);
+        expect(JSON.parse(localStorage.getItem(WATCH_KEY("trilogy"))!)).toEqual(
+            [],
+        );
+    });
+
+    test("recipes have isolated sidecars", () => {
+        useStudio.getState().setWatches(["$a"]);
+        useStudio.setState({ activeRecipeName: "zen" });
+        useStudio.getState().setWatches(["$z"]);
+        // Each sidecar carries only its own recipe's list — the prior
+        // recipe's entries don't bleed across.
+        expect(JSON.parse(localStorage.getItem(WATCH_KEY("trilogy"))!)).toEqual(
+            ["$a"],
+        );
+        expect(JSON.parse(localStorage.getItem(WATCH_KEY("zen"))!)).toEqual([
+            "$z",
+        ]);
+    });
+
+    test("setWatches with no active recipe doesn't persist", () => {
+        useStudio.setState({ activeRecipeName: null });
+        useStudio.getState().setWatches(["$x"]);
+        // Nothing in localStorage — the persistor needs a recipe name
+        // to key the sidecar by, and a null recipe means we can't
+        // safely associate the list.
+        expect(localStorage.length).toBe(0);
+        // The in-memory list still updated so the UI renders the
+        // additions for the current session.
+        expect(useStudio.getState().watches).toEqual(["$x"]);
+    });
+});
+
+describe("replTranscript", () => {
+    beforeEach(() => {
+        const service = new FakeStudioService();
+        installStudioService(service, new QueryClient());
+        useStudio.setState({
+            replTranscript: [],
+            paused: null,
+            pauseId: 0,
+        });
+    });
+
+    test("appendReplEntry pushes rows in order", () => {
+        useStudio.getState().appendReplEntry({
+            kind: "result",
+            input: "$a",
+            pauseId: 1,
+            value: 1,
+        });
+        useStudio.getState().appendReplEntry({
+            kind: "error",
+            input: "$b",
+            pauseId: 1,
+            message: "boom",
+        });
+        const rows = useStudio.getState().replTranscript;
+        expect(rows).toHaveLength(2);
+        expect(rows[0]?.input).toBe("$a");
+        expect(rows[1]?.input).toBe("$b");
+    });
+
+    test("clearReplTranscript drops every entry", () => {
+        useStudio.getState().appendReplEntry({
+            kind: "result",
+            input: "$a",
+            pauseId: 1,
+            value: 1,
+        });
+        useStudio.getState().clearReplTranscript();
+        expect(useStudio.getState().replTranscript).toEqual([]);
+    });
+
+    test("transcript survives a pause+clear-pause cycle", () => {
+        // The whole reason transcript lives in the store rather than
+        // component-local state: DebuggerPanel unmounts when paused
+        // goes null, and component-local state would die with it.
+        // Pausing then clearing the pause must NOT drop the rows.
+        useStudio.getState().appendReplEntry({
+            kind: "result",
+            input: "$a",
+            pauseId: 1,
+            value: 1,
+        });
+        useStudio.getState().debugPause({
+            kind: "step",
+            step: "list",
+            step_index: 0,
+            start_line: 0,
+            scope: {
+                bindings: [],
+                inputs: {},
+                secrets: [],
+                current: null,
+                emit_counts: {},
+                step_responses: {},
+            },
+        });
+        useStudio.getState().debugClearPause();
+        expect(useStudio.getState().replTranscript).toHaveLength(1);
+    });
+
+    test("debugPause bumps pauseId so the transcript can boundary-mark", () => {
+        // The renderer keys the dashed separator off pauseId
+        // differences between rows; each pause must produce a fresh
+        // id so the boundary lands.
+        const initial = useStudio.getState().pauseId;
+        useStudio.getState().debugPause({
+            kind: "step",
+            step: "list",
+            step_index: 0,
+            start_line: 0,
+            scope: {
+                bindings: [],
+                inputs: {},
+                secrets: [],
+                current: null,
+                emit_counts: {},
+                step_responses: {},
+            },
+        });
+        expect(useStudio.getState().pauseId).toBe(initial + 1);
     });
 });

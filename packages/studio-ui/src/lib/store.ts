@@ -11,10 +11,20 @@ import type { ProgressUnit } from "../bindings/ProgressUnit";
 import type { RecipeStatus } from "../bindings/RecipeStatus";
 import type { RunEvent } from "../bindings/RunEvent";
 import type { Snapshot } from "../bindings/Snapshot";
+import type { StepResponse } from "../bindings/StepResponse";
 import type { ValidationOutcome } from "../bindings/ValidationOutcome";
 import type { StudioService } from "./services/StudioService";
 import { recipeNameOf } from "./path";
 import { recipeStatusesKey } from "./queryKeys";
+
+/// One entry in the REPL transcript. `result` carries the evaluator's
+/// JSON value on success; `error` carries the failure string. Stored
+/// on the store rather than the panel because `DebuggerPanel` unmounts
+/// every time `paused` flips to `null` between pauses, and the user
+/// expects the transcript to survive that transition.
+export type ReplEntry =
+    | { kind: "result"; input: string; pauseId: number; value: unknown }
+    | { kind: "error"; input: string; pauseId: number; message: string };
 
 export type View = "editor" | "deployment" | "notebook";
 
@@ -79,7 +89,7 @@ export type NotebookState = {
     /// same reason as `stagePickerOpen`.
     publishDialogOpen: boolean;
 };
-export type InspectorMode = "run" | "history" | "records";
+export type InspectorMode = "run" | "history" | "records" | "responses";
 
 /// An aggregated run of `Emitted` events between two non-emit
 /// events. The engine fires one `RunEvent::Emitted` per record per
@@ -220,17 +230,39 @@ type StudioState = {
         replay: boolean;
         ephemeral: boolean;
     };
-    // Breakpoints — step names with breakpoints set. Toggled by gutter
-    // clicks in the editor pane; the backend reads the latest set on
-    // every step pause to decide whether to actually wait.
-    breakpoints: Set<string>;
-    // Current pause payload when the engine is parked at a step or
-    // inside a `for`-loop iteration, null otherwise.
+    // Breakpoints — 0-based source lines with breakpoints set, keyed
+    // on the start line of each pause-able statement (step / emit /
+    // for). Toggled by gutter clicks in the editor pane; the backend
+    // reads the latest set on every engine pause to decide whether to
+    // actually wait.
+    breakpoints: Set<number>;
+    // Current pause payload when the engine is parked at a step,
+    // emit, or for-loop entry. Null when not paused.
     paused: PausePayload | null;
-    // Whether the user has asked the engine to pause inside every
-    // `for`-loop iteration. Reset to false at runBegin so a previous
-    // run's setting doesn't carry over.
-    pauseIterations: boolean;
+    /// Run id minted by the backend on every `run_recipe` invocation
+    /// and broadcast via `forage:run-begin`. Used to scope step
+    /// responses + the "load full" command back to the correct run.
+    /// `null` between runs.
+    runId: string | null;
+    /// Per-step responses captured during the current/most-recent run.
+    /// Populated by the `forage:run-step-response` event; survives the
+    /// run's end so the inspector's Responses pane can show the final
+    /// state of an aborted run.
+    lastResponses: Record<string, StepResponse>;
+    /// Per-recipe watch expressions. The Watches section persists each
+    /// recipe's list to localStorage; the store mirrors it so the
+    /// reactive UI re-renders on add / remove.
+    watches: string[];
+    /// REPL transcript for the current debug session. Hoisted out of
+    /// `DebuggerPanel` because the panel unmounts during pause-null
+    /// transitions (between pauses); without this the transcript would
+    /// disappear every Continue. Cleared at workspace close.
+    replTranscript: ReplEntry[];
+    /// Monotonic counter incremented on every pause. The REPL uses it
+    /// as a boundary marker so the transcript can render a separator
+    /// between pause sessions without coupling to the pause payload
+    /// shape.
+    pauseId: number;
 
     // ── Notebook scratchpad ─────────────────────────────────────────
     notebook: NotebookState;
@@ -259,9 +291,28 @@ type StudioState = {
     setProgressUnit: (unit: ProgressUnit | null) => void;
     debugPause: (p: PausePayload) => void;
     debugClearPause: () => void;
-    toggleBreakpoint: (step: string) => void;
+    /// Toggle the breakpoint on a 0-based source line. Used by the
+    /// editor's gutter click handler.
+    toggleBreakpoint: (line: number) => void;
     clearBreakpoints: () => void;
-    setPauseIterations: (enabled: boolean) => void;
+    /// Set the run id (called from the `forage:run-begin` listener).
+    setRunId: (id: string | null) => void;
+    /// Append (or update) a captured step response.
+    setStepResponse: (step: string, response: StepResponse) => void;
+    /// Clear the captured responses + run id (called from
+    /// `forage:run-begin` and at workspace close so a stale capture
+    /// can't survive a new run).
+    resetRunResponses: () => void;
+    /// Replace the current recipe's watch expression list. The
+    /// Watches section drives this from its localStorage-backed local
+    /// state.
+    setWatches: (watches: string[]) => void;
+    /// Append a REPL entry. The REPL panel calls this after
+    /// `evalWatchExpression` resolves / rejects.
+    appendReplEntry: (entry: ReplEntry) => void;
+    /// Clear the REPL transcript. Workspace close fires this; the
+    /// user can also clear it manually from the REPL header.
+    clearReplTranscript: () => void;
     /// Update one or more run-flag fields. The toolbar's preset
     /// selector calls this with the resolved values for the selected
     /// preset; per-flag toggles call this with a single field.
@@ -343,6 +394,41 @@ function recipeNameForPath(state: StudioState, path: string): string | null {
     return recipeNameOf(path, recipes);
 }
 
+/// localStorage key for the watch expression list, keyed by recipe
+/// header name. `null` means no recipe is active — keep the list
+/// empty.
+function watchesStorageKey(name: string): string {
+    return `forage:watch-expressions:${name}`;
+}
+
+/// Load the persisted watch expression list for `name`. Falls back to
+/// the empty list when nothing is stored or the JSON is malformed —
+/// watches are best-effort UI state, not safety-critical.
+function loadWatches(name: string | null): string[] {
+    if (!name) return [];
+    try {
+        const raw = localStorage.getItem(watchesStorageKey(name));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string")) {
+            return parsed;
+        }
+        return [];
+    } catch {
+        return [];
+    }
+}
+
+function saveWatches(name: string | null, watches: string[]): void {
+    if (!name) return;
+    try {
+        localStorage.setItem(watchesStorageKey(name), JSON.stringify(watches));
+    } catch {
+        // Quota / disabled storage — silent drop. The next reload
+        // shows the in-memory state, which is fine for a watch list.
+    }
+}
+
 /// Reverse of `recipeNameForPath`: look up the on-disk draft path for
 /// a recipe by header name. Used by `setActiveRecipeName` when the
 /// caller didn't pass a path explicitly — only `valid` drafts have a
@@ -418,9 +504,13 @@ async function switchActiveTarget(
         stepStartMs: {},
         paused: null,
         breakpoints: new Set(),
+        lastResponses: {},
+        runId: null,
+        replTranscript: [],
+        watches: loadWatches(name),
     });
     // Clear engine-side breakpoints synchronously so a fast Run after
-    // the switch doesn't pause on the previous recipe's steps. The
+    // the switch doesn't pause on the previous recipe's lines. The
     // per-recipe set arrives via `loadRecipeBreakpoints` below and
     // overwrites this.
     service.setBreakpoints([]).catch((e) =>
@@ -436,10 +526,10 @@ async function switchActiveTarget(
         .catch((e) => set({ runError: String(e) }));
     if (name) {
         service.loadRecipeBreakpoints(name)
-            .then((steps) => {
+            .then((lines) => {
                 if (get().activeFilePath === path) {
-                    set({ breakpoints: new Set(steps) });
-                    return service.setBreakpoints(steps);
+                    set({ breakpoints: new Set(lines) });
+                    return service.setBreakpoints(lines);
                 }
                 return undefined;
             })
@@ -490,9 +580,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     stepStats: {},
     currentStep: null,
     stepStartMs: {},
-    breakpoints: new Set<string>(),
+    breakpoints: new Set<number>(),
     paused: null,
-    pauseIterations: false,
+    runId: null,
+    lastResponses: {},
+    watches: [],
+    replTranscript: [],
+    pauseId: 0,
     runFlags: {
         sample_limit: 10,
         replay: true,
@@ -543,7 +637,12 @@ export const useStudio = create<StudioState>((set, get) => ({
             snapshot: null,
             runError: null,
             paused: null,
-            pauseIterations: false,
+            // Drop the previous run's captured responses and run id so
+            // the inspector + pop-out window restart from an empty
+            // state. The `forage:run-begin` listener fires `setRunId`
+            // right after this with the fresh id.
+            lastResponses: {},
+            runId: null,
         }),
     runAppend: (e) =>
         set((state) => {
@@ -711,24 +810,31 @@ export const useStudio = create<StudioState>((set, get) => ({
             return { running: false, paused: null, stepStats };
         }),
     setProgressUnit: (unit) => set({ progressUnit: unit }),
-    debugPause: (p) => set({ paused: p }),
+    debugPause: (p) =>
+        set((state) => ({
+            paused: p,
+            // Monotonic pause id so the REPL can boundary-mark each
+            // pause without coupling to the payload shape. The
+            // transcript renders a separator whenever pauseId changes.
+            pauseId: state.pauseId + 1,
+        })),
     debugClearPause: () => set({ paused: null }),
-    toggleBreakpoint: (step) => {
+    toggleBreakpoint: (line) => {
         const state = get();
         const { service, activeFilePath } = state;
         const cur = state.breakpoints;
         const name = activeFilePath ? recipeNameForPath(state, activeFilePath) : null;
         const next = new Set(cur);
-        if (next.has(step)) next.delete(step);
-        else next.add(step);
+        if (next.has(line)) next.delete(line);
+        else next.add(line);
         set({ breakpoints: next });
-        const steps = [...next];
+        const lines = [...next];
         if (name) {
-            service.setRecipeBreakpoints(name, steps).catch((e) =>
+            service.setRecipeBreakpoints(name, lines).catch((e) =>
                 console.warn("set_recipe_breakpoints failed", e),
             );
         } else {
-            service.setBreakpoints(steps).catch((e) =>
+            service.setBreakpoints(lines).catch((e) =>
                 console.warn("set_breakpoints failed", e),
             );
         }
@@ -748,13 +854,20 @@ export const useStudio = create<StudioState>((set, get) => ({
             );
         }
     },
-    setPauseIterations: (enabled) => {
-        const service = get().service;
-        set({ pauseIterations: enabled });
-        service.setPauseIterations(enabled).catch((e) =>
-            console.warn("set_pause_iterations failed", e),
-        );
+    setRunId: (id) => set({ runId: id }),
+    setStepResponse: (step, response) =>
+        set((state) => ({
+            lastResponses: { ...state.lastResponses, [step]: response },
+        })),
+    resetRunResponses: () => set({ lastResponses: {}, runId: null }),
+    setWatches: (watches) => {
+        const name = get().activeRecipeName;
+        set({ watches });
+        saveWatches(name, watches);
     },
+    appendReplEntry: (entry) =>
+        set((state) => ({ replTranscript: [...state.replTranscript, entry] })),
+    clearReplTranscript: () => set({ replTranscript: [] }),
     setRunFlags: (patch) =>
         set((state) => ({
             runFlags: { ...state.runFlags, ...patch },

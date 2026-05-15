@@ -234,6 +234,10 @@ fn synthesize_composition_file(name: &str, stages: &[String]) -> ForageFile {
             span: Span::default(),
         }),
         expectations: Vec::new(),
+        // Empty source is safe here: composition bodies have no
+        // pause sites, so the line-resolver never reads back from
+        // this string to map a byte span onto a source line.
+        source: std::sync::Arc::from(""),
     }
 }
 

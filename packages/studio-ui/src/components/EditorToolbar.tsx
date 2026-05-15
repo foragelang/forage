@@ -177,10 +177,15 @@ function ToolbarStatus() {
 function PausedBadge() {
     const paused = useStudio((s) => s.paused);
     if (!paused) return null;
-    const label =
-        paused.kind === "step"
-            ? `step ${paused.step}`
-            : `iter ${paused.iteration + 1}/${paused.total} of $${paused.variable}`;
+    let label: string;
+    if (paused.kind === "step") {
+        label = `step ${paused.step}`;
+    } else if (paused.kind === "emit") {
+        label = `emit ${paused.type_name}`;
+    } else {
+        // for_loop entry — total covers the empty-collection case.
+        label = `for-loop $${paused.variable} · ${paused.total} item${paused.total === 1 ? "" : "s"}`;
+    }
     return (
         <Badge variant="warning" className="font-mono tabular-nums">
             <Pause />

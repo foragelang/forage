@@ -173,47 +173,66 @@ pub fn parse_and_validate(source: &str) -> JsValue {
     }
 }
 
-/// Step name + 0-based source range. Mirrors `commands::StepLocation`
-/// on the Studio side; the hub IDE consumes the same `StepLocation.ts`
+/// One pause-able statement in source order. Mirrors `PausePoint`
+/// on the Studio side; the hub IDE consumes the same `PausePoint.ts`
 /// binding so both surfaces share one canonical shape.
 #[derive(serde::Serialize)]
-pub struct StepLocation {
-    pub name: String,
-    pub start_line: u32,
-    pub start_col: u32,
-    pub end_line: u32,
-    pub end_col: u32,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PausePoint {
+    Step {
+        name: String,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
+    Emit {
+        type_name: String,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
+    For {
+        variable: String,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
 }
 
-/// Pure-Rust core of `recipe_outline`. Returns the list of step
-/// locations in source order; empty when parsing fails or the body has
-/// no steps. The wasm wrapper just serializes the result.
-pub fn recipe_outline_inner(source: &str) -> Vec<StepLocation> {
+/// Pure-Rust core of `recipe_outline`. Returns the list of pause
+/// points in source order; empty when parsing fails or the body has
+/// no pause-able statements. The wasm wrapper just serializes the
+/// result.
+pub fn recipe_outline_inner(source: &str) -> Vec<PausePoint> {
     let Ok(recipe) = core_parse(source) else {
         return Vec::new();
     };
     let line_map = LineMap::new(source);
-    let mut steps = Vec::new();
-    collect_step_locations(recipe.body.statements(), &line_map, &mut steps);
-    steps
+    let mut out = Vec::new();
+    collect_pause_points(recipe.body.statements(), &line_map, &mut out);
+    out
 }
 
-/// Structural outline of a recipe — step name + 0-based source range
-/// for each `step ...` block, in source order. Mirrors the JSON shape
-/// of `apps/studio/src-tauri/src/commands.rs::RecipeOutline` so the
-/// hub IDE consumes the same `bindings/RecipeOutline.ts` Studio does.
+/// Structural outline of a recipe — every pause-able statement (step
+/// / emit / for) with its 0-based source range, in source order.
+/// Mirrors the JSON shape of `apps/studio/src-tauri/src/commands.rs::RecipeOutline`
+/// so the hub IDE consumes the same `bindings/RecipeOutline.ts` Studio does.
 #[wasm_bindgen]
 pub fn recipe_outline(source: &str) -> JsValue {
-    let steps = recipe_outline_inner(source);
-    serde_wasm_bindgen::to_value(&serde_json::json!({ "steps": steps })).unwrap_or(JsValue::NULL)
+    let pause_points = recipe_outline_inner(source);
+    serde_wasm_bindgen::to_value(&serde_json::json!({ "pause_points": pause_points }))
+        .unwrap_or(JsValue::NULL)
 }
 
-fn collect_step_locations(body: &[Statement], line_map: &LineMap, out: &mut Vec<StepLocation>) {
+fn collect_pause_points(body: &[Statement], line_map: &LineMap, out: &mut Vec<PausePoint>) {
     for s in body {
         match s {
             Statement::Step(step) => {
                 let r = line_map.range(step.span.clone());
-                out.push(StepLocation {
+                out.push(PausePoint::Step {
                     name: step.name.clone(),
                     start_line: r.start.line,
                     start_col: r.start.character,
@@ -221,10 +240,32 @@ fn collect_step_locations(body: &[Statement], line_map: &LineMap, out: &mut Vec<
                     end_col: r.end.character,
                 });
             }
-            Statement::ForLoop { body, .. } => {
-                collect_step_locations(body, line_map, out);
+            Statement::Emit(em) => {
+                let r = line_map.range(em.span.clone());
+                out.push(PausePoint::Emit {
+                    type_name: em.type_name.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
             }
-            Statement::Emit(_) => {}
+            Statement::ForLoop {
+                variable,
+                body,
+                span,
+                ..
+            } => {
+                let r = line_map.range(span.clone());
+                out.push(PausePoint::For {
+                    variable: variable.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
+                collect_pause_points(body, line_map, out);
+            }
         }
     }
 }

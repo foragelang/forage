@@ -11,6 +11,8 @@ use serde::Serialize;
 use std::sync::Arc;
 use ts_rs::TS;
 
+use crate::debug::StepResponse;
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export)]
@@ -57,6 +59,27 @@ pub enum RunEvent {
 /// the CLI can wrap a logger; tests can use `NoopSink` or capture into a Vec.
 pub trait ProgressSink: Send + Sync {
     fn emit(&self, event: RunEvent);
+
+    /// Fires once per executed step, right after the engine captures
+    /// the response onto `DebugScope::step_responses`. Lets hosts
+    /// stream the response shape to the UI independent of any pause
+    /// — the studio surfaces this on a persistent "Responses" pane so
+    /// the user can inspect a failed step even when the run aborts on
+    /// 4xx/5xx before any pause site fires.
+    ///
+    /// Default no-op so CLI / daemon sinks compile unchanged.
+    fn step_response_captured(&self, _step: &str, _response: &StepResponse) {}
+
+    /// Hand the sink the **uncapped** response body for a step the
+    /// engine just executed. Separate from `RunEvent::ResponseReceived`
+    /// and `step_response_captured` because most sinks (CLI, daemon,
+    /// tests) don't care about the bytes — only Studio's pop-out /
+    /// "load full" code path needs them, and we don't want to ship
+    /// multi-MB payloads through the regular event channel. The
+    /// buffer is borrowed from the engine for the call's lifetime —
+    /// hosts that need to keep the bytes around must copy. Default
+    /// no-op so existing sinks compile unchanged.
+    fn step_response_full_body(&self, _step: &str, _body: &[u8]) {}
 }
 
 /// Discard all events. Used by default when the caller doesn't care.

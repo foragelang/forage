@@ -1,12 +1,22 @@
-/// Shared fake StudioService for vitest. Records every method
-/// invocation; per-test code stamps responses by method name via
-/// `setHandler`. Unset methods reject loudly so a test that forgets to
-/// mock a path doesn't pass with `undefined` flowing through.
+/// Shared test scaffolding: a recording fake of `StudioService` plus a
+/// `wrap` helper that mounts components inside the same provider tree
+/// Studio uses at runtime (service context, react-query, tooltip).
+///
+/// Tests dial behavior in via `setHandler(method, value-or-fn)`. Calls
+/// to methods without a configured handler reject with a descriptive
+/// error so a forgotten mock surfaces loudly instead of resolving with
+/// `undefined`.
 
-import type {
-    ServiceCapabilities,
-    StudioService,
-    Unsubscribe,
+import type React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render } from "@testing-library/react";
+
+import { TooltipProvider } from "./components/ui/tooltip";
+import {
+    StudioServiceProvider,
+    type ServiceCapabilities,
+    type StudioService,
+    type Unsubscribe,
 } from "@/lib/services";
 
 export class FakeStudioService implements StudioService {
@@ -88,16 +98,20 @@ export class FakeStudioService implements StudioService {
     }
     cancelRun() { return this.call("cancelRun", []); }
     debugResume(action: string) { return this.call("debugResume", [action]); }
-    setPauseIterations(enabled: boolean) {
-        return this.call("setPauseIterations", [enabled]);
-    }
-    setBreakpoints(steps: string[]) { return this.call("setBreakpoints", [steps]); }
-    setRecipeBreakpoints(name: string, steps: string[]) {
-        return this.call("setRecipeBreakpoints", [name, steps]);
+    setBreakpoints(lines: number[]) { return this.call("setBreakpoints", [lines]); }
+    setRecipeBreakpoints(name: string, lines: number[]) {
+        return this.call("setRecipeBreakpoints", [name, lines]);
     }
     loadRecipeBreakpoints(name: string) {
         return this.call("loadRecipeBreakpoints", [name]);
     }
+    evalWatchExpression(exprSource: string) {
+        return this.call("evalWatchExpression", [exprSource]);
+    }
+    loadFullStepBody(runId: string, stepName: string) {
+        return this.call("loadFullStepBody", [runId, stepName]);
+    }
+    openResponseWindow() { return this.call("openResponseWindow", []); }
 
     // Daemon
     daemonStatus() { return this.call("daemonStatus", []); }
@@ -167,9 +181,13 @@ export class FakeStudioService implements StudioService {
     }
 
     // Events — return immediate-no-op unsubscribes; the test surfaces
-    // here don't exercise the listener side.
+    // here don't exercise the listener side. Tests that want to fire
+    // events at handlers patch the handler property out instead.
     onRunEvent(): Unsubscribe { return () => {}; }
     onDebugPaused(): Unsubscribe { return () => {}; }
+    onRunBegin(): Unsubscribe { return () => {}; }
+    onStepResponse(): Unsubscribe { return () => {}; }
+    onDebugResumed(): Unsubscribe { return () => {}; }
     onDaemonRunCompleted(): Unsubscribe { return () => {}; }
     onWorkspaceOpened(): Unsubscribe { return () => {}; }
     onWorkspaceClosed(): Unsubscribe { return () => {}; }
@@ -180,4 +198,24 @@ export class FakeStudioService implements StudioService {
     async confirm(): Promise<boolean> { return false; }
     async pickDirectory(): Promise<string | null> { return null; }
     async revealInFileManager(): Promise<void> { return undefined; }
+}
+
+/// Mount components inside the same provider tree Studio uses at
+/// runtime (service context, react-query, tooltip). Returns the
+/// react-testing-library render result; tests assert against the
+/// returned DOM. The QueryClient is exposed on `result.qc` so tests
+/// that need to seed query-cache entries (e.g. recipe statuses) can
+/// reach into it without owning the provider boilerplate themselves.
+export function wrap(service: StudioService, children: React.ReactNode) {
+    const qc = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const result = render(
+        <StudioServiceProvider service={service}>
+            <QueryClientProvider client={qc}>
+                <TooltipProvider delayDuration={200}>{children}</TooltipProvider>
+            </QueryClientProvider>
+        </StudioServiceProvider>,
+    );
+    return Object.assign(result, { qc });
 }

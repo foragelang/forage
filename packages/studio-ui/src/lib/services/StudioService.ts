@@ -38,10 +38,27 @@ import type { SyncOutcomeWire } from "../../bindings/SyncOutcomeWire";
 import type { ValidationOutcome } from "../../bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "../../bindings/WorkspaceInfo";
 
-// Resume action sent back to the engine when paused at a step or inside
-// a for-loop iteration. Wire shape matches the Rust-side `ResumeAction`
-// enum (rendered as snake_case).
-export type DebugAction = "continue" | "step_over" | "stop";
+// Resume action sent back to the engine on a debug pause. Wire shape
+// matches the Rust-side `ResumeAction` enum (rendered as snake_case).
+// `step_in` is engine-equivalent to `step_over` today but joins the
+// wire shape for a future body-suppression pass.
+export type DebugAction = "continue" | "step_over" | "step_in" | "stop";
+
+// Wire payloads for the new debugger events that ride alongside
+// `PausePayload`. The shapes mirror the Rust-side
+// `StepResponseEvent` / `RunBeginEvent` / `RunDebugResumedEvent`.
+export type StepResponseEvent = {
+    run_id: string;
+    step: string;
+    response: import("../../bindings/StepResponse").StepResponse;
+};
+
+export type RunBeginEvent = { run_id: string };
+
+export type RunDebugResumedEvent = {
+    run_id: string;
+    action: "continue" | "step_over" | "step_in" | "stop";
+};
 
 // OAuth device-flow startup info; Studio uses this to bootstrap the
 // publish/login flow against hub-api.
@@ -313,10 +330,31 @@ export interface StudioService {
     runRecipe(name: string, flags?: RunRecipeFlags): Promise<RunOutcome>;
     cancelRun(): Promise<void>;
     debugResume(action: DebugAction): Promise<void>;
-    setPauseIterations(enabled: boolean): Promise<void>;
-    setBreakpoints(steps: string[]): Promise<void>;
-    setRecipeBreakpoints(name: string, steps: string[]): Promise<void>;
-    loadRecipeBreakpoints(name: string): Promise<string[]>;
+    /// Replace the in-memory engine-side breakpoint set. Lines are
+    /// 0-based source lines of pause-able statements (step / emit /
+    /// for). Lines not on a pause-able statement are harmless — the
+    /// engine simply never reaches them.
+    setBreakpoints(lines: number[]): Promise<void>;
+    /// Persist + push a recipe's breakpoints. Empty array clears the
+    /// recipe's sidecar entry.
+    setRecipeBreakpoints(name: string, lines: number[]): Promise<void>;
+    /// Load the persisted breakpoint set for one recipe. Empty array
+    /// when the recipe has no entry yet.
+    loadRecipeBreakpoints(name: string): Promise<number[]>;
+    /// Evaluate one Forage extraction against the paused scope.
+    /// Throws when no run is paused, on parse failure, or on
+    /// evaluator error — the watch panel and REPL render the
+    /// rejection string inline.
+    evalWatchExpression(exprSource: string): Promise<unknown>;
+    /// Read the uncapped step response body from disk. The engine
+    /// writes per-step `.raw` files under
+    /// `<workspace>/.forage/runs/<run_id>/responses/`; the studio's
+    /// "Load full" button on a truncated response calls this against
+    /// the captured run id + step name.
+    loadFullStepBody(runId: string, stepName: string): Promise<string>;
+    /// Open (or focus) the pop-out Response viewer. Tauri-only; hub
+    /// IDE no-ops.
+    openResponseWindow(): Promise<void>;
 
     // ── Notebook ────────────────────────────────────────────────────
     /// Run a composition chain of `stages` through the daemon. The
@@ -474,6 +512,19 @@ export interface StudioService {
     // ── Event subscriptions ─────────────────────────────────────────
     onRunEvent(handler: (event: RunEvent) => void): Unsubscribe;
     onDebugPaused(handler: (payload: PausePayload) => void): Unsubscribe;
+    /// Fired once at the top of every `run_recipe` invocation. The
+    /// payload carries the run id every subsequent `RUN_STEP_RESPONSE`
+    /// / `RUN_DEBUG_RESUMED` event ties back to.
+    onRunBegin(handler: (event: RunBeginEvent) => void): Unsubscribe;
+    /// Fired for every captured step response (live or replay,
+    /// success or 4xx/5xx). The Inspector "Responses" pane and the
+    /// pop-out window accumulate these.
+    onStepResponse(handler: (event: StepResponseEvent) => void): Unsubscribe;
+    /// Fired when `debugResume` wakes the engine. Subscribers can
+    /// clear pause-time UI state without waiting for the eventual run
+    /// success / failure event — used by the pop-out window which
+    /// otherwise has no signal that a continue happened.
+    onDebugResumed(handler: (event: RunDebugResumedEvent) => void): Unsubscribe;
     onDaemonRunCompleted(handler: (run: ScheduledRun) => void): Unsubscribe;
     onWorkspaceOpened(handler: () => void): Unsubscribe;
     onWorkspaceClosed(handler: () => void): Unsubscribe;

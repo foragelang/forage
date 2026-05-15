@@ -147,14 +147,15 @@ pub fn read_captures(root: &Path, recipe_name: &str) -> Vec<forage_replay::Captu
 }
 
 /// Per-recipe breakpoint persistence. One JSON sidecar at
-/// `<workspace_root>/breakpoints.json` keyed by recipe header name. The
-/// file is missing until the user sets a first breakpoint, so the
-/// empty-map case is the steady state for fresh workspaces.
+/// `<workspace_root>/breakpoints.json` keyed by recipe header name,
+/// valued by an array of 0-based source line numbers. The file is
+/// missing until the user sets a first breakpoint, so the empty-map
+/// case is the steady state for fresh workspaces.
 pub fn breakpoints_path(root: &Path) -> PathBuf {
     root.join("breakpoints.json")
 }
 
-pub fn read_breakpoints(root: &Path) -> io::Result<std::collections::HashMap<String, Vec<String>>> {
+pub fn read_breakpoints(root: &Path) -> io::Result<std::collections::HashMap<String, Vec<u32>>> {
     let path = breakpoints_path(root);
     let raw = match fs::read_to_string(&path) {
         Ok(s) => s,
@@ -171,7 +172,7 @@ pub fn read_breakpoints(root: &Path) -> io::Result<std::collections::HashMap<Str
 
 pub fn write_breakpoints(
     root: &Path,
-    map: &std::collections::HashMap<String, Vec<String>>,
+    map: &std::collections::HashMap<String, Vec<u32>>,
 ) -> io::Result<()> {
     let path = breakpoints_path(root);
     if let Some(parent) = path.parent() {

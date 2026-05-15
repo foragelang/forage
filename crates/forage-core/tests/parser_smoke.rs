@@ -837,3 +837,113 @@ fn compose_alongside_scraping_statements_is_a_parse_error() {
     "#;
     assert!(parse(src).is_err());
 }
+
+#[test]
+fn step_with_parse_json_override() {
+    let src = r#"
+        recipe "override"
+        engine http
+        type Item { id: String }
+        step list {
+            method "GET"
+            url    "https://example.com/items"
+            parse  : json
+        }
+    "#;
+    let r = parse(src).expect("parse");
+    let steps = r.body.statements();
+    let Statement::Step(step) = &steps[0] else {
+        panic!("expected first statement to be a step");
+    };
+    assert_eq!(step.parse, Some(ParseFormat::Json));
+}
+
+#[test]
+fn step_parse_clause_accepts_each_format() {
+    for (kw, expected) in [
+        ("json", ParseFormat::Json),
+        ("html", ParseFormat::Html),
+        ("xml", ParseFormat::Xml),
+        ("text", ParseFormat::Text),
+    ] {
+        let src = format!(
+            r#"
+                recipe "f"
+                engine http
+                step list {{
+                    method "GET"
+                    url    "https://example.com"
+                    parse  : {kw}
+                }}
+            "#,
+        );
+        let r = parse(&src).expect("parse");
+        let steps = r.body.statements();
+        let Statement::Step(step) = &steps[0] else {
+            panic!("expected first statement to be a step");
+        };
+        assert_eq!(step.parse, Some(expected), "format {kw}");
+    }
+}
+
+#[test]
+fn duplicate_parse_clause_is_a_parse_error() {
+    // One `parse` per step — the validator-equivalent check fires at
+    // parse time so the author sees the offending spot.
+    let src = r#"
+        recipe "dup"
+        engine http
+        step list {
+            method "GET"
+            url    "https://example.com"
+            parse  : json
+            parse  : html
+        }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn parse_clause_with_unknown_format_is_a_parse_error() {
+    let src = r#"
+        recipe "bad-fmt"
+        engine http
+        step list {
+            method "GET"
+            url    "https://example.com"
+            parse  : yaml
+        }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn parse_absent_when_clause_omitted() {
+    // Without a `parse` clause the AST carries `None` so the engine
+    // can fall through to content-type detection.
+    let src = r#"
+recipe "p"
+engine http
+type T { id: String }
+step list {
+    method "GET"
+    url    "https://example.com/x"
+}
+emit T { id ← "x" }
+"#;
+    let r = parse(src).expect("parse");
+    let Statement::Step(step) = &r.body.statements()[0] else {
+        panic!("expected step")
+    };
+    assert_eq!(step.parse, None);
+}
+
+#[test]
+fn parse_threads_source_onto_forage_file() {
+    // `parse(source)` attaches the raw source to the AST so the
+    // engine + debugger can resolve byte spans to lines without
+    // re-passing the source to every call site.
+    let src = "recipe \"src\"\nengine http\n";
+    let r = parse(src).expect("parse");
+    assert_eq!(r.source.as_ref(), src);
+}

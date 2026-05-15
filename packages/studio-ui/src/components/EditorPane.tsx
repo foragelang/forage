@@ -14,7 +14,7 @@ import { AlertTriangle, CheckCircle2, CircleAlert, CircleX } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Diagnostic } from "@/bindings/Diagnostic";
-import type { StepLocation } from "@/bindings/StepLocation";
+import type { PausePoint } from "@/bindings/PausePoint";
 import { useStudioService } from "@/lib/services";
 import { onRevealLine } from "@/lib/editorCommands";
 import { FORAGE_LANG_ID, registerForageLanguage } from "@/lib/monaco-forage";
@@ -22,6 +22,12 @@ import { useRecipeNameOf } from "@/hooks/useRecipes";
 import { useStudio, type StepStat } from "@/lib/store";
 
 type IEditor = MonacoNs.editor.IStandaloneCodeEditor;
+
+/// localStorage key for the editor-wide Vim mode toggle. The toggle
+/// itself is global (not per-recipe) because the user's editing
+/// preference doesn't change between recipes; sticking it to a recipe
+/// would force them to re-toggle on every file switch.
+const VIM_MODE_STORAGE_KEY = "forage:vim-mode";
 
 /// Validate the source on every change, debounced. Result lands in the
 /// Studio store via `setValidation` so the editor's marker effect picks
@@ -51,15 +57,15 @@ function useLiveValidation(source: string, recipeName: string | null, delayMs = 
 /// backend returns an empty outline when the source doesn't parse,
 /// which is fine — the gutter just shows nothing until the syntax is
 /// valid.
-function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
+function useRecipeOutline(source: string, delayMs = 150): PausePoint[] {
     const service = useStudioService();
-    const [steps, setSteps] = useState<StepLocation[]>([]);
+    const [points, setPoints] = useState<PausePoint[]>([]);
     useEffect(() => {
         let cancelled = false;
         const id = window.setTimeout(() => {
             service.recipeOutline(source)
                 .then((o) => {
-                    if (!cancelled) setSteps(o.steps);
+                    if (!cancelled) setPoints(o.pause_points);
                 })
                 .catch((e) => console.warn("recipe_outline failed", e));
         }, delayMs);
@@ -68,7 +74,15 @@ function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
             window.clearTimeout(id);
         };
     }, [source, delayMs, service]);
-    return steps;
+    return points;
+}
+
+/// Human-readable label for a pause point, used in gutter tooltips
+/// and the inline step-stats pill.
+function pauseLabel(p: PausePoint): string {
+    if (p.kind === "step") return `step \`${p.name}\``;
+    if (p.kind === "emit") return `emit \`${p.type_name}\``;
+    return `for \`$${p.variable}\``;
 }
 
 export function EditorPane() {
@@ -84,27 +98,29 @@ export function EditorPane() {
     const monacoRef = useRef<Monaco | null>(null);
     const editorRef = useRef<IEditor | null>(null);
     const decorationsRef = useRef<string[]>([]);
+    // Bumped from onMount once the editor instance is in place. The
+    // effects that key on the editor (gutter clicks, decorations,
+    // step-stats widgets, Vim mode) include this in their dep array
+    // so they re-fire when the ref lands — without it, the first
+    // effect pass sees a null `editorRef.current` and bails out, then
+    // never re-runs.
+    const [editorReady, setEditorReady] = useState(0);
     const [cursor, setCursor] = useState<{ line: number; column: number } | null>(
         null,
     );
+    const [hoverLine, setHoverLine] = useState<number | null>(null);
 
     useLiveValidation(source, recipeName);
-    const stepLocations = useRecipeOutline(source);
+    const pausePoints = useRecipeOutline(source);
 
-    // Map for the gutter click handler: clicked line → step name (if any).
-    // Monaco line numbers are 1-based; the outline lines are 0-based.
-    const stepByLine = useMemo(() => {
-        const m = new Map<number, string>();
-        for (const s of stepLocations) m.set(s.start_line + 1, s.name);
+    // Map for the gutter click handler: clicked 1-based Monaco line →
+    // pause point on that line. Pause points carry 0-based start lines,
+    // so we shift here once at memo time.
+    const pointByLine = useMemo(() => {
+        const m = new Map<number, PausePoint>();
+        for (const p of pausePoints) m.set(p.start_line + 1, p);
         return m;
-    }, [stepLocations]);
-
-    // Step name → 1-based Monaco line (for decorations + reveal).
-    const stepNameToLine = useMemo(() => {
-        const m = new Map<string, number>();
-        for (const s of stepLocations) m.set(s.name, s.start_line + 1);
-        return m;
-    }, [stepLocations]);
+    }, [pausePoints]);
 
     // Push gutter decorations + paused-line highlight whenever any input
     // changes. deltaDecorations replaces the previous set in one shot so
@@ -114,52 +130,69 @@ export function EditorPane() {
         const monaco = monacoRef.current;
         if (!ed || !monaco) return;
         const decos: MonacoNs.editor.IModelDeltaDecoration[] = [];
-        for (const [name, line] of stepNameToLine) {
-            if (breakpoints.has(name)) {
+        for (const [line, point] of pointByLine) {
+            if (breakpoints.has(line - 1)) {
                 decos.push({
                     range: new monaco.Range(line, 1, line, 1),
                     options: {
                         isWholeLine: false,
                         glyphMarginClassName: "forage-bp-glyph",
-                        glyphMarginHoverMessage: { value: `Breakpoint on \`${name}\`` },
+                        glyphMarginHoverMessage: {
+                            value: `Breakpoint on ${pauseLabel(point)}`,
+                        },
+                    },
+                });
+            } else if (hoverLine === line) {
+                // Hover-preview affordance: when the mouse is over a
+                // pause-able line with no BP set, render a faded
+                // version of the BP glyph so the user knows clicking
+                // here would set one. The `forage-bp-hover` class
+                // pairs with the same glyph at reduced opacity.
+                decos.push({
+                    range: new monaco.Range(line, 1, line, 1),
+                    options: {
+                        isWholeLine: false,
+                        glyphMarginClassName: "forage-bp-hover",
+                        glyphMarginHoverMessage: {
+                            value: `Click to set breakpoint on ${pauseLabel(point)}`,
+                        },
                     },
                 });
             }
         }
-        if (paused?.kind === "step") {
-            const line = stepNameToLine.get(paused.step);
-            if (line) {
-                decos.push({
-                    range: new monaco.Range(line, 1, line, 1),
-                    options: {
-                        isWholeLine: true,
-                        className: "forage-paused-line",
-                        glyphMarginClassName: "forage-paused-glyph",
-                    },
-                });
-            }
+        // Paused-line decoration: every payload variant carries
+        // `start_line`, so the highlight works for step / emit / for
+        // pauses with one branch.
+        if (paused) {
+            const line = paused.start_line + 1;
+            decos.push({
+                range: new monaco.Range(line, 1, line, 1),
+                options: {
+                    isWholeLine: true,
+                    className: "forage-paused-line",
+                    glyphMarginClassName: "forage-paused-glyph",
+                },
+            });
         }
         decorationsRef.current = ed.deltaDecorations(
             decorationsRef.current,
             decos,
         );
-    }, [stepNameToLine, breakpoints, paused]);
+    }, [pointByLine, breakpoints, paused, hoverLine, editorReady]);
 
     // Reveal the paused line so the user doesn't have to scroll to find
-    // where the engine stopped. Only fire on the rising edge of `paused`
-    // — otherwise we'd fight the user every time decorations re-render.
-    const pausedStep = paused?.kind === "step" ? paused.step : null;
+    // where the engine stopped. Only fire on the rising edge of the
+    // pause's line number — otherwise we'd fight the user every time
+    // decorations re-render.
+    const pausedLine = paused ? paused.start_line + 1 : null;
     useEffect(() => {
         const ed = editorRef.current;
-        if (!ed || !pausedStep) return;
-        const line = stepNameToLine.get(pausedStep);
-        if (line) {
-            ed.revealLineInCenterIfOutsideViewport(line);
-        }
-        // Intentionally only depends on pausedStep — re-running on source
-        // changes would interfere with editing while paused.
+        if (!ed || pausedLine === null) return;
+        ed.revealLineInCenterIfOutsideViewport(pausedLine);
+        // Intentionally only depends on pausedLine — re-running on
+        // source changes would interfere with editing while paused.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pausedStep]);
+    }, [pausedLine]);
 
     // External reveal-line commands (e.g. clicking a diagnostic's
     // `recipe:L` badge in the inspector). The handler is registered on
@@ -176,11 +209,101 @@ export function EditorPane() {
         return off;
     }, []);
 
+    // Gutter click handler — registered in an effect keyed on the
+    // point-by-line map so the captured map stays current with
+    // outline updates. A handler installed in onMount would close
+    // over the first render's map and stay stale across recipe
+    // edits; rebinding on every map identity keeps the click site
+    // pointed at the freshest pause points.
+    useEffect(() => {
+        const ed = editorRef.current;
+        const monaco = monacoRef.current;
+        if (!ed || !monaco) return;
+        const T = monaco.editor.MouseTargetType;
+        const downSub = ed.onMouseDown((e) => {
+            if (e.target.type !== T.GUTTER_GLYPH_MARGIN) return;
+            const line = e.target.position?.lineNumber;
+            if (!line) return;
+            if (pointByLine.has(line)) {
+                // The breakpoint set keys on 0-based line; the
+                // toggle action takes that shape directly.
+                toggleBreakpoint(line - 1);
+            }
+        });
+        const moveSub = ed.onMouseMove((e) => {
+            if (e.target.type !== T.GUTTER_GLYPH_MARGIN) {
+                setHoverLine(null);
+                return;
+            }
+            const line = e.target.position?.lineNumber ?? null;
+            setHoverLine(line && pointByLine.has(line) ? line : null);
+        });
+        const leaveSub = ed.onMouseLeave(() => setHoverLine(null));
+        return () => {
+            downSub.dispose();
+            moveSub.dispose();
+            leaveSub.dispose();
+        };
+    }, [pointByLine, toggleBreakpoint, editorReady]);
+
+    // Vim mode (lazy-loaded monaco-vim). Toggle persists in
+    // localStorage; the actual mode instance lives in a ref so the
+    // effect can dispose it on toggle-off or unmount. Status node is
+    // a DOM element the strip below renders; the lazy import wires
+    // its mode label into that node.
+    const [vimEnabled, setVimEnabled] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem(VIM_MODE_STORAGE_KEY) === "1";
+        } catch {
+            return false;
+        }
+    });
+    const vimStatusNodeRef = useRef<HTMLSpanElement | null>(null);
+    const vimInstanceRef = useRef<{ dispose: () => void } | null>(null);
+    useEffect(() => {
+        const ed = editorRef.current;
+        if (!ed) return;
+        const statusNode = vimStatusNodeRef.current;
+        if (!vimEnabled) {
+            vimInstanceRef.current?.dispose();
+            vimInstanceRef.current = null;
+            return;
+        }
+        let disposed = false;
+        // Lazy import keeps the monaco-vim chunk out of the initial
+        // bundle for users who never toggle the mode on.
+        import("monaco-vim")
+            .then((mod) => {
+                if (disposed) return;
+                const init = (mod.initVimMode ?? (mod as unknown as { default: typeof mod.initVimMode }).default) as
+                    typeof mod.initVimMode;
+                vimInstanceRef.current = init(ed, statusNode ?? undefined);
+            })
+            .catch((e) => console.warn("monaco-vim import failed", e));
+        return () => {
+            disposed = true;
+            vimInstanceRef.current?.dispose();
+            vimInstanceRef.current = null;
+        };
+    }, [vimEnabled, editorReady]);
+    const toggleVim = () => {
+        setVimEnabled((prev) => {
+            const next = !prev;
+            try {
+                localStorage.setItem(VIM_MODE_STORAGE_KEY, next ? "1" : "0");
+            } catch {
+                // Ignore storage failures — the in-memory flag drives
+                // the editor regardless.
+            }
+            return next;
+        });
+    };
+
     // Mount inline step-stats content widgets. Each widget is one DOM
     // node anchored to the end of the step's first line. We rebuild the
-    // full set whenever the step locations or the per-step stats
-    // change — Monaco diffs internally via the widget id, so existing
-    // widgets stay in place across re-renders.
+    // full set whenever the pause points or the per-step stats change
+    // — Monaco diffs internally via the widget id, so existing widgets
+    // stay in place across re-renders.
     useEffect(() => {
         const ed = editorRef.current;
         if (!ed) return;
@@ -188,17 +311,18 @@ export function EditorPane() {
             return undefined;
         }
         const widgets: MonacoNs.editor.IContentWidget[] = [];
-        for (const loc of stepLocations) {
-            const labels = formatStepStat(stepStats[loc.name]);
+        for (const p of pausePoints) {
+            if (p.kind !== "step") continue;
+            const labels = formatStepStat(stepStats[p.name]);
             if (!labels) continue;
             const dom = document.createElement("span");
             dom.className = `step-stat step-stat-${labels.tone}`;
             dom.textContent = labels.text;
             const widget: MonacoNs.editor.IContentWidget = {
-                getId: () => `forage:step-stat:${loc.name}`,
+                getId: () => `forage:step-stat:${p.name}`,
                 getDomNode: () => dom,
                 getPosition: () => ({
-                    position: { lineNumber: loc.start_line + 1, column: Number.MAX_SAFE_INTEGER },
+                    position: { lineNumber: p.start_line + 1, column: Number.MAX_SAFE_INTEGER },
                     preference: [1 /* EXACT */],
                 }),
             };
@@ -208,7 +332,7 @@ export function EditorPane() {
         return () => {
             for (const w of widgets) ed.removeContentWidget(w);
         };
-    }, [stepLocations, stepStats]);
+    }, [pausePoints, stepStats, editorReady]);
 
     useEffect(() => {
         if (!monacoRef.current) return;
@@ -248,14 +372,7 @@ export function EditorPane() {
                     onMount={(editor, monaco) => {
                         editorRef.current = editor;
                         monacoRef.current = monaco;
-                        editor.onMouseDown((e) => {
-                            const T = monaco.editor.MouseTargetType;
-                            if (e.target.type !== T.GUTTER_GLYPH_MARGIN) return;
-                            const line = e.target.position?.lineNumber;
-                            if (!line) return;
-                            const name = stepByLine.get(line);
-                            if (name) toggleBreakpoint(name);
-                        });
+                        setEditorReady((n) => n + 1);
                         // Track caret for the status strip below.
                         const initial = editor.getPosition();
                         if (initial) {
@@ -281,7 +398,12 @@ export function EditorPane() {
                 />
             </div>
             {validation && <ValidationBar diagnostics={validation.diagnostics} />}
-            <StatusStrip cursor={cursor} />
+            <StatusStrip
+                cursor={cursor}
+                vimEnabled={vimEnabled}
+                onToggleVim={toggleVim}
+                vimStatusNodeRef={vimStatusNodeRef}
+            />
         </div>
     );
 }
@@ -359,8 +481,14 @@ function ValidationBar({ diagnostics }: { diagnostics: Diagnostic[] }) {
 /// would force a parallel signal.
 function StatusStrip({
     cursor,
+    vimEnabled,
+    onToggleVim,
+    vimStatusNodeRef,
 }: {
     cursor: { line: number; column: number } | null;
+    vimEnabled: boolean;
+    onToggleVim: () => void;
+    vimStatusNodeRef: React.RefObject<HTMLSpanElement | null>;
 }) {
     const validation = useStudio((s) => s.validation);
     const errCount =
@@ -394,6 +522,20 @@ function StatusStrip({
                 </span>
             </span>
             <span className="ml-auto">browser engine · wry</span>
+            <span className="opacity-50">·</span>
+            <button
+                type="button"
+                onClick={onToggleVim}
+                aria-pressed={vimEnabled}
+                className={`px-1 font-mono select-none ${vimEnabled ? "text-amber-500" : "text-muted-foreground hover:text-foreground"}`}
+                title={vimEnabled ? "Disable Vim mode" : "Enable Vim mode"}
+            >
+                vim {vimEnabled ? "on" : "off"}
+            </button>
+            <span
+                ref={vimStatusNodeRef}
+                className="font-mono text-[10px] text-muted-foreground"
+            />
             <span className="opacity-50">·</span>
             <span className="font-mono tabular-nums">
                 {cursor

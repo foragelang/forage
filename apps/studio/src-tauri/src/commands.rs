@@ -4,35 +4,86 @@ use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
 use ts_rs::TS;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
-use forage_core::{EvalValue, LineMap, RunOptions, Snapshot, parse, validate};
+use forage_core::eval::default_registry;
+use forage_core::parse::parse_extraction;
+use forage_core::{
+    EvalValue, Evaluator, LineMap, RunOptions, Scope, Snapshot, parse, validate,
+};
 use forage_http::{
-    Debugger, Engine, IterationPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
-    RunEvent, StepPause,
+    Debugger, EmitPause, Engine, ForLoopPause, LiveTransport, ProgressSink, ReplayTransport,
+    ResumeAction, RunEvent, StepPause, StepResponse,
 };
 use forage_hub::{AuthStore, AuthTokens};
+
+use crate::state::StepKind;
 
 /// Tauri event name for streaming engine progress to the frontend.
 pub const RUN_EVENT: &str = "forage:run-event";
 /// Tauri event name for the engine telling the frontend it has paused
-/// somewhere — at a `step` boundary or inside a `for`-loop iteration.
-/// Payload is `PausePayload` (JSON) with a `kind` discriminator.
+/// somewhere — at a `step` boundary, an `emit`, or on `for`-loop entry.
+/// Payload is `PausePayload` (JSON) with a `kind` discriminator. The
+/// studio's debugger short-circuits `before_iteration` to Continue so
+/// the per-iteration pause site doesn't surface here.
 pub const DEBUG_PAUSED_EVENT: &str = "forage:debug-paused";
+/// Fired once at the top of every `run_recipe` invocation, before the
+/// engine starts. Payload `{ run_id }`. The frontend uses the run_id
+/// to correlate subsequent step-response events to one run and to
+/// reset any pop-out window's local response cache.
+pub const RUN_BEGIN_EVENT: &str = "forage:run-begin";
+/// Fired after every step's response is captured (whether the run
+/// proceeds or aborts on a 4xx/5xx). Payload `StepResponseEvent`.
+pub const RUN_STEP_RESPONSE_EVENT: &str = "forage:run-step-response";
+/// Fired when `debug_resume` wakes the engine. Subscribers can clear
+/// pop-out-window pause state without waiting for the eventual run
+/// success / failure event. Payload `{ run_id, action }`.
+pub const RUN_DEBUG_RESUMED_EVENT: &str = "forage:run-debug-resumed";
 
-/// What the engine paused on. Wraps the two `forage-http` pause payloads
-/// in a tagged union so the frontend can render either shape with one
-/// event listener.
+/// What the engine paused on. Wraps the three `forage-http` pause
+/// payloads the studio surfaces in a tagged union so the frontend can
+/// render any shape with one event listener. The studio doesn't
+/// surface `iteration` pauses (every per-iteration breakpoint is
+/// expressed as a line-keyed BP on a body statement); the engine still
+/// fires `before_iteration`, but the studio's debugger short-circuits
+/// it to Continue.
 #[derive(Serialize, TS)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PausePayload {
     Step(StepPause),
-    Iteration(IterationPause),
+    Emit(EmitPause),
+    ForLoop(ForLoopPause),
+}
+
+/// Wire shape for `RUN_STEP_RESPONSE_EVENT`. Carries the captured
+/// response alongside its step name + the run id minted at
+/// `run_recipe` start so the frontend (and any pop-out window) can
+/// associate the event with the correct run.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct StepResponseEvent {
+    pub run_id: String,
+    pub step: String,
+    pub response: StepResponse,
+}
+
+/// Wire shape for `RUN_BEGIN_EVENT` / `RUN_DEBUG_RESUMED_EVENT`.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct RunBeginEvent {
+    pub run_id: String,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct RunDebugResumedEvent {
+    pub run_id: String,
+    pub action: ResumeAction,
 }
 
 use crate::browser_driver::{LiveRunOptions, run_live as run_browser_live};
@@ -89,25 +140,50 @@ pub struct ValidationOutcome {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Structural outline of a recipe — currently just step locations,
-/// enough for Studio to anchor breakpoint glyphs and the "reveal paused
-/// step" jump without re-implementing a parser in TypeScript. Extend
-/// (types, emits, for-loops) as the UI needs them.
+/// Structural outline of a recipe — every pause-able statement
+/// (`step` / `emit` / `for`) with its source location. Studio anchors
+/// gutter affordances and the "reveal paused statement" jump on this.
+/// The validator-clean `parse` returns either an `Empty` body or a
+/// `Scraping` one; composition bodies have no pause points, so the
+/// outline for those is the empty list.
 #[derive(Serialize, Default, TS)]
 #[ts(export)]
 pub struct RecipeOutline {
-    pub steps: Vec<StepLocation>,
+    pub pause_points: Vec<PausePoint>,
 }
 
+/// One pause-able statement in source order. The variant tells the UI
+/// which gutter glyph to draw (step / emit / for) and the inner fields
+/// carry the identifier the gutter tooltip shows.
 #[derive(Serialize, TS)]
 #[ts(export)]
-pub struct StepLocation {
-    pub name: String,
-    /// 0-based line of the step declaration's start.
-    pub start_line: u32,
-    pub start_col: u32,
-    pub end_line: u32,
-    pub end_col: u32,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PausePoint {
+    Step {
+        /// Step identifier (`step <name> { … }`).
+        name: String,
+        /// 0-based line/col of the `step` keyword's span start.
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
+    Emit {
+        /// Record type being emitted (`emit <TypeName> { … }`).
+        type_name: String,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
+    For {
+        /// Loop variable name from `for $<variable> in …`.
+        variable: String,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    },
 }
 
 /// One validation issue with a precise source location. Maps onto
@@ -233,8 +309,21 @@ pub struct RunOutcome {
 /// even though the engine has completed. The drainer task aggregates
 /// events and emits them as `Vec<RunEvent>` every 50ms or 256 events,
 /// keeping the channel responsive and the invoke promise unblocked.
+///
+/// The sink additionally bridges the engine's `step_response_full_body`
+/// hook: every step's uncapped response body lands in
+/// `<workspace>/.forage/runs/<run_id>/responses/<step>.raw` so the
+/// "load full" UI affordance can read it back when the user clicks it
+/// against a 1 MiB truncated response. The wire-side `body_raw` stays
+/// truncated; only the disk artifact carries the full bytes.
 struct EmitterSink {
     tx: tokio::sync::mpsc::UnboundedSender<RunEvent>,
+    app: AppHandle,
+    run_id: String,
+    /// Workspace root captured at sink construction. The full-body
+    /// path build resolves against this so a workspace switch
+    /// mid-run can't redirect bytes onto a freshly opened workspace.
+    workspace_root: std::path::PathBuf,
 }
 
 impl ProgressSink for EmitterSink {
@@ -243,6 +332,77 @@ impl ProgressSink for EmitterSink {
         // continues even if the UI can't hear it anymore.
         let _ = self.tx.send(event);
     }
+
+    fn step_response_captured(&self, step: &str, response: &StepResponse) {
+        // Broadcast the wire-sized capture so the UI's Inspector
+        // "Responses" tab + the pop-out window can render the step's
+        // shape independent of any pause. Direct app.emit rather than
+        // riding the RunEvent channel because the payload is the
+        // already-truncated StepResponse, not the run-event variant
+        // shape.
+        emit_step_response(&self.app, &self.run_id, step, response);
+    }
+
+    fn step_response_full_body(&self, step: &str, body: &[u8]) {
+        // ULIDs are 26 chars of Crockford base32; step names follow
+        // the identifier grammar. Both are validated at the path-build
+        // site so a malformed run_id or step name can't escape the
+        // workspace via path traversal.
+        let path = match crate::run_artifacts::full_body_path(
+            &self.workspace_root,
+            &self.run_id,
+            step,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    run_id = %self.run_id,
+                    step = %step,
+                    error = %e,
+                    "step_response_full_body: rejected path"
+                );
+                return;
+            }
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "step_response_full_body: create dir failed"
+                );
+                return;
+            }
+        }
+        if let Err(e) = std::fs::write(&path, body) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "step_response_full_body: write failed"
+            );
+        }
+    }
+}
+
+/// Convenience hook the engine doesn't know about: emit one
+/// `RUN_STEP_RESPONSE_EVENT` per captured step response. Called by
+/// `run_recipe` after polling `step_responses` for new entries during
+/// the run; surfaces 4xx/5xx captures + every healthy response with
+/// the same payload shape.
+fn emit_step_response(
+    app: &AppHandle,
+    run_id: &str,
+    step: &str,
+    response: &StepResponse,
+) {
+    let _ = app.emit(
+        RUN_STEP_RESPONSE_EVENT,
+        &StepResponseEvent {
+            run_id: run_id.to_string(),
+            step: step.to_string(),
+            response: response.clone(),
+        },
+    );
 }
 
 /// Spawn a drainer task that batches incoming `RunEvent`s and flushes
@@ -306,12 +466,16 @@ fn spawn_event_drainer(
 
 /// Bridges the engine's `Debugger` trait to a Tauri event + a oneshot.
 ///
-/// The engine calls `before_step` for *every* step. We fast-path to
-/// `Continue` unless the step is on a user-set breakpoint or the user just
-/// clicked Step Over from a paused state. When we do pause: install a
-/// fresh sender on the shared `DebugSession`, emit `forage:debug-paused`,
-/// then await the receiver. The `debug_resume` command pulls the sender
-/// back out and wakes us with the chosen action.
+/// Every pause site (`before_step` / `before_emit` / `before_for_loop`)
+/// flows through one `should_pause(start_line)` gate against the
+/// shared line-keyed breakpoint set and the per-session `step_kind`
+/// one-shot. The engine fires `before_iteration` too but the studio
+/// short-circuits it to Continue — every per-iteration pause is
+/// expressed as a line-keyed BP on a body statement.
+///
+/// When we do pause: stash a clone of the live scope on the session
+/// (the watch / REPL commands evaluate against it), install a fresh
+/// resume oneshot, emit `forage:debug-paused`, then await the receiver.
 ///
 /// If the receiver drops (e.g. window closed, run cancelled), we default to
 /// `Stop` so a stranded engine task doesn't hang on an unresumable pause.
@@ -322,43 +486,56 @@ struct StudioDebugger {
 
 #[async_trait]
 impl Debugger for StudioDebugger {
-    async fn before_step(&self, pause: StepPause) -> ResumeAction {
-        let state = self.app.state::<crate::state::StudioState>();
-        // Hot path: read the breakpoint set without locking. ArcSwap
-        // gives a refcounted snapshot in nanoseconds; the comparison
-        // against the step name is the dominant cost.
-        let on_breakpoint = state.breakpoints.load().contains(&pause.step);
-        let step_over = self
-            .session
-            .step_over_pending
-            .swap(false, std::sync::atomic::Ordering::SeqCst);
-        if !on_breakpoint && !step_over {
+    async fn before_step(&self, pause: StepPause, scope: &Scope) -> ResumeAction {
+        if !self.should_pause(pause.start_line) {
             return ResumeAction::Continue;
         }
-        self.wait(PausePayload::Step(pause)).await
+        self.wait(PausePayload::Step(pause), scope).await
     }
 
-    async fn before_iteration(&self, pause: IterationPause) -> ResumeAction {
-        let pause_iterations = self
-            .session
-            .pause_iterations
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let step_over = self
-            .session
-            .step_over_pending
-            .swap(false, std::sync::atomic::Ordering::SeqCst);
-        if !pause_iterations && !step_over {
+    async fn before_emit(&self, pause: EmitPause, scope: &Scope) -> ResumeAction {
+        if !self.should_pause(pause.start_line) {
             return ResumeAction::Continue;
         }
-        self.wait(PausePayload::Iteration(pause)).await
+        self.wait(PausePayload::Emit(pause), scope).await
     }
+
+    async fn before_for_loop(&self, pause: ForLoopPause, scope: &Scope) -> ResumeAction {
+        if !self.should_pause(pause.start_line) {
+            return ResumeAction::Continue;
+        }
+        self.wait(PausePayload::ForLoop(pause), scope).await
+    }
+
+    // Iteration pauses are not surfaced — the line-keyed model expresses
+    // per-iteration breakpoints as BPs on body statements. The default
+    // trait impl (Continue) is exactly what we want; we override
+    // nothing here so the engine's call short-circuits at the trait
+    // boundary without consulting our state.
 }
 
 impl StudioDebugger {
-    /// Park the engine task on a fresh oneshot, emit the pause payload to
-    /// the frontend, and await the user's resume action. Shared by both
-    /// the step and iteration pause sites.
-    async fn wait(&self, payload: PausePayload) -> ResumeAction {
+    /// One line-keyed gate covering every pause site. Reads the
+    /// breakpoint set lock-free (ArcSwap) and consumes the one-shot
+    /// `step_kind` if it was set — both Step Over and Step In force
+    /// the next pause regardless of breakpoint, then revert to
+    /// BP-only behavior.
+    fn should_pause(&self, start_line: u32) -> bool {
+        let state = self.app.state::<crate::state::StudioState>();
+        let on_breakpoint = state.breakpoints.load().contains(&start_line);
+        let pending = self
+            .session
+            .step_kind
+            .swap(StepKind::None as u8, std::sync::atomic::Ordering::SeqCst);
+        let stepping = !matches!(StepKind::from_u8(pending), StepKind::None);
+        on_breakpoint || stepping
+    }
+
+    /// Park the engine task on a fresh oneshot, emit the pause payload
+    /// to the frontend, stash a snapshot of the live scope on the
+    /// session for the watch / REPL evaluators, and await the user's
+    /// resume action. Shared by every surfaced pause site.
+    async fn wait(&self, payload: PausePayload, scope: &Scope) -> ResumeAction {
         let (tx, rx) = tokio::sync::oneshot::channel();
         // The Mutex is the right primitive here — see DebugSession docs:
         // we need atomic take-and-fire on the resume path so two
@@ -368,8 +545,21 @@ impl StudioDebugger {
             .pending
             .lock()
             .expect("debug session pending sender") = Some(tx);
+        *self
+            .session
+            .paused_scope
+            .lock()
+            .expect("debug session paused_scope") = Some(scope.clone());
         let _ = self.app.emit(DEBUG_PAUSED_EVENT, &payload);
-        rx.await.unwrap_or(ResumeAction::Stop)
+        let action = rx.await.unwrap_or(ResumeAction::Stop);
+        // Clear the scope on resume so a stale snapshot can't survive
+        // a continue. The next pause writes a fresh one.
+        *self
+            .session
+            .paused_scope
+            .lock()
+            .expect("debug session paused_scope") = None;
+        action
     }
 }
 
@@ -493,8 +683,30 @@ pub async fn run_recipe(
         Vec::new()
     };
 
+    // Mint a fresh run id at run start. Used by the
+    // `RUN_BEGIN_EVENT` / `RUN_STEP_RESPONSE_EVENT` /
+    // `RUN_DEBUG_RESUMED_EVENT` events so the frontend (and the
+    // optional pop-out Response window) can correlate captures with
+    // the run they came from. Also keyed by `EmitterSink` for the
+    // on-disk full-body stash. ULID is monotonically sortable so
+    // simultaneous runs in different windows wouldn't collide either
+    // — Studio runs one recipe at a time today, but the choice
+    // anticipates the parallel case.
+    let run_id = ulid::Ulid::new().to_string();
+    let _ = app.emit(
+        RUN_BEGIN_EVENT,
+        &RunBeginEvent {
+            run_id: run_id.clone(),
+        },
+    );
+
     let (tx, drainer_handle) = spawn_event_drainer(app.clone());
-    let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink { tx });
+    let sink: Arc<dyn ProgressSink> = Arc::new(EmitterSink {
+        tx,
+        app: app.clone(),
+        run_id: run_id.clone(),
+        workspace_root: ws.root.clone(),
+    });
 
     // Install a cancellation handle so `cancel_run` can interrupt this
     // run. Replaces any previous handle — Studio only runs one recipe at
@@ -511,7 +723,12 @@ pub async fn run_recipe(
         .engine_kind()
         .ok_or_else(|| "recipe source has no recipe header".to_string())?;
     let debugger: Option<Arc<dyn Debugger>> = if engine_kind == EngineKind::Http {
-        let session = Arc::new(crate::state::DebugSession::default());
+        let session = Arc::new(crate::state::DebugSession {
+            pending: std::sync::Mutex::new(None),
+            step_kind: std::sync::atomic::AtomicU8::new(StepKind::None as u8),
+            paused_scope: std::sync::Mutex::new(None),
+            run_id: run_id.clone(),
+        });
         state.debug_session.store(Some(session.clone()));
         Some(Arc::new(StudioDebugger {
             app: app.clone(),
@@ -691,16 +908,20 @@ fn persist_snapshot(
     Ok(())
 }
 
-/// Resume a paused debug step. `action` is "continue", "step_over", or
-/// "stop". No-op when no run is in flight or no pause is pending — the UI
-/// can fire and forget without coordinating against state itself.
+/// Resume a paused debug step. `action` is `"continue"`, `"step_over"`,
+/// `"step_in"`, or `"stop"`. No-op when no run is in flight or no pause
+/// is pending — the UI can fire and forget without coordinating
+/// against state itself.
 ///
-/// "step_over" sets a one-shot flag on the session that forces the *next*
-/// step's `before_step` to pause regardless of whether it's on a
-/// breakpoint. From the engine's perspective both Continue and StepOver
-/// just mean "resume"; the difference lives entirely on the host.
+/// Step Over and Step In set a one-shot `step_kind` flag on the
+/// session that forces the *next* pause-able statement to pause
+/// regardless of whether it's on a breakpoint. The engine currently
+/// treats `StepOver` and `StepIn` as equivalent; the wire-distinct
+/// shape carries through so a future body-suppression pass can
+/// differentiate them without a wire break.
 #[tauri::command]
 pub fn debug_resume(
+    app: AppHandle,
     state: State<'_, crate::state::StudioState>,
     action: String,
 ) -> Result<(), String> {
@@ -708,17 +929,16 @@ pub fn debug_resume(
         return Ok(());
     };
 
-    let resume = match action.as_str() {
-        "continue" => ResumeAction::Continue,
-        "step_over" => {
-            session
-                .step_over_pending
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            ResumeAction::Continue
-        }
-        "stop" => ResumeAction::Stop,
+    let (resume, step_kind) = match action.as_str() {
+        "continue" => (ResumeAction::Continue, StepKind::None),
+        "step_over" => (ResumeAction::StepOver, StepKind::Over),
+        "step_in" => (ResumeAction::StepIn, StepKind::In),
+        "stop" => (ResumeAction::Stop, StepKind::None),
         other => return Err(format!("unknown debug action: {other}")),
     };
+    session
+        .step_kind
+        .store(step_kind as u8, std::sync::atomic::Ordering::SeqCst);
 
     let pending = session
         .pending
@@ -730,11 +950,23 @@ pub fn debug_resume(
         // cancelled). Either way, nothing else to do.
         let _ = tx.send(resume);
     }
+    // Notify any pop-out Response window so its local pause state
+    // clears alongside the main window's. The main window's store
+    // listens to the pause event flow directly; the pop-out has no
+    // other channel to clear pause state on a resume.
+    let _ = app.emit(
+        RUN_DEBUG_RESUMED_EVENT,
+        &RunDebugResumedEvent {
+            run_id: session.run_id.clone(),
+            action: resume,
+        },
+    );
     Ok(())
 }
 
-/// Replace the current in-memory breakpoint set. Step names not present
-/// in the recipe are harmless — the engine simply never reaches them.
+/// Replace the current in-memory breakpoint set. Lines not on any
+/// pause-able statement are harmless — the engine simply never reaches
+/// a pause site at that line.
 ///
 /// Per-recipe persistence is handled by `set_recipe_breakpoints` /
 /// `load_recipe_breakpoints` below. The frontend pushes via *this*
@@ -744,11 +976,11 @@ pub fn debug_resume(
 #[tauri::command]
 pub fn set_breakpoints(
     state: State<'_, crate::state::StudioState>,
-    steps: Vec<String>,
+    lines: Vec<u32>,
 ) -> Result<(), String> {
     state
         .breakpoints
-        .store(Arc::new(steps.into_iter().collect()));
+        .store(Arc::new(lines.into_iter().collect()));
     Ok(())
 }
 
@@ -759,19 +991,19 @@ pub fn set_breakpoints(
 pub fn set_recipe_breakpoints(
     state: State<'_, crate::state::StudioState>,
     name: String,
-    steps: Vec<String>,
+    lines: Vec<u32>,
 ) -> Result<(), String> {
     let ws = require_workspace(&state)?;
     let mut all = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
-    if steps.is_empty() {
+    if lines.is_empty() {
         all.remove(&name);
     } else {
-        all.insert(name, steps.clone());
+        all.insert(name, lines.clone());
     }
     workspace::write_breakpoints(&ws.root, &all).map_err(|e| e.to_string())?;
     state
         .breakpoints
-        .store(Arc::new(steps.into_iter().collect()));
+        .store(Arc::new(lines.into_iter().collect()));
     Ok(())
 }
 
@@ -783,26 +1015,10 @@ pub fn set_recipe_breakpoints(
 pub fn load_recipe_breakpoints(
     state: State<'_, crate::state::StudioState>,
     name: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<u32>, String> {
     let ws = require_workspace(&state)?;
     let mut map = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
     Ok(map.remove(&name).unwrap_or_default())
-}
-
-/// Toggle "pause inside every `for`-loop iteration" for the in-flight
-/// run. No-op when no run is active. Per-run state — resets to false
-/// every time a fresh run starts.
-#[tauri::command]
-pub fn set_pause_iterations(
-    state: State<'_, crate::state::StudioState>,
-    enabled: bool,
-) -> Result<(), String> {
-    if let Some(session) = state.debug_session.load_full() {
-        session
-            .pause_iterations
-            .store(enabled, std::sync::atomic::Ordering::SeqCst);
-    }
-    Ok(())
 }
 
 /// Cancel the currently-running recipe (if any). Idempotent — calling when
@@ -814,6 +1030,91 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
     if let Some(n) = state.run_cancel.load_full() {
         n.notify_one();
     }
+    Ok(())
+}
+
+/// Evaluate one Forage extraction expression against the paused scope.
+/// The watch panel and the REPL both go through this — they parse the
+/// user's input, evaluate against the live scope the studio debugger
+/// stashed on `DebugSession.paused_scope`, and return the result as a
+/// JSON value. Errors as a String the UI surfaces inline (parse
+/// failure, not-paused, evaluator error).
+#[tauri::command]
+pub async fn eval_watch_expression(
+    state: State<'_, crate::state::StudioState>,
+    expr_source: String,
+) -> Result<serde_json::Value, String> {
+    let Some(session) = state.debug_session.load_full() else {
+        return Err("not paused".to_string());
+    };
+    let scope = {
+        let guard = session
+            .paused_scope
+            .lock()
+            .expect("debug session paused_scope");
+        guard.clone()
+    };
+    let Some(scope) = scope else {
+        return Err("not paused".to_string());
+    };
+    let expr = parse_extraction(&expr_source).map_err(|e| format!("parse: {e}"))?;
+    // Watches evaluate against the built-in registry only — user
+    // functions live in a recipe-specific scope we don't have on
+    // hand here. Studio doesn't yet surface watch errors that come
+    // from "missing user fn"; the watch source is a one-shot
+    // expression the user types in the panel, and the failure path
+    // surfaces the engine's error verbatim.
+    let registry = default_registry();
+    let evaluator = Evaluator::new(registry);
+    let value = evaluator
+        .eval_extraction(&expr, &scope)
+        .map_err(|e| format!("eval: {e}"))?;
+    serde_json::to_value(value.into_json()).map_err(|e| format!("encode: {e}"))
+}
+
+/// Read the uncapped response body from disk for one `(run_id, step)`
+/// pair. The engine's `step_response_full_body` hook wrote it; this
+/// command reads it back when the user clicks "Load full" on a
+/// truncated response in the debugger.
+///
+/// Both arguments are validated against their grammar at the
+/// path-build site (`run_artifacts::full_body_path`) so a malformed
+/// value can't escape the workspace.
+#[tauri::command]
+pub fn load_full_step_body(
+    state: State<'_, crate::state::StudioState>,
+    run_id: String,
+    step_name: String,
+) -> Result<String, String> {
+    let ws = require_workspace(&state)?;
+    let path = crate::run_artifacts::full_body_path(&ws.root, &run_id, &step_name)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("read full body: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Open (or focus) the pop-out Response viewer. The window has a
+/// fixed label `response-viewer` so a second call focuses the
+/// existing window rather than spawning a duplicate. The window's
+/// React entry (`response.tsx`) subscribes to the same event flow
+/// as the main window — `RUN_STEP_RESPONSE_EVENT` and
+/// `DEBUG_PAUSED_EVENT` for additive state,
+/// `RUN_DEBUG_RESUMED_EVENT` / `RUN_BEGIN_EVENT` /
+/// `workspace-closed` for subtractive state.
+#[tauri::command]
+pub async fn open_response_window(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("response-viewer") {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "response-viewer",
+        tauri::WebviewUrl::App("response.html".into()),
+    )
+    .title("Response viewer")
+    .inner_size(900.0, 640.0)
+    .build()
+    .map_err(|e| format!("open response window: {e}"))?;
     Ok(())
 }
 
@@ -1047,32 +1348,32 @@ pub fn language_dictionary() -> LanguageDictionary {
 
 /// Parser-driven outline of the *current source buffer* (not the
 /// last-saved file on disk). Used by Studio to anchor breakpoint glyphs
-/// and reveal the paused step without a hand-rolled TS regex. Returns
-/// an empty outline on parse failure — the editor falls back to "no
-/// breakpoints visible until the source parses" rather than guessing
-/// at half-baked syntax.
+/// and reveal the paused statement without a hand-rolled TS regex.
+/// Returns an empty outline on parse failure — the editor falls back to
+/// "no pause points visible until the source parses" rather than
+/// guessing at half-baked syntax.
 #[tauri::command]
 pub fn recipe_outline(source: String) -> RecipeOutline {
     let Ok(recipe) = parse(&source) else {
         return RecipeOutline::default();
     };
     let line_map = LineMap::new(&source);
-    let mut steps = Vec::new();
-    collect_step_locations(recipe.body.statements(), &line_map, &mut steps);
-    RecipeOutline { steps }
+    let mut pause_points = Vec::new();
+    collect_pause_points(recipe.body.statements(), &line_map, &mut pause_points);
+    RecipeOutline { pause_points }
 }
 
-fn collect_step_locations(
+fn collect_pause_points(
     body: &[forage_core::ast::Statement],
     line_map: &LineMap,
-    out: &mut Vec<StepLocation>,
+    out: &mut Vec<PausePoint>,
 ) {
     use forage_core::ast::Statement;
     for s in body {
         match s {
             Statement::Step(step) => {
                 let r = line_map.range(step.span.clone());
-                out.push(StepLocation {
+                out.push(PausePoint::Step {
                     name: step.name.clone(),
                     start_line: r.start.line,
                     start_col: r.start.character,
@@ -1080,10 +1381,32 @@ fn collect_step_locations(
                     end_col: r.end.character,
                 });
             }
-            Statement::ForLoop { body, .. } => {
-                collect_step_locations(body, line_map, out);
+            Statement::Emit(em) => {
+                let r = line_map.range(em.span.clone());
+                out.push(PausePoint::Emit {
+                    type_name: em.type_name.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
             }
-            Statement::Emit(_) => {}
+            Statement::ForLoop {
+                variable,
+                body,
+                span,
+                ..
+            } => {
+                let r = line_map.range(span.clone());
+                out.push(PausePoint::For {
+                    variable: variable.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
+                collect_pause_points(body, line_map, out);
+            }
         }
     }
 }

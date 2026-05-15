@@ -1,31 +1,31 @@
 //! Bottom debugger panel — slides up from below the editor when the
-//! engine is paused. Three columns: Call Stack · Scope · Watch.
+//! engine is paused. Three columns:
 //!
-//! Watch is a placeholder: user-defined watch expressions aren't wired
-//! yet (DESIGN_HANDOFF.md "open questions"). Per-type emit counters
-//! render at the bottom of the Watch column so users still see
-//! "records emitted so far" alongside the placeholder.
+//! - Call Stack: frame switcher into the scope's stack.
+//! - Scope: inputs / secrets / bindings, plus Watches and REPL.
+//! - Response: per-step captured response, Tree / Raw / Headers.
+//!
+//! The Response column owns Maximize (collapses the other two) and
+//! pop-out (opens the same view in a separate Tauri window). The
+//! resume controls live in the panel header and honor the F10 / F11
+//! / F5 / Shift+F5 keyboard shortcuts (wired in `useStudioEffects`).
 
-import { useId, useMemo, useState } from "react";
+import { useState } from "react";
 import {
     ChevronRight,
     Pause,
     Play,
-    Plus,
-    Repeat,
     Square,
     SquareDashed,
     X,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
     Collapsible,
     CollapsibleContent,
     CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,14 @@ import type { DebugScope } from "@/bindings/DebugScope";
 import type { PausePayload } from "@/bindings/PausePayload";
 import { useStudioService, type DebugAction } from "@/lib/services";
 import { useStudio } from "@/lib/store";
+
+import { JsonNode } from "@/components/Debugger/JsonNode";
+import { ReplSection } from "@/components/Debugger/ReplSection";
+import {
+    ResponseColumn,
+    useMaximizeResponse,
+} from "@/components/Debugger/ResponseColumn";
+import { WatchesSection } from "@/components/Debugger/WatchesSection";
 
 /// Bottom panel attached to the editor pane. Renders the engine's
 /// paused scope and the resume controls. Mounted only when
@@ -44,15 +52,15 @@ export function DebuggerPanel() {
     const debugClearPause = useStudio((s) => s.debugClearPause);
     const breakpoints = useStudio((s) => s.breakpoints);
     const clearBreakpoints = useStudio((s) => s.clearBreakpoints);
-    const pauseIterations = useStudio((s) => s.pauseIterations);
-    const setPauseIterations = useStudio((s) => s.setPauseIterations);
-    const loopToggleId = useId();
-    // Frame switcher — Call Stack column writes into this; Scope reads
-    // it. Default to the innermost (last) frame, which is what the
-    // engine paused on.
+    const runId = useStudio((s) => s.runId);
+    const lastResponses = useStudio((s) => s.lastResponses);
+    // Frame switcher — Call Stack column writes into this; Scope
+    // reads it. Default to the innermost (last) frame, which is what
+    // the engine paused on.
     const [activeFrame, setActiveFrame] = useState<number>(
         paused?.scope.bindings.length ? paused.scope.bindings.length - 1 : 0,
     );
+    const { maximized, toggle: toggleMaximize } = useMaximizeResponse();
 
     if (!paused) return null;
 
@@ -65,41 +73,17 @@ export function DebuggerPanel() {
         }
     };
 
+    const responses: { [key in string]?: import("@/bindings/StepResponse").StepResponse }
+        = paused.scope.step_responses && Object.keys(paused.scope.step_responses).length > 0
+            ? paused.scope.step_responses
+            : lastResponses;
+
     return (
         <div className="border-t bg-background flex flex-col min-h-0 max-h-[50vh]">
             <header className="flex items-center gap-2 border-b px-4 py-2 text-xs shrink-0">
                 <Pause className="size-3.5 text-warning" />
                 <PauseLabel paused={paused} />
                 <div className="ml-auto flex items-center gap-2">
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <label
-                                htmlFor={loopToggleId}
-                                className="flex items-center gap-1.5 cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                            >
-                                <Repeat className="size-3.5" />
-                                <input
-                                    id={loopToggleId}
-                                    type="checkbox"
-                                    checked={pauseIterations}
-                                    onChange={(e) =>
-                                        setPauseIterations(e.target.checked)
-                                    }
-                                    className="size-3 accent-primary"
-                                />
-                                <Label
-                                    htmlFor={loopToggleId}
-                                    className="text-xs cursor-pointer"
-                                >
-                                    loop iters
-                                </Label>
-                            </label>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Pause inside every for-loop iteration
-                        </TooltipContent>
-                    </Tooltip>
-                    <Separator orientation="vertical" className="!h-4" />
                     <span className="text-muted-foreground tabular-nums">
                         {breakpoints.size} breakpoint
                         {breakpoints.size === 1 ? "" : "s"}
@@ -138,15 +122,13 @@ export function DebuggerPanel() {
                             <Button
                                 size="icon-xs"
                                 variant="ghost"
-                                onClick={() => resume("step_over")}
+                                onClick={() => resume("step_in")}
                                 aria-label="Step into"
                             >
                                 <ChevronRight />
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>
-                            Step into · F11 (uses step_over until step_in lands)
-                        </TooltipContent>
+                        <TooltipContent>Step into · F11</TooltipContent>
                     </Tooltip>
                     <Separator orientation="vertical" className="!h-4" />
                     <Tooltip>
@@ -171,18 +153,40 @@ export function DebuggerPanel() {
                                 Stop
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Abort the run</TooltipContent>
+                        <TooltipContent>Abort the run · Shift+F5</TooltipContent>
                     </Tooltip>
                 </div>
             </header>
-            <div className="flex-1 min-h-0 grid grid-cols-[200px_minmax(0,1fr)_240px] divide-x">
-                <CallStackColumn
-                    paused={paused}
-                    activeFrame={activeFrame}
-                    onSelectFrame={setActiveFrame}
+            <div
+                className={cn(
+                    "flex-1 min-h-0 grid divide-x",
+                    maximized
+                        ? "grid-cols-1"
+                        : "grid-cols-[200px_minmax(0,1fr)_minmax(360px,1fr)]",
+                )}
+            >
+                {!maximized && (
+                    <>
+                        <CallStackColumn
+                            paused={paused}
+                            activeFrame={activeFrame}
+                            onSelectFrame={setActiveFrame}
+                        />
+                        <ScopeColumn paused={paused} activeFrame={activeFrame} />
+                    </>
+                )}
+                <ResponseColumn
+                    responses={responses}
+                    runId={runId}
+                    onMaximize={toggleMaximize}
+                    isMaximized={maximized}
+                    onPopOut={() => {
+                        service.openResponseWindow().catch((e) =>
+                            console.warn("open_response_window failed", e),
+                        );
+                    }}
+                    emptyStateLabel="No responses captured at this pause yet."
                 />
-                <ScopeColumn paused={paused} activeFrame={activeFrame} />
-                <WatchColumn counts={paused.scope.emit_counts} />
             </div>
         </div>
     );
@@ -200,14 +204,27 @@ function PauseLabel({ paused }: { paused: PausePayload }) {
             </>
         );
     }
+    if (paused.kind === "emit") {
+        return (
+            <>
+                <span className="text-muted-foreground">paused before emit</span>
+                <span className="font-mono text-warning select-text">
+                    {paused.type_name}
+                </span>
+                <span className="text-muted-foreground tabular-nums">
+                    #{paused.emit_index}
+                </span>
+            </>
+        );
+    }
+    // for_loop
     return (
         <>
-            <span className="text-muted-foreground">iteration</span>
-            <span className="font-mono text-warning tabular-nums select-text">
-                {paused.iteration + 1}/{paused.total}
-            </span>
-            <span className="text-muted-foreground">of</span>
+            <span className="text-muted-foreground">paused at for-loop</span>
             <span className="font-mono text-warning select-text">${paused.variable}</span>
+            <span className="text-muted-foreground tabular-nums">
+                · {paused.total} item{paused.total === 1 ? "" : "s"}
+            </span>
         </>
     );
 }
@@ -280,63 +297,18 @@ function ScopeColumn({
             }
         >
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                <WatchesSection />
+                <ReplSection />
                 <InputsSection inputs={paused.scope.inputs} />
                 <SecretsSection names={paused.scope.secrets} />
                 <BindingsSection frame={frame} index={activeFrame} />
-                {paused.scope.current !== null &&
-                    paused.scope.current !== undefined && (
+                {paused.scope.current !== null
+                    && paused.scope.current !== undefined && (
                         <Section title="$ current">
                             <JsonNode value={paused.scope.current} />
                         </Section>
                     )}
-            </div>
-        </Column>
-    );
-}
-
-function WatchColumn({ counts }: { counts: Record<string, number> }) {
-    const entries = Object.entries(counts);
-    return (
-        <Column
-            title="Watch"
-            meta=""
-            trailing={
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            aria-label="Add watch (coming soon)"
-                            disabled
-                        >
-                            <Plus />
-                        </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Add watch — coming</TooltipContent>
-                </Tooltip>
-            }
-        >
-            <div className="flex-1 overflow-y-auto p-3 space-y-4">
-                <div className="text-xs text-muted-foreground italic">
-                    Add watch — coming
-                </div>
-                {entries.length > 0 && (
-                    <Section title="Records so far">
-                        <div className="space-y-1">
-                            {entries.map(([t, n]) => (
-                                <div
-                                    key={t}
-                                    className="flex items-baseline justify-between gap-2 text-sm"
-                                >
-                                    <span className="font-mono truncate">{t}</span>
-                                    <Badge variant="success" className="tabular-nums shrink-0">
-                                        {n}
-                                    </Badge>
-                                </div>
-                            ))}
-                        </div>
-                    </Section>
-                )}
+                <EmitCountsSection counts={paused.scope.emit_counts} />
             </div>
         </Column>
     );
@@ -345,12 +317,10 @@ function WatchColumn({ counts }: { counts: Record<string, number> }) {
 function Column({
     title,
     meta,
-    trailing,
     children,
 }: {
     title: string;
     meta?: string;
-    trailing?: React.ReactNode;
     children: React.ReactNode;
 }) {
     return (
@@ -360,7 +330,6 @@ function Column({
                 {meta !== undefined && meta !== "" && (
                     <span className="font-mono text-muted-foreground/70">{meta}</span>
                 )}
-                {trailing && <span className="ml-auto">{trailing}</span>}
             </div>
             <div className="flex-1 min-h-0 flex flex-col">{children}</div>
         </div>
@@ -431,6 +400,28 @@ function SecretsSection({ names }: { names: string[] }) {
     );
 }
 
+function EmitCountsSection({ counts }: { counts: Record<string, number> }) {
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return null;
+    return (
+        <Section title="Records so far">
+            <div className="space-y-1">
+                {entries.map(([t, n]) => (
+                    <div
+                        key={t}
+                        className="flex items-baseline justify-between gap-2 text-sm"
+                    >
+                        <span className="font-mono truncate">{t}</span>
+                        <span className="font-mono text-warning tabular-nums shrink-0">
+                            {n}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </Section>
+    );
+}
+
 function Section(props: { title: string; children: React.ReactNode }) {
     return (
         <section>
@@ -454,56 +445,6 @@ function KeyValueRow({ name, value }: { name: string; value: unknown }) {
     );
 }
 
-function JsonNode({ value }: { value: unknown }) {
-    const summary = useMemo(() => describe(value), [value]);
-    if (
-        value === null ||
-        value === undefined ||
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean"
-    ) {
-        return <span className={scalarTone(value)}>{summary}</span>;
-    }
-    return (
-        <Collapsible className="inline-block w-full">
-            <CollapsibleTrigger asChild>
-                <button
-                    type="button"
-                    className={cn(
-                        "group/json inline-flex items-center gap-1 text-left",
-                        "text-foreground hover:text-foreground/80",
-                    )}
-                >
-                    <ChevronRight className="size-3 text-muted-foreground transition-transform group-data-[state=open]/json:rotate-90" />
-                    <span>{summary}</span>
-                </button>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-                <pre className="mt-1 ml-3 pl-3 border-l border-border text-xs whitespace-pre-wrap overflow-x-auto max-h-96 overflow-y-auto select-text">
-                    {JSON.stringify(value, null, 2)}
-                </pre>
-            </CollapsibleContent>
-        </Collapsible>
-    );
-}
-
-function describe(v: unknown): string {
-    if (v === null) return "null";
-    if (v === undefined) return "—";
-    if (typeof v === "string") {
-        return v.length > 60 ? JSON.stringify(v.slice(0, 60)) + "…" : JSON.stringify(v);
-    }
-    if (typeof v === "number" || typeof v === "boolean") return String(v);
-    if (Array.isArray(v)) return `[${v.length}]`;
-    if (typeof v === "object") return `{${Object.keys(v as object).length} keys}`;
-    return String(v);
-}
-
-function scalarTone(v: unknown): string {
-    if (v === null || v === undefined) return "text-muted-foreground";
-    if (typeof v === "string") return "text-success";
-    if (typeof v === "number") return "text-warning";
-    if (typeof v === "boolean") return "text-foreground";
-    return "text-foreground";
-}
+// Retain a re-export for any caller that imported from this module
+// to access the collapsible JsonNode helpers.
+export { JsonNode, Collapsible, CollapsibleContent, CollapsibleTrigger };

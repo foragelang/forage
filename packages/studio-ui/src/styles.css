@@ -188,6 +188,18 @@
         transparent 4px
     );
 }
+.forage-bp-hover {
+    /* Faded affordance: the mouse is over a pause-able line with no
+     * BP set. Same radial-gradient as the set glyph at reduced opacity
+     * so the visual identity stays consistent — the user knows
+     * clicking will set the same dot. */
+    background: radial-gradient(
+        circle,
+        color-mix(in oklab, var(--destructive) 35%, transparent) 4px,
+        transparent 4px
+    );
+    cursor: pointer;
+}
 .forage-paused-glyph {
     background: linear-gradient(
         45deg,

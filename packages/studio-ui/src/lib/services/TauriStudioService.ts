@@ -32,9 +32,12 @@ import {
     type PublishPreview,
     type PublishTypePayload,
     type RecipeStatus,
+    type RunBeginEvent,
+    type RunDebugResumedEvent,
     type RunEvent,
     type ScheduledRun,
     type ServiceCapabilities,
+    type StepResponseEvent,
     type StudioService,
     type SyncOutcomeWire,
     type TypeVersion,
@@ -58,6 +61,9 @@ import type { WorkspaceInfo } from "../../bindings/WorkspaceInfo";
 // commands module (`commands::RUN_EVENT`, `commands::DEBUG_PAUSED_EVENT`).
 const RUN_EVENT = "forage:run-event";
 const DEBUG_PAUSED_EVENT = "forage:debug-paused";
+const RUN_BEGIN_EVENT = "forage:run-begin";
+const RUN_STEP_RESPONSE_EVENT = "forage:run-step-response";
+const RUN_DEBUG_RESUMED_EVENT = "forage:run-debug-resumed";
 const DAEMON_RUN_COMPLETED_EVENT = "forage:daemon-run-completed";
 const WORKSPACE_OPENED_EVENT = "forage:workspace-opened";
 const WORKSPACE_CLOSED_EVENT = "forage:workspace-closed";
@@ -211,17 +217,23 @@ export class TauriStudioService implements StudioService {
     debugResume(action: DebugAction): Promise<void> {
         return invoke<void>("debug_resume", { action });
     }
-    setPauseIterations(enabled: boolean): Promise<void> {
-        return invoke<void>("set_pause_iterations", { enabled });
+    setBreakpoints(lines: number[]): Promise<void> {
+        return invoke<void>("set_breakpoints", { lines });
     }
-    setBreakpoints(steps: string[]): Promise<void> {
-        return invoke<void>("set_breakpoints", { steps });
+    setRecipeBreakpoints(name: string, lines: number[]): Promise<void> {
+        return invoke<void>("set_recipe_breakpoints", { name, lines });
     }
-    setRecipeBreakpoints(name: string, steps: string[]): Promise<void> {
-        return invoke<void>("set_recipe_breakpoints", { name, steps });
+    loadRecipeBreakpoints(name: string): Promise<number[]> {
+        return invoke<number[]>("load_recipe_breakpoints", { name });
     }
-    loadRecipeBreakpoints(name: string): Promise<string[]> {
-        return invoke<string[]>("load_recipe_breakpoints", { name });
+    evalWatchExpression(exprSource: string): Promise<unknown> {
+        return invoke<unknown>("eval_watch_expression", { exprSource });
+    }
+    loadFullStepBody(runId: string, stepName: string): Promise<string> {
+        return invoke<string>("load_full_step_body", { runId, stepName });
+    }
+    openResponseWindow(): Promise<void> {
+        return invoke<void>("open_response_window");
     }
 
     // ── Daemon ──────────────────────────────────────────────────────
@@ -472,6 +484,15 @@ export class TauriStudioService implements StudioService {
     }
     onDebugPaused(handler: (payload: PausePayload) => void): Unsubscribe {
         return listenSync<PausePayload>(DEBUG_PAUSED_EVENT, handler);
+    }
+    onRunBegin(handler: (event: RunBeginEvent) => void): Unsubscribe {
+        return listenSync<RunBeginEvent>(RUN_BEGIN_EVENT, handler);
+    }
+    onStepResponse(handler: (event: StepResponseEvent) => void): Unsubscribe {
+        return listenSync<StepResponseEvent>(RUN_STEP_RESPONSE_EVENT, handler);
+    }
+    onDebugResumed(handler: (event: RunDebugResumedEvent) => void): Unsubscribe {
+        return listenSync<RunDebugResumedEvent>(RUN_DEBUG_RESUMED_EVENT, handler);
     }
     onDaemonRunCompleted(handler: (run: ScheduledRun) => void): Unsubscribe {
         return listenSync<ScheduledRun>(DAEMON_RUN_COMPLETED_EVENT, handler);

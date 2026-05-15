@@ -17,10 +17,19 @@ import { useStudio, type InspectorMode } from "@/lib/store";
 import { HistoryPane } from "./HistoryPane";
 import { RecordsPane } from "./RecordsPane";
 import { RunPane } from "./RunPane";
+import { RunResponsesPane } from "./RunResponsesPane";
 
 export function Inspector({ width }: { width: number }) {
     const inspectorMode = useStudio((s) => s.inspectorMode);
     const setInspectorMode = useStudio((s) => s.setInspectorMode);
+    const lastResponses = useStudio((s) => s.lastResponses);
+    const running = useStudio((s) => s.running);
+    // Disable the Responses tab when there's nothing to show *and*
+    // no run is in flight — switching into an empty pane is a
+    // dead-end. Surface the capture count as a badge so the user
+    // sees at a glance how many step responses landed.
+    const responseCount = Object.keys(lastResponses).length;
+    const responsesDisabled = responseCount === 0 && !running;
     return (
         <aside
             style={{ width }}
@@ -36,6 +45,11 @@ export function Inspector({ width }: { width: number }) {
                         <TabsTrigger value="run">This run</TabsTrigger>
                         <TabsTrigger value="history">History</TabsTrigger>
                         <TabsTrigger value="records">Records</TabsTrigger>
+                        <TabsTrigger value="responses" disabled={responsesDisabled}>
+                            {responseCount > 0
+                                ? `Responses (${responseCount})`
+                                : "Responses"}
+                        </TabsTrigger>
                     </TabsList>
                 </div>
                 <TabsContent
@@ -55,6 +69,12 @@ export function Inspector({ width }: { width: number }) {
                     className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
                 >
                     <RecordsPane />
+                </TabsContent>
+                <TabsContent
+                    value="responses"
+                    className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
+                >
+                    <RunResponsesPane />
                 </TabsContent>
             </Tabs>
         </aside>

@@ -11,7 +11,10 @@ use tracing::{debug, trace};
 
 use crate::auth::{AuthState, apply_request_headers, run_session_login};
 use crate::body::render_body;
-use crate::debug::{DebugScope, Debugger, IterationPause, ResumeAction, StepPause};
+use crate::debug::{
+    BODY_CAPTURE_MAX, DebugScope, Debugger, EmitPause, ForLoopPause, IterationPause, ResumeAction,
+    StepPause, StepResponse,
+};
 use crate::error::{HttpError, HttpResult};
 use crate::paginate::{NextPage, PaginationDriver};
 use crate::progress::{NoopSink, ProgressSink, RunEvent};
@@ -19,7 +22,7 @@ use crate::transport::{EngineTransportContext, HttpRequest, HttpResponse, Transp
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, Record, RunOptions, Scope, Snapshot, TypeCatalog};
+use forage_core::{EvalValue, Evaluator, LineMap, Record, RunOptions, Scope, Snapshot, TypeCatalog};
 
 /// Records to seed a downstream recipe with — the upstream stage's
 /// emissions, threaded into the next stage's input slot at run
@@ -220,6 +223,14 @@ impl<'t> Engine<'t> {
         let mut requests_made: u32 = 0;
         let mut emit_counts: IndexMap<String, usize> = IndexMap::new();
         let mut step_index: usize = 0;
+        let mut emit_index: usize = 0;
+        let mut step_responses: IndexMap<String, StepResponse> = IndexMap::new();
+        // Build the line map once per run. Pause sites resolve each
+        // statement's byte span to a 0-based line via this; that's what
+        // the studio's gutter clicks key on. `recipe.source` is `""`
+        // for hand-constructed / JSON-round-tripped ASTs, in which case
+        // every span maps to line 0 — see ForageFile docs.
+        let line_map = LineMap::new(&recipe.source);
         self.run_statements(
             recipe.body.statements(),
             recipe,
@@ -231,6 +242,9 @@ impl<'t> Engine<'t> {
             &mut requests_made,
             &mut emit_counts,
             &mut step_index,
+            &mut emit_index,
+            &mut step_responses,
+            &line_map,
             options,
             // Top-level body: outermost for-loops here are the sample
             // unit. Inside `run_statements`, a recursive call inside a
@@ -258,6 +272,9 @@ impl<'t> Engine<'t> {
         requests_made: &'a mut u32,
         emit_counts: &'a mut IndexMap<String, usize>,
         step_index: &'a mut usize,
+        emit_index: &'a mut usize,
+        step_responses: &'a mut IndexMap<String, StepResponse>,
+        line_map: &'a LineMap,
         options: &'a RunOptions,
         top_level: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResult<()>> + Send + 'a>> {
@@ -265,24 +282,64 @@ impl<'t> Engine<'t> {
             for s in body {
                 match s {
                     Statement::Step(step) => {
+                        let start_line = line_map.range(step.span.clone()).start.line;
                         if let Some(dbg) = self.debugger.clone() {
                             let pause = StepPause {
                                 step: step.name.clone(),
                                 step_index: *step_index,
-                                scope: DebugScope::from_scope(scope, &recipe.secrets, emit_counts),
+                                start_line,
+                                scope: DebugScope::from_scope(
+                                    scope,
+                                    &recipe.secrets,
+                                    emit_counts,
+                                    step_responses,
+                                ),
                             };
-                            match dbg.before_step(pause).await {
-                                ResumeAction::Continue | ResumeAction::StepOver => {}
+                            match dbg.before_step(pause, scope).await {
+                                ResumeAction::Continue
+                                | ResumeAction::StepOver
+                                | ResumeAction::StepIn => {}
                                 ResumeAction::Stop => {
                                     return Err(HttpError::Generic("stopped by debugger".into()));
                                 }
                             }
                         }
                         *step_index += 1;
-                        self.run_step(step, recipe, auth_state, evaluator, scope, requests_made)
-                            .await?;
+                        self.run_step(
+                            step,
+                            recipe,
+                            auth_state,
+                            evaluator,
+                            scope,
+                            requests_made,
+                            step_responses,
+                        )
+                        .await?;
                     }
                     Statement::Emit(em) => {
+                        let start_line = line_map.range(em.span.clone()).start.line;
+                        if let Some(dbg) = self.debugger.clone() {
+                            let pause = EmitPause {
+                                type_name: em.type_name.clone(),
+                                emit_index: *emit_index,
+                                start_line,
+                                scope: DebugScope::from_scope(
+                                    scope,
+                                    &recipe.secrets,
+                                    emit_counts,
+                                    step_responses,
+                                ),
+                            };
+                            match dbg.before_emit(pause, scope).await {
+                                ResumeAction::Continue
+                                | ResumeAction::StepOver
+                                | ResumeAction::StepIn => {}
+                                ResumeAction::Stop => {
+                                    return Err(HttpError::Generic("stopped by debugger".into()));
+                                }
+                            }
+                        }
+                        *emit_index += 1;
                         self.run_emit(em, evaluator, transport_ctx, scope, snapshot, emit_counts)
                             .await?;
                     }
@@ -290,8 +347,9 @@ impl<'t> Engine<'t> {
                         variable,
                         collection,
                         body,
-                        ..
+                        span,
                     } => {
+                        let start_line = line_map.range(span.clone()).start.line;
                         let collection_val = evaluator
                             .eval_extraction_async(collection, scope, transport_ctx)
                             .await?;
@@ -307,6 +365,27 @@ impl<'t> Engine<'t> {
                             options.cap_top_level(&mut items);
                         }
                         let total = items.len();
+                        if let Some(dbg) = self.debugger.clone() {
+                            let pause = ForLoopPause {
+                                variable: variable.clone(),
+                                total,
+                                start_line,
+                                scope: DebugScope::from_scope(
+                                    scope,
+                                    &recipe.secrets,
+                                    emit_counts,
+                                    step_responses,
+                                ),
+                            };
+                            match dbg.before_for_loop(pause, scope).await {
+                                ResumeAction::Continue
+                                | ResumeAction::StepOver
+                                | ResumeAction::StepIn => {}
+                                ResumeAction::Stop => {
+                                    return Err(HttpError::Generic("stopped by debugger".into()));
+                                }
+                            }
+                        }
                         for (idx, item) in items.into_iter().enumerate() {
                             scope.push_frame();
                             scope.bind(variable, item.clone());
@@ -317,14 +396,18 @@ impl<'t> Engine<'t> {
                                     variable: variable.clone(),
                                     iteration: idx,
                                     total,
+                                    start_line,
                                     scope: DebugScope::from_scope(
                                         scope,
                                         &recipe.secrets,
                                         emit_counts,
+                                        step_responses,
                                     ),
                                 };
-                                match dbg.before_iteration(pause).await {
-                                    ResumeAction::Continue | ResumeAction::StepOver => {}
+                                match dbg.before_iteration(pause, scope).await {
+                                    ResumeAction::Continue
+                                    | ResumeAction::StepOver
+                                    | ResumeAction::StepIn => {}
                                     ResumeAction::Stop => {
                                         scope.current = saved_current;
                                         scope.pop_frame();
@@ -345,6 +428,9 @@ impl<'t> Engine<'t> {
                                 requests_made,
                                 emit_counts,
                                 step_index,
+                                emit_index,
+                                step_responses,
+                                line_map,
                                 options,
                                 false,
                             )
@@ -359,6 +445,7 @@ impl<'t> Engine<'t> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_step(
         &self,
         step: &HTTPStep,
@@ -367,6 +454,7 @@ impl<'t> Engine<'t> {
         evaluator: &Evaluator<'_>,
         scope: &mut Scope,
         requests_made: &mut u32,
+        step_responses: &mut IndexMap<String, StepResponse>,
     ) -> HttpResult<()> {
         let mut driver = step.pagination.as_ref().map(PaginationDriver::new);
         let mut extra_query: Vec<(String, String)> = Vec::new();
@@ -454,6 +542,32 @@ impl<'t> Engine<'t> {
                 duration_ms,
                 bytes: resp.body.len(),
             });
+            // Capture the response BEFORE the status gate so 4xx/5xx
+            // responses still land in `step_responses` for the debug
+            // panel. The recipe will abort right after — but the user
+            // needs to see the response body to know why.
+            //
+            // The full (uncapped) bytes go through the progress sink's
+            // `step_response_full_body` hook so a host can stash them
+            // somewhere outside the wire payload. The wire-side
+            // `body_raw` is truncated to `BODY_CAPTURE_MAX` to keep
+            // pause-time IPC bounded.
+            let resolved_format = resolve_parse_format(step, &resp);
+            let content_type_header = normalized_content_type(&resp);
+            let (body_raw, body_truncated) = truncate_body_lossy(&resp.body);
+            self.progress
+                .step_response_full_body(&step.name, &resp.body);
+            let captured = StepResponse {
+                status: resp.status,
+                headers: resp.headers.clone(),
+                body_raw,
+                body_truncated,
+                format: resolved_format,
+                content_type_header,
+            };
+            self.progress
+                .step_response_captured(&step.name, &captured);
+            step_responses.insert(step.name.clone(), captured);
             if !(200..400).contains(&resp.status) {
                 return Err(HttpError::Status {
                     status: resp.status,
@@ -461,7 +575,7 @@ impl<'t> Engine<'t> {
                 });
             }
 
-            let body_val = parse_response_body(&req.url, &resp)?;
+            let body_val = parse_response_body(step, &resp)?;
 
             // Bind `$<stepName>` to the response body for downstream eval —
             // pagination accumulation overrides this at the end of the loop.
@@ -751,18 +865,87 @@ fn bind_prior_records(
     )))
 }
 
-fn parse_response_body(url: &str, resp: &HttpResponse) -> HttpResult<EvalValue> {
+fn parse_response_body(step: &HTTPStep, resp: &HttpResponse) -> HttpResult<EvalValue> {
     let body = resp.body_str();
-    // Try JSON first; if it doesn't parse, fall back to string.
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        return Ok((&v).into());
-    }
-    // Empty body → null. Otherwise treat as raw string (HTML, plain text).
     if body.is_empty() {
         return Ok(EvalValue::Null);
     }
-    let _ = url;
-    Ok(EvalValue::String(body.into()))
+    // The recipe's `parse : <fmt>` override (when present) takes
+    // priority over content-type detection. Without an override we
+    // keep the historical fallback: try JSON first (covers
+    // text/plain-tagged JSON), then drop to a raw string.
+    let format = resolve_parse_format(step, resp);
+    match format {
+        ParseFormat::Json => match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(v) => Ok((&v).into()),
+            Err(_) => Ok(EvalValue::String(body.into())),
+        },
+        ParseFormat::Html | ParseFormat::Xml | ParseFormat::Text => {
+            // The engine's existing $<step> binding for these formats
+            // is the raw body string — DOM walking happens at the
+            // recipe expression level via the dom-* transforms.
+            Ok(EvalValue::String(body.into()))
+        }
+    }
+}
+
+/// Resolve the parse format for a step's response: recipe-level
+/// override > Content-Type detection > JSON-first fallback for
+/// headerless responses (replay fixtures often omit headers entirely).
+fn resolve_parse_format(step: &HTTPStep, resp: &HttpResponse) -> ParseFormat {
+    if let Some(f) = step.parse {
+        return f;
+    }
+    match normalized_content_type(resp) {
+        Some(mime) => ParseFormat::from_content_type(&mime),
+        None => {
+            // No Content-Type at all (raw HTTP capture / replay fixture):
+            // try JSON first as a generous default so existing
+            // recipes that don't declare `parse :` keep working
+            // against pre-parse-format fixtures.
+            let body = resp.body_str();
+            if !body.is_empty()
+                && serde_json::from_str::<serde_json::Value>(body).is_ok()
+            {
+                ParseFormat::Json
+            } else {
+                ParseFormat::Text
+            }
+        }
+    }
+}
+
+/// Lower-case the `Content-Type` header (case-insensitive lookup) and
+/// drop any `; charset=…` suffix. Returns `None` when the response
+/// carried no `Content-Type` header.
+fn normalized_content_type(resp: &HttpResponse) -> Option<String> {
+    for (k, v) in &resp.headers {
+        if k.eq_ignore_ascii_case("content-type") {
+            let trimmed = v.split(';').next().unwrap_or("").trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            return Some(trimmed.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// UTF-8-lossy decode of the response body, capped at
+/// `BODY_CAPTURE_MAX` chars. Returns `(body_raw, body_truncated)` —
+/// the wire-side fields the debugger UI reads.
+fn truncate_body_lossy(bytes: &[u8]) -> (String, bool) {
+    let s = String::from_utf8_lossy(bytes);
+    if s.len() <= BODY_CAPTURE_MAX {
+        return (s.into_owned(), false);
+    }
+    // Slice on a char boundary so the truncated body remains valid
+    // UTF-8 for the wire and for downstream JSON serialization.
+    let mut end = BODY_CAPTURE_MAX;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
 }
 
 #[cfg(test)]
@@ -1933,5 +2116,726 @@ for $i in $list.items[*] {
             })
             .collect();
         assert_eq!(ids, vec!["a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"]);
+    }
+
+    #[tokio::test]
+    async fn debugger_fires_before_each_for_loop_with_total() {
+        use crate::debug::RecordingDebugger;
+
+        // `before_for_loop` fires once on loop entry, regardless of
+        // whether the collection has zero or many items — exactly the
+        // 0-iteration debugger affordance the pause site exists for.
+        let src = r#"
+            recipe "for-entry"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            // Two items so the engine enters the for-loop body twice.
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let dbg = Arc::new(RecordingDebugger::new(Vec::new()));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+        engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+        let for_loops = dbg.seen_for_loops.lock().unwrap();
+        assert_eq!(for_loops.len(), 1, "before_for_loop fires once per for-loop");
+        assert_eq!(for_loops[0].variable, "i");
+        assert_eq!(for_loops[0].total, 2);
+        // `start_line` is 0-based; the `for` keyword sits on the 10th
+        // source line (0 = empty leading newline, then count the lines
+        // up to "            for $i …").
+        assert!(
+            for_loops[0].start_line > 0,
+            "start_line should be non-zero when source is attached"
+        );
+    }
+
+    #[tokio::test]
+    async fn debugger_fires_before_for_loop_on_empty_collection() {
+        use crate::debug::RecordingDebugger;
+
+        // The zero-iteration case is the entire reason
+        // before_for_loop exists — confirm it fires.
+        let src = r#"
+            recipe "empty-loop"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let dbg = Arc::new(RecordingDebugger::new(Vec::new()));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+        engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+        let for_loops = dbg.seen_for_loops.lock().unwrap();
+        assert_eq!(for_loops.len(), 1);
+        assert_eq!(for_loops[0].total, 0, "0-item loop still fires entry");
+        // No body iterations ran, so no per-iteration pauses.
+        assert!(dbg.seen_iterations.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn debugger_fires_before_each_emit_with_running_index() {
+        // The engine must call `before_emit` once per `emit` statement
+        // it executes, with `emit_index` monotonically increasing
+        // across the run (including emits inside for-loop iterations)
+        // and `start_line` resolving to the source line of the `emit`
+        // keyword. Pin all three fields so a regression in the index
+        // counter, the line resolver, or the dispatch site shows up
+        // immediately.
+        use crate::debug::RecordingDebugger;
+
+        // The recipe lives at known line offsets so the assertions
+        // can compare absolute lines below.
+        let src = "recipe \"emits\"\nengine http\ntype Item { id: String }\nstep list {\n    method \"GET\"\n    url \"https://api.example.com/items\"\n}\nfor $i in $list.items[*] {\n    emit Item { id ← $i.id }\n}\n";
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let dbg = Arc::new(RecordingDebugger::new(vec![]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 2);
+
+        let emits = dbg.seen_emits.lock().unwrap();
+        assert_eq!(emits.len(), 2, "one emit pause per record, got {emits:?}");
+        for (idx, p) in emits.iter().enumerate() {
+            assert_eq!(p.type_name, "Item");
+            assert_eq!(p.emit_index, idx);
+            // The `emit` keyword sits on line 8 (0-based) in `src`.
+            assert_eq!(
+                p.start_line, 8,
+                "emit pause #{idx} should resolve to line 8, got {:?}",
+                p.start_line
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn debugger_stop_in_emit_aborts_run() {
+        // Returning Stop from an emit pause must abort the run with the
+        // same "stopped by debugger" error path as the step / iteration
+        // Stop arms, leaving any later records uncommitted.
+        use crate::debug::RecordingDebugger;
+
+        let src = "recipe \"emit-stop\"\nengine http\ntype Item { id: String }\nstep list {\n    method \"GET\"\n    url \"https://api.example.com/items\"\n}\nfor $i in $list.items[*] {\n    emit Item { id ← $i.id }\n}\n";
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        // Script: step = Continue, then emit#0 = Stop. Iteration pauses
+        // short-circuit without consuming because we don't opt into
+        // `with_iterations()`.
+        let dbg = Arc::new(
+            RecordingDebugger::new(vec![ResumeAction::Continue, ResumeAction::Stop])
+                .with_emits(),
+        );
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let err = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stopped by debugger"));
+        let emits = dbg.seen_emits.lock().unwrap();
+        assert_eq!(emits.len(), 1, "stopped before emit #1 could fire");
+        // Snapshot must be empty — Stop fires before run_emit commits.
+        let steps = dbg.seen_steps.lock().unwrap();
+        assert_eq!(steps.len(), 1, "step pause should have fired exactly once");
+    }
+
+    #[tokio::test]
+    async fn debugger_stop_in_for_loop_aborts_run() {
+        // Returning Stop from a for-loop entry must abort the run with
+        // the same "stopped by debugger" error as the step / emit /
+        // iteration sites; no iteration body fires after the stop.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "fstop"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        // Script: step pause = Continue, then for-loop entry = Stop.
+        let dbg = Arc::new(
+            RecordingDebugger::new(vec![ResumeAction::Continue, ResumeAction::Stop])
+                .with_for_loops(),
+        );
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let err = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stopped by debugger"));
+        let iters = dbg.seen_iterations.lock().unwrap();
+        assert!(iters.is_empty(), "stopped before any iteration could fire");
+    }
+
+    #[tokio::test]
+    async fn step_in_and_step_over_engine_equivalent_at_for_loop() {
+        // `ResumeAction::StepIn` and `ResumeAction::StepOver` are wire-
+        // distinct so the host can carry user intent across the
+        // boundary — but the engine treats both identically today: each
+        // pause site's resume action falls through, and the body's
+        // first pause site (an emit here) re-pauses regardless of which
+        // variant the host sent. Future engine work (body-suppression
+        // counter keyed off StepOver) can break the symmetry without a
+        // wire-shape change; this test pins the equivalence we ship
+        // with so a regression that accidentally diverges the two
+        // variants fails loudly.
+        use crate::debug::RecordingDebugger;
+
+        let src = "recipe \"pair\"\nengine http\ntype Item { id: String }\nstep list {\n    method \"GET\"\n    url \"https://api.example.com/items\"\n}\nfor $i in $list.items[*] {\n    emit Item { id ← $i.id }\n}\n";
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+
+        // Per-run helper: same recipe, same capture, same script
+        // shape; only the at-for-loop action differs. Returns the
+        // emit-pause count at termination so the caller can compare.
+        async fn emits_after(
+            action: ResumeAction,
+            recipe: &ForageFile,
+            catalog: &TypeCatalog,
+        ) -> usize {
+            let cap = Capture::Http(HttpExchange {
+                url: "https://api.example.com/items".into(),
+                method: "GET".into(),
+                request_headers: IndexMap::new(),
+                request_body: None,
+                status: 200,
+                response_headers: IndexMap::new(),
+                body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
+            });
+            let transport = ReplayTransport::new(vec![cap]);
+            // Script: step pause = Continue, for-loop pause = action,
+            // first emit pause = Stop. If `action` falls through and
+            // the engine descends into the body, the emit pause fires
+            // once before Stop short-circuits the run.
+            let dbg = Arc::new(
+                RecordingDebugger::new(vec![ResumeAction::Continue, action, ResumeAction::Stop])
+                    .with_for_loops()
+                    .with_emits(),
+            );
+            let engine = Engine::new(&transport).with_debugger(dbg.clone());
+            let _ = engine
+                .run(recipe, catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+                .await;
+            dbg.seen_emits.lock().unwrap().len()
+        }
+
+        let in_emits = emits_after(ResumeAction::StepIn, &recipe, &catalog).await;
+        let over_emits = emits_after(ResumeAction::StepOver, &recipe, &catalog).await;
+        assert_eq!(in_emits, 1, "StepIn falls through into the body");
+        assert_eq!(
+            in_emits, over_emits,
+            "StepIn and StepOver currently produce identical engine behavior at a for-loop pause",
+        );
+    }
+
+    #[tokio::test]
+    async fn step_in_at_step_falls_back_to_step_over() {
+        // At a step pause site there's no body to descend into, so
+        // StepIn must behave identically to StepOver: the engine
+        // resumes and the next pause site fires. With two steps in
+        // the recipe, StepIn at step 1 lets execution reach step 2.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "two"
+            engine http
+            type Item { id: String }
+            step first {
+                method "GET"
+                url "https://api.example.com/a"
+            }
+            step second {
+                method "GET"
+                url "https://api.example.com/b"
+            }
+            emit Item { id ← "x" }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let first = Capture::Http(HttpExchange {
+            url: "https://api.example.com/a".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"ok":true}"#.into(),
+        });
+        let second = Capture::Http(HttpExchange {
+            url: "https://api.example.com/b".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: r#"{"ok":true}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![first, second]);
+        // Script: step 1 = StepIn (falls through), step 2 = Stop.
+        let dbg = Arc::new(RecordingDebugger::new(vec![
+            ResumeAction::StepIn,
+            ResumeAction::Stop,
+        ]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+
+        let err = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stopped by debugger"));
+        let steps = dbg.seen_steps.lock().unwrap();
+        assert_eq!(steps.len(), 2, "StepIn at step 1 reached step 2");
+        assert_eq!(steps[0].step, "first");
+        assert_eq!(steps[1].step, "second");
+    }
+
+    #[tokio::test]
+    async fn step_response_captures_status_headers_body_and_format() {
+        // The debugger's StepResponse map must populate after each
+        // executed step with the resolved status, header map (verbatim
+        // from the transport), raw body, content-type-detected format
+        // (since `parse :` is absent here), and the normalized
+        // content-type header value.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "capture"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url    "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let mut hdrs = IndexMap::new();
+        hdrs.insert("Content-Type".into(), "application/json; charset=utf-8".into());
+        hdrs.insert("X-Trace-Id".into(), "abc-123".into());
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: hdrs,
+            body: r#"{"items":[{"id":"a"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        // Use the for-loop pause site as a deterministic inspection
+        // point: it fires after `list` ran, so step_responses must
+        // already contain the captured response.
+        let dbg = Arc::new(RecordingDebugger::new(vec![]).with_for_loops());
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+        let _ = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+
+        let loops = dbg.seen_for_loops.lock().unwrap();
+        let resp = loops[0]
+            .scope
+            .step_responses
+            .get("list")
+            .expect("step_responses should carry the executed step");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.format, ParseFormat::Json);
+        assert_eq!(
+            resp.content_type_header.as_deref(),
+            Some("application/json"),
+        );
+        assert_eq!(resp.body_raw, r#"{"items":[{"id":"a"}]}"#);
+        assert!(!resp.body_truncated);
+        assert_eq!(
+            resp.headers.get("X-Trace-Id"),
+            Some(&"abc-123".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn step_response_truncates_oversized_body() {
+        // Pin the 1 MiB cap: any body larger than BODY_CAPTURE_MAX gets
+        // sliced down with `body_truncated = true`, so the debug viewer
+        // doesn't OOM at pause time and the user knows the body isn't
+        // complete. The second step acts as a post-`big` inspection
+        // point — its `before_step` pause snapshots scope after `big`
+        // has executed and captured, but before anything else fires.
+        use crate::debug::RecordingDebugger;
+
+        let src = r#"
+            recipe "truncate"
+            engine http
+            type Item { id: String }
+            step big {
+                method "GET"
+                url    "https://api.example.com/big"
+                parse  : text
+            }
+            step probe {
+                method "GET"
+                url    "https://api.example.com/probe"
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let oversized = "x".repeat(BODY_CAPTURE_MAX + 1024);
+        let captures = vec![
+            Capture::Http(HttpExchange {
+                url: "https://api.example.com/big".into(),
+                method: "GET".into(),
+                request_headers: IndexMap::new(),
+                request_body: None,
+                status: 200,
+                response_headers: IndexMap::new(),
+                body: oversized,
+            }),
+            Capture::Http(HttpExchange {
+                url: "https://api.example.com/probe".into(),
+                method: "GET".into(),
+                request_headers: IndexMap::new(),
+                request_body: None,
+                status: 200,
+                response_headers: IndexMap::new(),
+                body: "{}".into(),
+            }),
+        ];
+        let transport = ReplayTransport::new(captures);
+        let dbg = Arc::new(RecordingDebugger::new(vec![]));
+        let engine = Engine::new(&transport).with_debugger(dbg.clone());
+        let _ = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+
+        let steps = dbg.seen_steps.lock().unwrap();
+        assert_eq!(steps.len(), 2, "two step pauses expected, got {steps:?}");
+        // probe's `before_step` snapshot is taken after `big` ran, so
+        // big's capture must be present and truncated.
+        let resp = steps[1]
+            .scope
+            .step_responses
+            .get("big")
+            .expect("captured response for step `big`");
+        assert!(resp.body_truncated, "oversized body should set body_truncated");
+        assert_eq!(
+            resp.body_raw.len(),
+            BODY_CAPTURE_MAX,
+            "body_raw should be sliced to the cap",
+        );
+    }
+
+    /// Sink that records every `step_response_captured` call so tests
+    /// can assert the engine fires once per step, with the resolved
+    /// StepResponse, on both success and failure paths. Also records
+    /// `step_response_full_body` hits so the disk-stash precondition
+    /// (uncapped bytes are visible to the host) stays pinned.
+    struct RecordingSink {
+        captured: std::sync::Mutex<Vec<(String, StepResponse)>>,
+        full_bodies: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self {
+                captured: std::sync::Mutex::new(Vec::new()),
+                full_bodies: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, _: RunEvent) {}
+        fn step_response_captured(&self, step: &str, response: &StepResponse) {
+            self.captured
+                .lock()
+                .expect("captured step responses")
+                .push((step.to_string(), response.clone()));
+        }
+        fn step_response_full_body(&self, step: &str, body: &[u8]) {
+            self.full_bodies
+                .lock()
+                .expect("captured full bodies")
+                .push((step.to_string(), body.to_vec()));
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_sink_receives_step_response_on_success() {
+        // The sink hook fires once per executed step on a clean
+        // 2xx path — the studio relies on this to populate its
+        // Responses pane during a normal run.
+        let src = r#"
+            recipe "ok"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url    "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let mut hdrs = IndexMap::new();
+        hdrs.insert("Content-Type".into(), "application/json".into());
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: hdrs,
+            body: r#"{"items":[{"id":"a"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Engine::new(&transport).with_progress(sink.clone());
+        let _ = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+
+        let seen = sink.captured.lock().unwrap();
+        assert_eq!(seen.len(), 1, "expected one capture, got {seen:?}");
+        assert_eq!(seen[0].0, "list");
+        assert_eq!(seen[0].1.status, 200);
+        assert_eq!(seen[0].1.format, ParseFormat::Json);
+        assert_eq!(seen[0].1.body_raw, r#"{"items":[{"id":"a"}]}"#);
+    }
+
+    #[tokio::test]
+    async fn progress_sink_receives_step_response_on_5xx_failure() {
+        // The whole point of streaming captures independent of pause
+        // state is that the user can still inspect a 5xx response
+        // even when the engine aborts the run on the status gate.
+        // Pin that the sink fires before the gate trips.
+        let src = r#"
+            recipe "bad"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url    "https://api.example.com/items"
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let mut hdrs = IndexMap::new();
+        hdrs.insert("Content-Type".into(), "application/json".into());
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 500,
+            response_headers: hdrs,
+            body: r#"{"error":"oops"}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Engine::new(&transport).with_progress(sink.clone());
+        let err = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .expect_err("5xx should abort the run");
+        assert!(matches!(err, HttpError::Status { status: 500, .. }));
+
+        let seen = sink.captured.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "the failing step's capture should still reach the sink",
+        );
+        assert_eq!(seen[0].0, "list");
+        assert_eq!(seen[0].1.status, 500);
+        assert_eq!(seen[0].1.body_raw, r#"{"error":"oops"}"#);
+    }
+
+    #[tokio::test]
+    async fn progress_sink_receives_full_body_uncapped() {
+        // The `step_response_full_body` hook is the disk-stash
+        // precondition: hosts get the raw bytes before the cap is
+        // applied, so a multi-MB response stays inspectable via the
+        // "Load full" affordance even though `body_raw` was sliced.
+        // Pin the invariant by running a single step whose response
+        // body crosses the cap and asserting the hook saw every byte.
+        let src = r#"
+            recipe "full"
+            engine http
+            type Item { id: String }
+            step big {
+                method "GET"
+                url    "https://api.example.com/big"
+                parse  : text
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let oversized = "x".repeat(BODY_CAPTURE_MAX + 1024);
+        let oversized_len = oversized.len();
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/big".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: oversized.clone(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let sink = Arc::new(RecordingSink::new());
+        let engine = Engine::new(&transport).with_progress(sink.clone());
+        let _ = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+
+        let full = sink.full_bodies.lock().unwrap();
+        assert_eq!(full.len(), 1, "one full-body hit per step");
+        assert_eq!(full[0].0, "big");
+        assert_eq!(
+            full[0].1.len(),
+            oversized_len,
+            "the host must see the uncapped bytes — body_raw is truncated, the stash isn't",
+        );
+        assert!(full[0].1.iter().all(|&b| b == b'x'));
+
+        // Sanity: the in-payload `body_raw` did get truncated, so the
+        // disk stash is the *only* path to the full body.
+        let captured = sink.captured.lock().unwrap();
+        assert!(captured[0].1.body_truncated);
+        assert_eq!(captured[0].1.body_raw.len(), BODY_CAPTURE_MAX);
+    }
+
+    #[tokio::test]
+    async fn parse_override_forces_json_on_text_plain_response() {
+        // The headline use case: a server claims `text/plain` for
+        // what is actually JSON. Without `parse :`, the engine's
+        // content-type detection would treat the body as raw text
+        // and downstream `$step.field` wouldn't resolve. With
+        // `parse : json`, the engine binds the parsed object.
+        let src = r#"
+            recipe "json-override"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+                parse : json
+            }
+            for $i in $list.items[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let mut headers = IndexMap::new();
+        headers.insert("content-type".to_string(), "text/plain".to_string());
+        let cap = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: headers,
+            body: r#"{"items":[{"id":"a"},{"id":"b"}]}"#.into(),
+        });
+        let transport = ReplayTransport::new(vec![cap]);
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 2);
     }
 }

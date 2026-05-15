@@ -24,7 +24,8 @@ pub mod transport;
 #[cfg(feature = "native")]
 pub use client::{LiveTransport, LiveTransportConfig};
 pub use debug::{
-    DebugFrame, DebugScope, Debugger, IterationPause, NoopDebugger, ResumeAction, StepPause,
+    BODY_CAPTURE_MAX, DebugFrame, DebugScope, Debugger, EmitPause, ForLoopPause, IterationPause,
+    NoopDebugger, ResumeAction, StepPause, StepResponse,
 };
 pub use engine::{Engine, EngineConfig, PriorRecords};
 pub use error::{HttpError, HttpResult};

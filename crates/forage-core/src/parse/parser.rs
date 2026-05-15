@@ -53,7 +53,30 @@ pub enum ParseError {
 pub fn parse(source: &str) -> Result<ForageFile, ParseError> {
     let toks = lex(source)?;
     let mut p = Parser::new(toks, source.len());
-    p.parse_forage_file()
+    let mut file = p.parse_forage_file()?;
+    // Stash the source so engine + debugger sites can resolve byte
+    // spans to lines without callers re-passing it around.
+    file.source = std::sync::Arc::from(source);
+    Ok(file)
+}
+
+/// Lex + parse a single extraction expression. The debugger's
+/// watch-expression evaluator goes through this: the user types
+/// something like `$list.items | length` or `$i.id`, and we need an
+/// `ExtractionExpr` to feed `Evaluator::eval_extraction`. Trailing
+/// tokens after a complete expression are an error — a watch is one
+/// expression, not a recipe fragment.
+pub fn parse_extraction(source: &str) -> Result<ExtractionExpr, ParseError> {
+    let toks = lex(source)?;
+    let mut p = Parser::new(toks, source.len());
+    let expr = p.parse_extraction()?;
+    if p.peek().is_some() {
+        return Err(ParseError::Generic {
+            span: p.current_span(),
+            message: "unexpected tokens after expression".into(),
+        });
+    }
+    Ok(expr)
 }
 
 struct Parser {
@@ -344,6 +367,10 @@ impl Parser {
             browser,
             body,
             expectations,
+            // Filled in by `parse` after the recipe is constructed —
+            // the parser only sees the token stream and would otherwise
+            // need the source threaded through every grammar method.
+            source: std::sync::Arc::from(""),
         })
     }
 
@@ -1339,6 +1366,7 @@ impl Parser {
         let mut body: Option<HTTPBody> = None;
         let mut pagination: Option<Pagination> = None;
         let mut extract: Option<RegexExtract> = None;
+        let mut parse: Option<ParseFormat> = None;
 
         while !matches!(self.peek(), Some(Token::RBrace) | None) {
             match self.peek().cloned() {
@@ -1390,6 +1418,17 @@ impl Parser {
                 }
                 Some(Token::Keyword(k)) if k == "paginate" => {
                     pagination = Some(self.parse_pagination()?);
+                }
+                Some(Token::Keyword(k)) if k == "parse" => {
+                    self.bump();
+                    self.expect_punct(&Token::Colon)?;
+                    let fmt = self.parse_parse_format()?;
+                    if parse.is_some() {
+                        return Err(self.generic(
+                            "duplicate `parse` clause in step body (one `parse` per step)",
+                        ));
+                    }
+                    parse = Some(fmt);
                 }
                 Some(Token::Keyword(k)) if k == "extract" => {
                     self.bump();
@@ -1464,8 +1503,27 @@ impl Parser {
             request: req,
             pagination,
             extract,
+            parse,
             span: self.span_to_here(start),
         })
+    }
+
+    /// `parse_format := 'json' | 'html' | 'xml' | 'text'`.
+    /// Consumes one bare-keyword token; anything else is a parse error
+    /// with the four-option list in the message.
+    fn parse_parse_format(&mut self) -> Result<ParseFormat, ParseError> {
+        let fmt = match self.peek().cloned() {
+            Some(Token::Keyword(k)) => match k.as_str() {
+                "json" => ParseFormat::Json,
+                "html" => ParseFormat::Html,
+                "xml" => ParseFormat::Xml,
+                "text" => ParseFormat::Text,
+                _ => return Err(self.unexpected("'json' | 'html' | 'xml' | 'text'")),
+            },
+            _ => return Err(self.unexpected("'json' | 'html' | 'xml' | 'text'")),
+        };
+        self.bump();
+        Ok(fmt)
     }
 
     fn parse_json_body_kvs(&mut self) -> Result<Vec<HTTPBodyKV>, ParseError> {

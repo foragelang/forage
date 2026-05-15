@@ -5,6 +5,7 @@ mod commands;
 mod daemon_browser;
 pub mod hub_sync;
 mod menu;
+mod run_artifacts;
 mod state;
 mod workspace;
 
@@ -131,7 +132,9 @@ pub fn run() {
             commands::set_breakpoints,
             commands::set_recipe_breakpoints,
             commands::load_recipe_breakpoints,
-            commands::set_pause_iterations,
+            commands::eval_watch_expression,
+            commands::load_full_step_body,
+            commands::open_response_window,
             commands::recipe_outline,
             commands::recipe_hover,
             commands::language_dictionary,

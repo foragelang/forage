@@ -20,7 +20,7 @@ pub use eval::{
     AsyncTransformFn, EvalError, EvalValue, Evaluator, NoTransport, RunOptions, Scope,
     TransformFuture, TransformRegistry, TransportContext, default_registry,
 };
-pub use parse::parse;
+pub use parse::{parse, parse_extraction};
 pub use progress::{ProgressUnit, infer_progress_unit};
 pub use snapshot::{
     DiagnosticReport, JsonLdDocument, JsonLdRecord, JsonLdTypeContext, Record, RecordType,
