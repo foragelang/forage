@@ -1600,24 +1600,8 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
     }
 
     let r = LineMap::new(source).range(0..0);
-    if workspace::is_legacy_recipe_path(root, path) {
-        return ValidationOutcome {
-            ok: false,
-            diagnostics: vec![Diagnostic {
-                severity: "error",
-                code: "UnmigratedWorkspace".into(),
-                message: workspace::unmigrated_workspace_message(root),
-                start_line: r.start.line,
-                start_col: r.start.character,
-                end_line: r.end.line,
-                end_col: r.end.character,
-            }],
-        };
-    }
-
-    // Any other `.forage` location is a sidecar — neither at the
-    // workspace root nor in a recognized layout. classify_file tags
-    // it `Other`; validate_path agrees so the UI doesn't silently
+    // Any non-root `.forage` location is a sidecar — classify_file
+    // tags it `Other`; validate_path agrees so the UI doesn't silently
     // treat sidecars as source.
     ValidationOutcome {
         ok: false,
@@ -2493,29 +2477,6 @@ for $i in $list.items[*] {
         assert_eq!(outcome.diagnostics[0].code, "UnrecognizedForageFile");
     }
 
-    /// A `.forage` file at the pre-Phase-10 legacy slot
-    /// (`<root>/<slug>/recipe.forage`) is an unmigrated workspace.
-    /// validate_path surfaces the migration prompt so the UI can route
-    /// the user at `forage migrate` instead of trying to parse against
-    /// a shape Studio no longer supports.
-    #[test]
-    fn validate_path_flags_legacy_recipe_path_as_unmigrated() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("legacy")).unwrap();
-        let legacy = root.join("legacy").join("recipe.forage");
-        std::fs::write(&legacy, "recipe \"legacy\"\nengine http\n").unwrap();
-
-        let outcome = validate_path(root, &legacy, "recipe \"legacy\"\nengine http\n");
-        assert!(!outcome.ok, "legacy path must not validate clean");
-        assert_eq!(outcome.diagnostics.len(), 1);
-        assert_eq!(outcome.diagnostics[0].code, "UnmigratedWorkspace");
-        assert!(
-            outcome.diagnostics[0].message.contains("forage migrate"),
-            "expected migrate prompt; got {:?}",
-            outcome.diagnostics[0].message,
-        );
-    }
 
     /// Root-level `.forage` files run through workspace-aware
     /// validation. A header-less file with only a clean type

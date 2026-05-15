@@ -170,17 +170,18 @@ for $i in $list.items[*] {
     assert!(em_text.ends_with('}'));
 }
 
-/// Regression: the recipe header is flat. A leftover `{` after the name
-/// (the old block syntax) must be rejected — otherwise stale recipes would
-/// parse "by accident" once the parser tolerates the brace.
+/// The recipe header is flat: `recipe "<name>"` followed by `engine`
+/// at the top level. A `{` after the name turns the body into an
+/// unintended block; the parser must reject so the malformed source
+/// doesn't go through unnoticed.
 #[test]
-fn legacy_block_syntax_is_rejected() {
+fn brace_after_recipe_header_is_rejected() {
     let src = r#"
         recipe "old" {
             engine http
         }
     "#;
-    let err = parse(src).expect_err("legacy block syntax must not parse");
+    let err = parse(src).expect_err("brace-bodied recipe must not parse");
     let msg = format!("{err}");
     assert!(
         msg.contains("engine") || msg.contains("'{'") || msg.contains("'}'") || msg.contains("{"),

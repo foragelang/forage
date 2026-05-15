@@ -7,8 +7,7 @@
 //!
 //! Path resolution flows through these helpers so every caller agrees
 //! on the layout; string-building the paths inline at consumer sites
-//! is what diverged the legacy `<slug>/fixtures/captures.jsonl` +
-//! `<slug>/snapshot.json` shape in the first place.
+//! is how shapes drift.
 
 use std::path::{Path, PathBuf};
 

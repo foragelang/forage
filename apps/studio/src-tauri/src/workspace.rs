@@ -51,36 +51,6 @@ pub fn resolve_recipe_path(ws: &Workspace, name: &str) -> Result<PathBuf, String
         .ok_or_else(|| format!("no recipe named {name:?} in workspace at {}", ws.root.display()))
 }
 
-/// User-facing rejection used when an action targets a recipe still
-/// in the legacy `<slug>/recipe.forage` layout. Studio refuses to act
-/// against unmigrated workspaces; the CLI's `forage migrate` is the
-/// one-shot fix.
-pub fn unmigrated_workspace_message(root: &Path) -> String {
-    format!(
-        "this workspace has not been migrated — run `forage migrate {}`",
-        root.display()
-    )
-}
-
-/// True when `recipe_path` is at the pre-Phase-10 legacy layout
-/// (`<root>/<slug>/recipe.forage`): exactly one directory deep under
-/// the root, with the file basename literally `recipe.forage`.
-pub fn is_legacy_recipe_path(root: &Path, recipe_path: &Path) -> bool {
-    let Some(parent) = recipe_path.parent() else {
-        return false;
-    };
-    if parent == root {
-        return false;
-    }
-    if parent.parent() != Some(root) {
-        return false;
-    }
-    recipe_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|s| s == "recipe.forage")
-}
-
 /// Scaffold a new recipe at `<root>/<name>.forage` with a `recipe
 /// "<name>" engine http` header. When `name_override` is None, pick
 /// the next-available `untitled-N` (so a fresh workspace starts at
@@ -130,9 +100,6 @@ pub fn read_source(ws: &Workspace, name: &str) -> Result<String, String> {
 
 /// Delete the on-disk file for the recipe named `name`. Resolves the
 /// path through the workspace index and removes `<root>/<name>.forage`.
-/// A recipe still at the legacy `<root>/<slug>/recipe.forage` location
-/// is rejected with the migration prompt — Studio doesn't act against
-/// unmigrated workspaces.
 ///
 /// Refuses anything resolving outside the workspace root — a symlinked
 /// recipe file pointing at `/etc/passwd` would otherwise let us delete
@@ -147,9 +114,6 @@ pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
                 format!("no recipe named {name:?} in workspace at {}", ws.root.display()),
             )
         })?;
-    if is_legacy_recipe_path(&ws.root, &path) {
-        return Err(io::Error::other(unmigrated_workspace_message(&ws.root)));
-    }
 
     let canonical = path.canonicalize()?;
     let root_canonical = ws.root.canonicalize()?;
@@ -700,44 +664,12 @@ mod tests {
         .unwrap();
     }
 
-    fn make_legacy_recipe(root: &Path, slug: &str, header_name: &str) {
-        let dir = root.join(slug);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("recipe.forage"),
-            format!("recipe \"{header_name}\"\nengine http\n"),
-        )
-        .unwrap();
-    }
-
     fn make_flat_recipe(root: &Path, file_stem: &str, header_name: &str) {
         fs::write(
             root.join(format!("{file_stem}.forage")),
             format!("recipe \"{header_name}\"\nengine http\n"),
         )
         .unwrap();
-    }
-
-    /// A recipe whose source file is still at the pre-Phase-10
-    /// `<root>/<slug>/recipe.forage` location is an unmigrated
-    /// workspace. Recipe-scoped commands refuse to act and surface a
-    /// `forage migrate` prompt — Studio doesn't treat a half-shape
-    /// workspace as workable.
-    #[test]
-    fn delete_unmigrated_recipe_surfaces_migration_prompt() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_manifest(tmp.path());
-        make_legacy_recipe(tmp.path(), "to-delete", "to-delete");
-
-        let ws = forage_core::workspace::load(tmp.path()).unwrap();
-        let err = delete_recipe(&ws, "to-delete").unwrap_err();
-        assert!(
-            err.to_string().contains("forage migrate"),
-            "expected migrate prompt; got {err}"
-        );
-        // The file is left in place — Studio doesn't mutate
-        // unmigrated state.
-        assert!(tmp.path().join("to-delete/recipe.forage").exists());
     }
 
     /// A recipe named "remedy" in the flat `<root>/remedy.forage`

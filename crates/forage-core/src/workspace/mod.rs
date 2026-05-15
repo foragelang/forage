@@ -671,7 +671,7 @@ mod tests {
 
     /// `recipes()` reports every file that parsed cleanly *and* declares
     /// a header; header-less files are visible via `files` but not
-    /// `recipes()`. Files live at any depth, not only `<slug>/recipe.forage`.
+    /// `recipes()`. Files live at any depth in the tree.
     #[test]
     fn recipes_discovers_files_at_any_depth() {
         let tmp = tempfile::tempdir().unwrap();
@@ -687,22 +687,22 @@ mod tests {
             &root.join("remedy.forage"),
             "recipe \"remedy\"\nengine http\n",
         );
-        // Recipe nested in a folder.
+        // Recipe nested in a subdirectory.
         write(
             &root.join("subdir").join("nested.forage"),
             "recipe \"nested\"\nengine http\n",
         );
-        // Recipe in the legacy `<slug>/recipe.forage` shape.
+        // Recipe with a non-matching file stem in another subdirectory.
         write(
-            &root.join("legacy").join("recipe.forage"),
-            "recipe \"legacy\"\nengine http\n",
+            &root.join("other").join("inner.forage"),
+            "recipe \"inner\"\nengine http\n",
         );
 
         let ws = load(root).unwrap();
         let names: Vec<&str> = ws.recipes().map(|r| r.name()).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
-        assert_eq!(sorted, vec!["legacy", "nested", "remedy"]);
+        assert_eq!(sorted, vec!["inner", "nested", "remedy"]);
         assert_eq!(ws.files.len(), 4, "all four files in `files`");
     }
 
