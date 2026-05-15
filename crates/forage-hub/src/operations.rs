@@ -436,10 +436,7 @@ pub fn assemble_publish_plan(
     for inp in &parsed_recipe.inputs {
         collect_referenced_type_names(&inp.ty, &mut input_names);
     }
-    let output_names: std::collections::BTreeSet<String> = match &parsed_recipe.emits {
-        Some(decl) => decl.types.iter().cloned().collect(),
-        None => parsed_recipe.emit_types(),
-    };
+    let output_names = parsed_recipe.resolved_output_types();
     let input_type_refs: Vec<TypeRef> = type_refs
         .iter()
         .filter(|r| input_names.contains(&r.name))
@@ -1134,7 +1131,7 @@ mod tests {
             assert_eq!(r.author, "alice");
             assert_eq!(r.version, 0, "driver overwrites this with the server-resolved version");
         }
-        // `output Product` in the recipe header surfaces in
+        // `emits Product` in the recipe header surfaces in
         // `output_type_refs`; the unread `Variant` doesn't. Both are
         // still pinned in `type_refs` because they ride with the
         // workspace.

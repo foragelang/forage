@@ -224,20 +224,80 @@ impl RecipeSignatures {
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
+
+    /// Resolve a recipe's output type set, chasing composition chains
+    /// when the recipe itself doesn't declare `emits` and has a
+    /// composition body.
+    ///
+    /// For most recipes this is just `sig.output_types` — declared
+    /// `emits` if present, otherwise inferred from the body's emit
+    /// statements (precomputed at construction). The chain walk only
+    /// kicks in when the recipe is a composition without an `emits`
+    /// clause: we follow `compose A | B | C` to its terminal stage,
+    /// look that stage up here, and recurse — handling composed
+    /// compositions as well.
+    ///
+    /// Returns an empty set when:
+    /// - the recipe isn't in the map
+    /// - the composition's terminal stage is a hub-dep reference
+    ///   (`@author/name`) that isn't resolvable from this map
+    /// - the chain bottoms out at a stage that's not in the map
+    ///
+    /// The validator's `EmptyComposeStage` rule catches the second and
+    /// third cases during validation; this method tolerates them so
+    /// callers reading mid-edit / not-yet-validated workspaces don't
+    /// crash.
+    pub fn resolve_output_types(&self, recipe_name: &str) -> std::collections::BTreeSet<String> {
+        self.resolve_output_types_visited(recipe_name, &mut Vec::new())
+    }
+
+    fn resolve_output_types_visited(
+        &self,
+        recipe_name: &str,
+        visited: &mut Vec<String>,
+    ) -> std::collections::BTreeSet<String> {
+        // Defense against cycles. The validator's ComposeCycle rule is
+        // the real enforcement; this avoids infinite recursion against
+        // a not-yet-validated workspace.
+        if visited.iter().any(|n| n == recipe_name) {
+            return std::collections::BTreeSet::new();
+        }
+        let Some(sig) = self.by_name.get(recipe_name) else {
+            return std::collections::BTreeSet::new();
+        };
+        if !sig.output_types.is_empty() {
+            return sig.output_types.clone();
+        }
+        // The recipe's own projection is empty. Two cases reach this:
+        // scraping/empty bodies that emit nothing (return the empty
+        // set unchanged) and composition bodies without a declared
+        // `emits` (chase the chain's terminal stage).
+        let crate::ast::RecipeBody::Composition(comp) = &sig.body else {
+            return std::collections::BTreeSet::new();
+        };
+        let Some(final_stage) = comp.stages.last() else {
+            return std::collections::BTreeSet::new();
+        };
+        if final_stage.author.is_some() {
+            // Hub-dep stages aren't resolved through this map; the
+            // validator rejects them with `HubDepStageUnsupported`.
+            return std::collections::BTreeSet::new();
+        }
+        visited.push(recipe_name.to_string());
+        let resolved = self.resolve_output_types_visited(&final_stage.name, visited);
+        visited.pop();
+        resolved
+    }
 }
 
 impl RecipeSignature {
     /// Project one `ForageFile` into a signature record.
     pub fn from_file(file: &ForageFile) -> Self {
-        let output_types = match &file.emits {
-            Some(decl) => decl.types.iter().cloned().collect(),
-            None => file.emit_types(),
-        };
         Self {
             inputs: file.inputs.clone(),
             emits: file.emits.clone(),
             body: file.body.clone(),
-            output_types,
+            output_types: file.resolved_output_types(),
         }
     }
 }
@@ -777,6 +837,7 @@ pub fn type_cache_file(cache_root: &Path, author: &str, name: &str, version: u32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
 
     fn write(path: &Path, body: &str) {
@@ -1397,5 +1458,110 @@ mod tests {
 
         assert_eq!(back.types, original.types);
         assert_eq!(back.enums, original.enums);
+    }
+
+    /// `RecipeSignatures::resolve_output_types` reports the terminal
+    /// stage's emits for a composition recipe that has no declared
+    /// `emits` clause of its own. The notebook picker and any other
+    /// "what does this recipe produce" consumer needs this so a
+    /// `compose A | B` recipe registers as a producer of B's output
+    /// type even without an `emits` declaration on the composition.
+    #[test]
+    fn resolve_output_types_chases_composition_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("Product.forage"),
+            "share type Product { id: String }\n",
+        );
+        write(
+            &root.join("scrape.forage"),
+            "recipe \"scrape\"\nengine http\n\
+             step list { method \"GET\" url \"https://x.test\" }\n\
+             emit Product { id ← \"a\" }\n",
+        );
+        write(
+            &root.join("enrich.forage"),
+            "recipe \"enrich\"\nengine http\n\
+             input prior: [Product]\n\
+             step list { method \"GET\" url \"https://x.test\" }\n\
+             emit Product { id ← \"b\" }\n",
+        );
+        // Composition recipe carries no `emits` clause; its output
+        // must resolve to `enrich`'s output (the chain's terminal
+        // stage) via chain resolution.
+        write(
+            &root.join("composed.forage"),
+            "recipe \"composed\"\nengine http\n\
+             compose \"scrape\" | \"enrich\"\n",
+        );
+        let ws = load(root).unwrap();
+        let signatures = ws.recipe_signatures();
+
+        // The composition recipe's own `output_types` field is empty
+        // (no declared emits, no body emits).
+        let composed_sig = signatures.get("composed").expect("composed signature");
+        assert!(
+            composed_sig.output_types.is_empty(),
+            "composition without emits has empty local output_types: {:?}",
+            composed_sig.output_types,
+        );
+
+        // Chain resolution walks to the terminal stage and reports
+        // its output.
+        let resolved = signatures.resolve_output_types("composed");
+        let expected: BTreeSet<String> = ["Product".to_string()].into_iter().collect();
+        assert_eq!(resolved, expected);
+    }
+
+    /// Multi-level composition: `outer = compose middle | tail`;
+    /// `middle = compose leaf | passthrough`; the chain bottoms out
+    /// at scraping recipes that emit Product. `resolve_output_types`
+    /// chases through both composition levels to find Product.
+    #[test]
+    fn resolve_output_types_recurses_through_composed_compositions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("Product.forage"),
+            "share type Product { id: String }\n",
+        );
+        write(
+            &root.join("leaf.forage"),
+            "recipe \"leaf\"\nengine http\n\
+             step list { method \"GET\" url \"https://x.test\" }\n\
+             emit Product { id ← \"a\" }\n",
+        );
+        write(
+            &root.join("passthrough.forage"),
+            "recipe \"passthrough\"\nengine http\n\
+             input prior: [Product]\n\
+             step list { method \"GET\" url \"https://x.test\" }\n\
+             emit Product { id ← \"b\" }\n",
+        );
+        write(
+            &root.join("tail.forage"),
+            "recipe \"tail\"\nengine http\n\
+             input prior: [Product]\n\
+             step list { method \"GET\" url \"https://x.test\" }\n\
+             emit Product { id ← \"c\" }\n",
+        );
+        write(
+            &root.join("middle.forage"),
+            "recipe \"middle\"\nengine http\n\
+             compose \"leaf\" | \"passthrough\"\n",
+        );
+        write(
+            &root.join("outer.forage"),
+            "recipe \"outer\"\nengine http\n\
+             compose \"middle\" | \"tail\"\n",
+        );
+        let ws = load(root).unwrap();
+        let signatures = ws.recipe_signatures();
+        let resolved = signatures.resolve_output_types("outer");
+        let expected: BTreeSet<String> = ["Product".to_string()].into_iter().collect();
+        assert_eq!(resolved, expected);
     }
 }

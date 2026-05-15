@@ -70,7 +70,7 @@ pub struct TypeFieldAlignment {
 ///
 /// `input_type_refs` and `output_type_refs` partition `type_refs` by the
 /// role the recipe gives each type. A type may appear in both
-/// (enrichment recipes like `input T → output T`). A type can also
+/// (enrichment recipes like `input T → emits T`). A type can also
 /// appear in `type_refs` but in neither input nor output — a
 /// `share`d type the recipe carries through without reading or
 /// emitting (the workspace shipped it alongside the recipe). The hub
@@ -90,9 +90,11 @@ pub struct PackageVersion {
     /// declarations. The hub indexes recipes by these for
     /// `consumers_of(T)`.
     pub input_type_refs: Vec<TypeRef>,
-    /// Subset of `type_refs` the recipe produces via its `output T |
-    /// U | …` signature. The hub indexes recipes by these for
-    /// `producers_of(T)`.
+    /// Subset of `type_refs` the recipe produces — declared `emits T
+    /// | U | …` when the source has one, otherwise inferred from the
+    /// recipe body's `emit X { … }` statements. Wire field name is
+    /// historical (`output_type_refs`); the source-side keyword is
+    /// `emits`. The hub indexes recipes by these for `producers_of(T)`.
     pub output_type_refs: Vec<TypeRef>,
     pub fixtures: Vec<PackageFixture>,
     pub snapshot: Option<PackageSnapshot>,

@@ -2137,11 +2137,12 @@ pub async fn notebook_run(
 /// `notebook_save`.
 ///
 /// `output_type` is the tail stage's output type name. It rides
-/// onto the synthesized recipe as `output T` so the validator can
+/// onto the synthesized recipe as `emits T` so the validator can
 /// check the composition's chain and the daemon can build an output-
 /// store schema. The frontend already knows this from the picker's
-/// `RecipeSignatureWire`; passing `None` synthesizes a no-output
-/// recipe that runs ephemerally but can't persist records.
+/// `RecipeSignatureWire`; passing `None` synthesizes a recipe with
+/// no `emits` clause that runs ephemerally but can't persist records
+/// (the daemon's `derive_schema` returns no tables for it).
 #[tauri::command]
 pub fn notebook_compose_source(
     name: String,
@@ -2208,7 +2209,13 @@ pub fn list_workspace_recipe_signatures(
                     optional: i.optional,
                 })
                 .collect(),
-            outputs: sig.output_types.iter().cloned().collect(),
+            // Chain-resolved: a composition recipe without a declared
+            // `emits` clause reports its terminal stage's output here
+            // so the notebook picker's "produces T" filter finds it.
+            outputs: signatures
+                .resolve_output_types(name)
+                .into_iter()
+                .collect(),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2236,7 +2243,7 @@ pub fn parse_recipe_signature(source: String) -> Option<RecipeSignatureWire> {
                 optional: i.optional,
             })
             .collect(),
-        outputs: parsed.emit_types().into_iter().collect(),
+        outputs: parsed.resolved_output_types().into_iter().collect(),
     })
 }
 

@@ -1509,6 +1509,15 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+        // Composition recipes carry no body `emit` statements of their
+        // own — the chain's terminal stage produces the records, not
+        // this recipe. The `emits` clause on a composition is the
+        // declared signature of what the chain emits; the pipe-boundary
+        // check enforces it. Skip the body-emit walk here so the
+        // composition doesn't spuriously trip `UnusedInEmits`.
+        if matches!(self.file.body, crate::ast::RecipeBody::Composition(_)) {
+            return;
+        }
         let emitted = self.file.emit_types();
         for name in &out.types {
             if !emitted.contains(name) {
@@ -3369,6 +3378,49 @@ emit Item { }
     }
 
     #[test]
+    fn composition_with_declared_emits_does_not_warn_unused() {
+        // A composition recipe has no body `emit` statements of its
+        // own — its records flow through from the chain's terminal
+        // stage. The `UnusedInEmits` walk must skip composition
+        // bodies; otherwise every clean `emits T` on a `compose A | B`
+        // recipe would trip a spurious warning.
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            emits Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "y" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            emits Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            !rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::UnusedInEmits),
+            "composition with declared `emits` must not warn UnusedInEmits: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
     fn emit_not_in_emits_diagnostic_anchors_at_emit_site() {
         let src = "recipe \"anchor\"\nengine http\nemits Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
         let r = parse(src).unwrap();
@@ -3537,6 +3589,94 @@ emit Item { }
                 .iter()
                 .any(|i| i.code == ValidationCode::EmptyComposeStage),
             "stage with no emits + no emit statements must be flagged: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn multi_type_compose_stage_via_declared_emits_rejected() {
+        // Upstream declares `emits Product | Variant`. Two declared
+        // output types collapse the composition's downstream input
+        // ambiguity; the validator must reject via MultiTypeComposeStage.
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            type Variant { id: String }
+            emits Product | Variant
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+            emit Variant { id ← "y" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            emits Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "z" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            emits Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::MultiTypeComposeStage),
+            "declared multi-type upstream must be flagged: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn multi_type_compose_stage_via_inferred_emits_rejected() {
+        // Upstream omits `emits` but body emits two distinct types.
+        // Inference resolves the stage's output to {Product, Variant};
+        // the validator must reject via MultiTypeComposeStage just like
+        // the declared form.
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            type Variant { id: String }
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+            emit Variant { id ← "y" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            emits Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "z" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            emits Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::MultiTypeComposeStage),
+            "inferred multi-type upstream must be flagged: {:?}",
             rep.issues,
         );
     }

@@ -43,7 +43,7 @@ Recipes that need the deeply-nested structure read it from `_raw`.
 
 Combine `wikidataEntity` with the type-extension shape: declare a
 child type that adds the fields reconciliation can populate, then
-write a `input [Parent] -> output Child` recipe that fills those
+write a `input [Parent] → emits Child` recipe that fills those
 fields from the Wikidata entity.
 
 ```forage
@@ -104,7 +104,7 @@ compose "scrape-companies" | "wikidata-reconcile"
 `scrape-companies` produces `Company` records with `wikidataId` set
 from the source. `wikidata-reconcile` is the typed function
 `[Company] -> EnrichedCompany` from above. Composition validates
-because the output / input types line up.
+because the emitted / input types line up.
 
 ## Replay
 

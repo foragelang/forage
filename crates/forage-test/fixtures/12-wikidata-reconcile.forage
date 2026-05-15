@@ -1,7 +1,7 @@
 // Wikidata reconciliation: take a list of Company records each
 // carrying a `wikidataId` Q-ID, fetch the entity, and merge selected
 // claims into an EnrichedCompany. The canonical adapter shape for
-// enrichment recipes — `input Company -> output EnrichedCompany`
+// enrichment recipes — `input Company → emits EnrichedCompany`
 // where the child type extends the parent and adds the fields that
 // reconciliation can populate.
 //

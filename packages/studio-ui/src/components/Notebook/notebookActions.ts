@@ -79,7 +79,7 @@ export async function commitNotebookPublish(args: {
     const stageNames = stages.map((s) => s.name);
     // The composition's output type is the tail stage's output — what
     // the chain emits is what its last stage emits. Captured at add-
-    // time on the stage so we can stamp `output T` on the synthesized
+    // time on the stage so we can stamp `emits T` on the synthesized
     // recipe without re-fetching the stage's signature.
     const tailOutput = stages[stages.length - 1]?.outputType ?? null;
     try {

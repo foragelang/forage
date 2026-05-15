@@ -61,11 +61,14 @@ impl ForageFile {
     /// `ExtractionExpr::MapTo { emission }` inside extraction
     /// expressions, and the browser config's capture / document-
     /// capture bodies. The single canonical walker — the validator's
-    /// emit-vs-`emits` cross-check, the composition signature, and the
-    /// daemon's `derive_schema` all go through this.
+    /// emit-vs-`emits` cross-check and the daemon's `derive_schema`
+    /// both go through this.
     ///
     /// Empty for composition and for header-less files (neither carries
-    /// `emit` statements of their own).
+    /// `emit` statements of their own). For composition recipes the
+    /// "what does this recipe emit" question is answered by
+    /// `resolved_output_types`, which falls back to the declared
+    /// `emits` clause.
     pub fn emit_types(&self) -> std::collections::BTreeSet<String> {
         let mut out = std::collections::BTreeSet::new();
         collect_body_emit_types(&self.body, &mut out);
@@ -78,6 +81,23 @@ impl ForageFile {
             }
         }
         out
+    }
+
+    /// The "what types does this recipe emit" projection used by
+    /// every caller that asks the question at recipe granularity:
+    /// `RecipeSignature::from_file`, the Studio
+    /// `parse_recipe_signature` wire, and the hub publish flow's
+    /// input/output role partition. Declared `emits` wins when the
+    /// source supplies one; otherwise inferred from the body via
+    /// `emit_types`. The two projections must stay in lockstep —
+    /// inconsistency between this and `emit_types` is what produced
+    /// the bug where hub composition recipes silently dropped out of
+    /// type-filtered pickers.
+    pub fn resolved_output_types(&self) -> std::collections::BTreeSet<String> {
+        match &self.emits {
+            Some(decl) => decl.types.iter().cloned().collect(),
+            None => self.emit_types(),
+        }
     }
 
     pub fn function(&self, name: &str) -> Option<&FnDecl> {

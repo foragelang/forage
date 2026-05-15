@@ -329,7 +329,7 @@ export interface StudioService {
     }): Promise<RunOutcome>;
     /// Render the `.forage` source a `notebookSave` would write,
     /// without touching disk. Used to power the publish-preview pane.
-    /// `outputType` rides onto the synthesized recipe as `output T`;
+    /// `outputType` rides onto the synthesized recipe as `emits T`;
     /// pass the tail stage's output type so the published recipe
     /// can persist records.
     composeNotebookSource(

@@ -81,7 +81,7 @@ top_level_form       := recipe_header
                       | type_decl
                       | enum_decl
                       | input_decl
-                      | output_decl
+                      | emits_decl
                       | secret_decl
                       | fn_decl
                       | auth_block

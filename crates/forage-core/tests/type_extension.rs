@@ -3,7 +3,7 @@
 //!
 //! The adapter-recipe test exercises the typed-hub composition flow:
 //! a `parent_emitter | adapter_to_child` chain where the adapter
-//! declares `input Parent → output Child`, the validator confirms the
+//! declares `input Parent → emits Child`, the validator confirms the
 //! pipe boundary, and the type catalog resolves the child's effective
 //! shape (parent fields + alignments + child additions).
 
@@ -283,8 +283,8 @@ fn adapter_recipe_pipes_parent_records_into_child() {
     );
 
     // Chain: `producer | to-enhanced` type-checks because the adapter
-    // has `input parents: [Parent]` matching the producer's `output
-    // Parent`.
+    // has `input parents: [Parent]` matching the producer's emitted
+    // `Parent` (declared via the producer's `emits Parent` clause).
     let cat = TypeCatalog::from_file(&chain);
     let signatures = signatures_from(&[("producer", &producer), ("to-enhanced", &adapter)]);
     let rep = validate(&chain, &cat, &signatures);
@@ -296,10 +296,10 @@ fn adapter_recipe_pipes_parent_records_into_child() {
 }
 
 #[test]
-fn adapter_recipe_rejected_when_output_unrelated_to_input() {
+fn adapter_recipe_rejected_when_emits_unrelated_to_input() {
     // The validator's IncompatiblePipeStage rule rejects an adapter
-    // whose output type doesn't match the upstream output: there's no
-    // structural link between the input and output types.
+    // whose emitted type doesn't match the upstream output: there's
+    // no structural link between the input and emitted types.
     let producer_src = "\
         recipe \"producer\"\n\
         engine http\n\

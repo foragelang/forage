@@ -34,12 +34,13 @@ export type NotebookStage = {
     /// `@author/name` references carry the author here so the
     /// type-shaped picker can render the citation chip.
     author: string | null;
-    /// The stage's declared output type at add-time. Captured so
-    /// "publish notebook" can stamp the right `output T` on the
-    /// synthesized recipe (the tail stage's output flows out of the
-    /// composition). `null` for recipes that haven't migrated to a
-    /// typed output — the publish path falls back to a no-output
-    /// composition the daemon still runs ephemerally.
+    /// The stage's resolved output type at add-time — declared `emits`
+    /// when the source has one, otherwise inferred from the body.
+    /// Captured so "publish notebook" can stamp the right `emits T`
+    /// on the synthesized recipe (the tail stage's output flows out
+    /// of the composition). `null` for recipes whose output is
+    /// ambiguous (zero or many types) — the publish path falls back
+    /// to a no-`emits` composition the daemon runs ephemerally.
     outputType: string | null;
 };
 

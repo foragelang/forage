@@ -721,6 +721,26 @@ fn duplicate_emits_decl_is_a_parse_error() {
 }
 
 #[test]
+fn legacy_output_keyword_is_rejected() {
+    // `output` was the pre-`emits` keyword. It must not parse: with
+    // `output` no longer reserved, `output T` lexes as an identifier
+    // and falls through to the top-level dispatch's unexpected-token
+    // arm. Guards against accidentally re-adding the keyword.
+    let src = r#"
+        recipe "stale"
+        engine http
+        output Item
+        type Item { id: String }
+        step list { method "GET" url "https://x.test" }
+        emit Item { id ← "a" }
+    "#;
+    assert!(
+        parse(src).is_err(),
+        "legacy `output` clause must not parse"
+    );
+}
+
+#[test]
 fn parses_compose_body_as_composition() {
     let src = r#"
         recipe "enriched-products"

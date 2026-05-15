@@ -195,3 +195,32 @@ fn load_records_excludes_bookkeeping_columns() {
     assert!(!keys.contains("_scheduled_run_id"));
     assert!(!keys.contains("_emitted_at"));
 }
+
+/// `derive_schema` against a composition recipe with a declared
+/// `emits` clause pre-creates the tables the chain's output store
+/// needs. The composition body has no `emit` statements of its own —
+/// records arrive via the chain's terminal stage — so derive_schema
+/// reads the declared `emits` to know which types the store must hold.
+#[test]
+fn derive_schema_creates_tables_from_emits_on_composition_body() {
+    const COMPOSITION: &str = r#"recipe "composed"
+engine http
+
+type Product {
+    id: String
+}
+
+emits Product
+
+compose "scrape" | "enrich"
+"#;
+    let recipe = parse(COMPOSITION).expect("parse");
+    let catalog = TypeCatalog::from_file(&recipe);
+    let tables = derive_schema(&recipe, &catalog);
+    let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Product"],
+        "declared `emits Product` on a composition recipe must contribute a Product table"
+    );
+}
