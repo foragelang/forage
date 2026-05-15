@@ -94,7 +94,6 @@ describe("HubStudioService", () => {
                 fixtures: [],
                 snapshot: null,
                 base_version: 1,
-                forked_from: null,
             })
             .catch((e) => e as unknown);
         expect(err).toBeInstanceOf(StaleBaseError);

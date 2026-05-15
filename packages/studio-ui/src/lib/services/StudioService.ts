@@ -139,6 +139,11 @@ export class StaleBaseError extends Error {
     }
 }
 
+// `forked_from` is server-owned: the fork endpoint stamps it on the
+// v1 metadata, and the server preserves it across subsequent
+// publishes against the fork. Letting clients pass it would let a
+// caller synthesize a fake lineage on a brand-new package, so it's
+// intentionally absent from the publish wire.
 export type PublishPayload = {
     description: string;
     category: string;
@@ -148,7 +153,6 @@ export type PublishPayload = {
     fixtures: PackageFixture[];
     snapshot: PackageSnapshot | null;
     base_version: number | null;
-    forked_from: ForkedFrom | null;
 };
 
 // --- Service capabilities ----------------------------------------------
