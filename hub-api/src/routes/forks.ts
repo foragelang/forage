@@ -23,6 +23,14 @@ import { validateSegment, newForkedFrom } from './packages'
 // to `:upstreamSlug`) with v1 carrying the upstream's full content +
 // `forked_from` lineage. Bumps upstream's `fork_count` + `downloads`.
 //
+// Materialized-copy semantics: the fork's v1 is a full snapshot of
+// the upstream's latest version (recipe + decls + fixtures +
+// snapshot). For 20 MiB R2-backed artifacts that means a full R2
+// fetch + KV write at fork time. The plan picks this over a "lazy"
+// `forked_from`-only fork so the fork is self-contained and diverges
+// cleanly from the upstream — no implicit content tracking, no
+// dependency on the upstream version remaining reachable.
+//
 // One-shot lineage: the fork is independent after creation. There is
 // no auto-tracking and `forked_from` is not updated on subsequent
 // publishes against the fork.
