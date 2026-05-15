@@ -8,6 +8,7 @@
 //! that Studio renders when the server returns 409 stale-base.
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -239,22 +240,22 @@ pub struct PublishPreview {
     pub fixtures_count: u32,
 }
 
-/// Author + slug regex — matches the hub's SEGMENT_RE.
-const SEGMENT_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,38}$";
+/// Author + slug regex — matches the hub's SEGMENT_RE. Compiled
+/// once; the deeplink handler can fire repeatedly so we don't want
+/// per-call regex construction in the hot path.
+static SEGMENT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^[a-z0-9][a-z0-9-]{0,38}$").expect("static SEGMENT_RE must compile")
+});
 
 /// Validate a `(author, slug)` pair against the regex the hub uses.
 /// The deeplink handler runs this before passing the values into
 /// `sync_from_hub` so an opportunistic URL can't smuggle a `..` or a
 /// shell escape through.
 pub fn validate_segments(author: &str, slug: &str) -> Result<(), String> {
-    let re = match regex::Regex::new(SEGMENT_PATTERN) {
-        Ok(r) => r,
-        Err(_) => return Err("segment regex is itself broken".into()),
-    };
-    if !re.is_match(author) {
+    if !SEGMENT_RE.is_match(author) {
         return Err(format!("invalid author segment: {author}"));
     }
-    if !re.is_match(slug) {
+    if !SEGMENT_RE.is_match(slug) {
         return Err(format!("invalid slug segment: {slug}"));
     }
     Ok(())
