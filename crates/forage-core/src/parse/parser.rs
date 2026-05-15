@@ -515,22 +515,41 @@ impl Parser {
         matches!(self.peek(), Some(Token::Keyword(k)) if k == kw)
     }
 
-    /// alignment_uri := segment ('.' segment)* '/' segment ('.' segment)*
+    /// alignment_uri := segment ('.' segment)* ('/' segment ('.' segment)*)?
+    ///                 | '/' segment ('.' segment)*
     ///
     /// `segment` is any ident-like token: `Ident`, `TypeName`, or a
     /// `Keyword` (so terms like `schema.org/name` parse — `name` is a
-    /// recipe keyword in another context). The ontology is everything
-    /// before the first `/`, joined by `.`; the term is everything after,
-    /// also joined by `.`. The grammar requires at least one `/` and at
-    /// least one segment on each side; malformed inputs surface in the
-    /// validator with `MalformedAlignment` (e.g. empty ontology, empty
-    /// term) — the parser only refuses to advance when no segment is
-    /// available at all.
+    /// recipe keyword in another context). The ontology is the dotted
+    /// path before the first `/`; the term is the dotted path after.
+    ///
+    /// The parser is permissive: a missing `/` (e.g. `aligns invalid`),
+    /// a missing term after `/`, or a missing ontology before `/` each
+    /// produce an `AlignmentUri` with the empty piece as `""`. The
+    /// validator's `MalformedAlignment` rule surfaces the empty pieces;
+    /// keeping the malformed shape in the AST gives the diagnostic a
+    /// real span rather than a generic parse failure.
     fn parse_alignment_uri(&mut self) -> Result<AlignmentUri, ParseError> {
         let start = self.current_span().start;
-        let ontology = self.parse_dotted_segments()?;
-        self.expect_punct(&Token::Slash)?;
-        let term = self.parse_dotted_segments()?;
+        let ontology = if self.peek_is_alignment_segment() {
+            self.parse_alignment_path()?
+        } else {
+            String::new()
+        };
+        let term = if self.eat_punct(&Token::Slash) {
+            if self.peek_is_alignment_segment() {
+                self.parse_alignment_path()?
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        // Refuse only the case where nothing at all was consumed —
+        // `aligns` followed by a non-segment, non-slash token.
+        if ontology.is_empty() && term.is_empty() && self.span_to_here(start).is_empty() {
+            return Err(self.unexpected("alignment URI"));
+        }
         Ok(AlignmentUri {
             ontology,
             term,
@@ -538,9 +557,10 @@ impl Parser {
         })
     }
 
-    /// One or more `<segment>` joined by `.`. Caller has already
-    /// positioned the cursor at the first segment.
-    fn parse_dotted_segments(&mut self) -> Result<String, ParseError> {
+    /// One or more `<segment>` joined by `.`. Errors only when no segment
+    /// is available at all — the validator catches whatever the resulting
+    /// `AlignmentUri` is missing.
+    fn parse_alignment_path(&mut self) -> Result<String, ParseError> {
         let mut out = String::new();
         out.push_str(&self.expect_alignment_segment()?);
         while self.eat_punct(&Token::Dot) {
@@ -559,6 +579,13 @@ impl Parser {
             }
             _ => Err(self.unexpected("alignment URI segment")),
         }
+    }
+
+    fn peek_is_alignment_segment(&self) -> bool {
+        matches!(
+            self.peek(),
+            Some(Token::Ident(_)) | Some(Token::TypeName(_)) | Some(Token::Keyword(_)),
+        )
     }
 
     /// Field-position identifiers can be keywords (e.g. `name: String`).

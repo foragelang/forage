@@ -274,6 +274,16 @@ pub enum ValidationCode {
     /// `T` (conditionally, based on inputs) is legitimate, but
     /// most of the time this is a stale signature.
     UnusedInOutput,
+    /// An `aligns <uri>` clause is structurally malformed — empty
+    /// ontology, empty term, or missing the `/` separator. The validator
+    /// does not check that the ontology / term actually exist in some
+    /// external registry; that's the hub's responsibility. This rule
+    /// only catches syntactic shapes that can't possibly index.
+    MalformedAlignment,
+    /// A type or field declares the same alignment URI twice. Duplicate
+    /// indexing has no semantic effect but is almost always a typo —
+    /// surface it so the author keeps the declaration list tidy.
+    DuplicateAlignment,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -442,11 +452,73 @@ impl<'a> Validator<'a> {
         self.check_recipe_headers();
         self.check_recipe_context();
         self.check_duplicates();
+        self.check_alignments();
         self.check_engine_consistency();
         self.check_user_fns();
         self.check_references();
         self.check_emit_records();
         self.check_output_decl();
+    }
+
+    /// Surface malformed alignment URIs and duplicate alignment URIs on
+    /// each type's type-level alignments and per-field alignment.
+    /// Semantic checks (does `schema.org/Product` actually exist?) live
+    /// on the hub side; this pass is purely structural.
+    fn check_alignments(&mut self) {
+        for ty in &self.file.types.clone() {
+            self.check_alignment_list(&ty.alignments, &format!("type '{}'", ty.name));
+            for field in &ty.fields {
+                if let Some(uri) = &field.alignment {
+                    self.check_one_alignment(
+                        uri,
+                        &format!("field '{}.{}'", ty.name, field.name),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Run malformed + duplicate checks against a vector of alignments.
+    /// `where_` is a human-readable site descriptor for the diagnostic
+    /// message ("type 'Product'", "field 'Product.name'").
+    fn check_alignment_list(&mut self, list: &[AlignmentUri], where_: &str) {
+        for uri in list {
+            self.check_one_alignment(uri, where_);
+        }
+        // Duplicates: same ontology + term within the same list.
+        let mut seen: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        for uri in list {
+            let key = (uri.ontology.as_str(), uri.term.as_str());
+            if !seen.insert(key) {
+                self.err(
+                    uri.span.clone(),
+                    ValidationCode::DuplicateAlignment,
+                    format!(
+                        "{where_} declares the same alignment '{}/{}' more than once",
+                        uri.ontology, uri.term,
+                    ),
+                );
+            }
+        }
+    }
+
+    fn check_one_alignment(&mut self, uri: &AlignmentUri, where_: &str) {
+        if uri.ontology.is_empty() {
+            self.err(
+                uri.span.clone(),
+                ValidationCode::MalformedAlignment,
+                format!("{where_} declares an alignment with an empty ontology"),
+            );
+        }
+        if uri.term.is_empty() {
+            self.err(
+                uri.span.clone(),
+                ValidationCode::MalformedAlignment,
+                format!(
+                    "{where_} declares an alignment with an empty term (missing '/term' after ontology)",
+                ),
+            );
+        }
     }
 
     /// Walk every `fn` declaration: duplicate detection, parameter rules,
@@ -2337,6 +2409,153 @@ emit Item { }
                 .iter()
                 .any(|i| i.code == ValidationCode::DuplicateRecipeName)),
             "expected DuplicateRecipeName on file B; got {by_path:?}",
+        );
+    }
+
+    #[test]
+    fn well_formed_alignment_passes() {
+        let src = r#"
+            share type Product
+                aligns schema.org/Product
+                aligns wikidata/Q2424752
+            {
+                name: String aligns schema.org/name
+                description: String? aligns schema.org/description
+                price: Double aligns schema.org/offers.price
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            !rep.errors().any(|i| matches!(
+                i.code,
+                ValidationCode::MalformedAlignment | ValidationCode::DuplicateAlignment,
+            )),
+            "well-formed alignments must validate clean; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn alignment_without_slash_flagged_as_malformed() {
+        let src = r#"
+            share type Product aligns invalid {
+                name: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::MalformedAlignment)
+            .expect("MalformedAlignment");
+        assert!(
+            issue.message.contains("type 'Product'") && issue.message.contains("empty term"),
+            "expected message to anchor on type 'Product' and mention empty term; got {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn field_level_alignment_without_slash_flagged() {
+        let src = r#"
+            share type Product {
+                name: String aligns bare
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::MalformedAlignment)
+            .expect("MalformedAlignment");
+        assert!(
+            issue.message.contains("field 'Product.name'"),
+            "expected message to anchor on the field site; got {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn alignment_with_empty_ontology_flagged_as_malformed() {
+        let src = r#"
+            share type Product aligns /Product {
+                name: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
+                && i.message.contains("empty ontology")),
+            "expected MalformedAlignment for empty ontology; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn alignment_with_empty_term_flagged_as_malformed() {
+        let src = r#"
+            share type Product aligns schema.org/ {
+                name: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
+                && i.message.contains("empty term")),
+            "expected MalformedAlignment for empty term; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn duplicate_type_level_alignment_flagged() {
+        let src = r#"
+            share type Product
+                aligns schema.org/Product
+                aligns schema.org/Product
+            {
+                name: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::DuplicateAlignment)
+            .expect("DuplicateAlignment");
+        assert!(
+            issue.message.contains("schema.org/Product"),
+            "expected message to name the duplicated URI; got {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn distinct_alignments_on_different_ontologies_do_not_collide() {
+        let src = r#"
+            share type Product
+                aligns schema.org/Product
+                aligns wikidata/Q2424752
+            {
+                name: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            !rep.errors().any(|i| i.code == ValidationCode::DuplicateAlignment),
+            "distinct ontologies must not collide; got {:?}",
+            rep.issues,
         );
     }
 

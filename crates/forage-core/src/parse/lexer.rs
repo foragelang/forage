@@ -196,6 +196,12 @@ impl<'a> Lexer<'a> {
     /// (`{`, `(`, `[`, `,`), a `←` / `→` / `|`, or at the start of input.
     /// After a value-producing token (identifier, number, `]`, `)`, `}`)
     /// a `/` is binary division.
+    ///
+    /// `aligns` is the one keyword that introduces a `/`-separated URI
+    /// rather than a fresh expression slot, so a `/` immediately after
+    /// it must lex as a `Slash` (the alignment URI's ontology/term
+    /// separator). Without this carve-out, `aligns /Term` would scan
+    /// the rest of the line as a regex literal.
     fn regex_allowed_here(&self) -> bool {
         let Some((prev, _)) = self.out.last() else {
             return true;
@@ -219,6 +225,9 @@ impl<'a> Lexer<'a> {
             | Token::RBracket
             | Token::RBrace
             | Token::Wildcard => false,
+            // `aligns` introduces an alignment URI; the next `/` is its
+            // ontology/term separator, not the start of a regex.
+            Token::Keyword(k) if k == "aligns" => false,
             // Everything else — operators, openers, punctuation — opens
             // a fresh expression slot.
             _ => true,
