@@ -17,14 +17,14 @@ describe('user profile', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p1/versions',
                 a,
-                publishRequest({ description: 'one' }),
+                publishRequest('p1', { description: 'one' }),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/p2/versions',
                 a,
-                publishRequest({ description: 'two' }),
+                publishRequest('p2', { description: 'two' }),
             ),
         )
         const b = await userToken('bob')
@@ -32,7 +32,7 @@ describe('user profile', () => {
             authedPostJson(
                 'https://hub/v1/packages/bob/q/versions',
                 b,
-                publishRequest({ description: 'b' }),
+                publishRequest('q', { description: 'b' }),
             ),
         )
         await fetchJson(
@@ -71,7 +71,7 @@ describe('user profile', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         // bob has no published packages and no OAuth row (the JWT is
@@ -97,7 +97,7 @@ describe('user profile', () => {
                 authedPostJson(
                     `https://hub/v1/packages/alice/${slug}/versions`,
                     a,
-                    publishRequest({ description: slug }),
+                    publishRequest(slug, { description: slug }),
                 ),
             )
         }

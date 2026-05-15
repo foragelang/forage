@@ -43,7 +43,12 @@ const MAX_TAGS = 16
 const MAX_CATEGORY_LEN = 64
 const MAX_DESCRIPTION_LEN = 2048
 
-const RECIPE_HEAD_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"/
+// Captures the recipe header name out of the publish payload's
+// `recipe` field. The hub-side slug equals the recipe's header name —
+// keying data dirs, sidecars, and daemon state off a value that
+// silently drifts from the URL slug would break the round-trip — so
+// publish-time validation enforces the match.
+const RECIPE_HEAD_NAME_RE = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*recipe\s+"([^"]+)"/
 
 const FILE_NAME_RE = /^[a-z0-9][a-z0-9._\-]*(?:\/[a-z0-9][a-z0-9._\-]*)*\.forage$/i
 const FIXTURE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,127}$/
@@ -246,9 +251,18 @@ export async function publishVersion(
         return jsonError(400, 'bad_json', 'request body is not valid JSON', {}, request)
     }
 
-    const validationError = validatePublish(payload)
-    if (validationError !== null) {
-        return jsonError(400, 'invalid', validationError, {}, request)
+    const validation = validatePublish(payload)
+    if (typeof validation === 'string') {
+        return jsonError(400, 'invalid', validation, {}, request)
+    }
+    if (validation.recipeName !== slug) {
+        return jsonError(
+            400,
+            'slug_mismatch',
+            `publish slug ${slug} does not match recipe header name ${validation.recipeName}`,
+            {},
+            request,
+        )
     }
 
     const existing = await getPackage(env, author, slug)
@@ -358,7 +372,11 @@ export async function publishVersion(
 
 // --- Validation ----------------------------------------------------------
 
-function validatePublish(payload: PublishRequest): string | null {
+interface ValidatedPublish {
+    recipeName: string
+}
+
+function validatePublish(payload: PublishRequest): ValidatedPublish | string {
     if (payload === null || typeof payload !== 'object') {
         return 'body must be an object'
     }
@@ -386,9 +404,11 @@ function validatePublish(payload: PublishRequest): string | null {
     if (payload.recipe.length > MAX_RECIPE_BYTES) {
         return `recipe exceeds ${MAX_RECIPE_BYTES} bytes`
     }
-    if (!RECIPE_HEAD_RE.test(payload.recipe)) {
+    const headerMatch = payload.recipe.match(RECIPE_HEAD_NAME_RE)
+    if (headerMatch === null) {
         return 'recipe must start with `recipe "..."` (after comments / whitespace)'
     }
+    const recipeName = headerMatch[1]
     if (!Array.isArray(payload.decls) || payload.decls.length > MAX_DECLS_FILES) {
         return `decls must be an array of at most ${MAX_DECLS_FILES} files`
     }
@@ -417,7 +437,7 @@ function validatePublish(payload: PublishRequest): string | null {
     ) {
         return 'base_version must be null or a non-negative integer'
     }
-    return null
+    return { recipeName }
 }
 
 function validateFile(

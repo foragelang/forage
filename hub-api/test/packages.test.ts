@@ -24,7 +24,7 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest({ description: 'A leafy thing' }),
+                publishRequest('zen-leaf', { description: 'A leafy thing' }),
             ),
         )
         expect(status).toBe(201)
@@ -36,7 +36,7 @@ describe('publish + retrieve', () => {
 
     it('returns the atomic version artifact with recipe + decls + fixtures + snapshot', async () => {
         const token = await userToken('alice')
-        const payload = publishRequest({
+        const payload = publishRequest('atom', {
             description: 'Carries everything in one artifact',
             recipe: 'recipe "atom" {}\n',
             decls: [{ name: 'shared.forage', source: 'type X {}\n' }],
@@ -63,14 +63,14 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest({ description: 'first' }),
+                publishRequest('zen-leaf', { description: 'first' }),
             ),
         )
         const v2 = await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest({ description: 'second', base_version: 1 }),
+                publishRequest('zen-leaf', { description: 'second', base_version: 1 }),
             ),
         )
         expect(v2.status).toBe(201)
@@ -88,21 +88,21 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest(),
+                publishRequest('zen-leaf'),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest({ base_version: 1 }),
+                publishRequest('zen-leaf', { base_version: 1 }),
             ),
         )
         const stale = await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 token,
-                publishRequest({ base_version: 0 }),
+                publishRequest('zen-leaf', { base_version: 0 }),
             ),
         )
         expect(stale.status).toBe(409)
@@ -117,7 +117,7 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/new-pkg/versions',
                 token,
-                publishRequest({ base_version: 1 }),
+                publishRequest('new-pkg', { base_version: 1 }),
             ),
         )
         expect(stale.status).toBe(409)
@@ -131,11 +131,31 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/bob/foo/versions',
                 token,
-                publishRequest(),
+                publishRequest('foo'),
             ),
         )
         expect(denied.status).toBe(403)
         expect(denied.body.error.code).toBe('forbidden')
+    })
+
+    it('rejects publish whose recipe header name does not match the URL slug', async () => {
+        // The recipe header name is the hub-side slug identity:
+        // workspace data dirs, sidecars, and daemon state all key on
+        // the header name, so a publish that stamps a different name
+        // inside the body would create a round-trip mismatch on
+        // sync. The hub catches it at publish time.
+        const token = await userToken('alice')
+        const r = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/zen-leaf/versions',
+                token,
+                publishRequest('different-name'),
+            ),
+        )
+        expect(r.status).toBe(400)
+        expect(r.body.error.code).toBe('slug_mismatch')
+        expect(r.body.error.message).toContain('zen-leaf')
+        expect(r.body.error.message).toContain('different-name')
     })
 
     it('ignores caller-sent forked_from on direct publish (no lineage spoof)', async () => {
@@ -144,7 +164,7 @@ describe('publish + retrieve', () => {
         // must drop them: lineage is server-owned, never caller-set.
         const token = await userToken('alice')
         const spoofedBody = {
-            ...publishRequest({ base_version: null }),
+            ...publishRequest('forge', { base_version: null }),
             forked_from: { author: 'torvalds', slug: 'linux', version: 1 },
         }
         const r = await fetchJson(
@@ -161,7 +181,7 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/foo/versions',
                 null,
-                publishRequest(),
+                publishRequest('foo'),
             ),
         )
         expect(denied.status).toBe(401)
@@ -173,14 +193,14 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 token,
-                publishRequest({ description: 'first' }),
+                publishRequest('p', { description: 'first' }),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 token,
-                publishRequest({ description: 'second', base_version: 1 }),
+                publishRequest('p', { description: 'second', base_version: 1 }),
             ),
         )
         const latest = await fetchJson(
@@ -196,14 +216,14 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 token,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 token,
-                publishRequest({ base_version: 1 }),
+                publishRequest('p', { base_version: 1 }),
             ),
         )
         const versions = await fetchJson(
@@ -220,7 +240,7 @@ describe('publish + retrieve', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 token,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const fix = await fetchJson(
@@ -232,6 +252,29 @@ describe('publish + retrieve', () => {
         )
         expect(snap.status).toBe(404)
     })
+
+    // A flat-workspace publish — the recipe lives in `<workspace>/foo.forage`
+    // declaring `recipe "bar"` — produces a hub-side artifact under
+    // `@alice/bar` regardless of what the file basename was. The
+    // round-trip from publish → GET preserves the recipe content
+    // verbatim; the slug is the header name, not any path-derived value.
+    it('accepts a publish whose hub-side slug equals the recipe header name (not a folder basename)', async () => {
+        const token = await userToken('alice')
+        const recipeSource = 'recipe "bar" {\n  step list { source = "https://example.com" }\n}\n'
+        const r = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/bar/versions',
+                token,
+                publishRequest('bar', { recipe: recipeSource }),
+            ),
+        )
+        expect(r.status).toBe(201)
+        expect(r.body.slug).toBe('bar')
+        const fetched = await fetchJson(
+            get('https://hub/v1/packages/alice/bar/versions/1'),
+        )
+        expect(fetched.body.recipe).toBe(recipeSource)
+    })
 })
 
 describe('listing + filtering', () => {
@@ -241,14 +284,14 @@ describe('listing + filtering', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/a/versions',
                 a,
-                publishRequest({ description: 'A', category: 'dispensary' }),
+                publishRequest('a', { description: 'A', category: 'dispensary' }),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/b/versions',
                 a,
-                publishRequest({ description: 'B', category: 'menu-platform' }),
+                publishRequest('b', { description: 'B', category: 'menu-platform' }),
             ),
         )
         const list = await fetchJson(get('https://hub/v1/packages'))
@@ -265,14 +308,14 @@ describe('listing + filtering', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/a/versions',
                 a,
-                publishRequest({ category: 'dispensary' }),
+                publishRequest('a', { category: 'dispensary' }),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/b/versions',
                 a,
-                publishRequest({ category: 'menu-platform' }),
+                publishRequest('b', { category: 'menu-platform' }),
             ),
         )
         const filtered = await fetchJson(
@@ -288,14 +331,14 @@ describe('listing + filtering', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/lo/versions',
                 a,
-                publishRequest(),
+                publishRequest('lo'),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/hi/versions',
                 a,
-                publishRequest(),
+                publishRequest('hi'),
             ),
         )
         const b = await userToken('bob')
@@ -325,7 +368,7 @@ describe('R2 fallback for oversized version artifacts', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/big/versions',
                 token,
-                publishRequest({ description: 'goes to R2' }),
+                publishRequest('big', { description: 'goes to R2' }),
             ),
         )
         expect(publish.status).toBe(201)
@@ -358,14 +401,14 @@ describe('categories', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/a/versions',
                 a,
-                publishRequest({ category: 'dispensary' }),
+                publishRequest('a', { category: 'dispensary' }),
             ),
         )
         await fetchJson(
             authedPostJson(
                 'https://hub/v1/packages/alice/b/versions',
                 a,
-                publishRequest({ category: 'menu-platform' }),
+                publishRequest('b', { category: 'menu-platform' }),
             ),
         )
         const cats = await fetchJson(get('https://hub/v1/categories'))
@@ -379,7 +422,7 @@ describe('categories', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/a/versions',
                 a,
-                publishRequest({ category: 'dispensary' }),
+                publishRequest('a', { category: 'dispensary' }),
             ),
         )
         // Re-publish v2 under a different category. `dispensary` now
@@ -388,7 +431,7 @@ describe('categories', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/a/versions',
                 a,
-                publishRequest({ category: 'menu-platform', base_version: 1 }),
+                publishRequest('a', { category: 'menu-platform', base_version: 1 }),
             ),
         )
         const cats = await fetchJson(get('https://hub/v1/categories'))

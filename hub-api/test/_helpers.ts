@@ -63,14 +63,21 @@ export async function fetchJson(request: Request): Promise<{ status: number; bod
     return { status: resp.status, body }
 }
 
+// Build a canonical PublishRequest body. The recipe's header name
+// must equal the URL slug the publish posts to — the hub enforces
+// this — so the helper takes the slug as a first argument and stamps
+// it inside the recipe source. Pass `recipe:` in overrides to bypass
+// the default for tests that exercise body-level recipe content
+// (slug-mismatch tests, for instance).
 export function publishRequest(
+    slug: string,
     overrides: Partial<PublishRequest> = {},
 ): PublishRequest {
     return {
         description: 'Sample description',
         category: 'dispensary',
         tags: ['test'],
-        recipe: 'recipe "test" {\n  step list { source = "https://example.com" }\n}\n',
+        recipe: `recipe "${slug}" {\n  step list { source = "https://example.com" }\n}\n`,
         decls: [],
         fixtures: [],
         snapshot: null,

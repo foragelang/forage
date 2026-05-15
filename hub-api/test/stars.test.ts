@@ -22,7 +22,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const b = await userToken('bob')
@@ -43,7 +43,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const b = await userToken('bob')
@@ -65,7 +65,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const b = await userToken('bob')
@@ -90,7 +90,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const b = await userToken('bob')
@@ -115,7 +115,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const denied = await fetchJson(
@@ -130,7 +130,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         // Pin the social-bucket counter for bob at the cap; the next
@@ -153,7 +153,7 @@ describe('stars', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const b = await userToken('bob')

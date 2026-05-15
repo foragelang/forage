@@ -17,7 +17,7 @@ describe('downloads', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest(),
+                publishRequest('p'),
             ),
         )
         const first = await fetchJson(

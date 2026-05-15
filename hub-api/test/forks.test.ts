@@ -20,7 +20,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 a,
-                publishRequest({ description: 'upstream', category: 'dispensary' }),
+                publishRequest('zen-leaf', { description: 'upstream', category: 'dispensary' }),
             ),
         )
         const b = await userToken('bob')
@@ -60,7 +60,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 a,
-                publishRequest(),
+                publishRequest('zen-leaf'),
             ),
         )
         const b = await userToken('bob')
@@ -81,7 +81,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 a,
-                publishRequest(),
+                publishRequest('zen-leaf'),
             ),
         )
         const b = await userToken('bob')
@@ -89,7 +89,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/bob/zen-leaf/versions',
                 b,
-                publishRequest(),
+                publishRequest('zen-leaf'),
             ),
         )
         const collision = await fetchJson(
@@ -109,7 +109,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/zen-leaf/versions',
                 a,
-                publishRequest(),
+                publishRequest('zen-leaf'),
             ),
         )
         // Mint a token for `John-Doe`. GitHub returns logins with
@@ -151,7 +151,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/alice/p/versions',
                 a,
-                publishRequest({ description: 'v1' }),
+                publishRequest('p', { description: 'v1' }),
             ),
         )
         const b = await userToken('bob')
@@ -168,7 +168,7 @@ describe('forks', () => {
             authedPostJson(
                 'https://hub/v1/packages/bob/p/versions',
                 b,
-                publishRequest({ description: 'fork v2', base_version: 1 }),
+                publishRequest('p', { description: 'fork v2', base_version: 1 }),
             ),
         )
         const fork = await fetchJson(get('https://hub/v1/packages/bob/p'))
