@@ -6,22 +6,43 @@ dropped it). All subcommands are flat — `forage <subcommand>
 
 ```text
 forage run        Parse and execute a .forage recipe; print the snapshot
-forage test       Run a recipe against fixtures and diff vs expected snapshot
-forage capture    Launch a webview and record fetch/XHR exchanges to JSONL
-forage scaffold   Build a starter .forage recipe from a captures JSONL file
-forage publish    Push a recipe to the Forage hub
+forage record     Run a recipe live and write _fixtures/<recipe>.jsonl
+forage test       Run a recipe against fixtures and diff vs _snapshots/<recipe>.json
+forage new        Scaffold <workspace>/<name>.forage with a recipe header
+forage init       Drop a forage.toml so a directory becomes a workspace
+forage update     Resolve forage.toml [deps] against the hub
+forage publish    Push a recipe to the Forage hub by header name
+forage sync       Clone a published recipe into the current workspace
+forage fork       Fork an upstream recipe into your account, then clone
+forage migrate    Restructure a legacy-shape workspace to the flat shape
 forage auth       Sign in / out / check status against the Forage hub via GitHub
 forage lsp        Start the Forage Language Server on stdio
+forage scaffold   Build a starter .forage recipe from a captures JSONL file
+forage capture    (stubbed — Studio drives live capture)
 ```
 
-## `forage run <dir>`
+## Recipe addressing
 
-Loads `<dir>/recipe.forage`, validates, loads
-`<dir>/fixtures/inputs.json`, runs the engine, prints the snapshot.
+Recipe-scoped subcommands (`run`, `record`, `test`, `publish`) take a
+recipe header name. The resolver walks ancestor directories looking
+for `forage.toml`, parses every `.forage` file in the workspace, and
+matches `<name>` against each header. A path to a `.forage` file is
+accepted as a fallback for recipes outside a workspace.
+
+```sh
+cd ~/Library/Forage/Recipes
+forage run hello             # resolves the recipe by header name
+forage run ./hello.forage    # path fallback works too
+```
+
+## `forage run <recipe>`
+
+Validates, runs the engine, prints the snapshot.
 
 Flags:
-- `--replay` — use `<dir>/fixtures/captures.jsonl` instead of hitting
-  the network.
+- `--inputs <path>` — path to a JSON object of input bindings.
+- `--replay` — replay against `<workspace>/_fixtures/<recipe>.jsonl`
+  instead of hitting the network.
 - `--output {pretty|json}` — output format. Default `pretty`.
 
 Exit codes:
@@ -31,33 +52,65 @@ Exit codes:
 - `3` — one or more `expect { … }` blocks failed.
 
 ```sh
-forage run ~/Library/Forage/Recipes/hacker-news
-forage run ~/Library/Forage/Recipes/hacker-news --output json | jq '.records | length'
-forage run ~/Library/Forage/Recipes/letterboxd-popular --replay
+forage run hacker-news
+forage run hacker-news --output json | jq '.records | length'
+forage run letterboxd-popular --replay
 ```
 
-## `forage test <dir>`
+## `forage record <recipe>`
 
-Replay-mode run, then diffs the produced snapshot against
-`<dir>/expected.snapshot.json` using the `similar` crate.
-
-- `--update` (or no expected file) writes the produced snapshot as the
-  new golden.
+Run an HTTP-engine recipe live against the network and write every
+exchange to `<workspace>/_fixtures/<recipe>.jsonl` — the same format
+`--replay` consumes.
 
 ```sh
-forage test ~/Library/Forage/Recipes/hacker-news
-forage test ~/Library/Forage/Recipes/hacker-news --update
+forage record hacker-news
+forage record hacker-news --inputs ./my-inputs.json
 ```
+
+Browser-engine recipes need a real WebView for live capture; use
+Forage Studio.
+
+## `forage test <recipe>`
+
+Replay-mode run, then diffs the produced snapshot against
+`<workspace>/_snapshots/<recipe>.json` using the `similar` crate.
+
+- `--update` (or no snapshot file yet) writes the produced snapshot as
+  the new golden.
+- `--inputs <path>` — JSON inputs map.
+
+```sh
+forage test hacker-news
+forage test hacker-news --update
+```
+
+## `forage new <name>`
+
+Scaffold `<workspace>/<name>.forage` with a `recipe "<name>" engine
+http` header at the workspace root.
+
+```sh
+forage new my-recipe
+forage new my-browser-recipe --engine browser
+```
+
+## `forage init [dir]`
+
+Drop an empty `forage.toml` so the surrounding tree becomes a Forage
+workspace.
+
+## `forage update [dir]`
+
+Resolve `[deps]` in `forage.toml` against the hub, fetch each into the
+local cache, and write `forage.lock`.
 
 ## `forage capture <url>`
 
 Open a WebView, navigate to `<url>`, record every fetch/XHR + the
-final document HTML to `captures.jsonl`. Useful for reverse-engineering
-a new site before any recipe exists.
-
-Today the CLI's capture command points users at Forage Studio (it needs
-a tao event loop the standalone CLI doesn't host). Use Studio's
-**Capture** button.
+final document HTML. Today the CLI's capture command points users at
+Forage Studio (it needs a tao event loop the standalone CLI doesn't
+host). Use Studio's **Capture** button.
 
 ## `forage scaffold <captures.jsonl>`
 
@@ -66,22 +119,42 @@ URL path, emits one `step` per unique request shape, scaffolds a
 placeholder `Item` type and emit loop.
 
 ```sh
-forage scaffold ~/captures.jsonl --name my-new-recipe > ~/Library/Forage/Recipes/my-new-recipe/recipe.forage
+forage scaffold ~/captures.jsonl --name my-new-recipe > ~/Library/Forage/Recipes/my-new-recipe.forage
 ```
 
-## `forage publish <dir>`
+## `forage publish <recipe>`
 
-Push a recipe to the Forage hub.
+Push a recipe to the Forage hub. The hub-side slug is the recipe's
+header name. `forage.toml` declares the author segment via `name =
+"<author>/<anything>"`; the slug portion after the slash is decorative.
 
 ```sh
-forage publish ~/Library/Forage/Recipes/hacker-news                    # dry-run
-forage publish ~/Library/Forage/Recipes/hacker-news --publish          # actually POST
-forage publish ~/Library/Forage/Recipes/hacker-news --hub https://...  # alternate hub
-forage publish ~/Library/Forage/Recipes/hacker-news --token $TOKEN     # explicit bearer
+forage publish hacker-news                    # dry-run
+forage publish hacker-news --publish          # actually POST
+forage publish hacker-news --hub https://...  # alternate hub
+forage publish hacker-news --token $TOKEN     # explicit bearer
 ```
 
 Auth source precedence: `--token` flag → `FORAGE_HUB_TOKEN` env →
 `AuthStore` at `~/Library/Forage/Auth/<host>.json`.
+
+## `forage sync @<author>/<slug>` / `forage fork @<author>/<slug>`
+
+Clone a published recipe (or fork it first into your namespace) into
+the current workspace.
+
+```sh
+forage sync alice/zen-leaf
+forage fork alice/zen-leaf --as my-leaf
+```
+
+## `forage migrate [dir]`
+
+One-shot restructure of a pre-1.0 workspace from
+`<slug>/recipe.forage` + `<slug>/fixtures/` + `<slug>/snapshot.json`
+into the current flat shape (`<recipe>.forage` +
+`_fixtures/<recipe>.jsonl` + `_snapshots/<recipe>.json`). Dry-run by
+default; pass `--apply` to mutate.
 
 ## `forage auth`
 
@@ -113,6 +186,7 @@ See [LSP](./lsp.md) for the capability list.
 
 | Var | Effect |
 |---|---|
+| `FORAGE_WORKSPACE_ROOT` | Studio's default workspace directory |
 | `FORAGE_HUB_URL` | default hub for `publish` / `auth` |
 | `FORAGE_HUB_TOKEN` | bearer token (overrides auth store) |
 | `FORAGE_SECRET_<NAME>` | resolve `$secret.<name>` in recipes |

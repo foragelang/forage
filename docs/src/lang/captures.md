@@ -72,7 +72,7 @@ Only one `captures.document` rule per recipe.
 ## Replay vs live
 
 In **replay mode** (`forage run --replay`), captures come from
-`fixtures/captures.jsonl`. Each line is one capture:
+`<workspace>/_fixtures/<recipe>.jsonl`. Each line is one capture:
 
 ```jsonl
 {"kind":"browser","subkind":"match","url":"https://iheartjane.com/v2/smartpage?page=1","method":"GET","status":200,"body":"{\"products\":[…]}"}

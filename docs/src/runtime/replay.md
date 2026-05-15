@@ -2,28 +2,29 @@
 
 Every run produces captures: HTTP request/response pairs for HTTP
 recipes, fetch/XHR + document snapshots for browser recipes. Saving
-them under `fixtures/captures.jsonl` next to the recipe lets future
+them under `_fixtures/<recipe>.jsonl` at the workspace root lets future
 runs reproduce the same output without network.
 
-## Directory layout
+## Workspace layout
 
-Inside your workspace (`~/Library/Forage/Recipes/` on macOS by
-convention) each recipe is one directory:
+Captures and snapshots live alongside source at the workspace root,
+keyed by recipe header name:
 
 ```
-<slug>/
-├── recipe.forage
-├── expected.snapshot.json           # written by `forage test --update`
-└── fixtures/
-    ├── inputs.json
-    └── captures.jsonl
+<workspace>/
+├── forage.toml
+├── <recipe>.forage
+├── _fixtures/
+│   └── <recipe>.jsonl       # capture stream
+└── _snapshots/
+    └── <recipe>.json        # golden snapshot, written by `forage test --update`
 ```
 
 ## Recording captures
 
-- **HTTP recipes**: `forage capture <url>` (CLI) — runs a one-shot
-  request, writes the response to `captures.jsonl`. Or hand-write the
-  file from any HAR / curl output.
+- **HTTP recipes**: `forage record <recipe>` runs the recipe live and
+  writes every exchange to `_fixtures/<recipe>.jsonl`. The same JSONL
+  is what `--replay` consumes.
 - **Browser recipes**: open the recipe in Forage Studio, click
   **Capture**, the visible WebView records every fetch/XHR + the
   post-settle document. Save on close.
@@ -46,15 +47,17 @@ the recipe's `urlPattern` regex is the matcher.
 ## `forage test`
 
 ```sh
-forage test ~/Library/Forage/Recipes/hacker-news            # diff produced vs expected
-forage test ~/Library/Forage/Recipes/hacker-news --update   # rewrite expected
+forage test hacker-news            # diff produced vs golden
+forage test hacker-news --update   # rewrite the golden
 ```
 
 Workflow:
 
 1. Author the recipe, record captures, validate the snapshot manually.
-2. Run `forage test --update` once to write `expected.snapshot.json`.
-3. Commit `recipe.forage`, `fixtures/`, and `expected.snapshot.json`.
+2. Run `forage test <recipe> --update` once to write
+   `_snapshots/<recipe>.json`.
+3. Commit `<recipe>.forage`, `_fixtures/<recipe>.jsonl`, and
+   `_snapshots/<recipe>.json`.
 4. CI runs `forage test`; any divergence prints a unified diff and
    exits non-zero.
 
@@ -63,7 +66,7 @@ When a real-world response changes, re-record captures, re-run
 
 ## Why this matters
 
-- **Reproducibility.** A recipe + its fixtures + its expected snapshot
+- **Reproducibility.** A recipe + its `_fixtures/` + its `_snapshots/`
   is a self-contained reviewable unit. Reviewers can verify the recipe
   extracts what its snapshot claims without running anything.
 - **No live-API flakiness in CI.** Every recipe in the repo runs offline.

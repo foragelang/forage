@@ -45,13 +45,12 @@ for $r in $list[*] {
 
 ## Inputs
 
-`fixtures/inputs.json`:
+Save the recipe as `github-releases.forage` at the workspace root, then
+point `forage run` at an inputs JSON:
 
-```json
-{
-    "owner": "rust-lang",
-    "repo":  "rust"
-}
+```sh
+echo '{"owner":"rust-lang","repo":"rust"}' > /tmp/gh-inputs.json
+forage run github-releases --inputs /tmp/gh-inputs.json
 ```
 
 The URL template interpolates them at request time:
@@ -93,7 +92,7 @@ auth.staticHeader {
 Then run with the token in the environment:
 
 ```sh
-FORAGE_SECRET_GITHUBTOKEN=ghp_xxx forage run ~/Library/Forage/Recipes/github-releases
+FORAGE_SECRET_GITHUBTOKEN=ghp_xxx forage run github-releases --inputs /tmp/gh-inputs.json
 ```
 
 The token never appears in the recipe text, never appears in

@@ -101,9 +101,9 @@ captures.document {
 
 ## How it runs
 
-- **CLI (`forage run --replay`)** drives the recipe against
-  `fixtures/captures.jsonl` — no webview needed. Useful for snapshot
-  diffing and CI.
+- **CLI (`forage run <recipe> --replay`)** drives the recipe against
+  `<workspace>/_fixtures/<recipe>.jsonl` — no webview needed. Useful
+  for snapshot diffing and CI.
 - **CLI (`forage run`)** for browser-engine recipes needs a webview
   event loop the CLI doesn't host on its own; use Forage Studio for
   live runs.

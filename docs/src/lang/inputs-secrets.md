@@ -19,7 +19,8 @@ body, including templates:
 url "https://api.example.com/items?store={$input.storeId}"
 ```
 
-The CLI reads them from `fixtures/inputs.json` next to the recipe:
+The CLI takes an explicit `--inputs <path>` flag pointing at a JSON
+object of bindings:
 
 ```json
 {
@@ -30,8 +31,15 @@ The CLI reads them from `fixtures/inputs.json` next to the recipe:
 }
 ```
 
+```sh
+forage run remedy-maryland --inputs ./remedy-inputs.json
+```
+
 Forage Studio binds inputs through its UI; the web IDE accepts them in
 the Run panel.
+
+`input` declarations are recipe-local — they don't take `share` and
+they only appear in files that declare a recipe header.
 
 Inputs are typed. `input storeId: String` and a JSON value `577` (a
 number) trigger a coercion error before any step runs.

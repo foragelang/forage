@@ -32,8 +32,9 @@ auth.session.formLogin {
 ```
 
 The cache lands at
-`~/Library/Forage/Cache/sessions/<recipe-slug>/<fingerprint>.json`
-(`$XDG_CACHE_HOME` on Linux, `%LOCALAPPDATA%` on Windows). Properties:
+`~/Library/Forage/Cache/sessions/<recipe-name>/<fingerprint>.json`
+(`$XDG_CACHE_HOME` on Linux, `%LOCALAPPDATA%` on Windows). `<recipe-name>`
+is the recipe's header name. Properties:
 
 - **`chmod 600`** — readable only by the owning user. Enforced at write
   time on Unix.

@@ -20,7 +20,7 @@
 - [Functions](./lang/functions.md)
 - [Expectations](./lang/expectations.md)
 - [Progress](./lang/progress.md)
-- [Imports](./lang/imports.md)
+- [Sharing and dependencies](./lang/imports.md)
 
 # Runtime
 - [Snapshot and records](./runtime/snapshot.md)

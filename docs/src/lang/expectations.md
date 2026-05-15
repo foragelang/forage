@@ -33,8 +33,8 @@ The CLI's `forage run` returns non-zero exit code 3 when any expectation
 is unmet (snapshot still printed). The Studio UI lights the Diagnostic
 tab and shows each unmet expectation in red.
 
-`forage test <dir>` is the canonical CI gate: it runs the recipe in
-replay mode, diffs the snapshot against `expected.snapshot.json`, and
+`forage test <recipe>` is the canonical CI gate: it runs the recipe in
+replay mode, diffs the snapshot against `_snapshots/<recipe>.json`, and
 also surfaces unmet expectations.
 
 ## Future shapes

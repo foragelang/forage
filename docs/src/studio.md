@@ -18,9 +18,9 @@ For development:
 
 ```sh
 git clone https://github.com/foragelang/forage
-cd forage/apps/studio/ui
+cd forage/packages/studio-ui
 npm install
-cd ..
+cd ../../apps/studio
 cargo tauri dev
 ```
 
@@ -28,29 +28,65 @@ cargo tauri dev
 WebView with hot reload for the React layer and `cargo` rebuilds for
 the Rust backend.
 
-## Layout
+## Workspace
+
+Studio operates on exactly one workspace at a time — `~/Library/Forage/Recipes/`
+by default, overridable via `FORAGE_WORKSPACE_ROOT`. A workspace is the
+directory marked by `forage.toml`; Studio drops an empty manifest on
+first launch.
+
+Workspace contents:
+
+- `forage.toml` — name + `[deps]` table for hub packages.
+- `*.forage` at any depth — source files. A file may carry a recipe
+  header, `share`d declarations, file-scoped declarations, or any
+  combination.
+- `_fixtures/<recipe>.jsonl`, `_snapshots/<recipe>.json` — workspace
+  data keyed by recipe header name.
+- `.forage/` — runtime state owned by the daemon (`daemon.sqlite`,
+  per-recipe output stores under `data/<recipe>.sqlite`).
+
+## Sidebar
+
+The sidebar carries the following sections:
+
+- **Workspace header** — root path; click to switch.
+- **Runs** — every `Run` row links to the Deployment view; hover-only
+  play button triggers an ad-hoc fire.
+- **Recipes** — the list of parsed recipes keyed by header name.
+  Clicking a row opens the recipe's file with Run / Configure / Deploy
+  enabled.
+- **Dependencies** — `[deps]` entries from `forage.toml`.
+- **Files** — the filesystem tree. Open header-less declarations files
+  here.
+- **Daemon footer** — running indicator + active-count + version.
+
+Files without a `recipe "..."` header have Run / Configure / Deploy
+disabled in the editor — they're declarations files contributing
+`share`d types / enums / fns to the workspace catalog.
 
 ```
 ┌──────────────┬───────────────────────────────────────────────┐
-│  Sidebar     │  Toolbar (slug, dirty, Save / Replay / Run live) │
+│  Sidebar     │  Toolbar (name, dirty, Save / Replay / Run live) │
 │              ├───────────────────────────────────────────────┤
-│  • slug-1    │  Source │ Fixtures │ Snapshot │ Diagnostic │ Publish │
-│  • slug-2    ├───────────────────────────────────────────────┤
-│  + New       │                                               │
-│              │   <active tab>                                │
-│              │                                               │
+│ Runs         │  Source │ Fixtures │ Snapshot │ Diagnostic │ Publish │
+│ Recipes      ├───────────────────────────────────────────────┤
+│  • hello     │                                               │
+│  • zen-leaf  │   <active tab>                                │
+│ + New        │                                               │
+│ Files        │                                               │
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
-Sidebar lists every recipe under `~/Library/Forage/Recipes/<slug>/`.
-`+ New` scaffolds a new `untitled-N` directory with a minimal template.
+`+ New` scaffolds `<workspace>/untitled-N.forage` with a minimal
+template (`recipe "untitled-N" engine http`).
 
 ## Tabs
 
 - **Source** — Monaco editor with full Forage syntax highlighting,
   bracket auto-closing, comment toggle, and validation markers from
   the LSP. ⌘S saves and validates.
-- **Fixtures** — per-recipe `inputs.json` + `captures.jsonl` view.
+- **Fixtures** — `_fixtures/<recipe>.jsonl` view for the active recipe.
 - **Snapshot** — after a run, records grouped by type; click a type
   to see a table of records with one column per field.
 - **Diagnostic** — `stall_reason`, unmet expectations, unfired capture
@@ -63,25 +99,17 @@ Sidebar lists every recipe under `~/Library/Forage/Recipes/<slug>/`.
 | Shortcut | Action |
 |---|---|
 | ⌘N | New recipe |
-| ⌘S | Save + validate the current recipe |
+| ⌘S | Save + validate the current file |
 | ⌘R | Run live |
 | ⇧⌘R | Run replay |
-| ⌘K | Capture from URL (R9 followup) |
+| ⌘K | Capture from URL |
 | ⌘, | Preferences |
 
 Native menu items use the same shortcuts via Tauri's menu API.
 
-## Recipe library
-
-Studio reads from `~/Library/Forage/Recipes/<slug>/` on macOS,
-`$XDG_DATA_HOME/Forage/Recipes/<slug>/` on Linux, and
-`%APPDATA%\Forage\Recipes\<slug>\` on Windows. The CLI shares this
-directory — recipes you `forage scaffold` from the command line show
-up in Studio on the next sidebar refresh.
-
 ## Browser-engine recipes
 
-Click **Run live** on a `engine browser` recipe and Studio opens a
+Click **Run live** on an `engine browser` recipe and Studio opens a
 fresh Tauri WebviewWindow at the recipe's `initialURL`, injects the
 fetch/XHR shim, scrolls until settle, and routes the collected captures
 through the same evaluator the CLI's replay mode uses. The diagnostic
@@ -89,12 +117,13 @@ shows up in the **Diagnostic** tab as it would for any other run.
 
 For M10 interactive bootstrap, Studio's WebviewWindow is the visible
 window the user solves the challenge in; the resulting session lands at
-`~/Library/Forage/Sessions/<slug>/session.json`.
+`~/Library/Forage/Sessions/<recipe>/session.json`.
 
 ## Authentication
 
-Studio stores OAuth tokens in the macOS Keychain under
-`com.foragelang.studio`; cross-platform via the `keyring` crate
-(`forage-keychain` wraps it). The Publish tab's **Sign in with GitHub**
-sheet runs the device-code flow against `api.foragelang.com`,
-displaying the user code + verification URL.
+Studio stores OAuth tokens in the OS keychain under
+`com.foragelang.studio` — macOS Keychain, Windows Credential Manager,
+or Linux Secret Service via the `keyring` crate (wrapped by
+`forage-keychain`). The Publish tab's **Sign in with GitHub** sheet
+runs the device-code flow against `api.foragelang.com`, displaying the
+user code + verification URL.

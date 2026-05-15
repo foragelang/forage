@@ -21,7 +21,7 @@ plus a `DiagnosticReport`.
 
 This is the canonical wire format — what the CLI prints with
 `--output json`, what `forage test` diffs against
-`expected.snapshot.json`, what hub-published snapshots use.
+`_snapshots/<recipe>.json`, what hub-published snapshots use.
 
 ## Record shape
 

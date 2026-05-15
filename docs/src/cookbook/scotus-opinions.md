@@ -52,18 +52,16 @@ expect { records.where(typeName == "Opinion").count >= 1 }
 
 ## Run it
 
+Save the recipe as `scotus-opinions.forage` at the workspace root,
+then run with an inputs file:
+
 ```sh
-FORAGE_SECRET_TERM=24 forage run ~/Library/Forage/Recipes/scotus-opinions
+echo '{"term":"24"}' > /tmp/scotus-inputs.json
+forage run scotus-opinions --inputs /tmp/scotus-inputs.json
 
 • Opinion (42 records)
   [0] date: "11/07/24", docket: "23-715", caseName: "City of …", pdfUrl: "/opinions/24pdf/23-715_…"
   …
-```
-
-…or with the value in `fixtures/inputs.json`:
-
-```json
-{ "term": "24" }
 ```
 
 ## Why HTML extraction matters

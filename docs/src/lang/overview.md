@@ -1,19 +1,21 @@
 # Language overview
 
-A `.forage` file declares one recipe. The header (`recipe "<name>"` +
-`engine <kind>`) lives flat at the top of the file; every subsequent
-declaration belongs to that recipe. There is no surrounding `{ }` block —
-the file IS the recipe.
+A `.forage` file is a sequence of top-level forms. A file with a `recipe
+"<name>" engine <kind>` header declares a recipe; one without is a pure
+declarations file contributing `share`d types / enums / fns to the
+workspace catalog. File location and basename carry no semantics — the
+recipe's identity is the string in its header.
 
 ```forage
 recipe "<name>"
 engine <http | browser>
 
-// Optional hub imports.
-// import alice/zen-leaf v2
+// File-scoped helper type.
+type LocalPanel { id: String }
 
-type Product { name: String, price: Double }
-enum MenuType { RECREATIONAL, MEDICAL }
+// Workspace-visible declarations (visible to every other .forage file).
+share type Product { name: String, price: Double }
+share enum MenuType { RECREATIONAL, MEDICAL }
 
 input storeId: String
 secret apiToken
@@ -43,6 +45,9 @@ API the runtime can drive directly; pick `engine browser` for SPAs that
 render in JS or sit behind JS-challenge bot management. Both engines
 target the same output type catalog, so downstream code never has to
 know which one ran.
+
+Workspaces pull in cross-workspace shared types through hub `[deps]` in
+`forage.toml`; see [Imports](./imports.md).
 
 ## Pipeline
 

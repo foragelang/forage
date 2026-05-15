@@ -1,7 +1,7 @@
 # User-defined functions
 
-Forage recipes can declare named transforms inline with the `fn` form.
-A user-defined function is a name, a parameter list, and a single
+Forage files can declare named transforms with the `fn` form. A
+user-defined function is a name, a parameter list, and a single
 expression body. The engine treats it identically to a built-in
 transform at every call site — pipe (`$x |> myFn`) or direct call
 (`myFn($x, $y)`).
@@ -9,7 +9,7 @@ transform at every call site — pipe (`$x |> myFn`) or direct call
 ```forage
 fn shout($x) { $x | upper | trim }
 
-fn variantKey($name) {
+share fn variantKey($name) {
     case $name of {
         "Half Ounce" → "half_ounce"
         "Ounce"      → "ounce"
@@ -17,10 +17,15 @@ fn variantKey($name) {
 }
 ```
 
+Like `type` and `enum`, a `fn` is **file-scoped** by default — visible
+only to other declarations in the same file. Prefix with `share` to
+publish it to the workspace catalog visible to every other `.forage`
+file.
+
 ## Syntax
 
 ```text
-fn <name>( <$param>, ... ) {
+'share'? 'fn' <name>( <$param>, ... ) {
     (let <$name> = <expression>)*
     <trailing_expression>
 }
@@ -126,5 +131,3 @@ fn normalize($variant) {
 - Parameters are dynamically typed (no annotations). The validator
   catches arity mismatches but not type mismatches.
 - Functions cannot capture for-loop or `as` bindings.
-- Workspace-shared functions (functions in a declarations file) are
-  not yet supported — declarations files carry only types and enums.

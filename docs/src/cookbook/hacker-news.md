@@ -51,8 +51,11 @@ expect { records.where(typeName == "Story").count >= 20 }
 
 ## Run it
 
+Save the recipe as `hacker-news.forage` at your workspace root:
+
 ```sh
-forage run ~/Library/Forage/Recipes/hacker-news
+cd ~/Library/Forage/Recipes
+forage run hacker-news
 
 • Story (30 records)
   [0] title: "Hardware Attestation as Monopoly Enabler", url: …, points: 2095, author: "ChuckMcM", comments: 708
@@ -62,20 +65,19 @@ forage run ~/Library/Forage/Recipes/hacker-news
 
 ## Replay
 
-Record once:
+`forage record` runs the recipe live and writes the exchanges to
+`_fixtures/hacker-news.jsonl` at the workspace root:
 
 ```sh
-mkdir -p ~/Library/Forage/Recipes/hacker-news/fixtures
-curl 'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30' > /tmp/hn.json
-jq -c '{kind: "http", url: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30", method: "GET", status: 200, body: tojson}' /tmp/hn.json > ~/Library/Forage/Recipes/hacker-news/fixtures/captures.jsonl
+forage record hacker-news
 ```
 
 Then:
 
 ```sh
-forage run ~/Library/Forage/Recipes/hacker-news --replay     # no network
-forage test ~/Library/Forage/Recipes/hacker-news --update    # write expected.snapshot.json
-forage test ~/Library/Forage/Recipes/hacker-news             # exit-0 means the recipe still matches the snapshot
+forage run hacker-news --replay   # no network
+forage test hacker-news --update  # write _snapshots/hacker-news.json
+forage test hacker-news           # exit-0 means the recipe still matches the snapshot
 ```
 
 ## Why this is the smallest example

@@ -46,7 +46,8 @@ browser {
 ## First run
 
 ```sh
-forage run --interactive ~/Library/Forage/Recipes/ebay-sold --input query=polaroid+sx-70
+echo '{"query":"polaroid sx-70"}' > /tmp/ebay-inputs.json
+forage run ebay-sold --interactive --inputs /tmp/ebay-inputs.json
 ```
 
 Studio prefers the menu item **Recipe → Bootstrap session…**.
@@ -59,15 +60,15 @@ Either path:
 3. The engine injects a "✓ Scrape this page" overlay; clicking it tells
    the engine "you can take it from here."
 4. Cookies (filtered by `cookieDomains`) + per-origin localStorage
-   snapshot into `~/Library/Forage/Sessions/<slug>/session.json`
-   (chmod 600).
+   snapshot into `~/Library/Forage/Sessions/<recipe>/session.json`
+   (chmod 600). `<recipe>` is the header name.
 5. The engine immediately proceeds with the recipe headlessly using
    that session.
 
 ## Subsequent runs
 
 ```sh
-forage run ~/Library/Forage/Recipes/ebay-sold --input query=polaroid+sx-70
+forage run ebay-sold --inputs /tmp/ebay-inputs.json
 ```
 
 The engine seeds the cookies + localStorage back into the WebView,

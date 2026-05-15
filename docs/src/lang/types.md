@@ -1,10 +1,11 @@
 # Types and enums
 
 Recipes declare their own type catalog. The runtime has no built-in
-`Product` / `Story` / `Item` — each recipe ships the shape it'll emit.
+`Product` / `Story` / `Item` — each recipe ships the shape it'll emit,
+or pulls it in from a `share`d declaration somewhere in the workspace.
 
 ```forage
-type Product {
+share type Product {
     externalId:  String
     name:        String
     description: String?           // optional
@@ -14,12 +15,36 @@ type Product {
     menu:        MenuType          // enum reference
 }
 
-type Category {
+share type Category {
     externalId: String
     name:       String
 }
 
-enum MenuType { RECREATIONAL, MEDICAL }
+share enum MenuType { RECREATIONAL, MEDICAL }
+```
+
+By default a `type` or `enum` is **file-scoped** — visible only to
+declarations in the same file (and to the recipe declared there, if
+any). Prefixing the declaration with `share` publishes it to the
+workspace-wide catalog visible to every other `.forage` file.
+
+Workspace-wide name collisions among `share`d declarations are a
+validator error. A file-scoped declaration overrides a same-named
+`share`d declaration when both reach the same recipe's catalog — useful
+for recipe-specific overrides of a shared shape.
+
+```forage
+share type Product {                  // workspace-visible default shape
+    externalId: String
+    sku:        String
+}
+
+// elsewhere in the workspace — alongside a different recipe:
+type Product {                        // overrides the share above
+    externalId: String
+    sku:        String
+    terpenes:   [String]              // extra fields just for this recipe
+}
 ```
 
 ## Field types
