@@ -54,6 +54,7 @@ export default defineConfig({
             {
                 text: 'Discover',
                 items: [
+                    { text: 'By type', link: '/discover/' },
                     { text: 'Top starred', link: '/discover/top-starred' },
                     { text: 'Most downloaded', link: '/discover/top-downloaded' },
                 ],

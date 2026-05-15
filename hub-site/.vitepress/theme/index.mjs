@@ -5,6 +5,9 @@ import PackageGrid from './PackageGrid.vue'
 import PackageDetail from './PackageDetail.vue'
 import PackageBrowse from './PackageBrowse.vue'
 import ProfilePage from './ProfilePage.vue'
+import DiscoverByType from './DiscoverByType.vue'
+import DiscoverAlignedWith from './DiscoverAlignedWith.vue'
+import DiscoverIndex from './DiscoverIndex.vue'
 import './custom.css'
 
 export default {
@@ -18,5 +21,8 @@ export default {
         app.component('PackageDetail', PackageDetail)
         app.component('PackageBrowse', PackageBrowse)
         app.component('ProfilePage', ProfilePage)
+        app.component('DiscoverByType', DiscoverByType)
+        app.component('DiscoverAlignedWith', DiscoverAlignedWith)
+        app.component('DiscoverIndex', DiscoverIndex)
     },
 }

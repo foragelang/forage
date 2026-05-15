@@ -42,6 +42,25 @@ export async function fetchCategories(base = HUB_API) {
     return Array.isArray(data.items) ? data.items : []
 }
 
+// `GET /v1/types?sort=&category=&q=&limit=` — list of `TypeListing`
+// rows. Used to enumerate dynamic discover routes (one
+// `/discover/producers/<author>/<name>` page per hub-known type).
+export async function fetchTypes(opts = {}, base = HUB_API) {
+    const { sort, category, q, limit = 100 } = opts
+    const params = new URLSearchParams()
+    if (sort) params.set('sort', sort)
+    if (category) params.set('category', category)
+    if (q) params.set('q', q)
+    params.set('limit', String(limit))
+    const url = `${base}/v1/types?${params}`
+    const r = await fetch(url)
+    if (!r.ok) {
+        throw new Error(`GET ${url} returned ${r.status}`)
+    }
+    const data = await r.json()
+    return Array.isArray(data.items) ? data.items : []
+}
+
 // True iff the operator has explicitly opted into strict builds (the
 // production deploy pipeline). Default is lenient because the
 // majority of cold builds — dev machines, fresh clones, contributor
@@ -96,4 +115,28 @@ export async function requireCategories() {
         return []
     }
     return cats
+}
+
+// Build-time enumerator for the type discovery routes. Empty (with a
+// warning) when the API is unreachable; loud failure when strict mode
+// is on and there are no types to enumerate.
+export async function requireTypes() {
+    let types
+    try {
+        types = await fetchTypes()
+    } catch (err) {
+        if (requireApi()) {
+            throw new Error(`[hub-site] fetchTypes failed during build: ${err.message ?? err}. Unset FORAGE_HUB_REQUIRE_API to continue with no routes.`)
+        }
+        console.warn(`[hub-site] fetchTypes failed (continuing with no routes):`, err.message ?? err)
+        return []
+    }
+    if (types.length === 0) {
+        if (requireApi()) {
+            throw new Error('[hub-site] fetchTypes returned no items during build; refusing to ship a hub with no type routes. Unset FORAGE_HUB_REQUIRE_API to continue.')
+        }
+        console.warn('[hub-site] fetchTypes returned no items (continuing with no routes)')
+        return []
+    }
+    return types
 }
