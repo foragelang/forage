@@ -223,7 +223,10 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
     let inputs = load_inputs(&recipe_dir)?;
     let secrets = load_secrets_from_env(&recipe);
 
-    let snapshot = match (recipe.engine_kind, replay) {
+    let engine_kind = recipe
+        .engine_kind()
+        .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\" engine <kind>` header"))?;
+    let snapshot = match (engine_kind, replay) {
         (EngineKind::Http, true) => {
             let captures = load_captures(&recipe_dir).context("loading fixtures/captures.jsonl")?;
             let transport = ReplayTransport::new(captures);
@@ -312,11 +315,11 @@ async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
     std::process::exit(1);
 }
 
-fn load_recipe(dir: &Path) -> Result<forage_core::Recipe> {
+fn load_recipe(dir: &Path) -> Result<forage_core::ForageFile> {
     load_recipe_at(dir, &dir.join("recipe.forage"))
 }
 
-fn load_recipe_at(_dir: &Path, path: &Path) -> Result<forage_core::Recipe> {
+fn load_recipe_at(_dir: &Path, path: &Path) -> Result<forage_core::ForageFile> {
     let source =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let recipe = parse(&source).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
@@ -337,14 +340,14 @@ fn load_recipe_at(_dir: &Path, path: &Path) -> Result<forage_core::Recipe> {
 /// Otherwise lonely-recipe mode — recipe-local types only.
 fn build_catalog_for(
     recipe_path: &Path,
-    recipe: &forage_core::Recipe,
+    recipe: &forage_core::ForageFile,
 ) -> Result<forage_core::TypeCatalog> {
     if let Some(ws) = forage_core::workspace::discover(recipe_path) {
         return ws
             .catalog(recipe, |p| std::fs::read_to_string(p))
             .map_err(|e| anyhow::anyhow!("workspace catalog: {e}"));
     }
-    Ok(forage_core::TypeCatalog::from_recipe(recipe))
+    Ok(forage_core::TypeCatalog::from_file(recipe))
 }
 
 fn load_inputs(dir: &Path) -> Result<IndexMap<String, EvalValue>> {
@@ -363,7 +366,7 @@ fn load_inputs(dir: &Path) -> Result<IndexMap<String, EvalValue>> {
     Ok(out)
 }
 
-fn load_secrets_from_env(recipe: &forage_core::Recipe) -> IndexMap<String, String> {
+fn load_secrets_from_env(recipe: &forage_core::ForageFile) -> IndexMap<String, String> {
     let mut out = IndexMap::new();
     for s in &recipe.secrets {
         let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
