@@ -68,6 +68,56 @@ fn recipe_local_overrides_shared_type() {
     assert!(product.fields.iter().any(|f| f.name == "terpenes"));
 }
 
+/// A bare (non-`share`d) `type Foo` in a sibling file is private to
+/// that file. The focal recipe must not see it — only `share`d
+/// declarations cross file boundaries.
+#[test]
+fn bare_type_in_sibling_is_invisible_to_recipe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = workspace_in(&tmp);
+    write(
+        &root.join("cannabis.forage"),
+        "type LocalThing { id: String }\n\
+         share type Dispensary { id: String }\n",
+    );
+    let recipe_path = root.join("sweed").join("recipe.forage");
+    write(&recipe_path, "recipe \"sweed\"\nengine http\n");
+    let ws = workspace::load(root).unwrap();
+    let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
+    assert!(
+        catalog.ty("Dispensary").is_some(),
+        "share type should reach the recipe",
+    );
+    assert!(
+        catalog.ty("LocalThing").is_none(),
+        "bare type must stay private to its declaring file",
+    );
+}
+
+/// A file with `share type Foo` and another with bare `type Foo` is
+/// not a collision: the bare declaration is private, and only the
+/// `share`d one crosses file boundaries.
+#[test]
+fn share_and_bare_with_same_name_coexist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = workspace_in(&tmp);
+    write(
+        &root.join("a.forage"),
+        "share type Product { id: String, name: String }\n",
+    );
+    write(&root.join("b.forage"), "type Product { id: String }\n");
+    let recipe_path = root.join("r").join("recipe.forage");
+    write(&recipe_path, "recipe \"r\"\nengine http\n");
+    let ws = workspace::load(root).unwrap();
+    let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
+    let product = catalog.ty("Product").expect("share Product reaches recipe");
+    assert_eq!(
+        product.fields.len(),
+        2,
+        "the share type wins; bare Product is invisible",
+    );
+}
+
 /// Bare `type Foo` declared in two sibling files is no longer a
 /// catalog-level error — each is file-scoped to its file. The focal
 /// recipe sees neither.

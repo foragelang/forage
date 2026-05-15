@@ -616,6 +616,57 @@ mod tests {
         assert!(product.fields.iter().any(|f| f.name == "terpenes"));
     }
 
+    /// A bare (non-`share`d) type declared in a sibling file is private
+    /// to that file. The focal recipe must not see it.
+    #[test]
+    fn bare_type_in_sibling_stays_file_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("cannabis.forage"),
+            "type LocalThing { id: String }\n\
+             share type Dispensary { id: String }\n",
+        );
+        let recipe_path = root.join("rec").join("recipe.forage");
+        write(&recipe_path, "recipe \"rec\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        assert!(
+            cat.ty("Dispensary").is_some(),
+            "share type must reach the focal catalog",
+        );
+        assert!(
+            cat.ty("LocalThing").is_none(),
+            "bare type must stay file-local",
+        );
+    }
+
+    /// Two files each declaring `share type Product` does not error at
+    /// the catalog level — the cross-file
+    /// `DuplicateSharedDeclaration` validator rule owns that diagnostic
+    /// now. The catalog merges last-writer-wins so the focal file sees
+    /// *some* `Product`.
+    #[test]
+    fn duplicate_share_types_across_files_merge_without_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(&root.join("a.forage"), "share type Product { id: String }\n");
+        write(
+            &root.join("b.forage"),
+            "share type Product { id: String, name: String }\n",
+        );
+        let recipe_path = root.join("r").join("recipe.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).expect("catalog builds");
+        assert!(
+            cat.ty("Product").is_some(),
+            "one of the share types should still reach the recipe; collision is the validator's concern",
+        );
+    }
+
     #[test]
     fn broken_recipe_is_captured_not_dropped() {
         let tmp = tempfile::tempdir().unwrap();
