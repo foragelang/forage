@@ -16,7 +16,7 @@ use ts_rs::TS;
 use forage_core::workspace::Workspace;
 use forage_hub::{
     AuthStore, ForageMeta, HubClient, HubError, PublishResponse, SyncOutcome,
-    assemble_publish_request, fork_from_hub, publish_from_workspace, sync_from_hub,
+    assemble_publish_plan, fork_from_hub, publish_from_workspace, sync_from_hub,
 };
 
 /// Typed error surface for `publish_recipe`. The stale-base variant
@@ -211,26 +211,36 @@ pub async fn run_publish(
     .map_err(PublishError::from_hub_error)
 }
 
-/// Dry-run preview: assemble the artifact but don't POST. Returns the
-/// byte count + base version the user would be publishing against, so
-/// the UI's pre-publish confirmation can show what's about to go up.
+/// Dry-run preview: assemble the publish plan but don't POST. Returns
+/// the byte count + base version the user would be publishing against,
+/// plus the number of types that would publish first. The UI's
+/// pre-publish confirmation renders this so the user sees the type
+/// list before any network traffic.
 pub fn preview_publish(
     workspace: &Workspace,
+    author: &str,
     recipe_name: &str,
     description: String,
     category: String,
     tags: Vec<String>,
 ) -> Result<PublishPreview, PublishError> {
-    let req = assemble_publish_request(workspace, recipe_name, description, category, tags)
+    let plan = assemble_publish_plan(workspace, recipe_name, author, description, category, tags)
         .map_err(PublishError::from_hub_error)?;
-    let bytes = req.recipe.len()
-        + req.decls.iter().map(|d| d.source.len()).sum::<usize>()
-        + req.fixtures.iter().map(|f| f.content.len()).sum::<usize>();
+    let recipe_bytes = plan.recipe_payload.recipe.len()
+        + plan
+            .recipe_payload
+            .fixtures
+            .iter()
+            .map(|f| f.content.len())
+            .sum::<usize>();
+    let type_bytes: usize = plan.types.iter().map(|t| t.source.len()).sum();
+    let type_names = plan.types.iter().map(|t| t.name.clone()).collect();
     Ok(PublishPreview {
-        recipe_bytes: bytes as u64,
-        base_version: req.base_version,
-        decls_count: req.decls.len() as u32,
-        fixtures_count: req.fixtures.len() as u32,
+        recipe_bytes: recipe_bytes as u64,
+        type_bytes: type_bytes as u64,
+        base_version: plan.recipe_payload.base_version,
+        types: type_names,
+        fixtures_count: plan.recipe_payload.fixtures.len() as u32,
     })
 }
 
@@ -238,8 +248,12 @@ pub fn preview_publish(
 #[ts(export)]
 pub struct PublishPreview {
     pub recipe_bytes: u64,
+    pub type_bytes: u64,
     pub base_version: Option<u32>,
-    pub decls_count: u32,
+    /// Bare type names that would publish under `@author/<name>` before
+    /// the recipe itself goes up. Empty when the workspace has no
+    /// `share` types.
+    pub types: Vec<String>,
     pub fixtures_count: u32,
 }
 

@@ -812,12 +812,15 @@ pub async fn fork_from_hub(
     crate::hub_sync::run_fork(&ws.root, &hub_url, &upstream_author, &upstream_slug, r#as).await
 }
 
-/// Dry-run preview of a `publish_recipe` call: assemble the artifact
-/// off-disk and report what would be sent without POSTing. The hub
-/// publish slug is the recipe header name (see `publish_recipe`).
+/// Dry-run preview of a `publish_recipe` call: assemble the publish
+/// plan off-disk and report what would be sent without POSTing. The
+/// preview surfaces the per-type publishes that ride alongside the
+/// recipe; the hub publish slug remains the recipe header name (see
+/// `publish_recipe`).
 #[tauri::command]
 pub fn preview_publish(
     state: State<'_, crate::state::StudioState>,
+    author: String,
     name: String,
     description: String,
     category: String,
@@ -826,7 +829,7 @@ pub fn preview_publish(
     let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
         message: e,
     })?;
-    crate::hub_sync::preview_publish(&ws, &name, description, category, tags)
+    crate::hub_sync::preview_publish(&ws, &author, &name, description, category, tags)
 }
 
 #[tauri::command]

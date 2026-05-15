@@ -4,7 +4,7 @@
 //! header name.
 
 use assert_cmd::Command;
-use forage_hub::PublishRequest;
+use forage_hub::{PublishRequest, PublishTypeRequest};
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,7 +27,7 @@ impl Respond for CapturingResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         // The mock server runs in a tokio runtime; lock-and-write
         // can't await, so use `try_lock` and panic on contention —
-        // every test has exactly one publish call in flight.
+        // every test has exactly one call in flight per endpoint.
         let mut guard = self.captured.try_lock().expect("captured already locked");
         *guard = Some(request.body.clone());
         self.response.clone()
@@ -36,16 +36,42 @@ impl Respond for CapturingResponder {
 
 /// `forage publish amazon-products` finds the recipe by header name —
 /// not by file basename, not by the slug portion of `forage.toml.name`
-/// — and POSTs the artifact to `<author>/<recipe-name>`. The author
-/// segment of `name` IS used; the slug segment is decorative.
+/// — extracts every `share`d type into its own publishable unit, posts
+/// the types first under `@<author>/<TypeName>`, then posts the recipe
+/// pinning the resolved type versions. The author segment of `name`
+/// IS used; the slug segment is decorative.
 #[tokio::test]
 async fn publish_keys_artifact_on_recipe_header_name() {
     let server = MockServer::start().await;
-    let captured: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let captured_recipe: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let captured_type: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+
+    // First publish: the type doesn't exist yet, so the GET returns 404.
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Dispensary"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": { "code": "not_found", "message": "unknown type" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/types/alice/Dispensary/versions"))
+        .respond_with(CapturingResponder {
+            captured: Arc::clone(&captured_type),
+            response: ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "author": "alice",
+                "name": "Dispensary",
+                "version": 1,
+                "latest_version": 1,
+                "deduped": false,
+            })),
+        })
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v1/packages/alice/amazon-products/versions"))
         .respond_with(CapturingResponder {
-            captured: Arc::clone(&captured),
+            captured: Arc::clone(&captured_recipe),
             response: ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "author": "alice",
                 "slug": "amazon-products",
@@ -66,8 +92,8 @@ async fn publish_keys_artifact_on_recipe_header_name() {
         "recipe \"amazon-products\"\nengine http\n",
     )
     .unwrap();
-    // Sibling with a `share`d declaration: must ship as a decl in
-    // the publish artifact.
+    // Sibling with a `share`d declaration: must publish as a separate
+    // type artifact and ride into the recipe as a `type_refs` entry.
     fs::write(
         ws.join("cannabis.forage"),
         "share type Dispensary { id: String }\n",
@@ -109,21 +135,39 @@ async fn publish_keys_artifact_on_recipe_header_name() {
         .success()
         .stdout(predicates::str::contains("alice/amazon-products"));
 
-    let body = captured
+    // The type POST received the standalone `share type Dispensary`
+    // source as its own artifact.
+    let type_body = captured_type
         .lock()
         .await
         .clone()
-        .expect("publish must have POSTed");
-    let req: PublishRequest = serde_json::from_slice(&body).expect("publish body is JSON");
+        .expect("type publish must have POSTed");
+    let type_req: PublishTypeRequest =
+        serde_json::from_slice(&type_body).expect("type publish body is JSON");
+    assert!(
+        type_req.source.starts_with("share type Dispensary"),
+        "type publish source must be the standalone share-type fragment: {:?}",
+        type_req.source,
+    );
+
+    let recipe_body = captured_recipe
+        .lock()
+        .await
+        .clone()
+        .expect("recipe publish must have POSTed");
+    let req: PublishRequest =
+        serde_json::from_slice(&recipe_body).expect("publish body is JSON");
     assert!(
         req.recipe.contains("recipe \"amazon-products\""),
         "POSTed recipe body must be the resolved file's content",
     );
-    let decl_names: Vec<&str> = req.decls.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(
-        decl_names,
-        vec!["cannabis.forage"],
-        "only `share`d sibling decls ship; bare-decl files stay home",
+    assert_eq!(req.type_refs.len(), 1);
+    assert_eq!(req.type_refs[0].author, "alice");
+    assert_eq!(req.type_refs[0].name, "Dispensary");
+    assert_eq!(req.type_refs[0].version, 1);
+    assert!(
+        !req.recipe.contains("Private"),
+        "file-local types do not appear in the recipe body's `type_refs` or in the source",
     );
     assert_eq!(req.fixtures.len(), 1, "_fixtures content rides along");
     assert!(req.snapshot.is_some(), "_snapshots content rides along");

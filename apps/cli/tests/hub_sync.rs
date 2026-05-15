@@ -4,7 +4,9 @@
 //! confirming the subcommands, args, and exit codes the user sees.
 
 use assert_cmd::Command;
-use forage_hub::{PackageFile, PackageFixture, PackageMetadata, PackageVersion};
+use forage_hub::{
+    PackageFixture, PackageMetadata, PackageVersion, TypeFieldAlignment, TypeRef, TypeVersion,
+};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -17,15 +19,33 @@ fn artifact(author: &str, slug: &str) -> PackageVersion {
         recipe: format!(
             "recipe \"{slug}\"\nengine http\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
         ),
-        decls: vec![PackageFile {
-            name: "shared.forage".into(),
-            source: "share type Shared { id: String }\n".into(),
+        type_refs: vec![TypeRef {
+            author: author.into(),
+            name: "Shared".into(),
+            version: 1,
         }],
         fixtures: vec![PackageFixture {
             name: "captures.jsonl".into(),
             content: "{\"x\":1}\n".into(),
         }],
         snapshot: None,
+        base_version: None,
+        published_at: 0,
+        published_by: author.into(),
+    }
+}
+
+fn type_version(author: &str, name: &str) -> TypeVersion {
+    TypeVersion {
+        author: author.into(),
+        name: name.into(),
+        version: 1,
+        source: format!("share type {name} {{\n    id: String\n}}\n"),
+        alignments: Vec::new(),
+        field_alignments: vec![TypeFieldAlignment {
+            field: "id".into(),
+            alignment: None,
+        }],
         base_version: None,
         published_at: 0,
         published_by: author.into(),
@@ -50,9 +70,10 @@ fn package_meta(author: &str, slug: &str) -> PackageMetadata {
 }
 
 #[tokio::test]
-async fn forage_sync_materializes_recipe_in_cwd() {
+async fn forage_sync_materializes_recipe_and_types_in_cwd() {
     let server = MockServer::start().await;
     let art = artifact("alice", "zen-leaf");
+    let tv = type_version("alice", "Shared");
     Mock::given(method("GET"))
         .and(path("/v1/packages/alice/zen-leaf"))
         .respond_with(ResponseTemplate::new(200).set_body_json(package_meta("alice", "zen-leaf")))
@@ -63,6 +84,11 @@ async fn forage_sync_materializes_recipe_in_cwd() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&art))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Shared/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&tv))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v1/packages/alice/zen-leaf/downloads"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
@@ -71,9 +97,11 @@ async fn forage_sync_materializes_recipe_in_cwd() {
 
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
+    let cache = tempfile::tempdir().unwrap();
 
     Command::cargo_bin("forage")
         .unwrap()
+        .env("FORAGE_HUB_CACHE", cache.path())
         .arg("sync")
         .arg("@alice/zen-leaf")
         .arg(ws)
@@ -85,7 +113,18 @@ async fn forage_sync_materializes_recipe_in_cwd() {
 
     assert!(ws.join("zen-leaf.forage").is_file());
     assert!(ws.join(".forage").join("sync").join("zen-leaf.json").is_file());
-    assert!(ws.join("shared.forage").is_file());
+    assert!(ws.join("Shared.forage").is_file());
+    // Type also lands in the hub-type cache so the workspace loader's
+    // lockfile resolution can pick it up.
+    assert!(
+        cache
+            .path()
+            .join("types")
+            .join("alice")
+            .join("Shared")
+            .join("1.forage")
+            .is_file(),
+    );
 }
 
 #[tokio::test]
@@ -93,6 +132,7 @@ async fn forage_sync_with_explicit_version_arg() {
     let server = MockServer::start().await;
     let mut art = artifact("alice", "zen-leaf");
     art.version = 7;
+    let tv = type_version("alice", "Shared");
     Mock::given(method("GET"))
         .and(path("/v1/packages/alice/zen-leaf"))
         .respond_with(ResponseTemplate::new(200).set_body_json(package_meta("alice", "zen-leaf")))
@@ -103,6 +143,11 @@ async fn forage_sync_with_explicit_version_arg() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&art))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Shared/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&tv))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v1/packages/alice/zen-leaf/downloads"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
@@ -111,9 +156,11 @@ async fn forage_sync_with_explicit_version_arg() {
 
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
+    let cache = tempfile::tempdir().unwrap();
 
     Command::cargo_bin("forage")
         .unwrap()
+        .env("FORAGE_HUB_CACHE", cache.path())
         .arg("sync")
         .arg("@alice/zen-leaf")
         .arg(ws)
@@ -148,6 +195,7 @@ async fn forage_sync_rejects_invalid_spec() {
 async fn forage_sync_accepts_bare_slug_without_at_prefix() {
     let server = MockServer::start().await;
     let art = artifact("alice", "zen-leaf");
+    let tv = type_version("alice", "Shared");
     Mock::given(method("GET"))
         .and(path("/v1/packages/alice/zen-leaf"))
         .respond_with(ResponseTemplate::new(200).set_body_json(package_meta("alice", "zen-leaf")))
@@ -158,6 +206,11 @@ async fn forage_sync_accepts_bare_slug_without_at_prefix() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&art))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Shared/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&tv))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v1/packages/alice/zen-leaf/downloads"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
@@ -166,9 +219,11 @@ async fn forage_sync_accepts_bare_slug_without_at_prefix() {
 
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
+    let cache = tempfile::tempdir().unwrap();
 
     Command::cargo_bin("forage")
         .unwrap()
+        .env("FORAGE_HUB_CACHE", cache.path())
         .arg("sync")
         .arg("alice/zen-leaf") // no `@` prefix
         .arg(ws)

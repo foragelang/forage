@@ -825,6 +825,10 @@ async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
     let mut lock = workspace::Lockfile::default();
     for (slug, &version) in &ws.manifest.deps {
         let (author, slug_only) = split_dep_slug(slug)?;
+        // Fetch the recipe artifact — `fetch_to_cache` also mirrors
+        // every referenced type into the parallel type cache. We then
+        // re-fetch the recipe artifact to enumerate its `type_refs`
+        // for the lockfile's `[types]` section.
         let fetched = fetch_to_cache(&client, &cache_root, author, slug_only, version)
             .await
             .with_context(|| format!("fetching {slug}@{version}"))?;
@@ -833,13 +837,41 @@ async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
             "fetched".green(),
             fetched.dir.display()
         );
-        lock.deps.insert(
+        lock.recipes.insert(
             slug.clone(),
             workspace::LockedDep {
                 version,
-                hash: fetched.sha256,
+                hash: fetched.sha256.clone(),
             },
         );
+
+        // Re-fetch to read the type_refs the recipe pins. `fetch_to_cache`
+        // already pulled the underlying type sources into the type cache;
+        // we just need the wire artifact to enumerate them for the
+        // lockfile's `[types]` pinning.
+        let artifact = client
+            .get_version(
+                author,
+                slug_only,
+                forage_hub::VersionSpec::Numbered(version),
+            )
+            .await
+            .with_context(|| format!("re-fetching {slug}@{version} for type_refs"))?;
+        for r in &artifact.type_refs {
+            let key = format!("{}/{}", r.author, r.name);
+            lock.types.insert(
+                key,
+                workspace::LockedDep {
+                    version: r.version,
+                    // Hashing the cached `.forage` byte body would be
+                    // cleaner than empty; pre-1.0 we leave the hash
+                    // field for a follow-up. The lockfile carries the
+                    // version pin (which is what catalog resolution
+                    // keys on); the hash is integrity metadata only.
+                    hash: String::new(),
+                },
+            );
+        }
     }
 
     let lock_body = workspace::serialize_lockfile(&lock)
@@ -885,32 +917,48 @@ async fn do_publish(
     let hub = resolve_hub(hub_override);
 
     if !really_publish {
-        let preview = forage_hub::assemble_publish_request(
+        let plan = forage_hub::assemble_publish_plan(
             &ws,
             &resolved.name,
+            author,
             description,
             category,
             tags,
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let bytes = preview.recipe.len()
-            + preview.decls.iter().map(|d| d.source.len()).sum::<usize>()
-            + preview.fixtures.iter().map(|f| f.content.len()).sum::<usize>();
+        let recipe_bytes = plan.recipe_payload.recipe.len()
+            + plan
+                .recipe_payload
+                .fixtures
+                .iter()
+                .map(|f| f.content.len())
+                .sum::<usize>();
+        let type_bytes: usize = plan.types.iter().map(|t| t.source.len()).sum();
         println!(
-            "{} would POST atomic artifact ({bytes} bytes total) to {hub}/v1/packages/{author}/{recipe}/versions",
+            "{} would publish {} type(s) under @{author} then POST the recipe to {hub}/v1/packages/{author}/{recipe}/versions (recipe + fixtures = {recipe_bytes} bytes; types = {type_bytes} bytes)",
             "dry-run:".yellow(),
+            plan.types.len(),
             recipe = resolved.name,
         );
-        println!("    · {} ({} bytes)", recipe_file_name(&resolved), preview.recipe.len());
-        for f in &preview.decls {
-            println!("    · {} ({} bytes)", f.name, f.source.len());
+        for t in &plan.types {
+            println!(
+                "    · type {} ({} bytes) → {hub}/v1/types/{author}/{}/versions",
+                t.name,
+                t.source.len(),
+                t.name,
+            );
         }
-        for f in &preview.fixtures {
-            println!("    · {} ({} bytes)", f.name, f.content.len());
+        println!(
+            "    · recipe {} ({} bytes)",
+            recipe_file_name(&resolved),
+            plan.recipe_payload.recipe.len(),
+        );
+        for f in &plan.recipe_payload.fixtures {
+            println!("    · fixture {} ({} bytes)", f.name, f.content.len());
         }
         println!(
             "    · base_version: {}",
-            preview
+            plan.recipe_payload
                 .base_version
                 .map(|v| format!("v{v}"))
                 .unwrap_or_else(|| "(first publish)".into())
