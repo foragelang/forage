@@ -19,12 +19,12 @@ compose "scrape-amazon" | "enrich-wikidata"
 ```
 
 Each stage reference is a string literal carrying the referenced
-recipe's header name. Workspace-local references use a bare name;
-hub-dep references prefix the author with `@`:
-
-```forage
-compose "scrape-amazon" | "@upstream/enrich-wikidata"
-```
+recipe's header name. Workspace-local references use a bare name. The
+parser accepts hub-dep references like `"@upstream/enrich-wikidata"`,
+but the validator rejects them with `HubDepStageUnsupported` — the
+runtime can't resolve published recipes referenced this way today.
+Sync the upstream into your workspace first and reference it by bare
+name.
 
 ## Stage signatures
 
@@ -81,9 +81,12 @@ recursively.
 
 The validator's composition rules:
 
-- **`UnknownComposeStage`** — the referenced recipe doesn't exist
-  in the workspace (or, for `@author/name` references, hasn't been
-  fetched into the local cache).
+- **`UnknownComposeStage`** — a bare-name stage isn't a recipe in
+  the local workspace.
+- **`HubDepStageUnsupported`** — the stage uses the
+  `@author/name` hub-dep form; the runtime can't resolve those today,
+  so the validator rejects them. Sync the upstream into your workspace
+  and reference it by bare name.
 - **`UnsignedComposeStage`** — a stage has no `output` declaration;
   the validator can't check the next boundary.
 - **`MultiOutputComposeStage`** — a stage declares `output T | U`

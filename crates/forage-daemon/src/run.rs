@@ -433,7 +433,6 @@ fn run_stage<'a>(
             RecipeBody::Composition(comp) => {
                 run_composition(
                     daemon,
-                    recipe,
                     comp,
                     inputs,
                     secrets,
@@ -576,7 +575,6 @@ async fn run_scraping(
 #[allow(clippy::too_many_arguments)]
 async fn run_composition(
     daemon: &Arc<Daemon>,
-    composition_recipe: &ForageFile,
     comp: &forage_core::ast::Composition,
     inputs: IndexMap<String, EvalValue>,
     secrets: IndexMap<String, String>,
@@ -585,25 +583,14 @@ async fn run_composition(
     options: &RunOptions,
     replay_captures: Option<&[forage_replay::Capture]>,
 ) -> Result<forage_core::Snapshot, RunFailure> {
-    let composition_name = composition_recipe
-        .recipe_name()
-        .unwrap_or("<unknown>")
-        .to_string();
     let mut prior = PriorRecords::default();
     let mut stage_inputs = inputs;
     let mut last_snapshot: Option<forage_core::Snapshot> = None;
+    // Hub-dep stages (`author.is_some()`) are rejected at validate time
+    // (`ValidationCode::HubDepStageUnsupported`), so by the time a
+    // deployed composition reaches this loop every stage is a bare
+    // workspace-local name.
     for stage_ref in &comp.stages {
-        if stage_ref.author.is_some() {
-            return Err(RunFailure {
-                message: format!(
-                    "composition '{composition_name}' references hub-dep '@{}/{}' — hub-dep stages aren't resolved yet",
-                    stage_ref.author.as_deref().unwrap_or(""),
-                    stage_ref.name,
-                ),
-                diagnostics: 0,
-                version: Some(version),
-            });
-        }
         let dv = match daemon.current_deployed(&stage_ref.name) {
             Ok(Some(dv)) => dv,
             Ok(None) => {

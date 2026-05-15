@@ -291,10 +291,14 @@ pub enum ValidationCode {
     /// indexing has no semantic effect but is almost always a typo —
     /// surface it so the author keeps the declaration list tidy.
     DuplicateAlignment,
-    /// A `compose` body references a recipe that doesn't exist in the
-    /// workspace (or, for hub-dep refs like `@author/name`, hasn't been
-    /// fetched into the local recipe-signature map).
+    /// A `compose` body references a workspace-local recipe by bare
+    /// name that doesn't exist in the local recipe-signature map.
     UnknownComposeStage,
+    /// A `compose` body references a hub-dep stage (`@author/name`).
+    /// The runtime can't resolve published recipes referenced this way
+    /// today — authors sync the upstream into the workspace first and
+    /// reference it by bare name.
+    HubDepStageUnsupported,
     /// Stage N+1 in a `compose` chain doesn't have an input slot that
     /// matches stage N's declared output type. The downstream recipe
     /// must declare exactly one `input <name>: [T]` (or `input <name>: T`)
@@ -1557,17 +1561,17 @@ impl<'a> Validator<'a> {
     }
 
     fn resolve_stage_output(&mut self, stage: &RecipeRef) -> Option<String> {
-        // Hub-dep references (`@author/name`) aren't resolved yet — the
-        // workspace's recipe-signature map only populates from local
-        // files. Surface a precise diagnostic so authors know to add
-        // the dep, instead of letting the chain fail downstream.
-        if stage.author.is_some() {
+        // Hub-dep references (`@author/name`) aren't resolvable at run
+        // time today — sync the upstream recipe into the workspace and
+        // reference it by bare name instead. The validator rejects
+        // here so the failure surfaces at deploy / parse, not mid-run.
+        if let Some(author) = &stage.author {
             self.err(
                 stage.span.clone(),
-                ValidationCode::UnknownComposeStage,
+                ValidationCode::HubDepStageUnsupported,
                 format!(
-                    "compose stage '@{}/{}' is a hub-dep reference; hub-dep recipes aren't resolved yet",
-                    stage.author.as_deref().unwrap_or(""),
+                    "compose stage '@{}/{}' is a hub-dep reference; hub-dep composition stages aren't supported yet — sync the recipe into your workspace and reference it by bare name",
+                    author,
                     stage.name,
                 ),
             );
@@ -3666,7 +3670,7 @@ emit Item { }
     }
 
     #[test]
-    fn hub_namespaced_stage_is_unresolved_today() {
+    fn hub_dep_stage_rejected_with_dedicated_code() {
         let src = r#"
             recipe "lifted"
             engine http
@@ -3677,12 +3681,15 @@ emit Item { }
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let hub_dep = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::HubDepStageUnsupported)
+            .expect("HubDepStageUnsupported expected");
         assert!(
-            rep.issues
-                .iter()
-                .any(|i| i.code == ValidationCode::UnknownComposeStage),
-            "hub-dep stages must surface a known diagnostic until hub-dep resolution lands: {:?}",
-            rep.issues,
+            hub_dep.message.contains("@upstream/scrape"),
+            "diagnostic should anchor on the offending stage: {:?}",
+            hub_dep,
         );
     }
 }
