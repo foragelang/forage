@@ -217,6 +217,61 @@ describe('consumers_of(T)', () => {
     })
 })
 
+describe('type_refs partition validation', () => {
+    it('rejects an output_type_refs entry whose version disagrees with type_refs', async () => {
+        // The umbrella `type_refs` declaration is the source of truth
+        // for the version pinned by the recipe; `input_type_refs` and
+        // `output_type_refs` partition that set. A partition entry that
+        // names a different version is a publish-driver bug — the hub
+        // surfaces it instead of indexing inconsistent state.
+        await publishType('alice', 'Product')
+        const token = await userToken('alice')
+        const { status, body } = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/scrape-amazon/versions',
+                token,
+                publishRequest('scrape-amazon', {
+                    recipe: 'recipe "scrape-amazon" {}\n',
+                    type_refs: [{ author: 'alice', name: 'Product', version: 5 }],
+                    input_type_refs: [],
+                    output_type_refs: [
+                        { author: 'alice', name: 'Product', version: 7 },
+                    ],
+                }),
+            ),
+        )
+        expect(status).toBe(400)
+        expect(body.error.code).toBe('invalid')
+        expect(body.error.message).toContain('output_type_refs')
+        expect(body.error.message).toContain('alice/Product')
+        expect(body.error.message).toContain('v7')
+        expect(body.error.message).toContain('v5')
+    })
+
+    it('rejects an input_type_refs entry whose version disagrees with type_refs', async () => {
+        await publishType('alice', 'MusicGroup')
+        const token = await userToken('alice')
+        const { status, body } = await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/enrich-wikidata/versions',
+                token,
+                publishRequest('enrich-wikidata', {
+                    recipe: 'recipe "enrich-wikidata" {}\n',
+                    type_refs: [{ author: 'alice', name: 'MusicGroup', version: 3 }],
+                    input_type_refs: [
+                        { author: 'alice', name: 'MusicGroup', version: 1 },
+                    ],
+                    output_type_refs: [],
+                }),
+            ),
+        )
+        expect(status).toBe(400)
+        expect(body.error.code).toBe('invalid')
+        expect(body.error.message).toContain('input_type_refs')
+        expect(body.error.message).toContain('alice/MusicGroup')
+    })
+})
+
 describe('aligned_with(<ontology>/<term>)', () => {
     it('returns types whose latest version declares the alignment', async () => {
         await publishType('alice', 'Product', {

@@ -519,20 +519,20 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
     if (!Array.isArray(payload.type_refs) || payload.type_refs.length > MAX_TYPE_REFS) {
         return `type_refs must be an array of at most ${MAX_TYPE_REFS} entries`
     }
-    const seenRefs = new Set<string>()
+    const declaredVersions = new Map<string, number>()
     for (const r of payload.type_refs) {
-        const err = validateTypeRef(r, seenRefs)
+        const err = validateTypeRef(r, declaredVersions)
         if (err !== null) return `type_refs: ${err}`
     }
     const inputErr = validateTypeRefPartition(
         payload.input_type_refs,
-        seenRefs,
+        declaredVersions,
         'input_type_refs',
     )
     if (inputErr !== null) return inputErr
     const outputErr = validateTypeRefPartition(
         payload.output_type_refs,
-        seenRefs,
+        declaredVersions,
         'output_type_refs',
     )
     if (outputErr !== null) return outputErr
@@ -560,27 +560,31 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
 }
 
 /// `input_type_refs` / `output_type_refs` must each be an array of
-/// type refs that already appear in `type_refs` (matched by
-/// `author/name`). Versions inside the partition must agree with the
-/// `type_refs` entry — the publisher computes both from the same pin
-/// list, so any disagreement means a bug in the publish driver, not a
-/// shape the hub should silently absorb. Returns `null` on success or
-/// a single-string diagnostic on failure (caller prefixes it).
+/// type refs that already appear in `type_refs`, with matching version.
+/// The publisher computes both from the same pin list, so any
+/// disagreement (missing entry, or version mismatch) means a bug in the
+/// publish driver, not a shape the hub should silently absorb. Returns
+/// `null` on success or a single-string diagnostic on failure (caller
+/// prefixes it).
 function validateTypeRefPartition(
     refs: TypeRef[] | undefined,
-    allowed: Set<string>,
+    declaredVersions: Map<string, number>,
     label: 'input_type_refs' | 'output_type_refs',
 ): string | null {
     if (!Array.isArray(refs) || refs.length > MAX_TYPE_REFS) {
         return `${label} must be an array of at most ${MAX_TYPE_REFS} entries`
     }
-    const seen = new Set<string>()
+    const seen = new Map<string, number>()
     for (const r of refs) {
         const err = validateTypeRef(r, seen)
         if (err !== null) return `${label}: ${err}`
         const key = `${r.author}/${r.name}`
-        if (!allowed.has(key)) {
+        const expected = declaredVersions.get(key)
+        if (expected === undefined) {
             return `${label}: ${key} not present in type_refs`
+        }
+        if (expected !== r.version) {
+            return `${label}: ${key} pinned at v${r.version} but type_refs declares v${expected}`
         }
     }
     return null
@@ -588,7 +592,7 @@ function validateTypeRefPartition(
 
 function validateTypeRef(
     r: TypeRef | undefined,
-    seen: Set<string>,
+    seen: Map<string, number>,
 ): string | null {
     if (r === null || typeof r !== 'object') return 'each entry must be an object'
     if (typeof r.author !== 'string' || !AUTHOR_RE.test(r.author)) {
@@ -606,7 +610,7 @@ function validateTypeRef(
     }
     const key = `${r.author}/${r.name}`
     if (seen.has(key)) return `duplicate type ref: ${key}`
-    seen.add(key)
+    seen.set(key, r.version)
     return null
 }
 
