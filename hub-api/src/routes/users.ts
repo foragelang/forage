@@ -53,9 +53,10 @@ export async function getProfile(
     const packageRefs = await listUserPackagesIndex(env, author)
     const starCount = await countStarsByUser(env, author)
 
-    // No packages and no OAuth record => 404. Otherwise we have
-    // something to show.
-    if (packageRefs.length === 0 && userRaw === null) {
+    // Profile exists if there's anything to anchor it to: an OAuth
+    // record (the user signed in), packages they published, or
+    // stars they gave. Pure 404 only when none of those hold.
+    if (packageRefs.length === 0 && starCount === 0 && userRaw === null) {
         return jsonError(404, 'not_found', `unknown user: ${author}`, {}, request)
     }
 

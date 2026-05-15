@@ -65,6 +65,31 @@ describe('user profile', () => {
         expect(r.status).toBe(404)
     })
 
+    it('serves a profile for a stars-only user (no packages, no OAuth record)', async () => {
+        const a = await userToken('alice')
+        await fetchJson(
+            authedPostJson(
+                'https://hub/v1/packages/alice/p/versions',
+                a,
+                publishRequest(),
+            ),
+        )
+        // bob has no published packages and no OAuth row (the JWT is
+        // signed locally and never goes through upsertUser). His only
+        // imprint on the system is a star.
+        const b = await userToken('bob')
+        await fetchJson(
+            authedPostJson('https://hub/v1/packages/alice/p/stars', b, {}),
+        )
+        const profile = await fetchJson(get('https://hub/v1/users/bob'))
+        expect(profile.status).toBe(200)
+        expect(profile.body.login).toBe('bob')
+        expect(profile.body.package_count).toBe(0)
+        expect(profile.body.star_count).toBe(1)
+        // No OAuth record => created_at surfaces as null, not 0.
+        expect(profile.body.created_at).toBeNull()
+    })
+
     it('paginates /users/:author/packages by cursor', async () => {
         const a = await userToken('alice')
         for (const slug of ['a', 'b', 'c']) {
