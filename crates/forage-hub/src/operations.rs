@@ -490,25 +490,28 @@ fn read_snapshot(recipe_dir: &Path) -> HubResult<Option<PackageSnapshot>> {
     // with `_id` + `typeName`); the hub stores per-type record arrays
     // + counts. Convert.
     let core_snapshot: forage_core::Snapshot = serde_json::from_str(&raw)?;
-    Ok(Some(core_snapshot_to_wire(&core_snapshot)))
+    Ok(Some(core_snapshot_to_wire(&core_snapshot)?))
 }
 
 /// Convert a `forage_core::Snapshot` into the hub's compact
 /// per-type-arrays shape. Records carry the full JSON body
 /// (`_id`, `typeName`, every field) so the hub can round-trip them
-/// back without losing the synthetic id.
-pub fn core_snapshot_to_wire(snapshot: &forage_core::Snapshot) -> PackageSnapshot {
+/// back without losing the synthetic id. A serialization failure on
+/// any record propagates rather than landing as `null` in the wire
+/// payload — `[null]` on the hub would survive replay as a phantom
+/// record and the original failure would be lost.
+pub fn core_snapshot_to_wire(snapshot: &forage_core::Snapshot) -> HubResult<PackageSnapshot> {
     let mut records: indexmap::IndexMap<String, Vec<serde_json::Value>> = indexmap::IndexMap::new();
     let mut counts: indexmap::IndexMap<String, u64> = indexmap::IndexMap::new();
     for r in &snapshot.records {
-        let v = serde_json::to_value(r).unwrap_or(serde_json::Value::Null);
+        let v = serde_json::to_value(r)?;
         records
             .entry(r.type_name.clone())
             .or_default()
             .push(v);
         *counts.entry(r.type_name.clone()).or_default() += 1;
     }
-    PackageSnapshot { records, counts }
+    Ok(PackageSnapshot { records, counts })
 }
 
 #[cfg(test)]
