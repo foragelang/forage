@@ -175,13 +175,16 @@ pub struct FetchedPackage {
 
 fn sha256_hex(s: &str) -> String {
     use sha2::Digest;
+    use std::fmt::Write;
     let mut h = sha2::Sha256::new();
     h.update(s.as_bytes());
     let out = h.finalize();
     let mut hex = String::with_capacity(out.len() * 2);
     for b in out {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
+        // Writing to `String` through `fmt::Write` is infallible —
+        // expect surfaces the impossibility rather than silently
+        // dropping the Result the way `let _ =` did.
+        write!(hex, "{b:02x}").expect("String fmt::Write cannot fail");
     }
     hex
 }
