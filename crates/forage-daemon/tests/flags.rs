@@ -241,3 +241,77 @@ async fn dev_preset_applies_sample_and_ephemeral_together() {
     assert_eq!(sr.counts.get("Item").copied(), Some(10));
     assert!(!persistent.exists(), "dev preset must not write persistent store");
 }
+
+/// All three flags on at once: sampled, replayed, ephemeral. The
+/// captures hold 100 records, sample_limit caps at 5, ephemeral
+/// keeps the persistent store untouched. This exercises the full
+/// "dev preset with a fixture file resolved" shape the CLI / Studio
+/// build when they detect `_fixtures/<recipe>.jsonl` is present.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_three_flags_compose() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws_root = tmp.path().to_path_buf();
+    let recipe_name = "sample-flag";
+
+    // The live mock errors any request — the run survives because
+    // replay short-circuits the live transport.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let live_url = format!("{}/items", server.uri());
+    let source = SAMPLE_RECIPE.replace("STAND_IN_URL", &live_url);
+    init_workspace(&ws_root, recipe_name, &source);
+
+    let captures_path = ws_root.join("captures.jsonl");
+    let mut body = String::from("[");
+    for i in 0..100 {
+        if i > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!(r#"{{"id":"r-{i}"}}"#));
+    }
+    body.push(']');
+    write_jsonl(
+        &captures_path,
+        &[Capture::Http(HttpExchange {
+            url: live_url.clone(),
+            method: "GET".into(),
+            request_headers: indexmap::IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: indexmap::IndexMap::new(),
+            body,
+        })],
+    )
+    .expect("write captures");
+
+    let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+    deploy_disk_recipe(&daemon, &ws_root, recipe_name);
+
+    let persistent = ws_root.join(".forage").join("data").join("triple.sqlite");
+    let cfg = RunConfig {
+        cadence: Cadence::Manual,
+        output: persistent.clone(),
+        enabled: true,
+        inputs: indexmap::IndexMap::new(),
+    };
+    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+
+    let flags = RunFlags {
+        sample_limit: Some(5),
+        replay: Some(captures_path),
+        ephemeral: true,
+    };
+    let sr = daemon
+        .trigger_run(&run.id, flags)
+        .await
+        .expect("trigger_run");
+    assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
+    assert_eq!(sr.counts.get("Item").copied(), Some(5));
+    assert!(
+        !persistent.exists(),
+        "ephemeral run with all three flags must not persist",
+    );
+}

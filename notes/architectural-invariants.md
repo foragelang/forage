@@ -37,6 +37,13 @@
   `Workspace`; Studio reads through `Daemon::workspace()` rather than
   caching a duplicate. Cross-boundary types are defined once in Rust with
   ts-rs export; the TS side imports them — no hand-maintained mirrors.
+- **Run mode is three orthogonal flags, not a binary.** `RunFlags`
+  composes `sample_limit`, `replay`, and `ephemeral` independently;
+  `dev` / `prod` are preset bundles, not separate code paths. The
+  scheduler always passes `RunFlags::prod()`; the editor "Run" button
+  defaults to dev but the toolbar exposes per-flag toggles. The same
+  recipe source runs in any combination — "playground mode" and
+  "production mode" are runtime knobs, never language constructs.
 
 See `grammar.md` for the file format, `forage-studio.md` for the Studio
 architecture in detail, and `../plans/workspaces.md` for the original

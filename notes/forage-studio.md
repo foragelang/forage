@@ -54,7 +54,12 @@ computation always reflects the latest config.
 `run_once` is the execution path: build catalog, parse + validate, pick the
 engine (HTTP or browser), run, write emitted rows in one transaction, persist
 the `ScheduledRun`, recompute `Run.health` (drift rule below), fire the host
-`run-completed` callback.
+`run-completed` callback. The caller hands `run_once` a `RunFlags` value
+carrying three composable toggles (`sample_limit`, `replay`, `ephemeral`).
+The scheduler always passes `RunFlags::prod()` so cadence-driven fires are
+production-shaped (live, full record set, persisted); `trigger_run` accepts
+caller-supplied flags so the deployment "Run now" button can default to
+prod while the editor "Run" button passes its toolbar state through.
 
 Drift rule: a `Run` is in `Health::Drift` when the latest run is `Ok` but at
 least one record type's emit count fell ≤70% of its median across the prior
@@ -93,9 +98,17 @@ Recipe-scoped:
   declares it.
 - `validate_recipe(source)` — debounced live validation off the in-memory
   buffer. `save_file` also re-validates after writing.
-- `run_recipe(name, replay)` — dev runs, keyed by recipe header name.
-  Spawns the engine with progress + debugger sinks; on success, calls
-  `daemon.ensure_run(name)` so the recipe shows up in the Runs sidebar.
+- `run_recipe(name, flags)` — editor-driven runs, keyed by recipe header
+  name. `flags` carries three orthogonal toggles (`sample_limit`,
+  `replay`, `ephemeral`); an absent argument falls back to the dev
+  preset (sample 10, replay against `_fixtures/<recipe>.jsonl`,
+  ephemeral). The run-toolbar popover holds the toggles + a dev/prod
+  preset selector and the resolved values ride here. Spawns the
+  engine with progress + debugger sinks; on success, calls
+  `daemon.ensure_run(name)` so the recipe shows up in the Runs
+  sidebar. When `ephemeral=false`, the resulting snapshot is also
+  written to the Run's persistent output store (the same path
+  scheduled fires would populate).
 - `cancel_run`, `debug_resume`, `set_breakpoints`, `set_recipe_breakpoints`,
   `load_recipe_breakpoints`, `set_pause_iterations` — debugger plumbing.
 - `recipe_outline`, `recipe_hover`, `language_dictionary` — parser-driven

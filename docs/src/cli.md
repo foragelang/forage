@@ -43,7 +43,19 @@ Flags:
 - `--inputs <path>` — path to a JSON object of input bindings.
 - `--replay` — replay against `<workspace>/_fixtures/<recipe>.jsonl`
   instead of hitting the network.
+- `--replay-from <path>` — replay against an explicit captures file
+  (overrides `--replay`'s default fixture lookup).
+- `--sample <N>` — cap each top-level `for $x in $arr[*]` iteration at
+  N items. Nested loops always run to completion. Useful for a
+  top-of-funnel sanity check against a real source.
+- `--mode dev|prod` — preset bundle. `dev` is sugar for `--sample 10
+  --replay`; `prod` is the empty preset. Explicit per-flag values
+  override the preset's defaults.
 - `--output {pretty|json}` — output format. Default `pretty`.
+
+`--ephemeral` lives at the daemon / Studio layer where output
+persistence is a real choice; `forage run` is already stateless so
+it isn't surfaced here.
 
 Exit codes:
 - `0` — clean run.
@@ -55,6 +67,9 @@ Exit codes:
 forage run hacker-news
 forage run hacker-news --output json | jq '.records | length'
 forage run letterboxd-popular --replay
+forage run hacker-news --sample 5             # top-5 records from live
+forage run hacker-news --mode dev             # sampled + replay against fixtures
+forage run hacker-news --replay-from cap.jsonl
 ```
 
 ## `forage record <recipe>`
