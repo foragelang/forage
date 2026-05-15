@@ -1,71 +1,19 @@
-//! End-to-end shared-recipe parity. For each entry in
-//! `Tests/shared-recipes/expected.json` that carries a `runSnapshot`,
-//! parse the recipe, drive it through the HTTP engine against the
-//! declared fixtures, and compare emitted records. The TS port runs
-//! the same `runSnapshot` through its own runner, so divergence
-//! between the Rust engine and the TS port fails one side first.
-
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+//! End-to-end parity for the bundled fixtures. For each entry that
+//! carries a `runSnapshot`, parse the recipe, drive it through the
+//! HTTP engine against the declared captures, and compare emitted
+//! records. Any future implementation that wants to claim parity has
+//! to clear the same snapshots.
 
 use forage_core::{EvalValue, parse};
 use forage_http::engine::Engine;
 use forage_http::transport::ReplayTransport;
 use forage_replay::{Capture, HttpExchange};
+use forage_test::ExpectedFile;
 use indexmap::IndexMap;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct ExpectedFile {
-    recipes: Vec<RecipeExpect>,
-}
-
-#[derive(Deserialize)]
-struct RecipeExpect {
-    file: String,
-    #[serde(default, rename = "runSnapshot")]
-    run_snapshot: Option<RunSnapshot>,
-}
-
-#[derive(Deserialize)]
-struct RunSnapshot {
-    #[serde(default)]
-    inputs: HashMap<String, serde_json::Value>,
-    #[serde(default, rename = "httpFixtures")]
-    http_fixtures: Vec<HttpFixture>,
-    records: Vec<ExpectedRecord>,
-}
-
-#[derive(Deserialize)]
-struct HttpFixture {
-    url: String,
-    method: String,
-    status: u16,
-    body: String,
-}
-
-#[derive(Deserialize)]
-struct ExpectedRecord {
-    #[serde(rename = "typeName")]
-    type_name: String,
-    fields: serde_json::Map<String, serde_json::Value>,
-}
-
-fn shared_dir() -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("Tests");
-    p.push("shared-recipes");
-    p
-}
 
 #[tokio::test]
-async fn shared_recipes_match_run_snapshots() {
-    let dir = shared_dir();
-    let raw = fs::read_to_string(dir.join("expected.json")).unwrap();
-    let exp: ExpectedFile = serde_json::from_str(&raw).unwrap();
+async fn fixtures_match_run_snapshots() {
+    let exp: ExpectedFile = forage_test::load_expected();
 
     let mut failures = Vec::<String>::new();
     let mut ran = 0;
@@ -75,7 +23,7 @@ async fn shared_recipes_match_run_snapshots() {
             continue;
         };
         ran += 1;
-        let src = fs::read_to_string(dir.join(&r.file)).unwrap();
+        let src = forage_test::load_recipe_source(&r.file);
         let recipe = match parse(&src) {
             Ok(r) => r,
             Err(e) => {
@@ -154,6 +102,6 @@ async fn shared_recipes_match_run_snapshots() {
         for f in &failures {
             eprintln!("--- {f}");
         }
-        panic!("{} shared-recipe runtime failures", failures.len());
+        panic!("{} fixture runtime failures", failures.len());
     }
 }

@@ -1,115 +1,24 @@
-//! Shared-recipes test vector harness.
+//! Cross-implementation parity test vectors.
 //!
-//! Loads `Tests/shared-recipes/*.forage` + `expected.json`, parses each
-//! recipe, runs the validator, and verifies the structural summary
-//! matches the expected descriptor. This is the same harness the Swift
-//! and TypeScript implementations conform to; passing here means the
-//! Rust parser/validator stays in lockstep with them.
-
-use std::fs;
-use std::path::PathBuf;
+//! Loads the fixture manifest through the `forage-test` harness,
+//! parses each `.forage` source, runs the validator, and verifies the
+//! structural summary matches the expected descriptor. Any future
+//! implementation that wants to claim parity has to clear the same
+//! manifest.
 
 use forage_core::ast::*;
 use forage_core::workspace::TypeCatalog;
 use forage_core::{parse, validate};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct ExpectedFile {
-    recipes: Vec<RecipeExpect>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct RecipeExpect {
-    file: String,
-    #[serde(default = "default_true")]
-    parses: bool,
-    #[serde(default)]
-    summary: Option<Summary>,
-    #[serde(default)]
-    types: Option<Vec<TypeExpect>>,
-    #[serde(default)]
-    enums: Option<Vec<EnumExpect>>,
-    #[serde(default)]
-    secrets: Option<Vec<String>>,
-    /// Number of top-level `fn` declarations the recipe must carry. Set
-    /// for fixtures that exercise user-defined functions; omitted for
-    /// recipes that don't.
-    #[serde(default, rename = "functionCount")]
-    function_count: Option<usize>,
-    #[serde(default)]
-    validation: Option<ValExpect>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct Summary {
-    name: String,
-    #[serde(rename = "engineKind")]
-    engine_kind: String,
-    #[serde(rename = "typeCount")]
-    type_count: usize,
-    #[serde(rename = "enumCount")]
-    enum_count: usize,
-    #[serde(rename = "inputCount")]
-    input_count: usize,
-    #[serde(rename = "stepNames")]
-    step_names: Vec<String>,
-    #[serde(rename = "expectationCount")]
-    expectation_count: usize,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct TypeExpect {
-    name: String,
-    #[serde(rename = "fieldNames")]
-    field_names: Vec<String>,
-    #[serde(rename = "requiredFieldCount", default)]
-    required_field_count: usize,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct EnumExpect {
-    name: String,
-    variants: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct ValExpect {
-    #[serde(rename = "errorCount", default)]
-    error_count: Option<usize>,
-    #[serde(rename = "errorCountMin", default)]
-    error_count_min: Option<usize>,
-}
-
-fn root() -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("Tests");
-    p.push("shared-recipes");
-    p
-}
+use forage_test::{ExpectedFile, Summary};
 
 #[test]
-fn shared_recipes_match_expected() {
-    let dir = root();
-    let expected_path = dir.join("expected.json");
-    let raw = fs::read_to_string(&expected_path).unwrap();
-    let exp: ExpectedFile = serde_json::from_str(&raw).unwrap();
+fn fixtures_match_expected() {
+    let exp: ExpectedFile = forage_test::load_expected();
 
     let mut failures = Vec::<String>::new();
 
     for r in &exp.recipes {
-        let path = dir.join(&r.file);
-        let src = fs::read_to_string(&path).unwrap();
+        let src = forage_test::load_recipe_source(&r.file);
         let parsed = parse(&src);
 
         if !r.parses {
@@ -209,6 +118,7 @@ fn shared_recipes_match_expected() {
                 }
             }
         }
+
     }
 
     if !failures.is_empty() {

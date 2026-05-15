@@ -36,6 +36,8 @@ regex       = { workspace = true }
 indexmap    = { workspace = true }
 
 [dev-dependencies]
+forage-test = { workspace = true }
+
 wiremock    = { workspace = true }
 tempfile    = { workspace = true }
 tokio       = { workspace = true }
