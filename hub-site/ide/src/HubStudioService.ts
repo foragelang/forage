@@ -61,25 +61,6 @@ type ListVersionsResponse = {
     items: ListVersionsItem[];
 };
 
-/// Lightweight event bus used to forward engine events to subscribers
-/// when (eventually) the WASM bridge gains progress streaming. Today
-/// `runRecipe("replay")` returns a final snapshot, not per-event
-/// updates — the bus is here so the contract stays compatible.
-class EventBus<T> {
-    private handlers: Set<(event: T) => void> = new Set();
-
-    subscribe(handler: (event: T) => void): Unsubscribe {
-        this.handlers.add(handler);
-        return () => {
-            this.handlers.delete(handler);
-        };
-    }
-
-    emit(event: T) {
-        for (const h of this.handlers) h(event);
-    }
-}
-
 /// Currently loaded version artifact — the IDE caches the latest fetch
 /// so subsequent `runRecipe` calls can replay against the same recipe
 /// + decls + fixtures without round-tripping to hub-api. `loadPackage`
@@ -99,7 +80,6 @@ export class HubStudioService implements StudioService {
     };
 
     private loaded: LoadedPackage | null = null;
-    private runEvents = new EventBus<RunEvent>();
 
     constructor(private readonly hubUrl: string = "https://api.foragelang.com") {}
 
@@ -476,8 +456,12 @@ export class HubStudioService implements StudioService {
 
     // ── Events ──────────────────────────────────────────────────────
 
-    onRunEvent(handler: (event: RunEvent) => void): Unsubscribe {
-        return this.runEvents.subscribe(handler);
+    onRunEvent(_handler: (event: RunEvent) => void): Unsubscribe {
+        // `runRecipe("replay")` returns a final snapshot synchronously;
+        // there's no per-event stream from the wasm bridge. Hub IDE
+        // subscribers see no events. When/if streaming is added, route
+        // engine events through the handler here.
+        return () => {};
     }
     onDebugPaused(_handler: (payload: PausePayload) => void): Unsubscribe {
         // No debugger in the hub IDE — the replay engine runs straight
