@@ -103,14 +103,14 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "validate" => {
             let _ = app.emit("menu:validate", ());
         }
-        // Context-menu items use ID prefix `recipe_delete:<slug>` so we
-        // can route many recipe slugs through one handler.
+        // Context-menu items use ID prefix `recipe_delete:<name>` so
+        // we can route many recipes through one handler.
         other if other.starts_with("recipe_delete:") => {
-            let slug = &other["recipe_delete:".len()..];
-            tracing::info!(slug, "menu:recipe_delete dispatching");
-            match app.emit("menu:recipe_delete", slug) {
-                Ok(()) => tracing::info!(slug, "menu:recipe_delete emitted"),
-                Err(e) => tracing::warn!(slug, error = %e, "menu:recipe_delete emit failed"),
+            let name = &other["recipe_delete:".len()..];
+            tracing::info!(name, "menu:recipe_delete dispatching");
+            match app.emit("menu:recipe_delete", name) {
+                Ok(()) => tracing::info!(name, "menu:recipe_delete emitted"),
+                Err(e) => tracing::warn!(name, error = %e, "menu:recipe_delete emit failed"),
             }
         }
         _ => {}

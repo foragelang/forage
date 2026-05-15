@@ -143,15 +143,15 @@ pub fn validate_recipe(source: String) -> ValidationOutcome {
 
 /// Infer the recipe's progress unit (the deepest emit-bearing for-
 /// loop scope) from current on-disk source. Frontend caches this per
-/// slug and uses it to scope the live-run / scheduled-run progress
-/// bar to a single type instead of summing all emits.
+/// recipe name and uses it to scope the live-run / scheduled-run
+/// progress bar to a single type instead of summing all emits.
 #[tauri::command]
 pub fn recipe_progress_unit(
     state: State<'_, StudioState>,
-    slug: String,
+    name: String,
 ) -> Result<Option<forage_core::ProgressUnit>, String> {
     let ws = require_workspace(&state)?;
-    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
+    let source = workspace::read_source(&ws, &name)?;
     let recipe = forage_core::parse(&source).map_err(|e| format!("{e}"))?;
     Ok(forage_core::infer_progress_unit(&recipe))
 }
@@ -163,22 +163,22 @@ pub fn create_recipe(state: State<'_, StudioState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn delete_recipe(state: State<'_, StudioState>, slug: String) -> Result<(), String> {
+pub fn delete_recipe(state: State<'_, StudioState>, name: String) -> Result<(), String> {
     let ws = require_workspace(&state)?;
-    workspace::delete_recipe(&ws.root, &slug).map_err(|e| e.to_string())
+    workspace::delete_recipe(&ws, &name).map_err(|e| e.to_string())
 }
 
 /// Pop up a native context menu (NSMenu on macOS, etc.) at the cursor
 /// location with a "Delete recipe…" item. Selection flows back through
 /// the global on_menu_event handler, which emits `menu:recipe_delete`
-/// with the slug as payload.
+/// with the recipe name as payload.
 #[tauri::command]
 pub fn show_recipe_context_menu(
     app: AppHandle,
     window: tauri::WebviewWindow,
-    slug: String,
+    name: String,
 ) -> Result<(), String> {
-    let id = format!("recipe_delete:{slug}");
+    let id = format!("recipe_delete:{name}");
     let delete_item = tauri::menu::MenuItemBuilder::with_id(&id, "Delete Recipe…")
         .build(&app)
         .map_err(|e| e.to_string())?;
@@ -377,13 +377,13 @@ impl StudioDebugger {
 pub async fn run_recipe(
     app: AppHandle,
     state: State<'_, crate::state::StudioState>,
-    slug: String,
+    name: String,
     replay: bool,
 ) -> Result<RunOutcome, String> {
-    tracing::info!(slug = %slug, replay, "run_recipe");
+    tracing::info!(name = %name, replay, "run_recipe");
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
-    let source = workspace::read_source(&ws.root, &slug).map_err(|e| e.to_string())?;
+    let source = workspace::read_source(&ws, &name)?;
     let recipe = match parse(&source) {
         Ok(r) => r,
         Err(e) => {
@@ -395,7 +395,7 @@ pub async fn run_recipe(
             });
         }
     };
-    let catalog = match build_catalog_for_slug(&ws.root, &slug, &recipe) {
+    let catalog = match build_catalog(&ws.root, &recipe) {
         Ok(c) => c,
         Err(e) => {
             return Ok(RunOutcome {
@@ -416,20 +416,20 @@ pub async fn run_recipe(
             daemon_warning: None,
         });
     }
-    let raw_inputs = workspace::read_inputs(&ws.root, &slug);
+    let raw_inputs = workspace::read_inputs(&ws, &name);
     let mut inputs: IndexMap<String, EvalValue> = IndexMap::new();
     for (k, v) in raw_inputs {
         inputs.insert(k, EvalValue::from(&v));
     }
     let secrets = workspace::read_secrets_from_env(&recipe);
     // Replay reads the recipe-name-keyed JSONL stream Phase 5 introduced
-    // (`<root>/_fixtures/<recipe>.jsonl`). A header-less file can't run,
-    // so the validator above has already screened those out; the unwrap
-    // is the last-ditch failure mode (deployed source without a header,
-    // which Phase 1 made structurally impossible).
+    // (`<root>/_fixtures/<recipe>.jsonl`). A live edit since workspace
+    // load may have stripped the header — fall back to empty captures
+    // in that case; the validator above will already have flagged the
+    // header-less state.
     let captures = if replay {
         match recipe.recipe_name() {
-            Some(name) => workspace::read_captures(&ws.root, name),
+            Some(header) => workspace::read_captures(&ws.root, header),
             None => Vec::new(),
         }
     } else {
@@ -533,11 +533,11 @@ pub async fn run_recipe(
             // silent log line was the old failure mode — the user
             // would see no Run row and have no idea why.
             let daemon_warning = match recipe.recipe_name() {
-                Some(name) => match daemon.ensure_run(name) {
+                Some(header) => match daemon.ensure_run(header) {
                     Ok(_) => None,
                     Err(e) => {
                         tracing::warn!(
-                            recipe_name = %name,
+                            recipe_name = %header,
                             error = %e,
                             "ensure_run after dev-run failed",
                         );
@@ -546,7 +546,7 @@ pub async fn run_recipe(
                 },
                 None => {
                     tracing::warn!(
-                        slug = %slug,
+                        name = %name,
                         "ensure_run skipped: dev-run target has no recipe header",
                     );
                     Some(
@@ -618,9 +618,9 @@ pub fn debug_resume(
 ///
 /// Per-recipe persistence is handled by `set_recipe_breakpoints` /
 /// `load_recipe_breakpoints` below. The frontend pushes via *this*
-/// command on slug switch so the engine's hot-path read sees the new
-/// recipe's set, then persists the user's edits through the recipe-
-/// scoped commands.
+/// command on recipe switch so the engine's hot-path read sees the
+/// new recipe's set, then persists the user's edits through the
+/// recipe-scoped commands.
 #[tauri::command]
 pub fn set_breakpoints(
     state: State<'_, crate::state::StudioState>,
@@ -634,19 +634,19 @@ pub fn set_breakpoints(
 
 /// Persist a recipe's breakpoint set to the workspace sidecar and push it
 /// to the in-memory cache the engine reads on pause. Empty set deletes
-/// the slug's entry so the sidecar doesn't grow stale.
+/// the recipe's entry so the sidecar doesn't grow stale.
 #[tauri::command]
 pub fn set_recipe_breakpoints(
     state: State<'_, crate::state::StudioState>,
-    slug: String,
+    name: String,
     steps: Vec<String>,
 ) -> Result<(), String> {
     let ws = require_workspace(&state)?;
     let mut all = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
     if steps.is_empty() {
-        all.remove(&slug);
+        all.remove(&name);
     } else {
-        all.insert(slug, steps.clone());
+        all.insert(name, steps.clone());
     }
     workspace::write_breakpoints(&ws.root, &all).map_err(|e| e.to_string())?;
     state
@@ -656,17 +656,17 @@ pub fn set_recipe_breakpoints(
 }
 
 /// Load the persisted breakpoint set for one recipe. Returns an empty
-/// vec when the slug has no entry — the absence of breakpoints is the
-/// default. A malformed sidecar surfaces as an error so the user sees
-/// the parse failure instead of silently losing every breakpoint.
+/// vec when the recipe has no entry — the absence of breakpoints is
+/// the default. A malformed sidecar surfaces as an error so the user
+/// sees the parse failure instead of silently losing every breakpoint.
 #[tauri::command]
 pub fn load_recipe_breakpoints(
     state: State<'_, crate::state::StudioState>,
-    slug: String,
+    name: String,
 ) -> Result<Vec<String>, String> {
     let ws = require_workspace(&state)?;
     let mut map = workspace::read_breakpoints(&ws.root).map_err(|e| e.to_string())?;
-    Ok(map.remove(&slug).unwrap_or_default())
+    Ok(map.remove(&name).unwrap_or_default())
 }
 
 /// Toggle "pause inside every `for`-loop iteration" for the in-flight
@@ -697,25 +697,29 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
     Ok(())
 }
 
-/// Publish the recipe at `slug` to the hub. The atomic artifact
-/// (recipe + workspace decls + fixtures + snapshot + base_version)
-/// is assembled by `forage-hub`'s shared operations module; this
-/// command thin-wraps it for the UI.
+/// Publish the recipe named `name` to the hub under `@author/<name>`.
+/// The atomic artifact (recipe + workspace decls + fixtures +
+/// snapshot + base_version) is assembled by `forage-hub`'s shared
+/// operations module; this command thin-wraps it for the UI.
 ///
-/// `author` and `slug` are passed in rather than derived from the
-/// manifest because Studio exposes a publish-as-other-author flow
-/// for forks (the Tauri command stays stateless w.r.t. manifest
-/// drift). `description`, `category`, `tags` ride from the manifest
-/// or the publish dialog.
+/// `author` is passed in rather than derived from the manifest because
+/// Studio exposes a publish-as-other-author flow for forks (the Tauri
+/// command stays stateless w.r.t. manifest drift). `description`,
+/// `category`, `tags` ride from the manifest or the publish dialog.
+///
+/// The hub-side publish slug is the recipe header name. Phase 9 will
+/// rework the hub-api to key on recipe name internally; for now the
+/// hub assembler still uses path-derived slugs and assumes
+/// `name == slug` (true in legacy workspaces).
 ///
 /// Errors land as typed [`hub_sync::PublishError`] values so the UI
-/// can render the stale-base banner with a "view diff" link
-/// instead of dumping a stringified server message into a toast.
+/// can render the stale-base banner with a "view diff" link instead
+/// of dumping a stringified server message into a toast.
 #[tauri::command]
 pub async fn publish_recipe(
     state: State<'_, crate::state::StudioState>,
     author: String,
-    slug: String,
+    name: String,
     hub_url: String,
     description: String,
     category: String,
@@ -728,16 +732,14 @@ pub async fn publish_recipe(
     // the server doesn't receive a malformed recipe. A broken recipe
     // surfaces as `Other` here, not `StaleBase` — the user fixes the
     // recipe before retrying.
-    let source = workspace::read_source(&ws.root, &slug).map_err(|e| {
-        crate::hub_sync::PublishError::Other {
-            message: e.to_string(),
-        }
+    let source = workspace::read_source(&ws, &name).map_err(|e| {
+        crate::hub_sync::PublishError::Other { message: e }
     })?;
     let recipe =
         parse(&source).map_err(|e| crate::hub_sync::PublishError::Other {
             message: format!("parse: {e}"),
         })?;
-    let catalog = build_catalog_for_slug(&ws.root, &slug, &recipe).map_err(|e| {
+    let catalog = build_catalog(&ws.root, &recipe).map_err(|e| {
         crate::hub_sync::PublishError::Other {
             message: format!("catalog: {e}"),
         }
@@ -751,7 +753,7 @@ pub async fn publish_recipe(
         &ws.root,
         &hub_url,
         &author,
-        &slug,
+        &name,
         description,
         category,
         tags,
@@ -794,11 +796,12 @@ pub async fn fork_from_hub(
 }
 
 /// Dry-run preview of a `publish_recipe` call: assemble the artifact
-/// off-disk and report what would be sent without POSTing.
+/// off-disk and report what would be sent without POSTing. The hub
+/// publish slug is the recipe header name (see `publish_recipe`).
 #[tauri::command]
 pub fn preview_publish(
     state: State<'_, crate::state::StudioState>,
-    slug: String,
+    name: String,
     description: String,
     category: String,
     tags: Vec<String>,
@@ -806,7 +809,7 @@ pub fn preview_publish(
     let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
         message: e,
     })?;
-    crate::hub_sync::preview_publish(&ws.root, &slug, description, category, tags)
+    crate::hub_sync::preview_publish(&ws.root, &name, description, category, tags)
 }
 
 #[tauri::command]
@@ -962,15 +965,11 @@ fn collect_step_locations(
     }
 }
 
-/// Slug-aware validation: parses the source, builds the workspace
-/// catalog (via `build_catalog_for_slug`), and attaches workspace
-/// errors as document-level diagnostics. Used by `save_recipe`, which
-/// always has a slug context.
-fn validate_source_with_slug(
-    workspace_root: &Path,
-    slug: &str,
-    source: &str,
-) -> ValidationOutcome {
+/// Workspace-aware validation: parses the source, builds the
+/// workspace catalog (via `build_catalog`), and attaches workspace
+/// errors as document-level diagnostics. Used by `save_file`, which
+/// always has a workspace context.
+fn validate_source_in_workspace(workspace_root: &Path, source: &str) -> ValidationOutcome {
     let line_map = LineMap::new(source);
     let to_diag = |span: std::ops::Range<usize>,
                    severity: &'static str,
@@ -990,7 +989,7 @@ fn validate_source_with_slug(
     };
     match parse(source) {
         Ok(r) => {
-            let catalog = match build_catalog_for_slug(workspace_root, slug, &r) {
+            let catalog = match build_catalog(workspace_root, &r) {
                 Ok(c) => c,
                 Err(e) => {
                     let diag = to_diag(0..0, "error", "WorkspaceError".into(), format!("{e}"));
@@ -1105,53 +1104,28 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
     }
 }
 
-/// Type catalog for a Studio recipe identified by slug. If the
-/// recipe's directory sits inside a workspace (ancestor
-/// `forage.toml`), the catalog folds in workspace declarations files
-/// plus cached hub-dep declarations. Otherwise lonely-recipe mode —
-/// the recipe's own types only.
+/// Type catalog for a recipe living under `workspace_root`. If the
+/// root sits inside a workspace (ancestor `forage.toml`), the catalog
+/// folds in workspace declarations files plus cached hub-dep
+/// declarations. Otherwise lonely-recipe mode — the recipe's own
+/// types only.
+///
+/// Re-discovers the workspace from disk on every call so a freshly
+/// saved sibling (a new declarations file, a new `share` decl) is
+/// visible without restarting Studio.
 ///
 /// Workspace errors (duplicate types across declarations files, parse
 /// failures in a sibling declarations file, etc.) are surfaced to the
 /// caller instead of being silently swallowed — the user has to see
 /// them to fix them.
-fn build_catalog_for_slug(
+fn build_catalog(
     workspace_root: &Path,
-    slug: &str,
     recipe: &forage_core::ForageFile,
 ) -> Result<forage_core::TypeCatalog, forage_core::workspace::WorkspaceError> {
-    let path = workspace::recipe_path(workspace_root, slug);
-    if let Some(ws) = forage_core::workspace::discover(&path) {
+    if let Some(ws) = forage_core::workspace::discover(workspace_root) {
         return ws.catalog(recipe, |p| std::fs::read_to_string(p));
     }
     Ok(forage_core::TypeCatalog::from_file(recipe))
-}
-
-/// Resolve the path-derived slug JS still sends over the wire to the
-/// recipe's header name — the daemon's canonical key as of Phase 4.
-/// The wire shape stays slug-based until Phase 7 reworks the Tauri
-/// commands; in the meantime every recipe-scoped handler translates
-/// here before calling into the daemon.
-///
-/// Matching is keyed on `slug_from_path`, so both legacy
-/// `<slug>/recipe.forage` files and flat `<slug>.forage` files
-/// resolve. The first recipe in path order wins on duplicates — the
-/// validator's `DuplicateRecipeName` rule still surfaces the
-/// collision through the editor diagnostics pipeline.
-fn resolve_recipe_name(
-    ws: &forage_core::workspace::Workspace,
-    slug: &str,
-) -> Result<String, String> {
-    for recipe in ws.recipes() {
-        if let Some(s) = forage_core::workspace::slug_from_path(&ws.root, recipe.path)
-            && s == slug
-        {
-            return Ok(recipe.name().to_string());
-        }
-    }
-    Err(format!(
-        "no recipe with slug '{slug}' found in the active workspace",
-    ))
 }
 
 fn host_of(url: &str) -> String {
@@ -1448,8 +1422,11 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, String> {
 /// Validate a file saved under the workspace at `path` (canonical,
 /// inside `root`). The decision tree:
 ///   * non-`.forage` — clean outcome (no diagnostics).
-///   * `<root>/<name>.forage` — declarations file, parse-only.
-///   * `<root>/<slug>/recipe.forage` — full recipe validation.
+///   * `<root>/<name>.forage` — workspace-aware validation
+///     (post-greenfield: a `.forage` file may declare a recipe or
+///     just hold shared types, both go through the same validator).
+///   * `<root>/<slug>/recipe.forage` — workspace-aware validation
+///     (legacy shape that still functions).
 ///   * any other `.forage` location — unrecognized; surface as a
 ///     diagnostic so the UI doesn't silently treat sidecars as
 ///     declarations.
@@ -1479,29 +1456,17 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
         };
     };
 
-    // Depth relative to the workspace root: 1 = root-level file
-    // (declarations), 2 = `<slug>/<file>.forage` (recipe slot).
     let rel = path.strip_prefix(root).unwrap_or(path);
     let depth = rel.components().count();
 
-    if depth == 1 {
-        return validate_declarations_source(source);
-    }
-    if depth == 2 && file_name == "recipe.forage" {
-        // Use the slug-aware validator so workspace-level catalog
-        // errors surface. The slug is the recipe's parent directory.
-        let slug = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        return validate_source_with_slug(root, &slug, source);
+    if depth == 1 || (depth == 2 && file_name == "recipe.forage") {
+        return validate_source_in_workspace(root, source);
     }
 
-    // Any other `.forage` location is a sidecar — neither a
-    // declarations file nor a recipe. classify_file tags it
-    // `Other`; validate_path must agree.
+    // Any other `.forage` location is a sidecar — neither at the
+    // workspace root nor in a legacy `<slug>/recipe.forage` slot.
+    // classify_file tags it `Other`; validate_path agrees so the UI
+    // doesn't silently treat sidecars as source.
     let r = LineMap::new(source).range(0..0);
     ValidationOutcome {
         ok: false,
@@ -1509,7 +1474,7 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
             severity: "error",
             code: "UnrecognizedForageFile".into(),
             message: format!(
-                "unrecognized .forage file location: {} — .forage files belong at the workspace root (declarations) or as <slug>/recipe.forage",
+                "unrecognized .forage file location: {} — .forage files belong at the workspace root or as <slug>/recipe.forage",
                 path.display()
             ),
             start_line: r.start.line,
@@ -1517,61 +1482,6 @@ fn validate_path(root: &Path, path: &Path, source: &str) -> ValidationOutcome {
             end_line: r.end.line,
             end_col: r.end.character,
         }],
-    }
-}
-
-/// Validate a header-less declarations file. Runs the parser, then
-/// the file-local validator against a catalog containing only the
-/// file's own types — that catches duplicate types, unknown record
-/// references, and (post-greenfield parser) `RecipeContextWithoutHeader`
-/// when stray recipe-context forms (auth, browser, expect, statements)
-/// appear without a `recipe` header. Workspace-wide cross-file checks
-/// land in `append_workspace_shared_diagnostics` once the file is
-/// persisted; the LSP-side cross-file pass handles live buffers.
-fn validate_declarations_source(source: &str) -> ValidationOutcome {
-    let line_map = LineMap::new(source);
-    let to_diag = |span: std::ops::Range<usize>,
-                   severity: &'static str,
-                   code: String,
-                   message: String|
-     -> Diagnostic {
-        let r = line_map.range(span);
-        Diagnostic {
-            severity,
-            code,
-            message,
-            start_line: r.start.line,
-            start_col: r.start.character,
-            end_line: r.end.line,
-            end_col: r.end.character,
-        }
-    };
-    match parse(source) {
-        Ok(r) => {
-            let catalog = forage_core::TypeCatalog::from_file(&r);
-            let report = validate(&r, &catalog);
-            let mut diagnostics: Vec<Diagnostic> = report
-                .issues
-                .into_iter()
-                .map(|i| {
-                    let sev = match i.severity {
-                        forage_core::Severity::Error => "error",
-                        forage_core::Severity::Warning => "warning",
-                    };
-                    to_diag(i.span, sev, format!("{:?}", i.code), i.message)
-                })
-                .collect();
-            diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
-            let ok = !diagnostics.iter().any(|d| d.severity == "error");
-            ValidationOutcome { ok, diagnostics }
-        }
-        Err(e) => {
-            let (span, msg) = parse_error_span(&e);
-            ValidationOutcome {
-                ok: false,
-                diagnostics: vec![to_diag(span, "error", "ParseError".into(), msg)],
-            }
-        }
     }
 }
 
@@ -1597,11 +1507,9 @@ pub fn get_run(state: State<'_, StudioState>, run_id: String) -> Result<Option<R
 #[tauri::command]
 pub fn configure_run(
     state: State<'_, StudioState>,
-    slug: String,
+    name: String,
     cfg: RunConfig,
 ) -> Result<Run, String> {
-    let ws = require_workspace(&state)?;
-    let name = resolve_recipe_name(&ws, &slug)?;
     require_daemon(&state)?
         .configure_run(&name, cfg)
         .map_err(|e| e.to_string())
@@ -1659,28 +1567,26 @@ pub async fn validate_cron_expr(expr: String) -> Result<(), String> {
 }
 
 /// Promote a draft recipe to a frozen deployed version. Reads the
-/// on-disk source for `slug`, resolves its catalog against the
+/// on-disk source for `name`, resolves its catalog against the
 /// Studio-side workspace (so workspace declarations and cached hub
 /// deps are folded in), and hands the validated pair to the daemon
-/// keyed on the recipe's header name.
-/// Returns the new `DeployedVersion` row.
+/// keyed on the recipe's header name. Returns the new
+/// `DeployedVersion` row.
 #[tauri::command]
 pub fn deploy_recipe(
     state: State<'_, StudioState>,
-    slug: String,
+    name: String,
 ) -> Result<DeployedVersion, String> {
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
     // Source and catalog anchored on the same workspace handle so a
     // mid-deploy refresh can't make the source disagree with the
     // catalog it resolves against.
-    let recipe_path = ws.root.join(&slug).join("recipe.forage");
-    let source = std::fs::read_to_string(&recipe_path)
-        .map_err(|e| format!("read {}: {e}", recipe_path.display()))?;
+    let source = workspace::read_source(&ws, &name)?;
     let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
     let recipe_name = recipe
         .recipe_name()
-        .ok_or_else(|| format!("file at {} has no recipe header", recipe_path.display()))?;
+        .ok_or_else(|| format!("recipe {name:?} no longer has a header in its source"))?;
     let catalog = ws
         .catalog(&recipe, |p| std::fs::read_to_string(p))
         .map_err(|e| format!("catalog: {e}"))?;
@@ -1695,10 +1601,8 @@ pub fn deploy_recipe(
 #[tauri::command]
 pub fn list_deployed_versions(
     state: State<'_, StudioState>,
-    slug: String,
+    name: String,
 ) -> Result<Vec<DeployedVersion>, String> {
-    let ws = require_workspace(&state)?;
-    let name = resolve_recipe_name(&ws, &slug)?;
     require_daemon(&state)?
         .deployed_versions(&name)
         .map_err(|e| e.to_string())
@@ -1708,11 +1612,6 @@ pub fn list_deployed_versions(
 /// (valid, broken, missing) with the daemon's view of deployed
 /// versions. Returns one entry per recipe known to either side,
 /// keyed on the recipe's header name and ordered alphabetically.
-///
-/// The wire shape's `slug` field is the recipe header name now —
-/// Phase 7 renames the field on the wire; for the duration of the
-/// Phase 4 boundary, the value moved over without the field name
-/// catching up.
 #[tauri::command]
 pub fn list_recipe_statuses(
     state: State<'_, StudioState>,
@@ -1783,7 +1682,7 @@ fn build_recipe_statuses(
     Ok(by_name
         .into_iter()
         .map(|(name, (draft, deployed))| RecipeStatus {
-            slug: name,
+            name,
             draft,
             deployed,
         })
@@ -2132,7 +2031,7 @@ for $i in $list.items[*] {
         assert_eq!(records.len(), 2);
     }
 
-    use super::{build_recipe_statuses, resolve_recipe_name};
+    use super::build_recipe_statuses;
     use crate::workspace::{DeployedState, DraftState};
 
     /// A workspace whose source file basename differs from the
@@ -2178,7 +2077,7 @@ for $i in $list.items[*] {
             "draft + deployment must collapse into one entry: {statuses:?}",
         );
         let status = &statuses[0];
-        assert_eq!(status.slug, "bar", "status keys on the header name");
+        assert_eq!(status.name, "bar", "status keys on the header name");
         assert!(
             matches!(status.draft, DraftState::Valid { .. }),
             "draft side picked up the parsed recipe: {status:?}",
@@ -2186,51 +2085,6 @@ for $i in $list.items[*] {
         assert!(
             matches!(status.deployed, DeployedState::Deployed { version: 1, .. }),
             "deployment side joined under the header name: {status:?}",
-        );
-    }
-
-    /// `resolve_recipe_name` walks the workspace's parsed recipes and
-    /// returns the header name for a file whose path-derived slug
-    /// matches the input. Covers both the legacy `<slug>/recipe.forage`
-    /// shape and the flat `<slug>.forage` shape.
-    #[test]
-    fn resolve_recipe_name_translates_both_shapes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::write(
-            root.join("forage.toml"),
-            "description = \"\"\ncategory = \"\"\ntags = []\n",
-        )
-        .unwrap();
-        // Legacy `<slug>/recipe.forage`: file path slug `legacy`,
-        // header name `legacy-products`.
-        let legacy_dir = root.join("legacy");
-        std::fs::create_dir_all(&legacy_dir).unwrap();
-        std::fs::write(
-            legacy_dir.join("recipe.forage"),
-            "recipe \"legacy-products\"\nengine http\n",
-        )
-        .unwrap();
-        // Flat `<slug>.forage`: file path slug `flat`, header name
-        // `flat-products`.
-        std::fs::write(
-            root.join("flat.forage"),
-            "recipe \"flat-products\"\nengine http\n",
-        )
-        .unwrap();
-
-        let ws = forage_core::workspace::load(root).expect("load workspace");
-        assert_eq!(
-            resolve_recipe_name(&ws, "legacy").unwrap(),
-            "legacy-products",
-        );
-        assert_eq!(
-            resolve_recipe_name(&ws, "flat").unwrap(),
-            "flat-products",
-        );
-        assert!(
-            resolve_recipe_name(&ws, "ghost").is_err(),
-            "missing slug must surface an error",
         );
     }
 
@@ -2306,10 +2160,11 @@ for $i in $list.items[*] {
         assert_eq!(outcome.diagnostics[0].code, "UnrecognizedForageFile");
     }
 
-    /// Root-level header-less `.forage` files validate as
-    /// declarations — only their parse errors are surfaced.
+    /// Root-level `.forage` files run through workspace-aware
+    /// validation. A header-less file with only a clean type
+    /// declaration produces no diagnostics.
     #[test]
-    fn validate_path_treats_root_forage_as_declarations() {
+    fn validate_path_treats_root_forage_as_source() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let decl = root.join("cannabis.forage");
@@ -2318,7 +2173,7 @@ for $i in $list.items[*] {
         let outcome = validate_path(root, &decl, "type Dispensary { id: String }\n");
         assert!(
             outcome.ok,
-            "declarations file should validate clean: {outcome:?}"
+            "header-less file should validate clean: {outcome:?}"
         );
         assert!(outcome.diagnostics.is_empty());
     }

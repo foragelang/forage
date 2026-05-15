@@ -1,9 +1,11 @@
 //! Filesystem helpers anchored on a workspace root. The root is whatever
 //! the user opened — there's no longer a single global workspace.
 //!
-//! Each recipe lives in `<workspace>/<slug>/recipe.forage`; the
-//! workspace itself is marked by a `forage.toml` at the root and may
-//! include header-less declarations files shared across recipes.
+//! Recipe-scoped reads (source, inputs, deletes) key on recipe header
+//! name and consult `Workspace::recipe_by_name` to find the underlying
+//! file. The file may live at `<root>/<name>.forage` (the post-Phase-1
+//! flat shape) or at `<root>/<slug>/recipe.forage` (legacy); the
+//! resolver hands back whichever path is on disk.
 //!
 //! This module also owns the cross-workspace **recents sidecar**: a
 //! JSON file in the OS data dir tracking which workspaces the user has
@@ -40,12 +42,14 @@ pub fn write_empty_manifest(root: &Path) -> io::Result<()> {
     fs::write(&path, body)
 }
 
-pub fn recipe_path(root: &Path, slug: &str) -> PathBuf {
-    root.join(slug).join("recipe.forage")
-}
-
-pub fn recipe_dir(root: &Path, slug: &str) -> PathBuf {
-    root.join(slug)
+/// Resolve a recipe's on-disk file path by header name. Looks the
+/// recipe up in the cached workspace listing — the path comes back
+/// whichever shape the file is in (`<root>/<name>.forage` flat or the
+/// legacy `<root>/<slug>/recipe.forage`).
+pub fn resolve_recipe_path(ws: &Workspace, name: &str) -> Result<PathBuf, String> {
+    ws.recipe_by_name(name)
+        .map(|r| r.path.to_path_buf())
+        .ok_or_else(|| format!("no recipe named {name:?} in workspace at {}", ws.root.display()))
 }
 
 pub fn create_recipe(root: &Path, template_slug: Option<&str>) -> io::Result<String> {
@@ -74,38 +78,83 @@ pub fn create_recipe(root: &Path, template_slug: Option<&str>) -> io::Result<Str
     }
 }
 
-pub fn read_source(root: &Path, slug: &str) -> io::Result<String> {
-    fs::read_to_string(recipe_path(root, slug))
+/// Read the source of the recipe named `name`. Resolves the on-disk
+/// path through the workspace's recipe index, then reads the file.
+pub fn read_source(ws: &Workspace, name: &str) -> Result<String, String> {
+    let path = resolve_recipe_path(ws, name)?;
+    fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
 }
 
-/// Delete a recipe directory under the workspace root.
+/// Delete the on-disk artifact for the recipe named `name`. Resolves
+/// the file path through the workspace index and removes either:
+///   * the entire `<slug>/` directory if the recipe lives in the legacy
+///     `<root>/<slug>/recipe.forage` shape, taking sibling
+///     `fixtures/` / `snapshot.json` with it.
+///   * just the `<name>.forage` file in the flat shape.
 ///
-/// Refuses anything that isn't a single path segment (no slashes, no `..`),
-/// so a malicious slug can't escape the workspace root with `../etc/passwd`.
-/// The slug must already exist as a directory directly under the workspace.
-pub fn delete_recipe(root: &Path, slug: &str) -> io::Result<()> {
-    if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid recipe slug: {slug:?}"),
-        ));
-    }
-    let dir = root.join(slug);
-    // Confirm the target sits inside the workspace root before deleting — a
-    // hardlink or symlink would otherwise let us nuke unrelated content.
-    let canonical = dir.canonicalize()?;
-    let root_canonical = root.canonicalize()?;
+/// Refuses anything resolving outside the workspace root — a symlinked
+/// recipe dir pointing at `/etc/passwd` would otherwise let us delete
+/// unrelated content.
+pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
+    let path = ws
+        .recipe_by_name(name)
+        .map(|r| r.path.to_path_buf())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no recipe named {name:?} in workspace at {}", ws.root.display()),
+            )
+        })?;
+    let target = legacy_recipe_dir(&ws.root, &path).unwrap_or(path);
+
+    let canonical = target.canonicalize()?;
+    let root_canonical = ws.root.canonicalize()?;
     if !canonical.starts_with(&root_canonical) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("recipe path {canonical:?} escapes workspace root {root_canonical:?}"),
         ));
     }
-    fs::remove_dir_all(&dir)
+    if canonical.is_dir() {
+        fs::remove_dir_all(&canonical)
+    } else {
+        fs::remove_file(&canonical)
+    }
 }
 
-pub fn read_inputs(root: &Path, slug: &str) -> indexmap::IndexMap<String, serde_json::Value> {
-    let path = recipe_dir(root, slug).join("fixtures").join("inputs.json");
+/// Returns the parent directory when `recipe_path` looks like the
+/// legacy `<root>/<slug>/recipe.forage` shape (parent is one level
+/// under the root, file is named `recipe.forage`). Returns `None`
+/// otherwise — flat `<root>/<name>.forage` files have no per-recipe
+/// directory to clean up.
+fn legacy_recipe_dir(root: &Path, recipe_path: &Path) -> Option<PathBuf> {
+    let parent = recipe_path.parent()?;
+    if parent == root {
+        return None;
+    }
+    if parent.parent() != Some(root) {
+        return None;
+    }
+    if recipe_path.file_name()?.to_str()? != "recipe.forage" {
+        return None;
+    }
+    Some(parent.to_path_buf())
+}
+
+/// Read per-recipe inputs for `name`. Only meaningful for recipes in
+/// the legacy `<slug>/recipe.forage` shape — the inputs file lives at
+/// `<slug>/fixtures/inputs.json` next to the recipe. For flat
+/// `<name>.forage` recipes there's no per-recipe directory and this
+/// returns an empty map; an inputs migration to the flat workspace
+/// shape will land separately.
+pub fn read_inputs(ws: &Workspace, name: &str) -> indexmap::IndexMap<String, serde_json::Value> {
+    let Some(recipe) = ws.recipe_by_name(name) else {
+        return indexmap::IndexMap::new();
+    };
+    let Some(dir) = legacy_recipe_dir(&ws.root, recipe.path) else {
+        return indexmap::IndexMap::new();
+    };
+    let path = dir.join("fixtures").join("inputs.json");
     if !path.exists() {
         return indexmap::IndexMap::new();
     }
@@ -146,9 +195,9 @@ pub fn read_captures(root: &Path, recipe_name: &str) -> Vec<forage_replay::Captu
 }
 
 /// Per-recipe breakpoint persistence. One JSON sidecar at
-/// `<workspace_root>/breakpoints.json` keyed by recipe slug. The file is
-/// missing until the user sets a first breakpoint, so the empty-map
-/// case is the steady state for fresh workspaces.
+/// `<workspace_root>/breakpoints.json` keyed by recipe header name. The
+/// file is missing until the user sets a first breakpoint, so the
+/// empty-map case is the steady state for fresh workspaces.
 pub fn breakpoints_path(root: &Path) -> PathBuf {
     root.join("breakpoints.json")
 }
@@ -275,22 +324,22 @@ pub enum FileKind {
     Other,
 }
 
-/// Per-slug status combining the Studio's on-disk view (drafts) with
-/// the daemon's view (deployed versions). The frontend renders these
-/// side by side so the user can see "edited but not deployed" or
-/// "deployed but the draft is missing" without joining the two views
-/// itself.
+/// Per-recipe status combining the Studio's on-disk view (drafts)
+/// with the daemon's view (deployed versions). The frontend renders
+/// these side by side so the user can see "edited but not deployed"
+/// or "deployed but the draft is missing" without joining the two
+/// views itself. Keyed on the recipe header name.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct RecipeStatus {
-    pub slug: String,
+    pub name: String,
     pub draft: DraftState,
     pub deployed: DeployedState,
 }
 
-/// Whether a slug has a draft on disk and whether that draft parses.
+/// Whether a recipe has a draft on disk and whether that draft parses.
 /// `Missing` covers the deployed-but-no-draft case: the daemon
-/// remembers a slug we no longer have a source file for.
+/// remembers a recipe we no longer have a source file for.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -326,12 +375,10 @@ pub enum DeployedState {
 /// daemon's working dir `.forage/` — are skipped so the file tree
 /// reflects what the user authored, not what the runtime cached.
 ///
-/// `FileNode.path` is workspace-relative — the frontend's slug
-/// derivation (`slugOf(path) == "<slug>"` when the path is exactly
-/// `<slug>/recipe.forage`) and per-path equality checks across the
-/// UI assume that shape. The root folder's relative path is empty;
-/// the UI iterates its `children` directly and never selects the
-/// root itself.
+/// `FileNode.path` is workspace-relative. The frontend's
+/// path-equality checks across the UI assume that shape. The root
+/// folder's relative path is empty; the UI iterates its `children`
+/// directly and never selects the root itself.
 pub fn build_file_tree(root: &Path) -> io::Result<FileNode> {
     let name = root
         .file_name()
@@ -653,51 +700,118 @@ pub fn derive_workspace_name(ws: &Workspace) -> String {
 mod tests {
     use super::*;
 
-    fn make_recipe(root: &Path, slug: &str) {
+    fn write_manifest(root: &Path) {
+        fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+    }
+
+    fn make_legacy_recipe(root: &Path, slug: &str, header_name: &str) {
         let dir = root.join(slug);
         fs::create_dir_all(dir.join("fixtures")).unwrap();
-        fs::write(dir.join("recipe.forage"), "recipe \"x\"\nengine http\n").unwrap();
+        fs::write(
+            dir.join("recipe.forage"),
+            format!("recipe \"{header_name}\"\nengine http\n"),
+        )
+        .unwrap();
         fs::write(dir.join("fixtures").join("inputs.json"), "{}").unwrap();
     }
 
+    fn make_flat_recipe(root: &Path, file_stem: &str, header_name: &str) {
+        fs::write(
+            root.join(format!("{file_stem}.forage")),
+            format!("recipe \"{header_name}\"\nengine http\n"),
+        )
+        .unwrap();
+    }
+
+    /// A recipe named "to-delete" in the legacy `<slug>/recipe.forage`
+    /// layout takes the whole `<slug>/` dir (including `fixtures/`)
+    /// with it when deleted.
     #[test]
-    fn delete_removes_directory_and_fixtures() {
+    fn delete_removes_legacy_directory_and_fixtures() {
         let tmp = tempfile::tempdir().unwrap();
-        make_recipe(tmp.path(), "to-delete");
+        write_manifest(tmp.path());
+        make_legacy_recipe(tmp.path(), "to-delete", "to-delete");
         assert!(tmp.path().join("to-delete/recipe.forage").exists());
         assert!(tmp.path().join("to-delete/fixtures/inputs.json").exists());
 
-        delete_recipe(tmp.path(), "to-delete").unwrap();
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        delete_recipe(&ws, "to-delete").unwrap();
 
         assert!(!tmp.path().join("to-delete").exists());
     }
 
+    /// A recipe named "remedy" in the flat `<root>/remedy.forage`
+    /// layout takes only the `.forage` file with it; the workspace
+    /// root and unrelated files stay intact.
     #[test]
-    fn delete_rejects_path_traversal() {
+    fn delete_removes_flat_recipe_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let siblings = tempfile::tempdir().unwrap();
-        let victim = siblings.path().join("victim");
-        fs::create_dir_all(&victim).unwrap();
-        fs::write(victim.join("important.txt"), "DO NOT DELETE").unwrap();
+        write_manifest(tmp.path());
+        make_flat_recipe(tmp.path(), "remedy", "remedy");
+        fs::write(tmp.path().join("cannabis.forage"), "share type X { id: String }\n").unwrap();
 
-        for bad in ["..", "../victim", "./x", "a/b", "a\\b", ""] {
-            let err = delete_recipe(tmp.path(), bad).unwrap_err();
-            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "slug {bad:?}");
-        }
-        assert!(victim.join("important.txt").exists());
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        delete_recipe(&ws, "remedy").unwrap();
+
+        assert!(!tmp.path().join("remedy.forage").exists());
+        assert!(tmp.path().join("cannabis.forage").exists());
     }
 
+    /// A flat-shape recipe whose header name differs from its file
+    /// basename — `foo.forage` containing `recipe "bar"` — resolves
+    /// off the header name, not the basename.
+    #[test]
+    fn delete_resolves_by_header_name_not_basename() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(tmp.path());
+        make_flat_recipe(tmp.path(), "foo", "bar");
+
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        delete_recipe(&ws, "bar").unwrap();
+
+        assert!(!tmp.path().join("foo.forage").exists());
+    }
+
+    /// A request to delete a recipe whose header doesn't appear in
+    /// the workspace surfaces NotFound rather than a generic IO
+    /// error, so the UI can render a precise "no such recipe" toast.
+    #[test]
+    fn delete_unknown_recipe_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(tmp.path());
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        let err = delete_recipe(&ws, "ghost").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// The workspace scanner refuses to follow symlinked dirs and
+    /// file symlinks, so any recipe content reachable only through a
+    /// symlink is invisible to the recipe index in the first place —
+    /// `delete_recipe` then returns NotFound and the file outside
+    /// the workspace remains untouched.
     #[cfg(unix)]
     #[test]
-    fn delete_rejects_symlink_escape() {
+    fn delete_symlinked_recipe_is_not_found_and_preserves_outside() {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
+        write_manifest(tmp.path());
         fs::write(outside.path().join("important.txt"), "DO NOT DELETE").unwrap();
+        fs::write(
+            outside.path().join("recipe.forage"),
+            "recipe \"escapee\"\nengine http\n",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(outside.path(), tmp.path().join("evil")).unwrap();
 
-        let err = delete_recipe(tmp.path(), "evil").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let ws = forage_core::workspace::load(tmp.path()).unwrap();
+        let err = delete_recipe(&ws, "escapee").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
         assert!(outside.path().join("important.txt").exists());
+        assert!(outside.path().join("recipe.forage").exists());
     }
 
     /// Lay out a synthetic workspace and verify the tree shape and
