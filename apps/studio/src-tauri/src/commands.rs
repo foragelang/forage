@@ -416,7 +416,16 @@ pub async fn run_recipe(
             daemon_warning: None,
         });
     }
-    let raw_inputs = workspace::read_inputs(&ws, &name);
+    // Inputs ride on the daemon's `Run.inputs`. A user with a recipe
+    // that takes inputs sets them via `configure_run` once and they
+    // apply to every subsequent fire — scheduler tick or Studio
+    // Run-from-editor. Recipes without a configured `Run` (or with an
+    // empty inputs map) run with no inputs; the engine surfaces a
+    // "missing input" error if the recipe declared any.
+    let raw_inputs = match daemon.get_run_by_name(&name).map_err(|e| e.to_string())? {
+        Some(run) => run.inputs,
+        None => IndexMap::new(),
+    };
     let mut inputs: IndexMap<String, EvalValue> = IndexMap::new();
     for (k, v) in raw_inputs {
         inputs.insert(k, EvalValue::from(&v));
@@ -2039,6 +2048,52 @@ for $i in $list.items[*] {
             .load_records(&sr.id, "Item", 10)
             .expect("load_records");
         assert_eq!(records.len(), 2);
+    }
+
+    /// Studio's `run_recipe` reads engine inputs from the daemon's
+    /// `Run.inputs` field. A `configure_run` that stamps an input must
+    /// be readable back through `get_run_by_name` keyed on the recipe
+    /// header — that's the exact lookup the command does before it
+    /// hands the bindings to the engine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_recipe_reads_inputs_from_daemon_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        let slug = "tenant-items";
+        write_workspace(&ws_root, slug, RECIPE);
+
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        let mut inputs = indexmap::IndexMap::new();
+        inputs.insert(
+            "tenant".to_string(),
+            serde_json::Value::String("acme".into()),
+        );
+        let cfg = RunConfig {
+            cadence: Cadence::Manual,
+            output: ws_root.join(".forage").join("data").join("items.sqlite"),
+            enabled: true,
+            inputs: inputs.clone(),
+        };
+        daemon.configure_run(slug, cfg).expect("configure_run");
+
+        // The same lookup `run_recipe` performs before calling the
+        // engine. Pre-Phase-10 this read came off
+        // `<slug>/fixtures/inputs.json`; now the row is authoritative.
+        let run = daemon
+            .get_run_by_name(slug)
+            .expect("get_run_by_name")
+            .expect("Run row present after configure");
+        assert_eq!(run.inputs, inputs);
+
+        // A recipe that hasn't been configured yet hands `run_recipe`
+        // an empty map — the engine then surfaces a clean
+        // "missing input" error for recipes that declare any.
+        assert!(
+            daemon
+                .get_run_by_name("never-configured")
+                .expect("get_run_by_name")
+                .is_none()
+        );
     }
 
     use super::build_recipe_statuses;

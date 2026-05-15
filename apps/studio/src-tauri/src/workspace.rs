@@ -155,37 +155,6 @@ fn legacy_recipe_dir(root: &Path, recipe_path: &Path) -> Option<PathBuf> {
     Some(parent.to_path_buf())
 }
 
-/// Read per-recipe inputs for `name`. Only meaningful for recipes in
-/// the legacy `<slug>/recipe.forage` shape — the inputs file lives at
-/// `<slug>/fixtures/inputs.json` next to the recipe. For flat
-/// `<name>.forage` recipes there's no per-recipe directory and this
-/// returns an empty map; an inputs migration to the flat workspace
-/// shape will land separately.
-pub fn read_inputs(ws: &Workspace, name: &str) -> indexmap::IndexMap<String, serde_json::Value> {
-    let Some(recipe) = ws.recipe_by_name(name) else {
-        return indexmap::IndexMap::new();
-    };
-    let Some(dir) = legacy_recipe_dir(&ws.root, recipe.path) else {
-        return indexmap::IndexMap::new();
-    };
-    let path = dir.join("fixtures").join("inputs.json");
-    if !path.exists() {
-        return indexmap::IndexMap::new();
-    }
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return indexmap::IndexMap::new(),
-    };
-    let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-    let mut out = indexmap::IndexMap::new();
-    if let serde_json::Value::Object(o) = v {
-        for (k, v) in o {
-            out.insert(k, v);
-        }
-    }
-    out
-}
-
 /// Read `<workspace>/_fixtures/<recipe_name>.jsonl`. Returns an empty
 /// list on a missing file (the workspace hasn't recorded captures for
 /// this recipe yet) and logs other I/O / parse failures at `warn` —
