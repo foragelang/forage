@@ -34,7 +34,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use forage_core::{EvalValue, ForageFile, SerializableCatalog, Snapshot, TypeCatalog};
+use forage_core::{
+    EvalValue, ForageFile, RecipeSignatures, SerializableCatalog, Snapshot, TypeCatalog,
+};
 use forage_http::{ProgressSink, RunEvent};
 use indexmap::IndexMap;
 use rusqlite::{Connection, OptionalExtension};
@@ -468,15 +470,21 @@ impl Daemon {
     /// files are written. The returned `DeployedVersion` is the row in
     /// the metadata table; the source lives at
     /// `<daemon_dir>/deployments/<recipe_name>/v<n>/`.
+    ///
+    /// `signatures` carries the typed input/output of every peer
+    /// recipe in the workspace; the validator's composition checks
+    /// look stages up here. Callers without composition concerns
+    /// pass `RecipeSignatures::default()`.
     pub fn deploy(
         &self,
         name: &str,
         source: String,
         catalog: SerializableCatalog,
+        signatures: &RecipeSignatures,
     ) -> Result<DeployedVersion, DeployError> {
         let recipe = forage_core::parse(&source).map_err(|e| DeployError::Parse(e.to_string()))?;
         let typed_catalog: TypeCatalog = catalog.clone().into();
-        let report = forage_core::validate(&recipe, &typed_catalog);
+        let report = forage_core::validate(&recipe, &typed_catalog, signatures);
         if report.has_errors() {
             let detail = report
                 .errors()

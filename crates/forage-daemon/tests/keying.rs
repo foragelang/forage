@@ -77,7 +77,12 @@ fn deploy_and_default_output_anchor_on_header_name() {
     assert_eq!(recipe_name, "amazon-products");
 
     let dv = daemon
-        .deploy(recipe_name, RECIPE_AMAZON.to_string(), wire)
+        .deploy(
+            recipe_name,
+            RECIPE_AMAZON.to_string(),
+            wire,
+            &forage_core::RecipeSignatures::default(),
+        )
         .expect("deploy");
     assert_eq!(dv.recipe_name, "amazon-products");
 

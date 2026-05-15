@@ -171,7 +171,7 @@ fn lonely_recipe_mode_uses_recipe_local_catalog() {
     "#;
     let r = parse(src).unwrap();
     let catalog = TypeCatalog::from_file(&r);
-    let rep = validate(&r, &catalog);
+    let rep = validate(&r, &catalog, &forage_core::RecipeSignatures::default());
     assert!(!rep.has_errors(), "lonely recipe errored: {:?}", rep.issues);
 }
 

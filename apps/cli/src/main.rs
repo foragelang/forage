@@ -602,7 +602,12 @@ fn validate_resolved(resolved: &ResolvedRecipe) -> Result<forage_core::TypeCatal
             .map_err(|e: WorkspaceError| anyhow::anyhow!("workspace catalog: {e}"))?,
         None => forage_core::TypeCatalog::from_file(&resolved.file),
     };
-    let report = validate(&resolved.file, &catalog);
+    let signatures = resolved
+        .workspace
+        .as_ref()
+        .map(|ws| ws.recipe_signatures())
+        .unwrap_or_default();
+    let report = validate(&resolved.file, &catalog, &signatures);
     if report.has_errors() {
         for e in report.errors() {
             eprintln!("{} {}", "validate:".red(), e.message);

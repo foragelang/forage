@@ -2,21 +2,28 @@
 //! severities. Validation is best-effort — even if some checks fail,
 //! others still run, so the user sees the full picture.
 //!
-//! Public entry: `validate(file, catalog) -> ValidationReport`. The
-//! catalog folds in workspace-shared declarations plus the file's local
-//! declarations; files outside a workspace pass
-//! `TypeCatalog::from_file(&file)` for lonely-file mode.
+//! Public entry: `validate(file, catalog, signatures) -> ValidationReport`.
+//! The catalog folds in workspace-shared declarations plus the file's
+//! local declarations; the signatures map names every other recipe in
+//! the workspace by header name so composition stage references
+//! resolve. Files outside a workspace pass `TypeCatalog::from_file(&file)`
+//! and `RecipeSignatures::default()` for lonely-file mode.
 
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
-use crate::workspace::TypeCatalog;
+use crate::workspace::{RecipeSignatures, TypeCatalog};
 
 /// Top-level entry point. `catalog` is the merged type namespace for
-/// this file — see `Workspace::catalog`. Lonely-file mode (no surrounding
-/// `forage.toml`) passes `TypeCatalog::from_file(file)`.
-pub fn validate(file: &ForageFile, catalog: &TypeCatalog) -> ValidationReport {
-    let mut v = Validator::new(file, catalog);
+/// this file — see `Workspace::catalog`. Lonely-file mode (no
+/// surrounding `forage.toml`) passes `TypeCatalog::from_file(file)`
+/// and `RecipeSignatures::default()`.
+pub fn validate(
+    file: &ForageFile,
+    catalog: &TypeCatalog,
+    signatures: &RecipeSignatures,
+) -> ValidationReport {
+    let mut v = Validator::new(file, catalog, signatures);
     v.run();
     ValidationReport { issues: v.issues }
 }
@@ -284,6 +291,30 @@ pub enum ValidationCode {
     /// indexing has no semantic effect but is almost always a typo —
     /// surface it so the author keeps the declaration list tidy.
     DuplicateAlignment,
+    /// A `compose` body references a recipe that doesn't exist in the
+    /// workspace (or, for hub-dep refs like `@author/name`, hasn't been
+    /// fetched into the local recipe-signature map).
+    UnknownComposeStage,
+    /// Stage N+1 in a `compose` chain doesn't have an input slot that
+    /// matches stage N's declared output type. The downstream recipe
+    /// must declare exactly one `input <name>: [T]` (or `input <name>: T`)
+    /// where `T` is the upstream output, so the composition runtime knows
+    /// where to bind the prior records.
+    IncompatiblePipeStage,
+    /// A `compose` stage references a recipe whose own composition body
+    /// transitively references this recipe. Composition is closed under
+    /// substitution but the relation must be acyclic — a cycle would
+    /// never terminate.
+    ComposeCycle,
+    /// A `compose` chain stage has no declared `output` clause, so the
+    /// validator can't check the type at the boundary. Every stage in
+    /// a composition needs a typed output.
+    UnsignedComposeStage,
+    /// A `compose` chain has more than one stage that declares
+    /// multi-type sum output (`output T | U | …`). The validator pins
+    /// each link to a single concrete type so the input lookup is
+    /// well-defined; multi-output composition is a future extension.
+    MultiOutputComposeStage,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -331,6 +362,7 @@ pub const BUILTIN_TRANSFORMS: &[&str] = &[
 struct Validator<'a> {
     file: &'a ForageFile,
     catalog: &'a TypeCatalog,
+    signatures: &'a RecipeSignatures,
     issues: Vec<ValidationIssue>,
     /// Variable bindings in scope at the current walking position. Includes
     /// step names (recipe-body-wide), for-loop variables (nested),
@@ -357,7 +389,11 @@ struct Validator<'a> {
 }
 
 impl<'a> Validator<'a> {
-    fn new(file: &'a ForageFile, catalog: &'a TypeCatalog) -> Self {
+    fn new(
+        file: &'a ForageFile,
+        catalog: &'a TypeCatalog,
+        signatures: &'a RecipeSignatures,
+    ) -> Self {
         let mut known_vars = std::collections::HashSet::new();
         collect_bindings(file.body.statements(), &mut known_vars);
         if let Some(b) = &file.browser {
@@ -393,6 +429,7 @@ impl<'a> Validator<'a> {
         Self {
             file,
             catalog,
+            signatures,
             issues: Vec::new(),
             known_vars,
             ref_bindings: std::collections::HashMap::new(),
@@ -458,6 +495,7 @@ impl<'a> Validator<'a> {
         self.check_references();
         self.check_emit_records();
         self.check_output_decl();
+        self.check_composition();
     }
 
     /// Surface malformed alignment URIs and duplicate alignment URIs on
@@ -1342,6 +1380,160 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// Walk a `compose` body and check each pipe boundary. The
+    /// invariant: stage N's declared `output T` must match an input
+    /// slot on stage N+1 with type `[T]` (or `T`). Each stage must
+    /// have a typed output (we can't check the next boundary
+    /// otherwise), and the chain must be acyclic — a recipe whose
+    /// composition transitively references itself would never
+    /// terminate.
+    fn check_composition(&mut self) {
+        let Some(comp) = self.file.body.composition().cloned() else {
+            return;
+        };
+        let outputs = self.resolve_stage_outputs(&comp);
+        self.check_pipe_boundaries(&comp, &outputs);
+        if let Some(recipe_name) = self.file.recipe_name() {
+            self.check_compose_cycle(recipe_name, &comp);
+        }
+    }
+
+    /// Resolve each stage's declared output type into a single concrete
+    /// type name. Returns `None` at positions where the lookup failed
+    /// (unknown stage, unsigned, or multi-output) and emits the
+    /// appropriate diagnostic at the same time so the per-boundary
+    /// check below can skip those positions cleanly.
+    fn resolve_stage_outputs(&mut self, comp: &Composition) -> Vec<Option<String>> {
+        comp.stages
+            .iter()
+            .map(|stage| self.resolve_stage_output(stage))
+            .collect()
+    }
+
+    fn resolve_stage_output(&mut self, stage: &RecipeRef) -> Option<String> {
+        // Hub-dep references (`@author/name`) aren't resolved yet — the
+        // workspace's recipe-signature map only populates from local
+        // files. Surface a precise diagnostic so authors know to add
+        // the dep, instead of letting the chain fail downstream.
+        if stage.author.is_some() {
+            self.err(
+                stage.span.clone(),
+                ValidationCode::UnknownComposeStage,
+                format!(
+                    "compose stage '@{}/{}' is a hub-dep reference; hub-dep recipes aren't resolved yet",
+                    stage.author.as_deref().unwrap_or(""),
+                    stage.name,
+                ),
+            );
+            return None;
+        }
+        let Some(sig) = self.signatures.get(&stage.name) else {
+            self.err(
+                stage.span.clone(),
+                ValidationCode::UnknownComposeStage,
+                format!("compose stage '{}' is not a recipe in this workspace", stage.name),
+            );
+            return None;
+        };
+        let Some(output) = &sig.output else {
+            self.err(
+                stage.span.clone(),
+                ValidationCode::UnsignedComposeStage,
+                format!(
+                    "compose stage '{}' has no `output` declaration; every stage in a composition needs a typed output",
+                    stage.name,
+                ),
+            );
+            return None;
+        };
+        if output.types.len() != 1 {
+            self.err(
+                stage.span.clone(),
+                ValidationCode::MultiOutputComposeStage,
+                format!(
+                    "compose stage '{}' declares {} output types ({}); composition requires exactly one",
+                    stage.name,
+                    output.types.len(),
+                    output.types.join(" | "),
+                ),
+            );
+            return None;
+        }
+        Some(output.types[0].clone())
+    }
+
+    /// At each boundary (N → N+1) check that stage N+1 has an `input
+    /// <name>: [T]` (or `input <name>: T`) where `T` matches stage
+    /// N's declared output. Stages whose output couldn't be resolved
+    /// (already-flagged above) silently skip — surfacing
+    /// `IncompatiblePipeStage` on top of `UnknownComposeStage` would
+    /// just be noise.
+    fn check_pipe_boundaries(&mut self, comp: &Composition, outputs: &[Option<String>]) {
+        for (idx, win) in comp.stages.windows(2).enumerate() {
+            let Some(upstream_ty) = outputs[idx].as_deref() else {
+                continue;
+            };
+            let downstream = &win[1];
+            if downstream.author.is_some() || self.signatures.get(&downstream.name).is_none() {
+                continue;
+            }
+            let sig = self
+                .signatures
+                .get(&downstream.name)
+                .expect("downstream signature exists — checked above");
+            let has_slot = sig.inputs.iter().any(|inp| input_accepts(&inp.ty, upstream_ty));
+            if !has_slot {
+                self.err(
+                    downstream.span.clone(),
+                    ValidationCode::IncompatiblePipeStage,
+                    format!(
+                        "compose stage '{}' has no `input <name>: [{}]` (or `: {}`) to receive records from '{}'",
+                        downstream.name,
+                        upstream_ty,
+                        upstream_ty,
+                        comp.stages[idx].name,
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Reject recipes whose `compose` chain transitively references
+    /// themselves. The walk is depth-first; revisiting an in-progress
+    /// recipe surfaces the cycle anchored at the offending stage so
+    /// authors land on the loop edge.
+    fn check_compose_cycle(&mut self, focal: &str, comp: &Composition) {
+        let mut in_progress: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        in_progress.insert(focal.to_string());
+        for stage in &comp.stages {
+            if stage.author.is_some() {
+                continue;
+            }
+            if stage.name == focal {
+                self.err(
+                    stage.span.clone(),
+                    ValidationCode::ComposeCycle,
+                    format!("compose stage '{}' references its own recipe", stage.name),
+                );
+                continue;
+            }
+            if let Some(path) = find_cycle(&stage.name, &mut in_progress, self.signatures, focal) {
+                self.err(
+                    stage.span.clone(),
+                    ValidationCode::ComposeCycle,
+                    format!(
+                        "compose stage '{}' transitively references '{}': {} -> {}",
+                        stage.name,
+                        focal,
+                        focal,
+                        path.join(" -> "),
+                    ),
+                );
+            }
+        }
+    }
+
     fn check_emit_records(&mut self) {
         // Verify each declared type's field types either resolve to a
         // primitive, an Array of one, an EnumRef to a declared enum, or a
@@ -1390,6 +1582,54 @@ impl<'a> Validator<'a> {
             FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
         }
     }
+}
+
+/// `input <name>: ty` accepts upstream records of type `upstream` iff
+/// `ty` is `[upstream]` (the batched-stream slot) or a bare
+/// `upstream` (the single-record slot). The validator picks either
+/// shape so authors can decide whether the downstream recipe wants
+/// the records as an array (typical) or one at a time (specialized).
+fn input_accepts(ty: &FieldType, upstream: &str) -> bool {
+    match ty {
+        FieldType::Array(inner) => matches!(inner.as_ref(), FieldType::Record(n) if n == upstream),
+        FieldType::Record(n) => n == upstream,
+        _ => false,
+    }
+}
+
+/// Depth-first search for a path from `start` back to `focal` through
+/// the recipe signature graph. Returns the stage-name path when a
+/// cycle exists so the diagnostic can point at the loop edge.
+fn find_cycle(
+    start: &str,
+    in_progress: &mut std::collections::HashSet<String>,
+    signatures: &RecipeSignatures,
+    focal_name: &str,
+) -> Option<Vec<String>> {
+    if in_progress.contains(start) {
+        return None;
+    }
+    let sig = signatures.get(start)?;
+    let RecipeBody::Composition(c) = &sig.body else {
+        return None;
+    };
+    in_progress.insert(start.to_string());
+    for stage in &c.stages {
+        if stage.author.is_some() {
+            continue;
+        }
+        if stage.name == focal_name {
+            in_progress.remove(start);
+            return Some(vec![start.to_string(), stage.name.clone()]);
+        }
+        if let Some(mut path) = find_cycle(&stage.name, in_progress, signatures, focal_name) {
+            in_progress.remove(start);
+            path.insert(0, start.to_string());
+            return Some(path);
+        }
+    }
+    in_progress.remove(start);
+    None
 }
 
 /// Walk a body recursively and collect every globally-known variable
@@ -1463,7 +1703,7 @@ mod tests {
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -1483,7 +1723,7 @@ mod tests {
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(rep.has_errors());
         assert!(
             rep.errors()
@@ -1507,7 +1747,7 @@ mod tests {
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::MissingRequiredField))
@@ -1539,7 +1779,7 @@ emit Item { }
 "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
 
         let dup = rep
             .issues
@@ -1597,7 +1837,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::UnexpectedBrowserConfig))
@@ -1620,7 +1860,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| matches!(i.code, ValidationCode::UnknownSecret))
@@ -1640,7 +1880,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::UnknownType
                 && i.message.contains("Ref<DoesNotExist>")),
@@ -1671,7 +1911,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::MissingRefAssignment),
@@ -1699,7 +1939,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RefTypeMismatch),
@@ -1725,7 +1965,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RefTypeMismatch),
@@ -1748,7 +1988,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::DuplicateBinding),
@@ -1789,7 +2029,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
@@ -1814,7 +2054,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::DuplicateBinding),
@@ -1843,7 +2083,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RefTypeMismatch),
@@ -1874,7 +2114,7 @@ emit Item { }
     fn valid_user_fn_validates() {
         let r = fn_recipe("fn shout($x) { $x | upper }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
@@ -1891,7 +2131,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::UnknownTransform),
@@ -1904,7 +2144,7 @@ emit Item { }
     fn duplicate_fn_name_flagged() {
         let r = fn_recipe("fn dup($x) { $x }\nfn dup($x) { $x }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::DuplicateFn),
             "expected DuplicateFn; got {:?}",
@@ -1916,7 +2156,7 @@ emit Item { }
     fn duplicate_param_name_flagged() {
         let r = fn_recipe("fn dupParams($x, $x) { $x }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::DuplicateParam),
@@ -1932,7 +2172,7 @@ emit Item { }
         // already excluded at the lexer level (distinct token kinds).
         let r = fn_recipe("fn nope($page) { $page }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::ReservedParam),
@@ -1957,7 +2197,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::WrongArity && i.message.contains("two")),
@@ -1983,7 +2223,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::WrongArity && i.message.contains("answer")),
@@ -2005,7 +2245,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
@@ -2023,7 +2263,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::WrongArity),
             "expected WrongArity; got {:?}",
@@ -2035,7 +2275,7 @@ emit Item { }
     fn user_fn_can_call_built_in_transform() {
         let r = fn_recipe("fn shouty($x) { $x | upper }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
@@ -2044,7 +2284,7 @@ emit Item { }
         // Forward reference: `a` calls `b` declared below it.
         let r = fn_recipe("fn a($x) { $x | b }\nfn b($y) { $y | upper }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
@@ -2052,7 +2292,7 @@ emit Item { }
     fn direct_recursion_emits_warning() {
         let r = fn_recipe("fn loopy($x) { $x | loopy }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.has_errors(),
             "recursion must compile (warning only); got errors: {:?}",
@@ -2073,7 +2313,7 @@ emit Item { }
         // `lower` exists as a built-in; redefining it warns but doesn't error.
         let r = fn_recipe("fn lower($x) { $x }");
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.has_errors(),
             "shadowing must not error; got: {:?}",
@@ -2104,7 +2344,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::UnknownVariable && i.message.contains("item")),
@@ -2131,7 +2371,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -2152,7 +2392,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::UnknownVariable && i.message.contains("prod")),
@@ -2176,7 +2416,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::DuplicateRecipeHeader),
@@ -2195,7 +2435,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader),
@@ -2211,7 +2451,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
@@ -2232,7 +2472,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
@@ -2249,7 +2489,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
@@ -2271,7 +2511,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -2434,7 +2674,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.errors().any(|i| matches!(
                 i.code,
@@ -2454,7 +2694,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         let issue = rep
             .errors()
             .find(|i| i.code == ValidationCode::MalformedAlignment)
@@ -2475,7 +2715,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         let issue = rep
             .errors()
             .find(|i| i.code == ValidationCode::MalformedAlignment)
@@ -2496,7 +2736,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
                 && i.message.contains("empty ontology")),
@@ -2514,7 +2754,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
                 && i.message.contains("empty term")),
@@ -2535,7 +2775,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         let issue = rep
             .errors()
             .find(|i| i.code == ValidationCode::DuplicateAlignment)
@@ -2559,7 +2799,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.errors().any(|i| i.code == ValidationCode::DuplicateAlignment),
             "distinct ontologies must not collide; got {:?}",
@@ -2616,7 +2856,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -2636,7 +2876,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         let issue = rep
             .errors()
             .find(|i| i.code == ValidationCode::MissingFromOutput)
@@ -2673,7 +2913,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -2694,7 +2934,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::EmptyOutput),
             "expected EmptyOutput; got {:?}",
@@ -2712,7 +2952,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::OutputWithoutHeader),
@@ -2737,7 +2977,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
                 .any(|i| i.code == ValidationCode::UnknownType && i.message.contains("Itme")),
@@ -2763,7 +3003,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.has_errors(),
             "UnusedInOutput must not error; got: {:?}",
@@ -2794,7 +3034,7 @@ emit Item { }
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
 
@@ -2803,7 +3043,7 @@ emit Item { }
         let src = "recipe \"anchor\"\nengine http\noutput Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
-        let rep = validate(&r, &cat);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
         let missing = rep
             .issues
             .iter()
@@ -2813,6 +3053,295 @@ emit Item { }
             src[missing.span.clone()].starts_with("emit Variant"),
             "diagnostic must anchor at the emit; got {:?}",
             &src[missing.span.clone()],
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Composition (`compose A | B | …`) validation.
+    // ----------------------------------------------------------------
+
+    fn sigs(entries: &[(&str, &str)]) -> RecipeSignatures {
+        let mut out = RecipeSignatures::default();
+        for (name, src) in entries {
+            let file = parse(src).expect("peer recipe parses");
+            out.insert(name.to_string(), crate::workspace::RecipeSignature::from_file(&file));
+        }
+        out
+    }
+
+    #[test]
+    fn unknown_stage_flagged() {
+        let src = r#"
+            recipe "downstream"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "missing" | "also-missing"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let count = rep
+            .issues
+            .iter()
+            .filter(|i| i.code == ValidationCode::UnknownComposeStage)
+            .count();
+        assert_eq!(count, 2, "both unknown stages must surface: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn compatible_pipe_stages_validate() {
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "y" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .all(|i| i.code != ValidationCode::IncompatiblePipeStage
+                    && i.code != ValidationCode::UnknownComposeStage),
+            "no composition issues expected: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn pipe_stage_with_wrong_input_type_rejected() {
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+        "#;
+        // Downstream wants `[Variant]` but upstream emits `Product`.
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Variant { id: String }
+            input prior: [Variant]
+            output Variant
+            step list { method "GET" url "https://x.test" }
+            emit Variant { id ← "y" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Variant { id: String }
+            output Variant
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        let issue = rep
+            .issues
+            .iter()
+            .find(|i| i.code == ValidationCode::IncompatiblePipeStage)
+            .expect("IncompatiblePipeStage expected");
+        assert!(
+            issue.message.contains("[Product]"),
+            "diagnostic should name the expected upstream type: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn unsigned_upstream_stage_rejected() {
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            type Product { id: String }
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "y" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::UnsignedComposeStage),
+            "missing output on stage 1 must be flagged: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn nested_composition_chains_through() {
+        // a | b is itself a recipe ("ab"); we then compose ab | c.
+        let a_src = r#"
+            recipe "a"
+            engine http
+            type Product { id: String }
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "x" }
+        "#;
+        let b_src = r#"
+            recipe "b"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "y" }
+        "#;
+        let ab_src = r#"
+            recipe "ab"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "a" | "b"
+        "#;
+        let c_src = r#"
+            recipe "c"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "z" }
+        "#;
+        let src = r#"
+            recipe "abc"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "ab" | "c"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("a", a_src), ("b", b_src), ("ab", ab_src), ("c", c_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            !rep.has_errors(),
+            "nested composition (composing composed recipes) must validate: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn direct_self_composition_rejected() {
+        let src = r#"
+            recipe "self"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            compose "self" | "self"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        // The focal recipe's own signature isn't in the map (it's the
+        // file being validated); but a stage that references the focal
+        // by name still cycles.
+        let signatures = RecipeSignatures::default();
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::ComposeCycle),
+            "direct self-reference must be a cycle: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn transitive_self_composition_rejected() {
+        // a composes b; b composes a — both should be rejected when
+        // they reach the validator. We validate b here so the
+        // signatures map carries a's body.
+        let a_src = r#"
+            recipe "a"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            compose "b" | "b"
+        "#;
+        let src = r#"
+            recipe "b"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            compose "a" | "a"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("a", a_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::ComposeCycle),
+            "transitive cycle must be rejected: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn hub_namespaced_stage_is_unresolved_today() {
+        let src = r#"
+            recipe "lifted"
+            engine http
+            type Product { id: String }
+            output Product
+            compose "@upstream/scrape" | "downstream"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::UnknownComposeStage),
+            "hub-dep stages must surface a known diagnostic until hub-dep resolution lands: {:?}",
+            rep.issues,
         );
     }
 }

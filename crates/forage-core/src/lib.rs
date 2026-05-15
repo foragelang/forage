@@ -25,6 +25,6 @@ pub use snapshot::{
 pub use source::{LineMap, Position, Range};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
 pub use workspace::{
-    SerializableCatalog, TypeCatalog, Workspace, WorkspaceError, discover, fixtures_path, load,
-    snapshot_path,
+    RecipeSignature, RecipeSignatures, SerializableCatalog, TypeCatalog, Workspace,
+    WorkspaceError, discover, fixtures_path, load, snapshot_path,
 };

@@ -46,7 +46,10 @@ pub fn deploy_disk_recipe(daemon: &Daemon, ws_root: &Path, name: &str) -> Deploy
         .catalog(&recipe, |p| std::fs::read_to_string(p))
         .expect("build catalog");
     let wire = SerializableCatalog::from(catalog);
-    daemon.deploy(recipe_name, source, wire).expect("deploy")
+    let signatures = workspace.recipe_signatures();
+    daemon
+        .deploy(recipe_name, source, wire, &signatures)
+        .expect("deploy")
 }
 
 pub fn set_secret(name: &str, value: &str) {

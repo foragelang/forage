@@ -88,9 +88,11 @@ pub fn validate_recipe(recipe_json: &str) -> JsValue {
         }
     };
     // The wasm IDE has no filesystem reach, so every recipe validates
-    // in lonely-recipe mode — the catalog is just its own local types.
+    // in lonely-recipe mode — the catalog is just its own local types
+    // and the signature map is empty (no peer recipes are visible).
     let catalog = TypeCatalog::from_file(&recipe);
-    let report = core_validate(&recipe, &catalog);
+    let signatures = forage_core::RecipeSignatures::default();
+    let report = core_validate(&recipe, &catalog, &signatures);
     let errors: Vec<_> = report
         .issues
         .iter()
@@ -127,7 +129,8 @@ pub fn parse_and_validate(source: &str) -> JsValue {
     match core_parse(source) {
         Ok(recipe) => {
             let catalog = TypeCatalog::from_file(&recipe);
-            let report = core_validate(&recipe, &catalog);
+            let signatures = forage_core::RecipeSignatures::default();
+            let report = core_validate(&recipe, &catalog, &signatures);
             let issues: Vec<_> = report
                 .issues
                 .iter()
@@ -346,7 +349,8 @@ pub async fn run_replay_inner(
     }
     catalog.merge_all(&recipe);
 
-    let report = core_validate(&recipe, &catalog);
+    let signatures = forage_core::RecipeSignatures::default();
+    let report = core_validate(&recipe, &catalog, &signatures);
     if report.has_errors() {
         let messages: Vec<String> = report
             .issues

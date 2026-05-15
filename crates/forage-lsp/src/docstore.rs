@@ -208,7 +208,10 @@ fn build_diagnostics(
             return (Some(parsed), diagnostics);
         }
     };
-    let report = validate(&parsed, &catalog);
+    let signatures = workspace
+        .map(|ws| ws.recipe_signatures())
+        .unwrap_or_default();
+    let report = validate(&parsed, &catalog, &signatures);
     push_issues(&mut diagnostics, line_map, report.issues.iter());
 
     // Cross-file pass: only meaningful inside a workspace. Build the

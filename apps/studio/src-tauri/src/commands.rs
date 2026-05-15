@@ -406,7 +406,8 @@ pub async fn run_recipe(
             });
         }
     };
-    let report = validate(&recipe, &catalog);
+    let signatures = build_signatures(&ws.root);
+    let report = validate(&recipe, &catalog, &signatures);
     if report.has_errors() {
         let msgs: Vec<String> = report.errors().map(|e| e.message.clone()).collect();
         return Ok(RunOutcome {
@@ -761,7 +762,8 @@ pub async fn publish_recipe(
             message: format!("catalog: {e}"),
         }
     })?;
-    if validate(&recipe, &catalog).has_errors() {
+    let signatures = build_signatures(&ws.root);
+    if validate(&recipe, &catalog, &signatures).has_errors() {
         return Err(crate::hub_sync::PublishError::Other {
             message: "recipe failed validation; fix errors before publishing".into(),
         });
@@ -1019,7 +1021,8 @@ fn validate_source_in_workspace(workspace_root: &Path, source: &str) -> Validati
                     };
                 }
             };
-            let report = validate(&r, &catalog);
+            let signatures = build_signatures(workspace_root);
+            let report = validate(&r, &catalog, &signatures);
             let mut diagnostics: Vec<Diagnostic> = report
                 .issues
                 .into_iter()
@@ -1069,7 +1072,8 @@ fn validate_source(source: &str) -> ValidationOutcome {
             // No filesystem path available here (live-typed buffer);
             // validate against the recipe-local catalog only.
             let catalog = forage_core::TypeCatalog::from_file(&r);
-            let report = validate(&r, &catalog);
+            let signatures = forage_core::RecipeSignatures::default();
+            let report = validate(&r, &catalog, &signatures);
             let mut diagnostics: Vec<Diagnostic> = report
                 .issues
                 .into_iter()
@@ -1146,6 +1150,16 @@ fn build_catalog(
         return ws.catalog(recipe, |p| std::fs::read_to_string(p));
     }
     Ok(forage_core::TypeCatalog::from_file(recipe))
+}
+
+/// Recipe-signature lookup for composition validation. Lonely-recipe
+/// mode (no workspace marker) yields an empty map — composition stage
+/// references then surface as `UnknownComposeStage` against an empty
+/// catalog, which is the correct diagnostic for that case.
+fn build_signatures(workspace_root: &Path) -> forage_core::RecipeSignatures {
+    forage_core::workspace::discover(workspace_root)
+        .map(|ws| ws.recipe_signatures())
+        .unwrap_or_default()
 }
 
 fn host_of(url: &str) -> String {
@@ -1627,8 +1641,9 @@ pub fn deploy_recipe(
         .catalog(&recipe, |p| std::fs::read_to_string(p))
         .map_err(|e| format!("catalog: {e}"))?;
     let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+    let signatures = ws.recipe_signatures();
     daemon
-        .deploy(recipe_name, source, wire)
+        .deploy(recipe_name, source, wire, &signatures)
         .map_err(|e| e.to_string())
 }
 
@@ -1982,7 +1997,10 @@ for $i in $list.items[*] {
             .catalog(&recipe, |p| std::fs::read_to_string(p))
             .unwrap();
         let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        daemon.deploy(name, source, wire).expect("deploy");
+        let signatures = workspace.recipe_signatures();
+        daemon
+            .deploy(name, source, wire, &signatures)
+            .expect("deploy");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2159,8 +2177,14 @@ for $i in $list.items[*] {
             .catalog(&recipe, |p| std::fs::read_to_string(p))
             .expect("catalog");
         let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+        let signatures = workspace.recipe_signatures();
         daemon
-            .deploy("bar", "recipe \"bar\"\nengine http\n".to_string(), wire)
+            .deploy(
+                "bar",
+                "recipe \"bar\"\nengine http\n".to_string(),
+                wire,
+                &signatures,
+            )
             .expect("deploy");
 
         let statuses = build_recipe_statuses(&workspace, &daemon).expect("build_recipe_statuses");
@@ -2254,7 +2278,10 @@ for $i in $list.items[*] {
             .catalog(&recipe, |p| std::fs::read_to_string(p))
             .expect("catalog");
         let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        daemon.deploy("bar", source, wire).expect("deploy");
+        let signatures = ws.recipe_signatures();
+        daemon
+            .deploy("bar", source, wire, &signatures)
+            .expect("deploy");
 
         let cfg = RunConfig {
             cadence: Cadence::Manual,

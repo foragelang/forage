@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ast::{ForageFile, RecipeEnum, RecipeType};
+use crate::ast::{ForageFile, InputDecl, OutputDecl, RecipeEnum, RecipeType};
 use crate::parse::{ParseError, parse};
 
 pub use fixtures::{FIXTURES_DIR, SNAPSHOTS_DIR, fixtures_path, snapshot_path};
@@ -162,6 +162,69 @@ impl From<SerializableCatalog> for TypeCatalog {
         Self {
             types: cat.types,
             enums: cat.enums,
+        }
+    }
+}
+
+/// One recipe's typed signature — its declared inputs and outputs,
+/// plus its body so the validator can chase composition references
+/// transitively. Composition validation walks the signatures of the
+/// recipes the stages reference to type-check each `|` boundary and
+/// to detect cycles; the engine / daemon read them to bind upstream
+/// records into the downstream input slot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecipeSignature {
+    pub inputs: Vec<InputDecl>,
+    /// `None` when the recipe hasn't declared a typed output yet
+    /// (legacy un-migrated recipes). Composition rejects unsigned
+    /// stages — every link in the chain needs a typed output to
+    /// check the next stage's input against.
+    pub output: Option<OutputDecl>,
+    pub body: crate::ast::RecipeBody,
+}
+
+/// Recipe-name → signature lookup. The validator's pipe-stage check
+/// consults this; the engine's composition runner uses it to align
+/// upstream records with the downstream input slot.
+///
+/// `RecipeSignatures::default()` is the lonely-file mode — no other
+/// recipes are visible, so composition fails fast with
+/// `UnknownComposeStage`. Workspace and daemon callers populate the
+/// map from their respective recipe catalogs.
+#[derive(Debug, Clone, Default)]
+pub struct RecipeSignatures {
+    by_name: HashMap<String, RecipeSignature>,
+}
+
+impl RecipeSignatures {
+    pub fn insert(&mut self, name: String, sig: RecipeSignature) {
+        self.by_name.insert(name, sig);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&RecipeSignature> {
+        self.by_name.get(name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &RecipeSignature)> {
+        self.by_name.iter()
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        self.by_name.keys()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+}
+
+impl RecipeSignature {
+    /// Project one `ForageFile` into a signature record.
+    pub fn from_file(file: &ForageFile) -> Self {
+        Self {
+            inputs: file.inputs.clone(),
+            output: file.output.clone(),
+            body: file.body.clone(),
         }
     }
 }
@@ -484,6 +547,25 @@ impl Workspace {
         //    is what gives the focal file file-local precedence.
         cat.merge_all(file);
         Ok(cat)
+    }
+
+    /// Build a name → signature lookup for every recipe in the
+    /// workspace. Composition validation walks this to type-check
+    /// stage boundaries; the engine reads it to bind upstream records
+    /// into the downstream stage's input slot.
+    ///
+    /// Broken (unparseable) files are skipped — they're surfaced
+    /// separately via `Workspace::broken()`.
+    pub fn recipe_signatures(&self) -> RecipeSignatures {
+        let mut out = RecipeSignatures::default();
+        for entry in &self.files {
+            let Ok(file) = &entry.parsed else { continue };
+            let Some(header) = file.recipe_header() else {
+                continue;
+            };
+            out.insert(header.name.clone(), RecipeSignature::from_file(file));
+        }
+        out
     }
 
     /// Disk-backed convenience over [`Workspace::catalog`]: reads the

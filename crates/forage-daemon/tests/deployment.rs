@@ -75,7 +75,12 @@ fn deploy_writes_filesystem_and_db_row() {
 
     let catalog = catalog_for(RECIPE, &ws_root);
     let dv = daemon
-        .deploy(recipe_name, RECIPE.to_string(), catalog.clone())
+        .deploy(
+            recipe_name,
+            RECIPE.to_string(),
+            catalog.clone(),
+            &forage_core::RecipeSignatures::default(),
+        )
         .expect("deploy");
     assert_eq!(dv.version, 1);
     assert_eq!(dv.recipe_name, recipe_name);
@@ -114,6 +119,7 @@ fn deploy_rejects_broken_source() {
             recipe_name,
             "for in {{ }}\n".to_string(),
             SerializableCatalog::default(),
+            &forage_core::RecipeSignatures::default(),
         )
         .expect_err("parse failure rejects the deploy");
     assert!(matches!(err, DeployError::Parse(_)), "got {err:?}");
@@ -141,6 +147,7 @@ fn deploy_rejects_invalid_recipe() {
             recipe_name,
             RECIPE_REFERENCES_UNDECLARED_TYPE.to_string(),
             catalog,
+            &forage_core::RecipeSignatures::default(),
         )
         .expect_err("validation failure rejects the deploy");
     assert!(matches!(err, DeployError::Validate(_)), "got {err:?}");
@@ -167,10 +174,20 @@ fn deploy_bumps_version() {
     let catalog = catalog_for(RECIPE, &ws_root);
 
     let v1 = daemon
-        .deploy(recipe_name, RECIPE.to_string(), catalog.clone())
+        .deploy(
+            recipe_name,
+            RECIPE.to_string(),
+            catalog.clone(),
+            &forage_core::RecipeSignatures::default(),
+        )
         .unwrap();
     let v2 = daemon
-        .deploy(recipe_name, RECIPE.to_string(), catalog)
+        .deploy(
+            recipe_name,
+            RECIPE.to_string(),
+            catalog,
+            &forage_core::RecipeSignatures::default(),
+        )
         .unwrap();
     assert_eq!(v1.version, 1);
     assert_eq!(v2.version, 2);
@@ -208,7 +225,12 @@ fn deploy_updates_run_pointer_when_run_exists() {
 
     let catalog = catalog_for(RECIPE, &ws_root);
     daemon
-        .deploy(recipe_name, RECIPE.to_string(), catalog)
+        .deploy(
+            recipe_name,
+            RECIPE.to_string(),
+            catalog,
+            &forage_core::RecipeSignatures::default(),
+        )
         .unwrap();
 
     let refreshed = daemon.get_run(&run.id).unwrap().unwrap();
@@ -257,7 +279,14 @@ async fn run_once_uses_deployed_source() {
 
     let daemon = Daemon::open(ws_root.clone()).unwrap();
     let catalog = catalog_for(&deployed_src, &ws_root);
-    daemon.deploy(recipe_name, deployed_src, catalog).unwrap();
+    daemon
+        .deploy(
+            recipe_name,
+            deployed_src,
+            catalog,
+            &forage_core::RecipeSignatures::default(),
+        )
+        .unwrap();
 
     // Now mangle the draft so a re-read would parse but emit zero
     // records. If the scheduler reads from disk we'll see the count
@@ -313,7 +342,12 @@ fn deploy_skips_past_stray_version_directories() {
 
     let catalog = catalog_for(RECIPE, &ws_root);
     let dv = daemon
-        .deploy(recipe_name, RECIPE.to_string(), catalog)
+        .deploy(
+            recipe_name,
+            RECIPE.to_string(),
+            catalog,
+            &forage_core::RecipeSignatures::default(),
+        )
         .expect("deploy must succeed past the stray dir");
     assert_eq!(dv.version, 2, "must bump past stray v1, not overwrite it");
 
@@ -357,8 +391,22 @@ async fn concurrent_deploys_land_at_distinct_versions() {
     let src2 = RECIPE.to_string();
 
     let (r1, r2) = tokio::join!(
-        tokio::task::spawn_blocking(move || d1.deploy(&name1, src1, cat1)),
-        tokio::task::spawn_blocking(move || d2.deploy(&name2, src2, cat2)),
+        tokio::task::spawn_blocking(move || {
+            d1.deploy(
+                &name1,
+                src1,
+                cat1,
+                &forage_core::RecipeSignatures::default(),
+            )
+        }),
+        tokio::task::spawn_blocking(move || {
+            d2.deploy(
+                &name2,
+                src2,
+                cat2,
+                &forage_core::RecipeSignatures::default(),
+            )
+        }),
     );
     let dv1 = r1.expect("join 1").expect("deploy 1");
     let dv2 = r2.expect("join 2").expect("deploy 2");
@@ -407,7 +455,14 @@ async fn scheduled_run_recipe_version_round_trips() {
 
     // Deploy then fire again: row carries `recipe_version: Some(1)`.
     let catalog = catalog_for(&deployed_src, &ws_root);
-    daemon.deploy(recipe_name, deployed_src, catalog).unwrap();
+    daemon
+        .deploy(
+            recipe_name,
+            deployed_src,
+            catalog,
+            &forage_core::RecipeSignatures::default(),
+        )
+        .unwrap();
     let post_deploy = daemon
         .trigger_run(&run.id)
         .await

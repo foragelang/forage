@@ -1065,7 +1065,11 @@ mod tests {
         "#;
         let recipe = parse(src).expect("recipe parses");
         let catalog = forage_core::TypeCatalog::from_file(&recipe);
-        let validation = forage_core::validate(&recipe, &catalog);
+        let validation = forage_core::validate(
+            &recipe,
+            &catalog,
+            &forage_core::RecipeSignatures::default(),
+        );
         assert!(
             !validation.has_errors(),
             "validation errors: {validation:?}"

@@ -99,7 +99,7 @@ fn fixtures_match_expected() {
         }
 
         if let Some(v) = &r.validation {
-            let rep = validate(&recipe, &catalog);
+            let rep = validate(&recipe, &catalog, &forage_core::RecipeSignatures::default());
             let errs = rep.errors().count();
             if let Some(want) = v.error_count {
                 if errs != want {
