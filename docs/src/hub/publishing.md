@@ -12,17 +12,20 @@ Two paths to push to `hub.foragelang.com`:
 ## CLI
 
 ```sh
-forage auth login                                              # one-time
-forage publish ~/Library/Forage/Recipes/hacker-news            # dry-run
-forage publish ~/Library/Forage/Recipes/hacker-news --publish  # POST
+forage auth login                       # one-time
+forage publish hacker-news              # dry-run
+forage publish hacker-news --publish    # POST
 ```
 
-The dry-run prints the publish envelope (file count, total size, hub
-URL, auth status, current `latest_version` for the slug). The live
-publish reads every `.forage` file in the workspace plus the most
-recent fixtures + snapshot under `.forage/replay/`, packs them into a
-single envelope, and POSTs to
-`https://api.foragelang.com/v1/packages/<author>/<slug>/versions`.
+The recipe argument is the header name; the resolver finds it in the
+surrounding workspace. The dry-run prints the publish envelope (file
+count, total size, hub URL, auth status, current `latest_version` for
+the slug). The live publish reads the recipe file plus every other
+`.forage` file in the workspace plus the recipe's
+`_fixtures/<recipe>.jsonl` and `_snapshots/<recipe>.json`, packs them
+into a single envelope, and POSTs to
+`https://api.foragelang.com/v1/packages/<author>/<slug>/versions`. The
+hub-side slug is the recipe's header name.
 
 Other flags:
 

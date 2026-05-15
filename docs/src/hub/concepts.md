@@ -56,19 +56,21 @@ either way.
   `…/packages` and `…/stars` list what they've shipped and what
   they've starred.
 
-## Imports
+## Sharing and dependencies
 
-Recipes reference each other via `import <author>/<slug>` directives
-at the top of the file:
+Workspaces consume hub packages via `[deps]` in `forage.toml`:
 
-```forage
-import alice/cannabis        // shared schema
-import alice/zen-leaf v2     // a specific dispensary recipe
+```toml
+# forage.toml
+[deps]
+"alice/cannabis"  = "*"
+"alice/zen-leaf"  = "v2"
 ```
 
-The resolver pulls them from the hub, caches them locally, and unions
-their types/enums/inputs into the importing recipe's catalog. See
-[Imports](../lang/imports.md).
+`forage update` resolves each entry, caches the fetched packages
+locally, and unions every `share`d declaration they ship into the
+consuming workspace's catalog. See
+[Sharing and dependencies](../lang/imports.md).
 
 ## Trust model
 
