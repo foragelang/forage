@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 use serde::Serialize;
 use ts_rs::TS;
 
+use forage_core::workspace::Workspace;
 use forage_hub::{
     AuthStore, ForageMeta, HubClient, HubError, PublishResponse, SyncOutcome,
     assemble_publish_request, fork_from_hub, publish_from_workspace, sync_from_hub,
@@ -99,6 +100,8 @@ impl From<PublishResponse> for PublishOutcome {
 #[ts(export)]
 pub struct SyncOutcomeWire {
     pub author: String,
+    /// Hub-side recipe identifier (the recipe's header name). The
+    /// wire still calls it `slug` because the URL shape is unchanged.
     pub slug: String,
     pub version: u32,
     pub origin: String,
@@ -180,10 +183,10 @@ pub async fn run_fork(
 }
 
 pub async fn run_publish(
-    workspace_root: &Path,
+    workspace: &Workspace,
     hub_url: &str,
     author: &str,
-    slug: &str,
+    recipe_name: &str,
     description: String,
     category: String,
     tags: Vec<String>,
@@ -196,9 +199,9 @@ pub async fn run_publish(
     }
     publish_from_workspace(
         &client,
-        workspace_root,
+        workspace,
+        recipe_name,
         author,
-        slug,
         description,
         category,
         tags,
@@ -212,13 +215,13 @@ pub async fn run_publish(
 /// byte count + base version the user would be publishing against, so
 /// the UI's pre-publish confirmation can show what's about to go up.
 pub fn preview_publish(
-    workspace_root: &Path,
-    slug: &str,
+    workspace: &Workspace,
+    recipe_name: &str,
     description: String,
     category: String,
     tags: Vec<String>,
 ) -> Result<PublishPreview, PublishError> {
-    let req = assemble_publish_request(workspace_root, slug, description, category, tags)
+    let req = assemble_publish_request(workspace, recipe_name, description, category, tags)
         .map_err(PublishError::from_hub_error)?;
     let bytes = req.recipe.len()
         + req.decls.iter().map(|d| d.source.len()).sum::<usize>()

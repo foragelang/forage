@@ -698,7 +698,7 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
 }
 
 /// Publish the recipe named `name` to the hub under `@author/<name>`.
-/// The atomic artifact (recipe + workspace decls + fixtures +
+/// The atomic artifact (recipe + workspace shared decls + fixtures +
 /// snapshot + base_version) is assembled by `forage-hub`'s shared
 /// operations module; this command thin-wraps it for the UI.
 ///
@@ -707,10 +707,9 @@ pub fn cancel_run(state: State<'_, crate::state::StudioState>) -> Result<(), Str
 /// command stays stateless w.r.t. manifest drift). `description`,
 /// `category`, `tags` ride from the manifest or the publish dialog.
 ///
-/// The hub-side publish slug is the recipe header name. Phase 9 will
-/// rework the hub-api to key on recipe name internally; for now the
-/// hub assembler still uses path-derived slugs and assumes
-/// `name == slug` (true in legacy workspaces).
+/// The hub-side publish slug equals the recipe header name. The
+/// workspace's `_fixtures/<name>.jsonl` / `_snapshots/<name>.json` /
+/// `.forage/sync/<name>.json` files all key on the same string.
 ///
 /// Errors land as typed [`hub_sync::PublishError`] values so the UI
 /// can render the stale-base banner with a "view diff" link instead
@@ -750,7 +749,7 @@ pub async fn publish_recipe(
         });
     }
     crate::hub_sync::run_publish(
-        &ws.root,
+        &ws,
         &hub_url,
         &author,
         &name,
@@ -809,7 +808,7 @@ pub fn preview_publish(
     let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
         message: e,
     })?;
-    crate::hub_sync::preview_publish(&ws.root, &name, description, category, tags)
+    crate::hub_sync::preview_publish(&ws, &name, description, category, tags)
 }
 
 #[tauri::command]

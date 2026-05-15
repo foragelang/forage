@@ -14,7 +14,7 @@ use forage_core::{EvalValue, ForageFile, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{
     AuthStore, AuthTokens, HubClient, HubError, device::run_device_flow, fetch_to_cache,
-    fork_from_hub, hub_cache_root, publish_recipe_from_workspace, sync_from_hub,
+    fork_from_hub, hub_cache_root, publish_from_workspace, sync_from_hub,
 };
 use forage_replay::{Capture, HttpExchange, write_jsonl};
 
@@ -881,7 +881,7 @@ async fn do_publish(
     let hub = resolve_hub(hub_override);
 
     if !really_publish {
-        let preview = forage_hub::assemble_recipe_publish(
+        let preview = forage_hub::assemble_publish_request(
             &ws,
             &resolved.name,
             description,
@@ -916,7 +916,7 @@ async fn do_publish(
     }
 
     let client = hub_client(&hub, token_override);
-    match publish_recipe_from_workspace(
+    match publish_from_workspace(
         &client,
         &ws,
         &resolved.name,
@@ -978,7 +978,7 @@ async fn do_sync(
         "{} {} → {}",
         "synced".green(),
         outcome.meta.origin,
-        outcome.recipe_dir.display()
+        outcome.recipe_path.display()
     );
     Ok(())
 }
@@ -1008,7 +1008,7 @@ async fn do_fork(
         "{} {} → {}",
         "forked".green(),
         outcome.meta.origin,
-        outcome.recipe_dir.display()
+        outcome.recipe_path.display()
     );
     Ok(())
 }

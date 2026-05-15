@@ -19,7 +19,7 @@ fn artifact(author: &str, slug: &str) -> PackageVersion {
         ),
         decls: vec![PackageFile {
             name: "shared.forage".into(),
-            source: "type Shared { id: String }\n".into(),
+            source: "share type Shared { id: String }\n".into(),
         }],
         fixtures: vec![PackageFixture {
             name: "captures.jsonl".into(),
@@ -83,8 +83,8 @@ async fn forage_sync_materializes_recipe_in_cwd() {
         .success()
         .stdout(predicates::str::contains("@alice/zen-leaf@v1"));
 
-    assert!(ws.join("zen-leaf").join("recipe.forage").is_file());
-    assert!(ws.join("zen-leaf").join(".forage-meta.json").is_file());
+    assert!(ws.join("zen-leaf.forage").is_file());
+    assert!(ws.join(".forage").join("sync").join("zen-leaf.json").is_file());
     assert!(ws.join("shared.forage").is_file());
 }
 
@@ -178,5 +178,5 @@ async fn forage_sync_accepts_bare_slug_without_at_prefix() {
         .success()
         .stdout(predicates::str::contains("@alice/zen-leaf@v1"));
 
-    assert!(ws.join("zen-leaf").join("recipe.forage").is_file());
+    assert!(ws.join("zen-leaf.forage").is_file());
 }

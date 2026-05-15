@@ -2,10 +2,16 @@
 //!
 //! These functions own the on-disk shape of a synced recipe. The wire
 //! layer ([`crate::client`]) just speaks the REST API; everything that
-//! materializes a `PackageVersion` into a workspace directory, walks an
-//! on-disk recipe back into a `PublishRequest`, and tracks the source
-//! version in a sidecar lives here so Studio's Tauri commands and the
-//! CLI subcommands share one implementation.
+//! materializes a `PackageVersion` into a workspace, walks an on-disk
+//! recipe back into a `PublishRequest`, and tracks the source version
+//! in a sidecar lives here so Studio's Tauri commands and the CLI
+//! subcommands share one implementation.
+//!
+//! The hub-side "slug" is the recipe's header name; locally each
+//! recipe is one flat file `<workspace>/<recipe>.forage`. Workspace
+//! data (`_fixtures/<recipe>.jsonl`, `_snapshots/<recipe>.json`) and
+//! the hub-sync sidecar (`.forage/sync/<recipe>.json`) hang off the
+//! workspace root keyed on the same recipe-name string.
 
 use std::fs;
 use std::io;
@@ -22,10 +28,9 @@ use crate::types::{
     PublishRequest, PublishResponse, VersionSpec,
 };
 
-/// File name of the hub-sync sidecar. Lives at
-/// `<workspace>/<slug>/.forage-meta.json`. The leading dot keeps it
-/// out of the visible file tree; consumers ignore it.
-pub const META_SIDECAR_NAME: &str = ".forage-meta.json";
+/// Per-workspace directory holding `forage publish` sidecars. Sits
+/// inside `.forage/` so the source scan already skips it.
+const META_DIR: &str = ".forage/sync";
 
 /// Sidecar tracking the hub origin of a synced recipe. `base_version`
 /// drives the publish-back stale-base check; `forked_from` is the
@@ -38,6 +43,9 @@ pub struct ForageMeta {
     /// individually.
     pub origin: String,
     pub author: String,
+    /// Hub-side recipe identifier. Equals the recipe's header name —
+    /// the wire still calls it `slug` because the URL shape
+    /// (`/v1/packages/:author/:slug`) is unchanged.
     pub slug: String,
     pub base_version: u32,
     pub forked_from: Option<ForkedFrom>,
@@ -49,30 +57,34 @@ impl ForageMeta {
     }
 }
 
-/// Result of [`sync_from_hub`]: the directory the recipe was written
-/// to (always `<workspace>/<slug>`), the version that landed, and the
-/// sidecar shape so callers can echo "synced @author/slug@v4" back to
-/// the user.
+/// Result of [`sync_from_hub`]: the file the recipe was written to
+/// (always `<workspace>/<slug>.forage`), the version that landed, and
+/// the sidecar shape so callers can echo "synced @author/slug@v4"
+/// back to the user.
 #[derive(Debug, Clone)]
 pub struct SyncOutcome {
-    pub recipe_dir: PathBuf,
+    pub recipe_path: PathBuf,
     pub version: u32,
     pub meta: ForageMeta,
 }
 
 /// Pull `(author, slug, version)` from the hub, materialize it under
-/// `workspace_root/<slug>/`, write the sidecar, and bump the download
-/// counter. The version defaults to `latest` when `version` is `None`.
+/// `workspace_root`, write the sidecar, and bump the download counter.
+/// The version defaults to `latest` when `version` is `None`.
 ///
-/// The on-disk layout matches what `forage-core`'s workspace loader
-/// expects: `<slug>/recipe.forage`, decls at their declared paths
-/// under `workspace_root`, captures at `_fixtures/<recipe>.jsonl`,
-/// snapshot at `_snapshots/<recipe>.json`. The sidecar hides under
-/// `.forage-meta.json`.
+/// The on-disk layout matches the flat workspace shape:
 ///
-/// The destination must be empty (or contain only the sidecar's old
-/// copy). Refusing to overwrite avoids clobbering an in-progress edit
-/// when the user `forage sync`'s into a slug they already have.
+/// - `<workspace_root>/<slug>.forage` — the recipe source.
+/// - `<workspace_root>/<decl-name>` — every decl at the relative path
+///   the publisher used.
+/// - `<workspace_root>/_fixtures/<slug>.jsonl` — captured replay data.
+/// - `<workspace_root>/_snapshots/<slug>.json` — captured snapshot.
+/// - `<workspace_root>/.forage/sync/<slug>.json` — hub-sync sidecar.
+///
+/// The destination file must be empty (or already a hub-synced copy
+/// at an older version). Refusing to overwrite avoids clobbering an
+/// in-progress edit when the user `forage sync`'s a recipe whose
+/// header name collides with a local file.
 ///
 /// Counter semantics: every successful sync bumps the upstream
 /// package's `downloads` counter, including re-syncs that pull a
@@ -94,33 +106,38 @@ pub async fn sync_from_hub(
         None => VersionSpec::Latest,
     };
     let artifact = client.get_version(author, slug, spec).await?;
-    let recipe_dir = workspace_root.join(slug);
-    if let Some(existing) = read_meta(&recipe_dir)? {
+    let recipe_name = recipe_name_from_source(&artifact.recipe, slug)?;
+    if recipe_name != artifact.slug {
+        return Err(HubError::Generic(format!(
+            "hub-side slug {:?} does not match the recipe header name {recipe_name:?} \
+             in the artifact; refusing to sync",
+            artifact.slug,
+        )));
+    }
+    let recipe_path = workspace_root.join(format!("{}.forage", artifact.slug));
+
+    if let Some(existing) = read_meta(workspace_root, &artifact.slug)? {
         if existing.author == artifact.author
             && existing.slug == artifact.slug
             && existing.base_version >= artifact.version
         {
             return Err(HubError::Generic(format!(
                 "{} already holds {} (version {}); refusing to overwrite",
-                recipe_dir.display(),
+                recipe_path.display(),
                 existing.origin,
                 existing.base_version,
             )));
         }
-    } else if recipe_dir.exists() && contains_recipe_files(&recipe_dir)? {
+    } else if recipe_path.exists() {
         return Err(HubError::Generic(format!(
-            "{} already holds local recipe files; pick another destination",
-            recipe_dir.display()
+            "{} already exists locally and has no hub-sync sidecar; \
+             pick another destination or remove the file first",
+            recipe_path.display()
         )));
     }
 
-    // Workspace sync: decls live at the workspace root so the
-    // workspace loader's root-only declarations rule picks them up;
-    // captures and snapshot land in the workspace-level data dirs
-    // keyed by the recipe's header name.
-    let recipe_name = recipe_name_from_source(&artifact.recipe, &recipe_dir)?;
-    write_recipe_and_decls(&recipe_dir, workspace_root, &artifact)?;
-    write_fixtures_and_snapshot(workspace_root, &recipe_name, &artifact)?;
+    write_recipe_and_decls(workspace_root, &recipe_path, &artifact)?;
+    write_fixtures_and_snapshot(workspace_root, &artifact.slug, &artifact)?;
 
     let forked_from = client
         .get_package(&artifact.author, &artifact.slug)
@@ -136,7 +153,7 @@ pub async fn sync_from_hub(
         base_version: artifact.version,
         forked_from,
     };
-    write_meta(&recipe_dir, &meta)?;
+    write_meta(workspace_root, &artifact.slug, &meta)?;
 
     // The counter is informational; if it fails we still consider
     // the sync successful. Log the bail-out at debug — a worker
@@ -154,7 +171,7 @@ pub async fn sync_from_hub(
     }
 
     Ok(SyncOutcome {
-        recipe_dir,
+        recipe_path,
         version: artifact.version,
         meta,
     })
@@ -181,7 +198,8 @@ pub async fn fetch_to_cache(
     // <version>/` recursively) finds them. Fixtures and snapshots are
     // run-time concerns the dep-cache reader never touches, so skip
     // them here — the cache stays a pure source-files-only mirror.
-    write_recipe_and_decls(&dir, &dir, &artifact)?;
+    let recipe_path = dir.join(format!("{slug}.forage"));
+    write_recipe_and_decls(&dir, &recipe_path, &artifact)?;
     let sha = sha256_hex(&serde_json::to_string(&artifact)?);
     Ok(FetchedPackage { dir, sha256: sha })
 }
@@ -234,116 +252,6 @@ pub async fn fork_from_hub(
     sync_from_hub(client, workspace_root, &fork.author, &fork.slug, Some(1)).await
 }
 
-/// Walk the on-disk workspace for `slug` and assemble the atomic
-/// publish artifact. Reads the sidecar for `base_version`; absent
-/// sidecar means "first publish". Lineage (`forked_from`) is
-/// server-owned and is not part of the publish request.
-pub fn assemble_publish_request(
-    workspace_root: &Path,
-    slug: &str,
-    description: String,
-    category: String,
-    tags: Vec<String>,
-) -> HubResult<PublishRequest> {
-    let recipe_dir = workspace_root.join(slug);
-    let recipe_path = recipe_dir.join("recipe.forage");
-    let recipe = fs::read_to_string(&recipe_path).map_err(|e| {
-        HubError::Io(io::Error::new(
-            e.kind(),
-            format!("read {}: {e}", recipe_path.display()),
-        ))
-    })?;
-    let recipe_name = recipe_name_from_source(&recipe, &recipe_dir)?;
-
-    let decls = read_workspace_decls(workspace_root)?;
-    let fixtures = read_fixtures(workspace_root, &recipe_name)?;
-    let snapshot = read_snapshot(workspace_root, &recipe_name)?;
-    let meta = read_meta(&recipe_dir)?;
-    let base_version = meta.map(|m| m.base_version);
-
-    Ok(PublishRequest {
-        description,
-        category,
-        tags,
-        recipe,
-        decls,
-        fixtures,
-        snapshot,
-        base_version,
-    })
-}
-
-/// Assemble the publish artifact, POST it, and on success update the
-/// sidecar so subsequent publishes carry the new `base_version`.
-pub async fn publish_from_workspace(
-    client: &HubClient,
-    workspace_root: &Path,
-    author: &str,
-    slug: &str,
-    description: String,
-    category: String,
-    tags: Vec<String>,
-) -> HubResult<PublishResponse> {
-    let payload = assemble_publish_request(workspace_root, slug, description, category, tags)?;
-    let resp = client.publish_version(author, slug, &payload).await?;
-    let recipe_dir = workspace_root.join(slug);
-    let existing = read_meta(&recipe_dir)?;
-    let meta = ForageMeta {
-        origin: ForageMeta::pretty_origin(author, slug, resp.version),
-        author: author.to_string(),
-        slug: slug.to_string(),
-        base_version: resp.version,
-        forked_from: existing.and_then(|m| m.forked_from),
-    };
-    write_meta(&recipe_dir, &meta)?;
-    Ok(resp)
-}
-
-// --- Recipe-name-keyed publish (Phase 6+) ---------------------------
-
-/// Per-workspace directory holding `forage publish` sidecars in the
-/// recipe-name-keyed layout. Sits inside `.forage/` so the source scan
-/// already skips it.
-const RECIPE_META_DIR: &str = ".forage/sync";
-
-/// Sidecar path for a recipe-name-keyed `forage publish`.
-/// `<workspace>/.forage/sync/<recipe-name>.json`.
-pub fn recipe_meta_path(workspace_root: &Path, recipe_name: &str) -> PathBuf {
-    workspace_root
-        .join(RECIPE_META_DIR)
-        .join(format!("{recipe_name}.json"))
-}
-
-pub fn read_recipe_meta(workspace_root: &Path, recipe_name: &str) -> HubResult<Option<ForageMeta>> {
-    let path = recipe_meta_path(workspace_root, recipe_name);
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(HubError::Io(io::Error::new(
-                e.kind(),
-                format!("read {}: {e}", path.display()),
-            )));
-        }
-    };
-    let meta: ForageMeta = serde_json::from_str(&raw)?;
-    Ok(Some(meta))
-}
-
-pub fn write_recipe_meta(
-    workspace_root: &Path,
-    recipe_name: &str,
-    meta: &ForageMeta,
-) -> HubResult<()> {
-    let path = recipe_meta_path(workspace_root, recipe_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::to_string_pretty(meta)?;
-    fs::write(path, body)?;
-    Ok(())
-}
-
 /// Assemble a publish artifact keyed on the recipe's header name. The
 /// recipe file is the one `Workspace::recipe_by_name(recipe_name)`
 /// returns; the `decls` bundle every other workspace `.forage` file
@@ -352,7 +260,7 @@ pub fn write_recipe_meta(
 /// and snapshot come off the workspace's `_fixtures/<recipe>.jsonl` /
 /// `_snapshots/<recipe>.json`; `base_version` comes from the per-recipe
 /// sidecar in `.forage/sync/`.
-pub fn assemble_recipe_publish(
+pub fn assemble_publish_request(
     workspace: &Workspace,
     recipe_name: &str,
     description: String,
@@ -375,7 +283,7 @@ pub fn assemble_recipe_publish(
     let decls = collect_shared_decls(workspace, recipe_ref.path)?;
     let fixtures = read_fixtures(&workspace.root, recipe_name)?;
     let snapshot = read_snapshot(&workspace.root, recipe_name)?;
-    let meta = read_recipe_meta(&workspace.root, recipe_name)?;
+    let meta = read_meta(&workspace.root, recipe_name)?;
     let base_version = meta.map(|m| m.base_version);
 
     Ok(PublishRequest {
@@ -390,10 +298,9 @@ pub fn assemble_recipe_publish(
     })
 }
 
-/// Recipe-name-keyed counterpart to [`publish_from_workspace`]: looks
-/// up the recipe in the workspace, POSTs to `<author>/<recipe_name>`,
-/// and updates the per-recipe sidecar with the freshly-stamped version.
-pub async fn publish_recipe_from_workspace(
+/// Assemble the publish artifact, POST it, and on success update the
+/// sidecar so subsequent publishes carry the new `base_version`.
+pub async fn publish_from_workspace(
     client: &HubClient,
     workspace: &Workspace,
     recipe_name: &str,
@@ -402,11 +309,11 @@ pub async fn publish_recipe_from_workspace(
     category: String,
     tags: Vec<String>,
 ) -> HubResult<PublishResponse> {
-    let payload = assemble_recipe_publish(workspace, recipe_name, description, category, tags)?;
+    let payload = assemble_publish_request(workspace, recipe_name, description, category, tags)?;
     let resp = client
         .publish_version(author, recipe_name, &payload)
         .await?;
-    let existing = read_recipe_meta(&workspace.root, recipe_name)?;
+    let existing = read_meta(&workspace.root, recipe_name)?;
     let meta = ForageMeta {
         origin: ForageMeta::pretty_origin(author, recipe_name, resp.version),
         author: author.to_string(),
@@ -414,7 +321,7 @@ pub async fn publish_recipe_from_workspace(
         base_version: resp.version,
         forked_from: existing.and_then(|m| m.forked_from),
     };
-    write_recipe_meta(&workspace.root, recipe_name, &meta)?;
+    write_meta(&workspace.root, recipe_name, &meta)?;
     Ok(resp)
 }
 
@@ -422,10 +329,7 @@ pub async fn publish_recipe_from_workspace(
 /// focal recipe that contains at least one `share`d type/enum/fn.
 /// Files with only file-local declarations stay home — they're invisible
 /// to the catalog anyway and have no business in the publish artifact.
-fn collect_shared_decls(
-    workspace: &Workspace,
-    focal_path: &Path,
-) -> HubResult<Vec<PackageFile>> {
+fn collect_shared_decls(workspace: &Workspace, focal_path: &Path) -> HubResult<Vec<PackageFile>> {
     let mut out = Vec::new();
     for entry in &workspace.files {
         if entry.path == focal_path {
@@ -462,13 +366,16 @@ fn collect_shared_decls(
 
 // --- Sidecar I/O ----------------------------------------------------
 
-/// Path of the sidecar for `<workspace_root>/<slug>`.
-pub fn meta_path(recipe_dir: &Path) -> PathBuf {
-    recipe_dir.join(META_SIDECAR_NAME)
+/// Sidecar path for a recipe-name-keyed `forage publish`.
+/// `<workspace>/.forage/sync/<recipe-name>.json`.
+pub fn meta_path(workspace_root: &Path, recipe_name: &str) -> PathBuf {
+    workspace_root
+        .join(META_DIR)
+        .join(format!("{recipe_name}.json"))
 }
 
-pub fn read_meta(recipe_dir: &Path) -> HubResult<Option<ForageMeta>> {
-    let path = meta_path(recipe_dir);
+pub fn read_meta(workspace_root: &Path, recipe_name: &str) -> HubResult<Option<ForageMeta>> {
+    let path = meta_path(workspace_root, recipe_name);
     let raw = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -483,46 +390,51 @@ pub fn read_meta(recipe_dir: &Path) -> HubResult<Option<ForageMeta>> {
     Ok(Some(meta))
 }
 
-pub fn write_meta(recipe_dir: &Path, meta: &ForageMeta) -> HubResult<()> {
-    fs::create_dir_all(recipe_dir)?;
+pub fn write_meta(
+    workspace_root: &Path,
+    recipe_name: &str,
+    meta: &ForageMeta,
+) -> HubResult<()> {
+    let path = meta_path(workspace_root, recipe_name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let body = serde_json::to_string_pretty(meta)?;
-    fs::write(meta_path(recipe_dir), body)?;
+    fs::write(path, body)?;
     Ok(())
 }
 
 // --- Materialization -----------------------------------------------
 
 /// Lay the source half of an atomic `PackageVersion` artifact on disk:
-/// the recipe file at `<recipe_dir>/recipe.forage` plus every decl
-/// rooted at `decls_root`. Used by both `sync_from_hub` (workspace
-/// destination) and `fetch_to_cache` (hub cache subtree); only the
-/// former goes on to write data-dir files via
-/// [`write_fixtures_and_snapshot`].
+/// the recipe file at `recipe_path` plus every decl rooted at
+/// `decls_root`. Used by both `sync_from_hub` (workspace destination)
+/// and `fetch_to_cache` (hub cache subtree); only the former goes on
+/// to write data-dir files via [`write_fixtures_and_snapshot`].
 ///
 /// `decls_root` differs by caller because the two consumers walk decls
 /// from different roots:
 ///
-/// - The workspace loader (`Workspace::catalog`) scans root-level
-///   `.forage` files of the workspace itself, so `sync_from_hub` passes
-///   the workspace root (the parent of `<workspace>/<slug>/`).
+/// - The workspace loader (`Workspace::catalog`) scans the workspace
+///   root recursively, so `sync_from_hub` passes the workspace root.
 /// - The dep-cache loader (`scan_package_declarations`) walks the
 ///   version-pinned subtree `<cache>/<author>/<slug>/<version>/`
-///   recursively, so `fetch_to_cache` passes the version directory
-///   itself.
+///   recursively, so `fetch_to_cache` passes the version directory.
 ///
 /// Decls keep their authored relative paths (so a publish that
 /// declared `nested/shared.forage` lands at `<decls_root>/nested/...`).
 /// `sanitize_member` rejects absolute names and `..` segments so a
 /// hostile artifact can't escape the root.
 fn write_recipe_and_decls(
-    recipe_dir: &Path,
     decls_root: &Path,
+    recipe_path: &Path,
     artifact: &PackageVersion,
 ) -> HubResult<()> {
-    fs::create_dir_all(recipe_dir)?;
     fs::create_dir_all(decls_root)?;
-
-    fs::write(recipe_dir.join("recipe.forage"), &artifact.recipe)?;
+    if let Some(parent) = recipe_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(recipe_path, &artifact.recipe)?;
 
     for f in &artifact.decls {
         let target = if f.name.contains('/') {
@@ -583,22 +495,17 @@ fn write_fixtures_and_snapshot(
     Ok(())
 }
 
-/// Parse `source` and pull the recipe's header name out for keying the
-/// workspace's data dirs. A failing parse or a header-less artifact is
-/// a publish-side bug — the hub-api rejects publishes without a
-/// `recipe "..."` header — but we surface a structured error here so
-/// the sync path doesn't silently land captures in `_fixtures/.jsonl`.
-fn recipe_name_from_source(source: &str, recipe_dir: &Path) -> HubResult<String> {
+/// Parse `source` and pull the recipe's header name out. The publish
+/// pipeline keys the workspace's data dirs and sidecar on the header
+/// name, so a header-less artifact is a structured error — silently
+/// landing captures in `_fixtures/.jsonl` would be a real bug.
+fn recipe_name_from_source(source: &str, slug: &str) -> HubResult<String> {
     let parsed = forage_core::parse(source).map_err(|e| {
-        HubError::Generic(format!(
-            "parse synced recipe at {}: {e}",
-            recipe_dir.display()
-        ))
+        HubError::Generic(format!("parse synced recipe @{slug}: {e}"))
     })?;
     parsed.recipe_name().map(str::to_string).ok_or_else(|| {
         HubError::Generic(format!(
-            "synced recipe at {} has no `recipe \"<name>\"` header",
-            recipe_dir.display()
+            "synced recipe @{slug} has no `recipe \"<name>\"` header",
         ))
     })
 }
@@ -646,62 +553,7 @@ fn sanitize_member(root: &Path, name: &str) -> HubResult<PathBuf> {
     Ok(canonical_parent.join(leaf))
 }
 
-fn contains_recipe_files(recipe_dir: &Path) -> HubResult<bool> {
-    if !recipe_dir.exists() {
-        return Ok(false);
-    }
-    let entries = fs::read_dir(recipe_dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        // The sidecar itself doesn't count — we just overwrote one
-        // when the user's last sync put it there. Hidden files in
-        // general (.DS_Store, etc.) don't block a sync either.
-        if name_str.starts_with('.') {
-            continue;
-        }
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-// --- Publish-side assembly --------------------------------------------
-
-fn read_workspace_decls(workspace_root: &Path) -> HubResult<Vec<PackageFile>> {
-    let mut out = Vec::new();
-    if !workspace_root.exists() {
-        return Ok(out);
-    }
-    // Root-level `.forage` files are header-less declarations — same
-    // rule the workspace loader uses. Subdirectories hold recipes
-    // (under `<slug>/recipe.forage`); we only publish the active
-    // slug's recipe, so other slugs' folders are skipped here.
-    let entries = fs::read_dir(workspace_root)?;
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy().into_owned();
-        if name_str.starts_with('.') {
-            continue;
-        }
-        let path = entry.path();
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        if !name_str.ends_with(".forage") {
-            continue;
-        }
-        let source = fs::read_to_string(&path)?;
-        out.push(PackageFile {
-            name: name_str,
-            source,
-        });
-    }
-    // Stable order on the wire — easier to diff between publishes.
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
-}
+// --- Publish-side I/O ------------------------------------------------
 
 /// Read the workspace's per-recipe JSONL captures file and wrap its
 /// raw bytes as a single `PackageFixture` for the publish wire. The
@@ -761,10 +613,7 @@ pub fn core_snapshot_to_wire(snapshot: &forage_core::Snapshot) -> HubResult<Pack
     let mut counts: indexmap::IndexMap<String, u64> = indexmap::IndexMap::new();
     for r in &snapshot.records {
         let v = serde_json::to_value(r)?;
-        records
-            .entry(r.type_name.clone())
-            .or_default()
-            .push(v);
+        records.entry(r.type_name.clone()).or_default().push(v);
         *counts.entry(r.type_name.clone()).or_default() += 1;
     }
     Ok(PackageSnapshot { records, counts })
@@ -785,7 +634,7 @@ mod tests {
             ),
             decls: vec![PackageFile {
                 name: "shared.forage".into(),
-                source: "type Shared { id: String }\n".into(),
+                source: "share type Shared { id: String }\n".into(),
             }],
             fixtures: vec![PackageFixture {
                 name: "captures.jsonl".into(),
@@ -801,26 +650,26 @@ mod tests {
         }
     }
 
-    /// A workspace-side sync lays the recipe + decls in the legacy
-    /// nested shape and the fixtures + snapshot in the workspace-level
-    /// data dirs keyed by the recipe's header name.
+    /// `write_recipe_and_decls` lays the recipe file at the
+    /// caller-supplied path and every decl alongside the decls root.
+    /// `write_fixtures_and_snapshot` lays workspace data keyed on the
+    /// recipe-name.
     #[test]
-    fn sync_writes_workspace_files_in_phase5_layout() {
+    fn writers_lay_flat_workspace_shape() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
-        let recipe_dir = ws.join("zen-leaf");
         let art = artifact("alice", "zen-leaf", 4);
-        write_recipe_and_decls(&recipe_dir, ws, &art).unwrap();
-        let recipe_name = recipe_name_from_source(&art.recipe, &recipe_dir).unwrap();
-        write_fixtures_and_snapshot(ws, &recipe_name, &art).unwrap();
+        let recipe_path = ws.join("zen-leaf.forage");
+        write_recipe_and_decls(ws, &recipe_path, &art).unwrap();
+        write_fixtures_and_snapshot(ws, &art.slug, &art).unwrap();
 
-        assert!(recipe_dir.join("recipe.forage").is_file());
+        assert!(recipe_path.is_file());
         assert!(ws.join("shared.forage").is_file());
         assert!(ws.join("_fixtures").join("zen-leaf.jsonl").is_file());
         assert!(ws.join("_snapshots").join("zen-leaf.json").is_file());
-        // No legacy data dirs under the recipe folder.
-        assert!(!recipe_dir.join("fixtures").exists());
-        assert!(!recipe_dir.join("snapshot.json").exists());
+        // No legacy nested layout.
+        assert!(!ws.join("zen-leaf").join("recipe.forage").exists());
+        assert!(!ws.join("zen-leaf").join("fixtures").exists());
     }
 
     /// A dep-cache fetch writes the source half only — fixtures and
@@ -830,9 +679,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let version_dir = tmp.path().join("alice").join("zen-leaf").join("4");
         let art = artifact("alice", "zen-leaf", 4);
-        write_recipe_and_decls(&version_dir, &version_dir, &art).unwrap();
+        let recipe_path = version_dir.join("zen-leaf.forage");
+        write_recipe_and_decls(&version_dir, &recipe_path, &art).unwrap();
 
-        assert!(version_dir.join("recipe.forage").is_file());
+        assert!(recipe_path.is_file());
         // shared.forage lands INSIDE the version dir, not in the
         // parent slug dir.
         assert!(version_dir.join("shared.forage").is_file());
@@ -852,7 +702,7 @@ mod tests {
     #[test]
     fn meta_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
-        let recipe_dir = tmp.path().join("rec");
+        let ws = tmp.path();
         let meta = ForageMeta {
             origin: ForageMeta::pretty_origin("alice", "zen-leaf", 4),
             author: "alice".into(),
@@ -860,45 +710,88 @@ mod tests {
             base_version: 4,
             forked_from: None,
         };
-        write_meta(&recipe_dir, &meta).unwrap();
-        let back = read_meta(&recipe_dir).unwrap().unwrap();
+        write_meta(ws, "zen-leaf", &meta).unwrap();
+        let back = read_meta(ws, "zen-leaf").unwrap().unwrap();
         assert_eq!(back, meta);
     }
 
+    /// `assemble_publish_request` resolves the recipe via
+    /// `Workspace::recipe_by_name`, bundles every sibling file that
+    /// declares at least one `share`d type, and folds in the workspace
+    /// data dirs.
     #[test]
-    fn assemble_uses_sidecar_base_version() {
+    fn assemble_request_walks_flat_workspace() {
         let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("zen-leaf").join("fixtures")).unwrap();
-        std::fs::write(ws.join("zen-leaf").join("recipe.forage"), "recipe \"zen-leaf\"\nengine http\nstep s { method \"GET\" url \"x\" }\n").unwrap();
-        let meta = ForageMeta {
-            origin: ForageMeta::pretty_origin("alice", "zen-leaf", 4),
-            author: "alice".into(),
-            slug: "zen-leaf".into(),
-            base_version: 4,
-            forked_from: None,
-        };
-        write_meta(&ws.join("zen-leaf"), &meta).unwrap();
-        let req = assemble_publish_request(
-            ws,
-            "zen-leaf",
-            "desc".into(),
-            "scrape".into(),
-            vec![],
+        let ws_root = tmp.path();
+        fs::write(
+            ws_root.join("forage.toml"),
+            "name = \"alice/bar\"\ndescription = \"\"\ncategory = \"x\"\ntags = []\n",
         )
         .unwrap();
-        assert_eq!(req.base_version, Some(4));
-        assert!(req.recipe.contains("zen-leaf"));
+        fs::write(
+            ws_root.join("foo.forage"),
+            "recipe \"bar\"\nengine http\nstep s { method \"GET\" url \"https://example.test\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            ws_root.join("shared.forage"),
+            "share type Shared { id: String }\n",
+        )
+        .unwrap();
+        // A sibling with only file-local decls must stay home.
+        fs::write(
+            ws_root.join("local-only.forage"),
+            "type LocalOnly { id: String }\n",
+        )
+        .unwrap();
+        fs::create_dir_all(ws_root.join("_fixtures")).unwrap();
+        fs::write(ws_root.join("_fixtures").join("bar.jsonl"), "{\"k\":1}\n").unwrap();
+
+        let meta = ForageMeta {
+            origin: ForageMeta::pretty_origin("alice", "bar", 3),
+            author: "alice".into(),
+            slug: "bar".into(),
+            base_version: 3,
+            forked_from: None,
+        };
+        write_meta(ws_root, "bar", &meta).unwrap();
+
+        let ws = forage_core::workspace::load(ws_root).unwrap();
+        let req = assemble_publish_request(
+            &ws,
+            "bar",
+            "desc".into(),
+            "scrape".into(),
+            vec!["t".into()],
+        )
+        .unwrap();
+        assert!(req.recipe.contains("recipe \"bar\""));
+        assert_eq!(req.base_version, Some(3));
+        assert!(req.decls.iter().any(|d| d.name == "shared.forage"));
+        assert!(
+            req.decls.iter().all(|d| d.name != "local-only.forage"),
+            "file-local-only siblings must not appear on the wire",
+        );
+        assert!(req.fixtures.iter().any(|f| f.name == "captures.jsonl"));
     }
 
     #[test]
     fn assemble_without_sidecar_means_first_publish() {
         let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("fresh")).unwrap();
-        std::fs::write(ws.join("fresh").join("recipe.forage"), "recipe \"fresh\"\nengine http\nstep s { method \"GET\" url \"x\" }\n").unwrap();
+        let ws_root = tmp.path();
+        fs::write(
+            ws_root.join("forage.toml"),
+            "name = \"alice/fresh\"\ndescription = \"\"\ncategory = \"x\"\ntags = []\n",
+        )
+        .unwrap();
+        fs::write(
+            ws_root.join("fresh.forage"),
+            "recipe \"fresh\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
+        )
+        .unwrap();
+        let ws = forage_core::workspace::load(ws_root).unwrap();
         let req = assemble_publish_request(
-            ws,
+            &ws,
             "fresh",
             "desc".into(),
             "scrape".into(),
@@ -909,13 +802,28 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_overwrite_local_recipe() {
-        // sync_from_hub guards against clobbering local edits, even
-        // without a sidecar.
+    fn assemble_errors_on_unknown_recipe_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("zen-leaf")).unwrap();
-        std::fs::write(ws.join("zen-leaf").join("recipe.forage"), "recipe \"zen-leaf\"\nengine http\n").unwrap();
-        assert!(contains_recipe_files(&ws.join("zen-leaf")).unwrap());
+        let ws_root = tmp.path();
+        fs::write(
+            ws_root.join("forage.toml"),
+            "name = \"alice/x\"\ndescription = \"\"\ncategory = \"x\"\ntags = []\n",
+        )
+        .unwrap();
+        fs::write(
+            ws_root.join("a.forage"),
+            "recipe \"a\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
+        )
+        .unwrap();
+        let ws = forage_core::workspace::load(ws_root).unwrap();
+        let err = assemble_publish_request(
+            &ws,
+            "missing",
+            "".into(),
+            "x".into(),
+            vec![],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("missing"), "unexpected: {err}");
     }
 }
