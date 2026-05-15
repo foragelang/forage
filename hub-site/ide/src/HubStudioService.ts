@@ -47,8 +47,11 @@ import type { ValidationOutcome } from "@/bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "@/bindings/WorkspaceInfo";
 
 import {
+    language_dictionary,
     parse_and_validate,
-    parse_recipe,
+    recipe_hover,
+    recipe_outline,
+    recipe_progress_unit,
     run_replay,
 } from "forage-wasm";
 
@@ -217,37 +220,23 @@ export class HubStudioService implements StudioService {
         });
     }
     recipeOutline(source: string): Promise<RecipeOutline> {
-        // The Rust-side `recipe_outline` derives step locations from
-        // the AST. Until forage-wasm exports it, fall back to an empty
-        // outline — the gutter just shows no step markers. Parsing
-        // success / failure is independent.
-        const result = parse_recipe(source) as { ok: boolean };
-        return Promise.resolve({
-            steps: result.ok ? [] : [],
-        } as unknown as RecipeOutline);
+        return Promise.resolve(recipe_outline(source) as RecipeOutline);
     }
-    recipeHover(_source: string, _line: number, _col: number): Promise<HoverInfo | null> {
-        // Hover info lives in forage-lsp's `intel::hover_at` and isn't
-        // wired through forage-wasm yet. Return null so Monaco shows no
-        // hover popover; the editor still functions for typing.
-        return Promise.resolve(null);
+    recipeHover(source: string, line: number, col: number): Promise<HoverInfo | null> {
+        return Promise.resolve(recipe_hover(source, line, col) as HoverInfo | null);
     }
     recipeProgressUnit(_slug: string): Promise<ProgressUnit | null> {
-        // Progress unit inference is in forage-core::progress; not yet
-        // exported through forage-wasm. Returning null disables the
-        // progress bar in the run pane, which is the right behavior
-        // when the inference isn't available.
-        return Promise.resolve(null);
+        // The Tauri command keys off slug to find the source on disk;
+        // in the hub IDE the loaded package's recipe is in memory, so
+        // we infer from that. Returns null when no package is loaded
+        // or when the recipe has no emit-bearing loop.
+        if (!this.loaded) return Promise.resolve(null);
+        return Promise.resolve(
+            recipe_progress_unit(this.loaded.version.recipe) as ProgressUnit | null,
+        );
     }
     languageDictionary(): Promise<LanguageDictionary> {
-        // Monaco completion. Empty dictionary → no completion
-        // suggestions; the editor still highlights syntax via the
-        // language grammar registered in `monaco-forage.ts`.
-        return Promise.resolve({
-            keywords: [],
-            type_keywords: [],
-            transforms: [],
-        } as unknown as LanguageDictionary);
+        return Promise.resolve(language_dictionary() as LanguageDictionary);
     }
     createRecipe(): Promise<string> {
         return Promise.reject(new NotSupportedByService("createRecipe"));
@@ -270,30 +259,42 @@ export class HubStudioService implements StudioService {
                 ok: false,
                 error: "no package loaded",
                 snapshot: null,
-            } as unknown as RunOutcome;
+                daemon_warning: null,
+            };
         }
         const captures = this.loaded.version.fixtures
             .map((f) => f.content)
             .join("\n");
         try {
-            const snapshot = await run_replay(
+            // `run_replay` returns the engine's `Snapshot` serialized as a
+            // JS object — same shape as `bindings/Snapshot.ts`.
+            const snapshot = (await run_replay(
                 this.loaded.version.recipe,
                 this.loaded.version.decls,
                 captures,
+                // Inputs/secrets stay empty in the hub IDE: the read +
+                // replay + light-authoring scope (per the roadmap) has
+                // no inputs UI today; live runs (which would need
+                // secrets) are gated off via `capabilities.liveRun`.
                 {},
                 {},
-            );
+            )) as RunOutcome["snapshot"];
             return {
                 ok: true,
                 error: null,
                 snapshot,
-            } as unknown as RunOutcome;
+                // `daemon_warning` reports a daemon-bookkeeping miss
+                // after a successful run. There's no daemon in the
+                // hub IDE, so this is structurally always null.
+                daemon_warning: null,
+            };
         } catch (e) {
             return {
                 ok: false,
                 error: e instanceof Error ? e.message : String(e),
                 snapshot: null,
-            } as unknown as RunOutcome;
+                daemon_warning: null,
+            };
         }
     }
     cancelRun(): Promise<void> { return Promise.resolve(); }
@@ -306,11 +307,15 @@ export class HubStudioService implements StudioService {
     // ── Daemon: hub has none ────────────────────────────────────────
 
     daemonStatus(): Promise<DaemonStatus> {
+        // The hub has no daemon. Returns the full `DaemonStatus` shape
+        // with `running: false`; `started_at: 0` is the documented
+        // sentinel for "not running" on the Studio side.
         return Promise.resolve({
             running: false,
             version: "hub-ide",
+            started_at: 0,
             active_count: 0,
-        } as unknown as DaemonStatus);
+        });
     }
     listRuns(): Promise<Run[]> { return Promise.resolve([]); }
     getRun(): Promise<Run | null> { return Promise.resolve(null); }
