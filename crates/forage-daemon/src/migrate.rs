@@ -23,7 +23,7 @@
 //! data, even mid-migration; a recipe deleted from disk while a Run
 //! row still references it is the user's call to clean up.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,54 +65,69 @@ pub(crate) fn migrate_legacy_keying(
     conn: &Connection,
     workspace_root: &Path,
 ) -> Result<(), DaemonError> {
-    let lookup = match build_slug_to_name(workspace_root) {
-        Some(map) if !map.is_empty() => map,
-        // No workspace (no `forage.toml`) or no parseable recipes —
-        // nothing to reconcile against.
-        _ => {
-            tracing::info!(
-                workspace = %workspace_root.display(),
-                "legacy keying migration: no workspace recipes to reconcile against",
-            );
-            return Ok(());
-        }
+    let Some(index) = build_recipe_index(workspace_root) else {
+        tracing::info!(
+            workspace = %workspace_root.display(),
+            "legacy keying migration: no workspace to reconcile against",
+        );
+        return Ok(());
     };
+    if index.lookup.is_empty() && index.known.is_empty() {
+        tracing::info!(
+            workspace = %workspace_root.display(),
+            "legacy keying migration: workspace has no recipes",
+        );
+        return Ok(());
+    }
 
     let daemon_dir = workspace_root.join(".forage");
     let deployments_dir = daemon_dir.join("deployments");
     let data_dir = daemon_dir.join("data");
 
-    rewrite_runs(conn, &lookup, &data_dir)?;
-    rewrite_deployed_versions(conn, &lookup)?;
-    rename_deployment_directories(&lookup, &deployments_dir)?;
-    rename_output_stores(&lookup, &data_dir)?;
+    rewrite_runs(conn, &index, &data_dir)?;
+    rewrite_deployed_versions(conn, &index)?;
+    rename_deployment_directories(&index.lookup, &deployments_dir)?;
+    rename_output_stores(&index.lookup, &data_dir)?;
     Ok(())
 }
 
-/// Map from path-derived legacy slug to the recipe's header name. Only
-/// entries where the slug differs from the header name are kept —
-/// recipes whose slug already equals their header name don't need any
-/// renaming work, and folding them into the map would mask legitimate
-/// "row points at a missing recipe" cases as no-op hits.
-fn build_slug_to_name(workspace_root: &Path) -> Option<HashMap<String, String>> {
+/// Cross-reference of the workspace's recipes used by the migration:
+/// the renames it can apply (`lookup`) and the set of valid current
+/// keys (`known`). The latter is what distinguishes a clean no-op (a
+/// row that's already on the new keying) from a genuine orphan (a row
+/// whose recipe_name corresponds to nothing on disk).
+struct RecipeIndex {
+    /// Legacy slug → recipe header name. Only entries where the slug
+    /// differs from the header name are kept; recipes whose slug already
+    /// equals their header name need no renaming.
+    lookup: HashMap<String, String>,
+    /// Every recipe header name currently on disk. A row whose
+    /// `recipe_name` is in this set is already in the post-Phase-4
+    /// keying — pass it through.
+    known: HashSet<String>,
+}
+
+fn build_recipe_index(workspace_root: &Path) -> Option<RecipeIndex> {
     let ws = discover(workspace_root)?;
-    let mut out: HashMap<String, String> = HashMap::new();
+    let mut lookup: HashMap<String, String> = HashMap::new();
+    let mut known: HashSet<String> = HashSet::new();
     for recipe in ws.recipes() {
+        let name = recipe.name().to_string();
+        known.insert(name.clone());
         let Some(slug) = slug_from_path(&ws.root, recipe.path) else {
             continue;
         };
-        let name = recipe.name().to_string();
         if slug == name {
             continue;
         }
-        out.insert(slug, name);
+        lookup.insert(slug, name);
     }
-    Some(out)
+    Some(RecipeIndex { lookup, known })
 }
 
 fn rewrite_runs(
     conn: &Connection,
-    lookup: &HashMap<String, String>,
+    index: &RecipeIndex,
     data_dir: &Path,
 ) -> Result<(), DaemonError> {
     let mut stmt =
@@ -129,40 +144,51 @@ fn rewrite_runs(
     drop(stmt);
 
     for (id, current_name, output_path) in rows {
-        let Some(new_name) = lookup.get(&current_name) else {
-            continue;
-        };
-        // Redirect the default-shaped output path
-        // (`<workspace>/.forage/data/<old-slug>.sqlite`) to the
-        // header-name file; a Run with a custom output path the user
-        // chose stays as-is. The file rename itself happens in
-        // `rename_output_stores` so multiple rows pointing at the
-        // same SQLite file all converge on one rename call.
-        let default_old = data_dir.join(format!("{current_name}.sqlite"));
-        let output_path_buf = PathBuf::from(&output_path);
-        let new_output = if output_path_buf == default_old {
-            data_dir.join(format!("{new_name}.sqlite"))
-        } else {
-            output_path_buf
-        };
+        if let Some(new_name) = index.lookup.get(&current_name) {
+            // Redirect the default-shaped output path
+            // (`<workspace>/.forage/data/<old-slug>.sqlite`) to the
+            // header-name file; a Run with a custom output path the
+            // user chose stays as-is. The file rename itself happens
+            // in `rename_output_stores` so multiple rows pointing at
+            // the same SQLite file all converge on one rename call.
+            let default_old = data_dir.join(format!("{current_name}.sqlite"));
+            let output_path_buf = PathBuf::from(&output_path);
+            let new_output = if output_path_buf == default_old {
+                data_dir.join(format!("{new_name}.sqlite"))
+            } else {
+                output_path_buf
+            };
 
-        tracing::info!(
-            run_id = %id,
-            from = %current_name,
-            to = %new_name,
-            "migrate runs row: recipe_name rewrite",
-        );
-        conn.execute(
-            "UPDATE runs SET recipe_name = ?1, output_path = ?2 WHERE id = ?3",
-            params![new_name, new_output.to_string_lossy(), id],
-        )?;
+            tracing::info!(
+                run_id = %id,
+                from = %current_name,
+                to = %new_name,
+                "migrate runs row: recipe_name rewrite",
+            );
+            conn.execute(
+                "UPDATE runs SET recipe_name = ?1, output_path = ?2 WHERE id = ?3",
+                params![new_name, new_output.to_string_lossy(), id],
+            )?;
+            continue;
+        }
+        if !index.known.contains(&current_name) {
+            // No workspace recipe matches this name and no legacy
+            // slug maps onto one. Leave the row alone — the daemon
+            // doesn't delete user data — but make the orphan visible
+            // so the user can clean it up.
+            tracing::warn!(
+                run_id = %id,
+                recipe_name = %current_name,
+                "migrate runs row: no workspace recipe matches; row left in place",
+            );
+        }
     }
     Ok(())
 }
 
 fn rewrite_deployed_versions(
     conn: &Connection,
-    lookup: &HashMap<String, String>,
+    index: &RecipeIndex,
 ) -> Result<(), DaemonError> {
     let mut stmt = conn.prepare("SELECT DISTINCT recipe_name FROM deployed_versions")?;
     let names: Vec<String> = stmt
@@ -171,18 +197,24 @@ fn rewrite_deployed_versions(
     drop(stmt);
 
     for current_name in names {
-        let Some(new_name) = lookup.get(&current_name) else {
+        if let Some(new_name) = index.lookup.get(&current_name) {
+            tracing::info!(
+                from = %current_name,
+                to = %new_name,
+                "migrate deployed_versions rows: recipe_name rewrite",
+            );
+            conn.execute(
+                "UPDATE deployed_versions SET recipe_name = ?1 WHERE recipe_name = ?2",
+                params![new_name, current_name],
+            )?;
             continue;
-        };
-        tracing::info!(
-            from = %current_name,
-            to = %new_name,
-            "migrate deployed_versions rows: recipe_name rewrite",
-        );
-        conn.execute(
-            "UPDATE deployed_versions SET recipe_name = ?1 WHERE recipe_name = ?2",
-            params![new_name, current_name],
-        )?;
+        }
+        if !index.known.contains(&current_name) {
+            tracing::warn!(
+                recipe_name = %current_name,
+                "migrate deployed_versions rows: no workspace recipe matches; rows left in place",
+            );
+        }
     }
     Ok(())
 }

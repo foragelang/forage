@@ -278,6 +278,7 @@ fn opening_legacy_v2_state_migrates_slug_to_header_name() {
 /// workspace stays untouched: the daemon doesn't delete the user's
 /// data and doesn't have enough information to rename it. The
 /// migration logs a warn and moves on.
+#[tracing_test::traced_test]
 #[test]
 fn legacy_state_with_no_matching_recipe_stays_in_place() {
     let tmp = tempfile::tempdir().unwrap();
@@ -288,13 +289,8 @@ fn legacy_state_with_no_matching_recipe_stays_in_place() {
     )
     .unwrap();
     // Workspace has one valid recipe.
-    let kept_dir = ws_root.join("kept");
-    std::fs::create_dir_all(&kept_dir).unwrap();
-    std::fs::write(
-        kept_dir.join("recipe.forage"),
-        "recipe \"kept\"\nengine http\n",
-    )
-    .unwrap();
+    let kept = ws_root.join("kept.forage");
+    std::fs::write(&kept, "recipe \"kept\"\nengine http\n").unwrap();
 
     // Pre-Phase-4 state: an orphan output store + DB row whose recipe
     // is no longer on disk.
@@ -355,6 +351,11 @@ fn legacy_state_with_no_matching_recipe_stays_in_place() {
             ],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO deployed_versions(slug, version, deployed_at) VALUES (?1, 1, 0)",
+            rusqlite::params!["orphan"],
+        )
+        .unwrap();
     }
 
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
@@ -368,4 +369,12 @@ fn legacy_state_with_no_matching_recipe_stays_in_place() {
 
     // The orphan output store file is still on disk.
     assert!(orphan_store.is_file(), "orphan store stays on disk");
+
+    // The migration emits a warn log so the user can see the
+    // unmigratable rows and decide how to clean up. The deployed_versions
+    // row is also an orphan and surfaces its own warn line.
+    assert!(
+        logs_contain("no workspace recipe matches"),
+        "expected warn log for orphan runs/deployed_versions row",
+    );
 }
