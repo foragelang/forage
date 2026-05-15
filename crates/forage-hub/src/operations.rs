@@ -70,6 +70,15 @@ pub struct SyncOutcome {
 /// The destination must be empty (or contain only the sidecar's old
 /// copy). Refusing to overwrite avoids clobbering an in-progress edit
 /// when the user `forage sync`'s into a slug they already have.
+///
+/// Counter semantics: every successful sync bumps the upstream
+/// package's `downloads` counter, including re-syncs that pull a
+/// higher version into the same workspace. "Downloads" therefore
+/// counts artifact-pulls, not unique users — the hub stays stateless
+/// per user (no idempotency key, no per-caller dedup), and the
+/// counter remains a useful "how lively is this package" signal.
+/// Unique-user counting would require server-side caller identity,
+/// which we don't want to grow for an informational stat.
 pub async fn sync_from_hub(
     client: &HubClient,
     workspace_root: &Path,
