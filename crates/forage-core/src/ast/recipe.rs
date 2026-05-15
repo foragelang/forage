@@ -7,7 +7,7 @@ use crate::ast::browser::BrowserConfig;
 use crate::ast::expr::{Emission, ExtractionExpr};
 use crate::ast::http::HTTPStep;
 use crate::ast::span::Span;
-use crate::ast::types::{InputDecl, OutputDecl, RecipeEnum, RecipeType};
+use crate::ast::types::{EmitsDecl, InputDecl, RecipeEnum, RecipeType};
 
 /// One parsed `.forage` file. The grammar is flat — a file is a sequence
 /// of top-level forms (`recipe`, `type`, `enum`, `input`, `secret`, `fn`,
@@ -33,11 +33,12 @@ pub struct ForageFile {
     pub types: Vec<RecipeType>,
     pub enums: Vec<RecipeEnum>,
     pub inputs: Vec<InputDecl>,
-    /// Recipe output signature, when declared (`output T` or
-    /// `output T1 | T2 | …`). `None` for header-less files and for
-    /// recipes that haven't been migrated to a typed output yet; the
-    /// validator's emit-vs-output check only fires when this is `Some`.
-    pub output: Option<OutputDecl>,
+    /// Optional `emits T` / `emits T1 | T2 | …` clause declaring the
+    /// types this recipe is contracted to emit. `None` for header-less
+    /// files and for recipes that omit the clause; in the latter case
+    /// the runtime shape is whatever the body's `emit` statements
+    /// produce and the validator skips the declared-vs-actual check.
+    pub emits: Option<EmitsDecl>,
     /// Top-level `secret <name>` declarations, in source order.
     pub secrets: Vec<String>,
     /// Top-level `fn <name>(...)` declarations, in source order. These are
@@ -53,6 +54,30 @@ pub struct ForageFile {
 impl ForageFile {
     pub fn input(&self, name: &str) -> Option<&InputDecl> {
         self.inputs.iter().find(|i| i.name == name)
+    }
+
+    /// Every type the recipe may emit, derived from
+    /// `Statement::Emit` (top-level and in `for`-loops), nested
+    /// `ExtractionExpr::MapTo { emission }` inside extraction
+    /// expressions, and the browser config's capture / document-
+    /// capture bodies. The single canonical walker — the validator's
+    /// emit-vs-`emits` cross-check, the composition signature, and the
+    /// daemon's `derive_schema` all go through this.
+    ///
+    /// Empty for composition and for header-less files (neither carries
+    /// `emit` statements of their own).
+    pub fn emit_types(&self) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        collect_body_emit_types(&self.body, &mut out);
+        if let Some(b) = &self.browser {
+            for cap in &b.captures {
+                collect_statements_emit_types(&cap.body, &mut out);
+            }
+            if let Some(doc) = &b.document_capture {
+                collect_statements_emit_types(&doc.body, &mut out);
+            }
+        }
+        out
     }
 
     pub fn function(&self, name: &str) -> Option<&FnDecl> {
@@ -200,6 +225,78 @@ impl RecipeBody {
             RecipeBody::Composition(c) => Some(c),
             _ => None,
         }
+    }
+}
+
+/// Walk a `RecipeBody` and accumulate every type referenced by an
+/// `emit X { … }`, including emits nested inside `ExtractionExpr::MapTo`
+/// inside binding expressions. A no-op on `Empty` and `Composition`
+/// bodies, both of which carry zero emit statements of their own.
+pub fn collect_body_emit_types(body: &RecipeBody, out: &mut std::collections::BTreeSet<String>) {
+    if let RecipeBody::Scraping(stmts) = body {
+        collect_statements_emit_types(stmts, out);
+    }
+}
+
+fn collect_statements_emit_types(
+    stmts: &[Statement],
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for s in stmts {
+        match s {
+            Statement::Emit(em) => collect_emission_emit_types(em, out),
+            Statement::ForLoop { body, .. } => collect_statements_emit_types(body, out),
+            Statement::Step(_) => {}
+        }
+    }
+}
+
+fn collect_emission_emit_types(em: &Emission, out: &mut std::collections::BTreeSet<String>) {
+    out.insert(em.type_name.clone());
+    for binding in &em.bindings {
+        collect_expr_emit_types(&binding.expr, out);
+    }
+}
+
+fn collect_expr_emit_types(expr: &ExtractionExpr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        ExtractionExpr::Pipe(inner, calls) => {
+            collect_expr_emit_types(inner, out);
+            for c in calls {
+                for a in &c.args {
+                    collect_expr_emit_types(a, out);
+                }
+            }
+        }
+        ExtractionExpr::CaseOf { branches, .. } => {
+            for (_, arm) in branches {
+                collect_expr_emit_types(arm, out);
+            }
+        }
+        ExtractionExpr::MapTo { emission, .. } => collect_emission_emit_types(emission, out),
+        ExtractionExpr::Call { args, .. } => {
+            for a in args {
+                collect_expr_emit_types(a, out);
+            }
+        }
+        ExtractionExpr::BinaryOp { lhs, rhs, .. } => {
+            collect_expr_emit_types(lhs, out);
+            collect_expr_emit_types(rhs, out);
+        }
+        ExtractionExpr::Unary { operand, .. } => collect_expr_emit_types(operand, out),
+        ExtractionExpr::StructLiteral { fields } => {
+            for f in fields {
+                collect_expr_emit_types(&f.expr, out);
+            }
+        }
+        ExtractionExpr::Index { base, index } => {
+            collect_expr_emit_types(base, out);
+            collect_expr_emit_types(index, out);
+        }
+        ExtractionExpr::Path(_)
+        | ExtractionExpr::Template(_)
+        | ExtractionExpr::Literal(_)
+        | ExtractionExpr::RegexLiteral(_) => {}
     }
 }
 

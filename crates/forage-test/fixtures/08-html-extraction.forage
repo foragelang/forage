@@ -9,7 +9,7 @@
 
 recipe "html-extraction"
 engine http
-output Listing
+emits Listing
 
 type Listing {
     title: String

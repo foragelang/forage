@@ -17,13 +17,9 @@
 //! to a later phase; we surface column-set differences as runtime
 //! errors when writes fail instead of silently dropping data.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
-use forage_core::ast::{
-    BrowserConfig, CaptureRule, DocumentCaptureRule, Emission, ExtractionExpr, FieldType,
-    ForageFile, JSONValue, RecipeType, Statement,
-};
+use forage_core::ast::{FieldType, ForageFile, JSONValue, RecipeType};
 use forage_core::TypeCatalog;
 use rusqlite::{Connection, ToSql, params_from_iter};
 
@@ -88,23 +84,22 @@ impl ColumnStorage {
 /// the merged `catalog`.
 ///
 /// Composition recipes have no `emit` statements of their own — their
-/// records arrive via the chain's final stage. The declared `output`
-/// signature drives the schema in that case so the output store
-/// knows which tables to create up front, before the run produces
-/// records.
+/// records arrive via the chain's final stage. When a composition
+/// recipe declares `emits T | U | …`, those types pre-create the
+/// output-store tables so the chain's writes land somewhere. A
+/// composition without an `emits` clause has no schema until the
+/// runtime adds tables on first record; that's a future extension,
+/// and today the daemon expects the author to declare `emits` on a
+/// composition recipe to enable the chain.
 ///
 /// A reachable `emit Foo` whose `Foo` isn't in the catalog is a
 /// validation error that should be caught upstream; here we skip it
 /// to avoid panicking — the run already failed validation before
 /// reaching this point.
 pub fn derive_schema(recipe: &ForageFile, catalog: &TypeCatalog) -> Vec<TableDef> {
-    let mut emit_types: BTreeSet<String> = BTreeSet::new();
-    collect_emit_types(recipe.body.statements(), &mut emit_types);
-    if let Some(b) = &recipe.browser {
-        collect_browser_emit_types(b, &mut emit_types);
-    }
+    let mut emit_types = recipe.emit_types();
     if recipe.body.composition().is_some() {
-        if let Some(out) = &recipe.output {
+        if let Some(out) = &recipe.emits {
             for name in &out.types {
                 emit_types.insert(name.clone());
             }
@@ -152,91 +147,6 @@ fn storage_for(ty: &FieldType) -> ColumnStorage {
             ColumnStorage::Json
         }
     }
-}
-
-fn collect_emit_types(body: &[Statement], out: &mut BTreeSet<String>) {
-    for s in body {
-        match s {
-            Statement::Step(_) => {}
-            Statement::Emit(em) => {
-                out.insert(em.type_name.clone());
-                for binding in &em.bindings {
-                    collect_emit_types_in_expr(&binding.expr, out);
-                }
-            }
-            Statement::ForLoop { body, .. } => collect_emit_types(body, out),
-        }
-    }
-}
-
-/// `ExtractionExpr::MapTo` carries a nested `emit`. Walk into them so
-/// per-row mapping emits show up in the schema.
-fn collect_emit_types_in_expr(expr: &ExtractionExpr, out: &mut BTreeSet<String>) {
-    match expr {
-        ExtractionExpr::Pipe(inner, calls) => {
-            collect_emit_types_in_expr(inner, out);
-            for c in calls {
-                for a in &c.args {
-                    collect_emit_types_in_expr(a, out);
-                }
-            }
-        }
-        ExtractionExpr::CaseOf { branches, .. } => {
-            for (_, arm) in branches {
-                collect_emit_types_in_expr(arm, out);
-            }
-        }
-        ExtractionExpr::MapTo { emission, .. } => collect_emission(emission, out),
-        ExtractionExpr::Call { args, .. } => {
-            for a in args {
-                collect_emit_types_in_expr(a, out);
-            }
-        }
-        ExtractionExpr::BinaryOp { lhs, rhs, .. } => {
-            collect_emit_types_in_expr(lhs, out);
-            collect_emit_types_in_expr(rhs, out);
-        }
-        ExtractionExpr::Unary { operand, .. } => {
-            collect_emit_types_in_expr(operand, out);
-        }
-        ExtractionExpr::StructLiteral { fields } => {
-            for f in fields {
-                collect_emit_types_in_expr(&f.expr, out);
-            }
-        }
-        ExtractionExpr::Index { base, index } => {
-            collect_emit_types_in_expr(base, out);
-            collect_emit_types_in_expr(index, out);
-        }
-        ExtractionExpr::Path(_)
-        | ExtractionExpr::Template(_)
-        | ExtractionExpr::Literal(_)
-        | ExtractionExpr::RegexLiteral(_) => {}
-    }
-}
-
-fn collect_emission(em: &Emission, out: &mut BTreeSet<String>) {
-    out.insert(em.type_name.clone());
-    for binding in &em.bindings {
-        collect_emit_types_in_expr(&binding.expr, out);
-    }
-}
-
-fn collect_browser_emit_types(cfg: &BrowserConfig, out: &mut BTreeSet<String>) {
-    for cap in &cfg.captures {
-        collect_capture_emit_types(cap, out);
-    }
-    if let Some(d) = &cfg.document_capture {
-        collect_document_emit_types(d, out);
-    }
-}
-
-fn collect_capture_emit_types(cap: &CaptureRule, out: &mut BTreeSet<String>) {
-    collect_emit_types(&cap.body, out);
-}
-
-fn collect_document_emit_types(d: &DocumentCaptureRule, out: &mut BTreeSet<String>) {
-    collect_emit_types(&d.body, out);
 }
 
 /// Open (and ensure-schema) the output store at `path`. Idempotent:

@@ -17,7 +17,7 @@
 
 recipe "to-enhanced"
 engine http
-output EnhancedJobPosting
+emits EnhancedJobPosting
 
 share type JobPosting {
     id:    String

@@ -80,19 +80,19 @@ Going forward, every recipe declares its signature:
 ```forage
 recipe ScrapeOpenTable {
     input  ()
-    output Restaurant
+    emits  Restaurant
     // …
 }
 
 recipe EnrichWithWikidata {
     input  MusicGroup
-    output MusicGroup
+    emits  MusicGroup
     // …
 }
 
 recipe MergeBy<T, K> {
     input  [T]
-    output [T]
+    emits  [T]
     key    K
     // …
 }
@@ -104,8 +104,8 @@ recipe MergeBy<T, K> {
 - HTTP / browser side effects are reified in the body, not in the
   signature. The signature is the contract; the body is the
   implementation.
-- A recipe may emit multiple types; in that case `output` is a sum
-  (`output Product | Variant | PriceObservation`) and the hub indexes
+- A recipe may emit multiple types; in that case `emits` is a sum
+  (`emits Product | Variant | PriceObservation`) and the hub indexes
   it under each component.
 
 The recipe's signature is what the hub indexes. The body is what the
@@ -117,7 +117,7 @@ Discovery's primary verb is "find me a recipe that takes X and produces
 Y." Keyword search is a fallback for when type-shaped search returns
 too many or too few results.
 
-- `producers_of(T)` — every recipe whose `output` aligns with `T`.
+- `producers_of(T)` — every recipe whose emitted types align with `T`.
 - `consumers_of(T)` — every recipe whose `input` aligns with `T`.
 - `aligned_with(ontology_term)` — every hub type that declares an
   alignment to the given external term.

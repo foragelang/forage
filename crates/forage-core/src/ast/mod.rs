@@ -38,5 +38,5 @@ pub use recipe::{
 };
 pub use span::Span;
 pub use types::{
-    FieldType, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType, TypeExtension,
+    EmitsDecl, FieldType, InputDecl, RecipeEnum, RecipeField, RecipeType, TypeExtension,
 };

@@ -151,32 +151,34 @@ type Product { category: Category }   // OK even though Category is below
 type Category { name: String }
 ```
 
-## Recipe output signature
+## Recipe `emits` clause
 
-A recipe declares the set of types it emits with a top-level `output`
-clause. Single-type recipes use `output T`; recipes that emit several
-types declare a sum with `|`:
+A recipe may declare the set of types it emits with a top-level
+`emits` clause. Single-type recipes use `emits T`; recipes that emit
+several types declare a sum with `|`:
 
 ```forage
 recipe "products-and-prices"
 engine http
-output Product | Variant | PriceObservation
+emits Product | Variant | PriceObservation
 
 type Product { /* … */ }
 type Variant { /* … */ }
 type PriceObservation { /* … */ }
 ```
 
-Every `emit X { … }` in the recipe body must reference a type listed in
-the `output` clause; the validator rejects mismatches with
-`MissingFromOutput`. Types listed but never emitted surface as
-`UnusedInOutput` warnings. The output declaration is what the hub
-indexes — `producers_of(Product)` resolves against the declared
-signature, not the runtime emit set.
+The clause is **optional**. When present, the validator enforces it:
+every `emit X { … }` in the body must reference a type listed in
+`emits` (`EmitNotInEmits` on mismatches), and types listed but never
+emitted surface as `UnusedInEmits` warnings. When the clause is
+omitted, the recipe's shape is inferred from whatever its body
+emits; the emit-vs-`emits` cross-check is skipped. Composition's
+stage resolution uses the same resolved set — declared `emits` when
+present, inferred from the body otherwise.
 
-The clause is optional in the AST; a recipe without an `output`
-declaration parses and validates, and the validator skips the
-emit-vs-output check entirely.
+The clause is also what the hub indexes when present —
+`producers_of(Product)` resolves against the declared signature
+first; recipes without `emits` contribute their inferred set.
 
 ## Alignments
 

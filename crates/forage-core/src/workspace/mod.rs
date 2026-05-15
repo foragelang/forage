@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ast::{AlignmentUri, ForageFile, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType};
+use crate::ast::{AlignmentUri, EmitsDecl, ForageFile, InputDecl, RecipeEnum, RecipeField, RecipeType};
 use crate::parse::{ParseError, parse};
 
 pub use fixtures::{FIXTURES_DIR, SNAPSHOTS_DIR, fixtures_path, snapshot_path};
@@ -175,12 +175,20 @@ impl From<SerializableCatalog> for TypeCatalog {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecipeSignature {
     pub inputs: Vec<InputDecl>,
-    /// `None` when the recipe hasn't declared a typed output yet
-    /// (legacy un-migrated recipes). Composition rejects unsigned
-    /// stages — every link in the chain needs a typed output to
-    /// check the next stage's input against.
-    pub output: Option<OutputDecl>,
+    /// The declared `emits T | U | …` clause, when the source provides
+    /// one. Optional: a recipe without `emits` has an inferred output
+    /// set (see `output_types`) but no declared contract for the
+    /// validator to check body emissions against.
+    pub emits: Option<EmitsDecl>,
     pub body: crate::ast::RecipeBody,
+    /// Resolved set of types this recipe emits. When `emits` is
+    /// declared, that's the canonical set; otherwise it's the set
+    /// inferred from the body's `emit X { … }` statements and the
+    /// browser config's captures. Empty for composition bodies and
+    /// header-less files. Pre-computed at signature construction so
+    /// composition's stage-resolution doesn't have to re-walk the
+    /// body on every check.
+    pub output_types: std::collections::BTreeSet<String>,
 }
 
 /// Recipe-name → signature lookup. The validator's pipe-stage check
@@ -221,10 +229,15 @@ impl RecipeSignatures {
 impl RecipeSignature {
     /// Project one `ForageFile` into a signature record.
     pub fn from_file(file: &ForageFile) -> Self {
+        let output_types = match &file.emits {
+            Some(decl) => decl.types.iter().cloned().collect(),
+            None => file.emit_types(),
+        };
         Self {
             inputs: file.inputs.clone(),
-            output: file.output.clone(),
+            emits: file.emits.clone(),
             body: file.body.clone(),
+            output_types,
         }
     }
 }

@@ -263,24 +263,24 @@ pub enum ValidationCode {
     /// `Workspace::recipe_by_name` resolves to the first match in path
     /// order, but each colliding file gets its own diagnostic.
     DuplicateRecipeName,
-    /// `emit X { … }` whose `X` is not listed in the recipe's `output`
-    /// declaration. Fires only when an `output` clause is present —
-    /// recipes that haven't been migrated to a typed output yet skip
-    /// the check entirely.
-    MissingFromOutput,
-    /// `output` clause was declared with no types listed. Almost
-    /// always a typo (`output` followed by a non-TypeName like the
-    /// next top-level keyword); the parser keeps the empty clause and
-    /// the validator surfaces it here.
-    EmptyOutput,
-    /// `output` declared in a header-less file. The output signature
-    /// is recipe-local; a declarations-only file has nothing to sign.
-    OutputWithoutHeader,
-    /// `output T` is declared but no `emit T` exists anywhere in the
+    /// `emit X { … }` whose `X` is not listed in the recipe's `emits`
+    /// clause. Fires only when an `emits` clause is present — recipes
+    /// that omit the clause run in inferred-shape mode and skip this
+    /// check entirely.
+    EmitNotInEmits,
+    /// `emits` clause was declared with no types listed. Almost always
+    /// a typo (`emits` followed by a non-TypeName like the next
+    /// top-level keyword); the parser keeps the empty clause and the
+    /// validator surfaces it here.
+    EmptyEmits,
+    /// `emits` declared in a header-less file. The clause is
+    /// recipe-local; a declarations-only file has nothing to contract.
+    EmitsWithoutHeader,
+    /// `emits T` is declared but no `emit T` exists anywhere in the
     /// recipe body. Warning, not error — a recipe that *could* emit
-    /// `T` (conditionally, based on inputs) is legitimate, but
-    /// most of the time this is a stale signature.
-    UnusedInOutput,
+    /// `T` (conditionally, based on inputs) is legitimate, but most of
+    /// the time this is a stale clause.
+    UnusedInEmits,
     /// An `aligns <uri>` clause is structurally malformed — empty
     /// ontology, empty term, or missing the `/` separator. The validator
     /// does not check that the ontology / term actually exist in some
@@ -310,15 +310,17 @@ pub enum ValidationCode {
     /// substitution but the relation must be acyclic — a cycle would
     /// never terminate.
     ComposeCycle,
-    /// A `compose` chain stage has no declared `output` clause, so the
-    /// validator can't check the type at the boundary. Every stage in
-    /// a composition needs a typed output.
-    UnsignedComposeStage,
-    /// A `compose` chain has more than one stage that declares
-    /// multi-type sum output (`output T | U | …`). The validator pins
-    /// each link to a single concrete type so the input lookup is
-    /// well-defined; multi-output composition is a future extension.
-    MultiOutputComposeStage,
+    /// A `compose` chain stage emits no types — neither a declared
+    /// `emits` clause nor any `emit X { … }` statements in the body —
+    /// so there's nothing for the downstream input to bind to. Every
+    /// stage in a composition must emit at least one type.
+    EmptyComposeStage,
+    /// A `compose` chain stage emits more than one type (declared
+    /// `emits T | U | …` or multiple distinct body emits). The
+    /// validator pins each link to a single concrete type so the input
+    /// lookup is well-defined; multi-type composition is a future
+    /// extension.
+    MultiTypeComposeStage,
     /// `type Child extends Parent@vN` whose parent name is not in the
     /// type catalog. For workspace-local references this means the
     /// parent isn't declared in this file or in any sibling's
@@ -517,7 +519,7 @@ impl<'a> Validator<'a> {
         self.check_user_fns();
         self.check_references();
         self.check_emit_records();
-        self.check_output_decl();
+        self.check_emits_decl();
         self.check_composition();
     }
 
@@ -969,11 +971,11 @@ impl<'a> Validator<'a> {
                 "`input` declarations require a `recipe \"<name>\" engine <kind>` header",
             );
         }
-        if let Some(out) = &self.file.output {
+        if let Some(out) = &self.file.emits {
             self.err(
                 out.span.clone(),
-                ValidationCode::OutputWithoutHeader,
-                "`output` declarations require a `recipe \"<name>\" engine <kind>` header",
+                ValidationCode::EmitsWithoutHeader,
+                "`emits` declarations require a `recipe \"<name>\" engine <kind>` header",
             );
         }
     }
@@ -1109,17 +1111,17 @@ impl<'a> Validator<'a> {
                 );
                 return;
             };
-            // `output` cross-check. Skip when the recipe has no
-            // declared output (legacy un-migrated recipes) or when the
-            // declared output is empty — `EmptyOutput` already covers
-            // that case and adding `MissingFromOutput` per emit would
-            // bury the real diagnostic.
-            if let Some(out) = &v.file.output {
+            // `emits` cross-check. Skip when the recipe has no
+            // declared `emits` clause (the inferred-shape mode) or when
+            // the declared clause is empty — `EmptyEmits` already
+            // covers that case and adding `EmitNotInEmits` per emit
+            // would bury the real diagnostic.
+            if let Some(out) = &v.file.emits {
                 if !out.types.is_empty() && !out.types.iter().any(|t| t == &em.type_name) {
                     v.err_here(
-                        ValidationCode::MissingFromOutput,
+                        ValidationCode::EmitNotInEmits,
                         format!(
-                            "emit {} is not listed in the recipe's `output` declaration",
+                            "emit {} is not listed in the recipe's `emits` clause",
                             em.type_name,
                         ),
                     );
@@ -1476,16 +1478,16 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// Validates the `output` clause itself: empty list, unknown type
+    /// Validates the `emits` clause itself: empty list, unknown type
     /// names, and declared-but-unemitted types. Skipped entirely on
-    /// header-less files (`OutputWithoutHeader` already fired) and on
-    /// recipes that haven't declared an output yet.
-    fn check_output_decl(&mut self) {
-        let Some(out) = self.file.output.clone() else {
+    /// header-less files (`EmitsWithoutHeader` already fired) and on
+    /// recipes that don't declare `emits` at all (inferred-shape mode).
+    fn check_emits_decl(&mut self) {
+        let Some(out) = self.file.emits.clone() else {
             return;
         };
         if self.file.recipe_header().is_none() {
-            // Header-less files already got `OutputWithoutHeader`; no
+            // Header-less files already got `EmitsWithoutHeader`; no
             // point also surfacing unknown-type / empty errors that
             // duplicate the diagnostic.
             return;
@@ -1493,8 +1495,8 @@ impl<'a> Validator<'a> {
         if out.types.is_empty() {
             self.err(
                 out.span.clone(),
-                ValidationCode::EmptyOutput,
-                "`output` declared with no types — list at least one (`output T` or `output T1 | T2`)",
+                ValidationCode::EmptyEmits,
+                "`emits` declared with no types — list at least one (`emits T` or `emits T1 | T2`)",
             );
             return;
         }
@@ -1503,27 +1505,18 @@ impl<'a> Validator<'a> {
                 self.err(
                     out.span.clone(),
                     ValidationCode::UnknownType,
-                    format!("`output {name}` references an unknown type"),
+                    format!("`emits {name}` references an unknown type"),
                 );
             }
         }
-        let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        collect_emitted_types(self.file.body.statements(), &mut emitted);
-        if let Some(b) = &self.file.browser {
-            for cap in &b.captures {
-                collect_emitted_types(&cap.body, &mut emitted);
-            }
-            if let Some(doc) = &b.document_capture {
-                collect_emitted_types(&doc.body, &mut emitted);
-            }
-        }
+        let emitted = self.file.emit_types();
         for name in &out.types {
             if !emitted.contains(name) {
                 self.warn(
                     out.span.clone(),
-                    ValidationCode::UnusedInOutput,
+                    ValidationCode::UnusedInEmits,
                     format!(
-                        "`output {name}` is declared but no `emit {name}` exists in the recipe body",
+                        "`emits {name}` is declared but no `emit {name}` exists in the recipe body",
                     ),
                 );
             }
@@ -1531,10 +1524,12 @@ impl<'a> Validator<'a> {
     }
 
     /// Walk a `compose` body and check each pipe boundary. The
-    /// invariant: stage N's declared `output T` must match an input
+    /// invariant: stage N's resolved emit type (declared `emits T` if
+    /// present, else inferred from body emits) must match an input
     /// slot on stage N+1 with type `[T]` (or `T`). Each stage must
-    /// have a typed output (we can't check the next boundary
-    /// otherwise), and the chain must be acyclic — a recipe whose
+    /// emit at least one (and exactly one) type — we can't check the
+    /// next boundary otherwise — and the chain must be acyclic: a
+    /// recipe whose
     /// composition transitively references itself would never
     /// terminate.
     fn check_composition(&mut self) {
@@ -1585,31 +1580,37 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        let Some(output) = &sig.output else {
+        // The resolved output set: declared `emits` if present, else
+        // inferred from the body's emit statements. Compose chains
+        // need exactly one type per upstream so the downstream's input
+        // is unambiguous.
+        let output_types = &sig.output_types;
+        if output_types.is_empty() {
             self.err(
                 stage.span.clone(),
-                ValidationCode::UnsignedComposeStage,
+                ValidationCode::EmptyComposeStage,
                 format!(
-                    "compose stage '{}' has no `output` declaration; every stage in a composition needs a typed output",
+                    "compose stage '{}' emits no types; every stage in a composition must emit at least one type",
                     stage.name,
-                ),
-            );
-            return None;
-        };
-        if output.types.len() != 1 {
-            self.err(
-                stage.span.clone(),
-                ValidationCode::MultiOutputComposeStage,
-                format!(
-                    "compose stage '{}' declares {} output types ({}); composition requires exactly one",
-                    stage.name,
-                    output.types.len(),
-                    output.types.join(" | "),
                 ),
             );
             return None;
         }
-        Some(output.types[0].clone())
+        if output_types.len() != 1 {
+            let joined: Vec<&str> = output_types.iter().map(String::as_str).collect();
+            self.err(
+                stage.span.clone(),
+                ValidationCode::MultiTypeComposeStage,
+                format!(
+                    "compose stage '{}' emits {} types ({}); composition requires exactly one",
+                    stage.name,
+                    output_types.len(),
+                    joined.join(" | "),
+                ),
+            );
+            return None;
+        }
+        output_types.iter().next().cloned()
     }
 
     /// At each boundary (N → N+1) check that stage N+1 has an `input
@@ -1810,23 +1811,6 @@ fn find_cycle(
 /// entry, restored on exit), so the Emit branch in `check_statement`
 /// catches out-of-scope `$v` references symmetrically with the in-scope
 /// shadow check.
-/// Walk a body recursively (steps, for-loops, captures) and collect
-/// every type name reached by an `emit T { … }`. Used by
-/// `check_output_decl` to compute the `output` set's coverage.
-fn collect_emitted_types(body: &[Statement], out: &mut std::collections::HashSet<String>) {
-    for s in body {
-        match s {
-            Statement::Emit(em) => {
-                out.insert(em.type_name.clone());
-            }
-            Statement::ForLoop { body, .. } => {
-                collect_emitted_types(body, out);
-            }
-            Statement::Step(_) => {}
-        }
-    }
-}
-
 fn collect_bindings(body: &[Statement], out: &mut std::collections::HashSet<String>) {
     for s in body {
         match s {
@@ -3185,14 +3169,14 @@ emit Item { }
         );
     }
 
-    // ---- output declarations -----------------------------------------
+    // ---- `emits` clause ---------------------------------------------
 
     #[test]
-    fn emit_listed_in_output_validates_clean() {
+    fn emit_listed_in_emits_validates_clean() {
         let src = r#"
             recipe "ok"
             engine http
-            output Item
+            emits Item
             type Item { id: String }
             step list { method "GET" url "https://x.test" }
             for $i in $list[*] {
@@ -3206,11 +3190,11 @@ emit Item { }
     }
 
     #[test]
-    fn emit_not_listed_in_output_flagged_as_missing_from_output() {
+    fn emit_not_listed_in_emits_flagged() {
         let src = r#"
             recipe "bad"
             engine http
-            output Product
+            emits Product
             type Product { id: String }
             type Variant { id: String }
             step list { method "GET" url "https://x.test" }
@@ -3224,8 +3208,8 @@ emit Item { }
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         let issue = rep
             .errors()
-            .find(|i| i.code == ValidationCode::MissingFromOutput)
-            .expect("MissingFromOutput");
+            .find(|i| i.code == ValidationCode::EmitNotInEmits)
+            .expect("EmitNotInEmits");
         assert!(
             issue.message.contains("Variant"),
             "expected message to name Variant; got {:?}",
@@ -3234,11 +3218,11 @@ emit Item { }
     }
 
     #[test]
-    fn multi_type_output_covers_each_listed_emit() {
+    fn multi_type_emits_covers_each_listed_emit() {
         let src = r#"
             recipe "multi"
             engine http
-            output Product | Variant | PriceObservation
+            emits Product | Variant | PriceObservation
             type Product { id: String }
             type Variant {
                 product: Ref<Product>
@@ -3263,14 +3247,14 @@ emit Item { }
     }
 
     #[test]
-    fn empty_output_clause_flagged() {
-        // `output` followed by no TypeName parses with an empty list;
+    fn empty_emits_clause_flagged() {
+        // `emits` followed by no TypeName parses with an empty list;
         // validator flags it so the author doesn't end up with a silent
-        // no-op output signature.
+        // no-op clause.
         let src = r#"
             recipe "empty"
             engine http
-            output
+            emits
             type Item { id: String }
             step list { method "GET" url "https://x.test" }
             for $i in $list[*] {
@@ -3281,39 +3265,39 @@ emit Item { }
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
-            rep.errors().any(|i| i.code == ValidationCode::EmptyOutput),
-            "expected EmptyOutput; got {:?}",
+            rep.errors().any(|i| i.code == ValidationCode::EmptyEmits),
+            "expected EmptyEmits; got {:?}",
             rep.issues,
         );
     }
 
     #[test]
-    fn output_in_header_less_file_flagged() {
-        // `output` belongs to a recipe — a declarations-only file has
-        // nothing to sign.
+    fn emits_in_header_less_file_flagged() {
+        // `emits` belongs to a recipe — a declarations-only file has
+        // nothing to contract.
         let src = r#"
             share type Item { id: String }
-            output Item
+            emits Item
         "#;
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             rep.errors()
-                .any(|i| i.code == ValidationCode::OutputWithoutHeader),
-            "expected OutputWithoutHeader; got {:?}",
+                .any(|i| i.code == ValidationCode::EmitsWithoutHeader),
+            "expected EmitsWithoutHeader; got {:?}",
             rep.issues,
         );
     }
 
     #[test]
-    fn output_with_unknown_type_flagged() {
-        // An `output T` for a `T` the catalog can't resolve is almost
+    fn emits_with_unknown_type_flagged() {
+        // An `emits T` for a `T` the catalog can't resolve is almost
         // always a typo. Re-uses the existing `UnknownType` code.
         let src = r#"
             recipe "typo"
             engine http
-            output Itme
+            emits Itme
             type Item { id: String }
             step list { method "GET" url "https://x.test" }
             for $i in $list[*] {
@@ -3332,13 +3316,13 @@ emit Item { }
     }
 
     #[test]
-    fn unused_output_type_emits_warning() {
-        // `output T` is declared but no `emit T` exists — warn so the
-        // author notices a stale signature without blocking the build.
+    fn unused_emits_type_emits_warning() {
+        // `emits T` is declared but no `emit T` exists — warn so the
+        // author notices a stale clause without blocking the build.
         let src = r#"
             recipe "stale"
             engine http
-            output Item | Stale
+            emits Item | Stale
             type Item { id: String }
             type Stale { id: String }
             step list { method "GET" url "https://x.test" }
@@ -3351,25 +3335,26 @@ emit Item { }
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
             !rep.has_errors(),
-            "UnusedInOutput must not error; got: {:?}",
+            "UnusedInEmits must not error; got: {:?}",
             rep.issues,
         );
         assert!(
             rep.issues.iter().any(|i| i.code
-                == ValidationCode::UnusedInOutput
+                == ValidationCode::UnusedInEmits
                 && i.severity == Severity::Warning
                 && i.message.contains("Stale")),
-            "expected UnusedInOutput warning naming 'Stale'; got {:?}",
+            "expected UnusedInEmits warning naming 'Stale'; got {:?}",
             rep.issues,
         );
     }
 
     #[test]
-    fn recipe_without_output_decl_skips_missing_from_output_check() {
-        // The `output` clause is optional in the AST; when it is absent
-        // the validator skips the emit-vs-output check entirely.
+    fn recipe_without_emits_skips_emit_vs_emits_check() {
+        // The `emits` clause is optional; when absent, the validator
+        // skips the emit-vs-emits cross-check entirely — the recipe's
+        // shape is inferred from whatever the body emits.
         let src = r#"
-            recipe "legacy"
+            recipe "inferred"
             engine http
             type Item { id: String }
             step list { method "GET" url "https://x.test" }
@@ -3384,16 +3369,16 @@ emit Item { }
     }
 
     #[test]
-    fn missing_from_output_diagnostic_anchors_at_emit_site() {
-        let src = "recipe \"anchor\"\nengine http\noutput Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
+    fn emit_not_in_emits_diagnostic_anchors_at_emit_site() {
+        let src = "recipe \"anchor\"\nengine http\nemits Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         let missing = rep
             .issues
             .iter()
-            .find(|i| i.code == ValidationCode::MissingFromOutput)
-            .expect("MissingFromOutput");
+            .find(|i| i.code == ValidationCode::EmitNotInEmits)
+            .expect("EmitNotInEmits");
         assert!(
             src[missing.span.clone()].starts_with("emit Variant"),
             "diagnostic must anchor at the emit; got {:?}",
@@ -3420,7 +3405,7 @@ emit Item { }
             recipe "downstream"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "missing" | "also-missing"
         "#;
         let r = parse(src).unwrap();
@@ -3440,7 +3425,7 @@ emit Item { }
             recipe "scrape"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "x" }
         "#;
@@ -3449,7 +3434,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "y" }
         "#;
@@ -3457,7 +3442,7 @@ emit Item { }
             recipe "composed"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "scrape" | "enrich"
         "#;
         let r = parse(src).unwrap();
@@ -3480,7 +3465,7 @@ emit Item { }
             recipe "scrape"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "x" }
         "#;
@@ -3490,7 +3475,7 @@ emit Item { }
             engine http
             type Variant { id: String }
             input prior: [Variant]
-            output Variant
+            emits Variant
             step list { method "GET" url "https://x.test" }
             emit Variant { id ← "y" }
         "#;
@@ -3498,7 +3483,7 @@ emit Item { }
             recipe "composed"
             engine http
             type Variant { id: String }
-            output Variant
+            emits Variant
             compose "scrape" | "enrich"
         "#;
         let r = parse(src).unwrap();
@@ -3518,7 +3503,51 @@ emit Item { }
     }
 
     #[test]
-    fn unsigned_upstream_stage_rejected() {
+    fn empty_upstream_stage_rejected() {
+        // A compose upstream that emits nothing — no `emits` clause
+        // and no `emit X { … }` in its body — has no inferable output,
+        // so the downstream input has nothing to bind to.
+        let upstream_src = r#"
+            recipe "scrape"
+            engine http
+            step list { method "GET" url "https://x.test" }
+        "#;
+        let downstream_src = r#"
+            recipe "enrich"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            emits Product
+            step list { method "GET" url "https://x.test" }
+            emit Product { id ← "y" }
+        "#;
+        let src = r#"
+            recipe "composed"
+            engine http
+            type Product { id: String }
+            emits Product
+            compose "scrape" | "enrich"
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
+        let rep = validate(&r, &cat, &signatures);
+        assert!(
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::EmptyComposeStage),
+            "stage with no emits + no emit statements must be flagged: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn inferred_output_drives_compose_boundary() {
+        // The upstream `scrape` does not declare `emits` but emits
+        // exactly one Product in its body. Composition resolves the
+        // stage's output to {Product} via inference, the downstream's
+        // `input prior: [Product]` matches, and the chain validates
+        // clean.
         let upstream_src = r#"
             recipe "scrape"
             engine http
@@ -3531,7 +3560,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "y" }
         "#;
@@ -3539,7 +3568,7 @@ emit Item { }
             recipe "composed"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "scrape" | "enrich"
         "#;
         let r = parse(src).unwrap();
@@ -3547,10 +3576,8 @@ emit Item { }
         let signatures = sigs(&[("scrape", upstream_src), ("enrich", downstream_src)]);
         let rep = validate(&r, &cat, &signatures);
         assert!(
-            rep.issues
-                .iter()
-                .any(|i| i.code == ValidationCode::UnsignedComposeStage),
-            "missing output on stage 1 must be flagged: {:?}",
+            !rep.has_errors(),
+            "inferred-output upstream should compose clean: {:?}",
             rep.issues,
         );
     }
@@ -3562,7 +3589,7 @@ emit Item { }
             recipe "a"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "x" }
         "#;
@@ -3571,7 +3598,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "y" }
         "#;
@@ -3579,7 +3606,7 @@ emit Item { }
             recipe "ab"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "a" | "b"
         "#;
         let c_src = r#"
@@ -3587,7 +3614,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             step list { method "GET" url "https://x.test" }
             emit Product { id ← "z" }
         "#;
@@ -3595,7 +3622,7 @@ emit Item { }
             recipe "abc"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "ab" | "c"
         "#;
         let r = parse(src).unwrap();
@@ -3616,7 +3643,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             compose "self" | "self"
         "#;
         let r = parse(src).unwrap();
@@ -3645,7 +3672,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             compose "b" | "b"
         "#;
         let src = r#"
@@ -3653,7 +3680,7 @@ emit Item { }
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             compose "a" | "a"
         "#;
         let r = parse(src).unwrap();
@@ -3675,7 +3702,7 @@ emit Item { }
             recipe "lifted"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             compose "@upstream/scrape" | "downstream"
         "#;
         let r = parse(src).unwrap();

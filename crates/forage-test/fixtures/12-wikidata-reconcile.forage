@@ -15,7 +15,7 @@
 
 recipe "wikidata-reconcile"
 engine http
-output EnrichedCompany
+emits EnrichedCompany
 
 share type Company
     aligns wikidata/Q4830453

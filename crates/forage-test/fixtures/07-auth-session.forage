@@ -5,7 +5,7 @@
 
 recipe "auth-session-demo"
 engine http
-output Item
+emits Item
 secret username
 secret password
 secret apiToken

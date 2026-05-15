@@ -426,21 +426,20 @@ pub fn assemble_publish_plan(
 
     // Partition the recipe's type pins by the role the recipe gives
     // each one: input (declared via `input <name>: T?`) or output
-    // (declared in `output T1 | T2 | …`). A single type can be in
-    // both (enrichment recipes like `input T → output T`). Types the
-    // recipe pins but doesn't directly read or emit — `share` types
-    // shipped alongside without participating in the recipe's
-    // signature — appear in `type_refs` only.
+    // (declared `emits T | U | …` when present, else inferred from the
+    // body's `emit X { … }` statements). A single type can be in both
+    // (enrichment recipes like `input T → emits T`). Types the recipe
+    // pins but doesn't directly read or emit — `share` types shipped
+    // alongside without participating in the recipe's signature —
+    // appear in `type_refs` only.
     let mut input_names = std::collections::BTreeSet::new();
     for inp in &parsed_recipe.inputs {
         collect_referenced_type_names(&inp.ty, &mut input_names);
     }
-    let mut output_names = std::collections::BTreeSet::new();
-    if let Some(out) = &parsed_recipe.output {
-        for name in &out.types {
-            output_names.insert(name.clone());
-        }
-    }
+    let output_names: std::collections::BTreeSet<String> = match &parsed_recipe.emits {
+        Some(decl) => decl.types.iter().cloned().collect(),
+        None => parsed_recipe.emit_types(),
+    };
     let input_type_refs: Vec<TypeRef> = type_refs
         .iter()
         .filter(|r| input_names.contains(&r.name))
@@ -1093,7 +1092,7 @@ mod tests {
         .unwrap();
         fs::write(
             ws_root.join("bar.forage"),
-            "recipe \"bar\"\nengine http\noutput Product\n\
+            "recipe \"bar\"\nengine http\nemits Product\n\
              step s { method \"GET\" url \"https://example.test\" }\n",
         )
         .unwrap();

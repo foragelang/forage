@@ -6,14 +6,15 @@ recipe references joined by `|`. The runtime walks the chain, feeding
 each stage's emitted records to the next.
 
 A composed recipe **is itself a recipe**. It declares the same
-`recipe "<name>"` header, the same `output` signature, and publishes
-under `/v1/recipes/` like any scraping recipe. There is no separate
-"pipeline" citizen: one citizen (Recipe), two body kinds.
+`recipe "<name>"` header, can carry the same optional `emits`
+clause, and publishes under `/v1/recipes/` like any scraping recipe.
+There is no separate "pipeline" citizen: one citizen (Recipe), two
+body kinds.
 
 ```forage
 recipe "enriched-products"
 engine http
-output Product
+emits Product
 
 compose "scrape-amazon" | "enrich-wikidata"
 ```
@@ -30,11 +31,13 @@ name.
 
 For `compose A | B`:
 
-- A must declare `output T` — exactly one type. Multi-type sum
-  outputs in a composition chain are reserved for a future
-  extension.
-- B must declare exactly one input slot whose type matches the
-  upstream:
+- A must emit exactly one type. The validator resolves the type from
+  A's declared `emits T` when the source supplies one, otherwise from
+  the body's `emit X { … }` statements. Either way, A's resolved
+  output set must have exactly one element — multi-type composition
+  is a future extension.
+- B must declare exactly one input slot whose type matches A's
+  resolved output:
   - `input <name>: [T]` — batched: B sees the entire stream at once.
     Typical for transformers and enrichers.
   - `input <name>: T` — single-record: B sees one record per
@@ -52,7 +55,7 @@ share type Product { id: String }
 
 input prior: [Product]
 
-output Product
+emits Product
 
 for $p in $input.prior {
     emit Product { id ← $p.id }
@@ -61,14 +64,14 @@ for $p in $input.prior {
 
 ## Composition is closed under composition
 
-A composition is itself a recipe with a typed signature, so it can
-appear as a stage in another composition. Nested composition is the
-common case once recipe authors start sharing pipelines:
+A composition is itself a recipe with a resolvable output type, so it
+can appear as a stage in another composition. Nested composition is
+the common case once recipe authors start sharing pipelines:
 
 ```forage
 recipe "ab-c"
 engine http
-output Product
+emits Product
 
 compose "ab" | "c"
 ```
@@ -87,11 +90,12 @@ The validator's composition rules:
   `@author/name` hub-dep form; the runtime can't resolve those today,
   so the validator rejects them. Sync the upstream into your workspace
   and reference it by bare name.
-- **`UnsignedComposeStage`** — a stage has no `output` declaration;
-  the validator can't check the next boundary.
-- **`MultiOutputComposeStage`** — a stage declares `output T | U`
-  (a multi-type sum); composition requires exactly one concrete
-  output per stage.
+- **`EmptyComposeStage`** — a stage emits no types: it neither
+  declares `emits` nor carries any `emit X { … }` statements in its
+  body, so there's nothing for the downstream input to bind to.
+- **`MultiTypeComposeStage`** — a stage emits more than one type
+  (declared `emits T | U | …` or multiple distinct body emits);
+  composition requires exactly one concrete output per stage.
 - **`IncompatiblePipeStage`** — stage N+1 has no input slot whose
   type matches stage N's output.
 - **`ComposeCycle`** — the chain transitively references the recipe

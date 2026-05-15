@@ -2208,11 +2208,7 @@ pub fn list_workspace_recipe_signatures(
                     optional: i.optional,
                 })
                 .collect(),
-            outputs: sig
-                .output
-                .as_ref()
-                .map(|o| o.types.clone())
-                .unwrap_or_default(),
+            outputs: sig.output_types.iter().cloned().collect(),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2240,11 +2236,7 @@ pub fn parse_recipe_signature(source: String) -> Option<RecipeSignatureWire> {
                 optional: i.optional,
             })
             .collect(),
-        outputs: parsed
-            .output
-            .as_ref()
-            .map(|o| o.types.clone())
-            .unwrap_or_default(),
+        outputs: parsed.emit_types().into_iter().collect(),
     })
 }
 
@@ -2253,9 +2245,11 @@ pub fn parse_recipe_signature(source: String) -> Option<RecipeSignatureWire> {
 pub struct RecipeSignatureWire {
     pub name: String,
     pub inputs: Vec<InputSlotWire>,
-    /// Declared output types (`output T` → `["T"]`, `output T1 | T2`
-    /// → `["T1", "T2"]`). Empty for recipes that haven't migrated
-    /// to a typed output yet.
+    /// Types this recipe emits, in alphabetical order. Resolved from
+    /// `emits T | U | …` when the source declares one, otherwise
+    /// inferred from the body's `emit X { … }` statements. Empty for
+    /// composition recipes that don't declare `emits` (the chain's
+    /// final stage carries the actual types).
     pub outputs: Vec<String>,
 }
 
@@ -2311,7 +2305,7 @@ fn render_composition_source(
     body.push_str("\"\n");
     body.push_str("engine http\n");
     if let Some(t) = output_type {
-        body.push_str("output ");
+        body.push_str("emits ");
         body.push_str(t);
         body.push('\n');
     }
@@ -2934,7 +2928,7 @@ engine http
 
 share type Item { id: String }
 
-output Item
+emits Item
 
 step list {
     method "GET"
@@ -2953,7 +2947,7 @@ share type Item { id: String }
 
 input prior: [Item]
 
-output Item
+emits Item
 
 for $p in $input.prior {
     emit Item { id ← $p.id }
@@ -2969,7 +2963,7 @@ for $p in $input.prior {
         );
         assert!(src.contains("recipe \"notebook\""));
         assert!(src.contains("engine http"));
-        assert!(src.contains("output Item"));
+        assert!(src.contains("emits Item"));
         assert!(src.contains("compose \"scrape\" | \"enrich\""));
 
         // The synthesized source must parse cleanly — that's the
@@ -2983,8 +2977,8 @@ for $p in $input.prior {
         assert_eq!(comp.stages[0].name, "scrape");
         assert!(comp.stages[0].author.is_none());
         assert_eq!(comp.stages[1].name, "enrich");
-        let output = parsed.output.as_ref().expect("output decl");
-        assert_eq!(output.types, vec!["Item".to_string()]);
+        let emits = parsed.emits.as_ref().expect("emits decl");
+        assert_eq!(emits.types, vec!["Item".to_string()]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

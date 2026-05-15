@@ -1,6 +1,6 @@
 recipe "pagination-modes"
 engine http
-output Hit
+emits Hit
 
 type Hit { id: String }
 

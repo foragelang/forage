@@ -14,7 +14,7 @@ const MANIFEST: &str = "description = \"\"\ncategory = \"\"\ntags = []\n";
 /// ride-through arms of the writer in one run.
 const RECIPE: &str = r#"recipe "items"
 engine http
-output Product | Note
+emits Product | Note
 
 type Product
     aligns schema.org/Product

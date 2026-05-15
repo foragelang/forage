@@ -124,17 +124,20 @@ pub struct InputDecl {
     pub span: Span,
 }
 
-/// Recipe output signature — the union of types this recipe may `emit`.
-/// `output T` is a single-type recipe; `output T1 | T2 | …` declares a
-/// multi-type sum. The validator checks every `emit X { … }` against the
-/// declared set and rejects emissions of types not listed here.
+/// Recipe `emits` clause — the declared union of types the recipe may
+/// emit. `emits T` is a single-type recipe; `emits T1 | T2 | …` declares
+/// a multi-type sum. Optional: when present, the validator checks every
+/// `emit X { … }` against this set and rejects emissions of types not
+/// listed here; when absent, the recipe's output shape is whatever its
+/// body's `emit` statements produce, with no declared contract to check
+/// against.
 ///
 /// `types` is the unresolved list as written by the author. The validator
 /// resolves each name against the recipe's `TypeCatalog` before checking
-/// emissions — unknown names surface as `UnknownType` on the output decl,
-/// not as silent passes through.
+/// emissions — unknown names surface as `UnknownType` on the clause, not
+/// as silent passes through.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OutputDecl {
+pub struct EmitsDecl {
     pub types: Vec<String>,
     #[serde(default)]
     pub span: Span,

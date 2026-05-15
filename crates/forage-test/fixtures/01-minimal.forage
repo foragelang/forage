@@ -1,6 +1,6 @@
 recipe "minimal"
 engine http
-output Item
+emits Item
 
 type Item {
     id: String

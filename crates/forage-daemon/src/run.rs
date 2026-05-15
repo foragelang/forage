@@ -224,7 +224,7 @@ fn synthesize_composition_file(name: &str, stages: &[String]) -> ForageFile {
         types: Vec::new(),
         enums: Vec::new(),
         inputs: Vec::new(),
-        output: None,
+        emits: None,
         secrets: Vec::new(),
         functions: Vec::new(),
         auth: None,

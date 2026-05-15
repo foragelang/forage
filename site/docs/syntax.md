@@ -84,16 +84,16 @@ input categoryIds: [Int]
 
 Reference an input anywhere a value is expected as `$input.fieldName`. `input` declarations are recipe-local — they don't take `share`.
 
-## Outputs
+## Emits
 
-A recipe declares the set of types it emits with a top-level `output` clause. Single-type recipes use `output T`; multi-type recipes declare a sum with `|`:
+A recipe may declare the set of types it emits with a top-level `emits` clause. Single-type recipes use `emits T`; multi-type recipes declare a sum with `|`:
 
 ```forage
-output Product                                   // single-type
-output Product | Variant | PriceObservation      // multi-type sum
+emits Product                                   // single-type
+emits Product | Variant | PriceObservation      // multi-type sum
 ```
 
-Every `emit X { … }` must reference a type listed in the `output` clause; the validator rejects mismatches. The clause sits alongside the header and other top-level forms.
+The clause is optional. When present, every `emit X { … }` in the body must reference a type listed in `emits` — the validator flags mismatches. When omitted, the recipe's output shape is inferred from whatever its body emits, and no per-emit cross-check fires. The clause sits alongside the header and other top-level forms.
 
 ## Auth
 

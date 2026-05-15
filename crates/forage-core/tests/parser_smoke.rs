@@ -638,27 +638,27 @@ fn fn_with_pipe_body_round_trips_through_ast() {
 }
 
 #[test]
-fn parses_single_type_output_decl() {
+fn parses_single_type_emits_decl() {
     let src = r#"
         recipe "single"
         engine http
-        output Product
+        emits Product
         type Product { id: String }
         step list { method "GET" url "https://x.test" }
         for $p in $list[*] { emit Product { id ← $p.id } }
     "#;
     let r = parse(src).expect("parse");
-    let out = r.output.expect("output decl");
+    let out = r.emits.expect("emits decl");
     assert_eq!(out.types, vec!["Product".to_string()]);
     assert!(out.span.start < out.span.end);
 }
 
 #[test]
-fn parses_multi_type_output_decl() {
+fn parses_multi_type_emits_decl() {
     let src = r#"
         recipe "multi"
         engine http
-        output Product | Variant | PriceObservation
+        emits Product | Variant | PriceObservation
         type Product { id: String }
         type Variant { id: String }
         type PriceObservation { id: String }
@@ -670,7 +670,7 @@ fn parses_multi_type_output_decl() {
         }
     "#;
     let r = parse(src).expect("parse");
-    let out = r.output.expect("output decl");
+    let out = r.emits.expect("emits decl");
     assert_eq!(
         out.types,
         vec![
@@ -682,39 +682,39 @@ fn parses_multi_type_output_decl() {
 }
 
 #[test]
-fn output_decl_carries_span_to_its_clause() {
-    let src = "recipe \"spans\"\nengine http\noutput Product | Variant\ntype Product { id: String }\ntype Variant { id: String }\n";
+fn emits_decl_carries_span_to_its_clause() {
+    let src = "recipe \"spans\"\nengine http\nemits Product | Variant\ntype Product { id: String }\ntype Variant { id: String }\n";
     let r = parse(src).expect("parse");
-    let out = r.output.expect("output decl");
+    let out = r.emits.expect("emits decl");
     let text = &src[out.span.clone()];
-    assert!(text.starts_with("output Product"), "got {text:?}");
+    assert!(text.starts_with("emits Product"), "got {text:?}");
     assert!(text.ends_with("Variant"), "got {text:?}");
 }
 
 #[test]
-fn output_decl_without_types_yields_empty_list() {
-    // `output` alone is accepted by the parser; the validator surfaces
-    // `EmptyOutput`. The next top-level form still parses normally.
+fn emits_decl_without_types_yields_empty_list() {
+    // `emits` alone is accepted by the parser; the validator surfaces
+    // `EmptyEmits`. The next top-level form still parses normally.
     let src = r#"
         recipe "empty"
         engine http
-        output
+        emits
         type Item { id: String }
         step list { method "GET" url "https://x.test" }
         for $i in $list[*] { emit Item { id ← $i.id } }
     "#;
     let r = parse(src).expect("parse");
-    let out = r.output.expect("output decl present even when empty");
+    let out = r.emits.expect("emits decl present even when empty");
     assert!(out.types.is_empty());
 }
 
 #[test]
-fn duplicate_output_decl_is_a_parse_error() {
+fn duplicate_emits_decl_is_a_parse_error() {
     let src = r#"
         recipe "dup"
         engine http
-        output Item
-        output Item
+        emits Item
+        emits Item
         type Item { id: String }
     "#;
     assert!(parse(src).is_err());
@@ -726,7 +726,7 @@ fn parses_compose_body_as_composition() {
         recipe "enriched-products"
         engine http
         type Product { id: String }
-        output Product
+        emits Product
         compose "scrape-amazon" | "enrich-wikidata"
     "#;
     let r = parse(src).expect("parse");
@@ -749,7 +749,7 @@ fn parses_namespaced_recipe_reference() {
         recipe "lifted"
         engine http
         type Product { id: String }
-        output Product
+        emits Product
         compose "scrape-amazon" | "@upstream/enrich-products"
     "#;
     let r = parse(src).expect("parse");
@@ -767,7 +767,7 @@ fn three_stage_composition_parses() {
         recipe "three-stage"
         engine http
         type Product { id: String }
-        output Product
+        emits Product
         compose "a" | "b" | "c"
     "#;
     let r = parse(src).expect("parse");

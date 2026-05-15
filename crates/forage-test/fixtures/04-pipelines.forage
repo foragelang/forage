@@ -1,6 +1,6 @@
 recipe "pipelines"
 engine http
-output Product
+emits Product
 
 // The cannabis size + prevalence helpers used to be engine built-ins; the
 // pipelines fixture now exercises them as user-defined fns so the contract

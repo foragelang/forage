@@ -94,7 +94,7 @@ fn workspace_local_extension_validates_clean_end_to_end() {
     let recipe_path = root.join("rec.forage");
     write(
         &recipe_path,
-        "recipe \"rec\"\nengine http\noutput Child\nstep list { method \"GET\" url \"https://x.test\" }\nfor $r in $list[*] {\n    emit Child { id \u{2190} $r.id, name \u{2190} $r.name, extra \u{2190} $r.extra }\n}\n",
+        "recipe \"rec\"\nengine http\nemits Child\nstep list { method \"GET\" url \"https://x.test\" }\nfor $r in $list[*] {\n    emit Child { id \u{2190} $r.id, name \u{2190} $r.name, extra \u{2190} $r.extra }\n}\n",
     );
     let ws = load(root).unwrap();
     let cat = ws.catalog_from_disk(&recipe_path).unwrap();
@@ -135,7 +135,7 @@ fn hub_dep_extension_resolves_through_lockfile_cached_parent() {
     let recipe_path = ws_root.join("rec.forage");
     write(
         &recipe_path,
-        "share type EnhancedJobPosting extends @upstream/JobPosting@v1 {\n    salaryMin: Int?\n}\nrecipe \"rec\"\nengine http\noutput EnhancedJobPosting\nstep list { method \"GET\" url \"https://x.test\" }\nfor $r in $list[*] {\n    emit EnhancedJobPosting { id \u{2190} $r.id, title \u{2190} $r.title, salaryMin \u{2190} $r.salary }\n}\n",
+        "share type EnhancedJobPosting extends @upstream/JobPosting@v1 {\n    salaryMin: Int?\n}\nrecipe \"rec\"\nengine http\nemits EnhancedJobPosting\nstep list { method \"GET\" url \"https://x.test\" }\nfor $r in $list[*] {\n    emit EnhancedJobPosting { id \u{2190} $r.id, title \u{2190} $r.title, salaryMin \u{2190} $r.salary }\n}\n",
     );
 
     let prev = std::env::var("FORAGE_HUB_CACHE").ok();
@@ -243,7 +243,7 @@ fn adapter_recipe_pipes_parent_records_into_child() {
         recipe \"producer\"\n\
         engine http\n\
         share type Parent { id: String, title: String }\n\
-        output Parent\n\
+        emits Parent\n\
         step list { method \"GET\" url \"https://x.test\" }\n\
         emit Parent { id \u{2190} \"p1\", title \u{2190} \"Engineer\" }\n";
     let adapter_src = "\
@@ -254,7 +254,7 @@ fn adapter_recipe_pipes_parent_records_into_child() {
             salaryMin: Int?\n\
         }\n\
         input parents: [Parent]\n\
-        output Enhanced\n\
+        emits Enhanced\n\
         for $p in $input.parents[*] {\n\
             emit Enhanced { id \u{2190} $p.id, title \u{2190} $p.title, salaryMin \u{2190} null }\n\
         }\n";
@@ -265,7 +265,7 @@ fn adapter_recipe_pipes_parent_records_into_child() {
         share type Enhanced extends Parent@v1 {\n\
             salaryMin: Int?\n\
         }\n\
-        output Enhanced\n\
+        emits Enhanced\n\
         compose \"producer\" | \"to-enhanced\"\n";
 
     let producer = parse(producer_src).expect("producer parses");
@@ -304,7 +304,7 @@ fn adapter_recipe_rejected_when_output_unrelated_to_input() {
         recipe \"producer\"\n\
         engine http\n\
         share type Parent { id: String }\n\
-        output Parent\n\
+        emits Parent\n\
         step list { method \"GET\" url \"https://x.test\" }\n\
         emit Parent { id \u{2190} \"p1\" }\n";
     let unrelated_src = "\
@@ -313,7 +313,7 @@ fn adapter_recipe_rejected_when_output_unrelated_to_input() {
         share type Apple { id: String }\n\
         share type Banana { id: String }\n\
         input apples: [Apple]\n\
-        output Banana\n\
+        emits Banana\n\
         for $a in $input.apples[*] {\n\
             emit Banana { id \u{2190} $a.id }\n\
         }\n";
@@ -322,7 +322,7 @@ fn adapter_recipe_rejected_when_output_unrelated_to_input() {
         engine http\n\
         share type Parent { id: String }\n\
         share type Banana { id: String }\n\
-        output Banana\n\
+        emits Banana\n\
         compose \"producer\" | \"unrelated\"\n";
 
     let producer = parse(producer_src).unwrap();

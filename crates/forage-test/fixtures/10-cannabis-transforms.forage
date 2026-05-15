@@ -1,6 +1,6 @@
 recipe "cannabis-transforms"
 engine http
-output Variant
+emits Variant
 
 // The migrated `parseSize` exercises regex literals, let-bindings,
 // struct literals, array indexing, and case-of with a default arm — the

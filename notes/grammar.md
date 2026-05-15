@@ -94,11 +94,11 @@ recipe_header        := 'recipe' STRING 'engine' engine_kind
 
 engine_kind          := 'http' | 'browser'
 
-output_decl          := 'output' ( TypeName ( '|' TypeName )* )?
+emits_decl           := 'emits' ( TypeName ( '|' TypeName )* )?
 ```
 
-`output_decl` declares the recipe's output signature: `output
-Product` for a single-type recipe; `output Product | Variant |
+`emits_decl` declares the recipe's output signature: `emits
+Product` for a single-type recipe; `emits Product | Variant |
 PriceObservation` for a multi-type sum. The `|` token is the same
 one used by pipe expressions; the parser disambiguates by context
 (only `TypeName`s are legal in this position).
@@ -109,22 +109,22 @@ block. Validator-enforced constraints (not parser-enforced):
 - **At most one `recipe_header` per file.** A second header is a
   validator error.
 - **Recipe-context forms require a header.** `auth_block`,
-  `browser_block`, `expect_block`, `output_decl`, and `statement`s
+  `browser_block`, `expect_block`, `emits_decl`, and `statement`s
   are only meaningful inside a recipe; if any appear in a file with
-  no `recipe_header`, the validator rejects (`OutputWithoutHeader`
-  for output specifically; `RecipeContextWithoutHeader` for the
+  no `recipe_header`, the validator rejects (`EmitsWithoutHeader`
+  for `emits` specifically; `RecipeContextWithoutHeader` for the
   rest).
-- **`output_decl` is at most one per file.** A second `output` clause
+- **`emits_decl` is at most one per file.** A second `emits` clause
   is a parse error.
-- **`output_decl` must list at least one type.** `output` with no
-  TypeName parses but the validator emits `EmptyOutput`. Every
-  type listed must resolve through the type catalog; unknown
-  names surface as `UnknownType`. Every `emit T { … }` whose `T`
-  is not in the declared list is rejected with `MissingFromOutput`.
-  Listed types with no corresponding `emit` warn as
-  `UnusedInOutput`. The output clause is optional in the AST; the
-  validator skips the emit-vs-output check entirely when the clause
-  is absent.
+- **`emits_decl` must list at least one type when written.** `emits`
+  with no TypeName parses but the validator emits `EmptyEmits`. Every
+  type listed must resolve through the type catalog; unknown names
+  surface as `UnknownType`. Every `emit T { … }` whose `T` is not in
+  the declared list is rejected with `EmitNotInEmits`. Listed types
+  with no corresponding `emit` warn as `UnusedInEmits`. The clause is
+  **optional**: a recipe without `emits` parses and validates, and
+  the validator skips the emit-vs-`emits` cross-check entirely — the
+  recipe's output shape is whatever the body emits.
 - **Order is free.** The header may appear anywhere among the other
   forms; the parser collects each kind into its slot on the
   `ForageFile` AST regardless of position.
@@ -307,9 +307,10 @@ A recipe's body is one of two kinds:
   statements that drive the HTTP or browser engine. The historical
   recipe shape.
 - **Composition body** — a chain of recipe references joined by
-  `|`. Each stage's `output` type matches the next stage's input
-  slot; the runtime walks the chain, feeding each stage's emitted
-  records to the next.
+  `|`. Each stage's resolved output type (declared `emits T` if
+  present, else inferred from body emits) must match the next
+  stage's input slot; the runtime walks the chain, feeding each
+  stage's emitted records to the next.
 
 The two kinds are mutually exclusive — a recipe body is either
 statements or a composition, never both. The parser rejects a file
@@ -336,19 +337,22 @@ a composition, it's just calling that recipe.
 
 For a `compose A | B`:
 
-- Stage A must declare a typed `output T` — exactly one type
-  (multi-type sums in a composition are reserved for a future
-  extension).
+- Stage A must emit exactly one type `T`. The validator resolves the
+  type from A's declared `emits T` when one is present, otherwise
+  from the body's `emit X { … }` statements. Either way A's resolved
+  output set must have exactly one element (multi-type sums in a
+  composition are reserved for a future extension).
 - Stage B must declare exactly one input slot whose type is
   `[T]` (the batched form — B sees the entire stream at once) or
   `T` (the single-record form — B sees one record per upstream
   emission, currently restricted to upstream stages that emit a
   single record).
 
-The composition recipe itself declares the `output` it produces —
+The composition recipe itself may declare the `emits` it produces —
 typically the same type as the final stage's output — so consumers
 can index the composition by its terminal type without inspecting
-the chain.
+the chain. When the composition omits `emits`, callers fall through
+to the chain-resolution path.
 
 Cycles are rejected: a recipe whose composition transitively
 references itself is structurally well-formed but would never
@@ -358,7 +362,7 @@ recipe-signature graph and refuses the chain.
 ```forage
 recipe "enriched-products"
 engine http
-output Product
+emits Product
 
 compose "scrape-amazon" | "enrich-wikidata"
 ```
@@ -595,7 +599,7 @@ categories:
 
 - **Reserved at top level** as statement / declaration heads or
   modifiers: `recipe`, `engine`, `share`, `type`, `enum`, `fn`,
-  `input`, `output`, `secret`, `auth`, `browser`, `step`, `for`,
+  `input`, `emits`, `secret`, `auth`, `browser`, `step`, `for`,
   `in`, `emit`, `as`, `case`, `of`, `let`, `expect`.
 - **Reserved inside structured forms** as field keys:
   `method`, `url`, `headers`, `body`, `json`, `form`, `raw`,

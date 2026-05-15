@@ -133,7 +133,7 @@ pub const KEYWORDS: &[&str] = &[
     "enum",
     "fn",
     "input",
-    "output",
+    "emits",
     "aligns",
     "extends",
     "step",

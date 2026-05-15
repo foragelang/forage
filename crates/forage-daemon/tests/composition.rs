@@ -15,7 +15,7 @@ engine http
 
 share type Product { id: String }
 
-output Product
+emits Product
 
 step list {
     method "GET"
@@ -37,7 +37,7 @@ share type Product { id: String }
 
 input prior: [Product]
 
-output Product
+emits Product
 
 for $p in $input.prior {
     emit Product { id ← $p.id }
@@ -52,7 +52,7 @@ engine http
 
 share type Product { id: String }
 
-output Product
+emits Product
 
 compose "scrape-products" | "enrich-products"
 "#;
@@ -139,7 +139,7 @@ engine http
 
 share type Product { id: String }
 
-output Product
+emits Product
 
 compose "composed" | "enrich-products"
 "#;

@@ -1721,7 +1721,7 @@ for $i in $list.items[*] {
             engine http
             type Product { id: String }
             input prior: [Product]
-            output Product
+            emits Product
             for $p in $input.prior {
                 emit Product { id ← $p.id }
             }
@@ -1783,7 +1783,7 @@ for $i in $list.items[*] {
             recipe "no-slot"
             engine http
             type Product { id: String }
-            output Product
+            emits Product
             emit Product { id ← "x" }
         "#;
         let recipe = parse(src).unwrap();

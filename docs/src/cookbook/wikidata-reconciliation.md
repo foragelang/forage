@@ -49,7 +49,7 @@ fields from the Wikidata entity.
 ```forage
 recipe "wikidata-reconcile"
 engine http
-output EnrichedCompany
+emits EnrichedCompany
 
 share type Company
     aligns wikidata/Q4830453
@@ -96,7 +96,7 @@ A scraping recipe that emits `Company` records can be lifted onto
 ```forage
 recipe "scrape-and-enrich"
 engine http
-output EnrichedCompany
+emits EnrichedCompany
 
 compose "scrape-companies" | "wikidata-reconcile"
 ```
