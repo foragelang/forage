@@ -99,6 +99,19 @@ export async function putPackage(
     await env.METADATA.put(PKG_KEY(pkg.author, pkg.slug), JSON.stringify(pkg))
 }
 
+// Cheap presence check — KV.list with limit=1 returns just the key
+// header, no value bytes. Use this when you don't need the metadata,
+// only need to assert "does this package exist".
+export async function packageExists(
+    env: Env,
+    author: string,
+    slug: string,
+): Promise<boolean> {
+    const key = PKG_KEY(author, slug)
+    const result = await env.METADATA.list({ prefix: key, limit: 1 })
+    return result.keys.some((k) => k.name === key)
+}
+
 // --- Version artifacts (with R2 fallback) --------------------------------
 
 // Wire shape of the KV version slot when the artifact lives in R2.

@@ -5,6 +5,7 @@ import {
     putStar,
     deleteStar,
     listStars,
+    packageExists,
 } from '../storage'
 import { identifyCaller } from '../auth'
 import { json, jsonError } from '../http'
@@ -75,8 +76,7 @@ export async function getStars(
     author: string,
     slug: string,
 ): Promise<Response> {
-    const meta = await getPackage(env, author, slug)
-    if (meta === null) {
+    if (!(await packageExists(env, author, slug))) {
         return jsonError(404, 'not_found', `unknown package: ${author}/${slug}`, {}, request)
     }
     const url = new URL(request.url)
