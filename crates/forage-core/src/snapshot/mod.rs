@@ -44,8 +44,8 @@ pub struct Record {
 /// entry per `type` declared in the recipe.
 ///
 /// The runtime does not transform values across alignments — this is
-/// strictly index data. Sub-plan 8 (JSON-LD output) reads it to build
-/// `@context` and `@type` on serialization.
+/// strictly index data; JSON-LD serialization and hub indexing read it
+/// to build `@context` / `@type` entries and per-field term mappings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RecordType {

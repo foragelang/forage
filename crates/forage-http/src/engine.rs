@@ -141,10 +141,9 @@ impl<'t> Engine<'t> {
         let mut scope = Scope::new().with_inputs(inputs).with_secrets(secrets);
         let mut snapshot = Snapshot::new();
         // Stamp every type the recipe could emit onto the snapshot at
-        // run boundary so downstream consumers (JSON-LD output, hub
-        // indexers) carry alignment metadata for workspace-shared and
-        // hub-dep types too — not just the ones declared in the recipe
-        // file itself.
+        // run boundary so JSON-LD serialization and hub indexing read
+        // alignment metadata for workspace-shared and hub-dep types
+        // too — not just the ones declared in the recipe file itself.
         snapshot.set_record_types(catalog.types_sorted());
         // Default `$page` so recipes that use `{$page}` outside a paginated
         // step (or before the first request) still have it bound. The
@@ -1497,10 +1496,10 @@ mod tests {
 
     /// A type declared `share` in a sibling workspace file (and thus
     /// absent from the focal recipe's `types` list) still has to land in
-    /// the snapshot's `record_types` with its alignments — downstream
-    /// consumers (JSON-LD writers, hub indexers) read alignment metadata
-    /// off the snapshot, not off the recipe source. The fix routes the
-    /// catalog (not just `recipe.types`) into `set_record_types`.
+    /// the snapshot's `record_types` with its alignments — JSON-LD
+    /// writers and hub indexers read alignment metadata off the
+    /// snapshot, not off the recipe source. The fix routes the catalog
+    /// (not just `recipe.types`) into `set_record_types`.
     #[tokio::test]
     async fn workspace_shared_type_alignment_lands_in_snapshot() {
         use tempfile::tempdir;
