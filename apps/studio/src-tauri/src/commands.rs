@@ -2032,7 +2032,7 @@ for $i in $list.items[*] {
     }
 
     use super::build_recipe_statuses;
-    use crate::workspace::{DeployedState, DraftState};
+    use crate::workspace::{self, DeployedState, DraftState};
 
     /// A workspace whose source file basename differs from the
     /// recipe header (`foo.forage` containing `recipe "bar"`)
@@ -2086,6 +2086,95 @@ for $i in $list.items[*] {
             matches!(status.deployed, DeployedState::Deployed { version: 1, .. }),
             "deployment side joined under the header name: {status:?}",
         );
+    }
+
+    const FOO_BAR_RECIPE: &str = r#"recipe "bar"
+engine http
+
+type Item {
+    id: String
+}
+
+step list {
+    method "GET"
+    url    "https://example.test/items"
+}
+
+for $i in $list.items[*] {
+    emit Item {
+        id ← $i.id
+    }
+}
+"#;
+
+    /// A file whose basename (`foo.forage`) differs from its recipe
+    /// header (`recipe "bar"`) is reachable end-to-end through the
+    /// recipe-name-keyed wire shape Phase 7 introduced. The
+    /// resolver, the source read, the deploy, the scheduled-run
+    /// trigger, and the recipe-name stamp on the resulting record
+    /// all key on `"bar"`, never on `"foo"`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn foo_forage_with_recipe_bar_round_trips_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        std::fs::write(
+            ws_root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+        let foo_path = ws_root.join("foo.forage");
+        std::fs::write(&foo_path, FOO_BAR_RECIPE).unwrap();
+
+        // Wire the recipe at a wiremock that returns two items so the
+        // scheduled-run record carries verifiable counts.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "a"}, {"id": "b"}],
+            })))
+            .mount(&mock)
+            .await;
+        rewrite_url(&foo_path, &format!("{}/items", mock.uri()));
+
+        let ws = forage_core::workspace::load(&ws_root).expect("load workspace");
+
+        // The Studio resolver path: name → file path → source. The
+        // helper has to consult `Workspace::recipe_by_name`; if it
+        // ever falls back to the basename it'd hit `foo.forage` via
+        // the slug-derivation that pre-Phase-7 builds used to do.
+        // `Workspace::load` canonicalizes, so compare canonical
+        // paths — the test fixture's path may carry a `/private`
+        // prefix on macOS.
+        let resolved = workspace::resolve_recipe_path(&ws, "bar").expect("resolve by name");
+        assert_eq!(resolved.canonicalize().unwrap(), foo_path.canonicalize().unwrap());
+        let source = workspace::read_source(&ws, "bar").expect("read source by name");
+        assert!(source.contains("recipe \"bar\""));
+
+        // Deploy + configure_run + trigger_run, all keyed on `"bar"`.
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        let recipe = forage_core::parse(&source).expect("parse");
+        let catalog = ws
+            .catalog(&recipe, |p| std::fs::read_to_string(p))
+            .expect("catalog");
+        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
+        daemon.deploy("bar", source, wire).expect("deploy");
+
+        let cfg = RunConfig {
+            cadence: Cadence::Manual,
+            output: ws_root.join(".forage").join("data").join("bar.sqlite"),
+            enabled: true,
+        };
+        let run = daemon.configure_run("bar", cfg).expect("configure_run");
+        assert_eq!(run.recipe_name, "bar");
+
+        let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
+        assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
+        assert_eq!(sr.counts.get("Item").copied(), Some(2));
+
+        // `delete_recipe` by name removes the actual file backing the
+        // recipe header — `foo.forage`, not a `bar/` directory.
+        workspace::delete_recipe(&ws, "bar").expect("delete by name");
+        assert!(!foo_path.exists());
     }
 
     use super::{resolve_existing, resolve_new, validate_path};
