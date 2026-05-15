@@ -4,16 +4,13 @@
 //! scratch state and the path-based view routing.)
 
 import { create } from "zustand";
-import { ask } from "@tauri-apps/plugin-dialog";
 
-import {
-    api,
-    type PausePayload,
-    type ProgressUnit,
-    type RunEvent,
-    type Snapshot,
-    type ValidationOutcome,
-} from "./api";
+import type { PausePayload } from "../bindings/PausePayload";
+import type { ProgressUnit } from "../bindings/ProgressUnit";
+import type { RunEvent } from "../bindings/RunEvent";
+import type { Snapshot } from "../bindings/Snapshot";
+import type { ValidationOutcome } from "../bindings/ValidationOutcome";
+import type { StudioService } from "./services/StudioService";
 import { slugOf } from "./path";
 
 export type View = "editor" | "deployment";
@@ -85,6 +82,17 @@ export type StepStat = {
 };
 
 type StudioState = {
+    // The active StudioService — set once during app boot by main.tsx.
+    // Stored here (rather than read from React Context inside actions)
+    // so imperative call sites — Zustand reducers, command handlers in
+    // studioActions.ts, the keyboard/menu listeners in useStudioEffects
+    // — can reach the service without being React components.
+    //
+    // `useStudioService()` (the React-side hook) still wraps the same
+    // value via Context; components that subscribe via hooks use that
+    // path, and never read `service` from the store directly.
+    service: StudioService;
+
     // Top-level routing.
     view: View;
     activeFilePath: string | null;
@@ -156,7 +164,24 @@ type StudioState = {
     setPauseIterations: (enabled: boolean) => void;
 };
 
+/// Placeholder service used before `installStudioService` runs. Every
+/// method throws; tests and the boot path must replace it. Keeps the
+/// store typing honest — no `Optional<StudioService>` to thread.
+const UNINSTALLED_SERVICE: StudioService = new Proxy({} as StudioService, {
+    get(_target, prop) {
+        if (prop === "capabilities") {
+            return { workspace: false, deploy: false, liveRun: false, hubPackages: false };
+        }
+        return () => {
+            throw new Error(
+                `StudioService not installed (called .${String(prop)}). Wrap the app in installStudioService(service).`,
+            );
+        };
+    },
+});
+
 export const useStudio = create<StudioState>((set, get) => ({
+    service: UNINSTALLED_SERVICE,
     view: "editor",
     activeFilePath: null,
     activeRunId: null,
@@ -186,19 +211,20 @@ export const useStudio = create<StudioState>((set, get) => ({
     setInspectorMode: (m) => set({ inspectorMode: m }),
     setActiveFilePath: async (path) => {
         const state = get();
+        const service = state.service;
         // Prompt-on-switch: single-buffer model means an unsaved
         // buffer would otherwise be silently discarded when the user
-        // picks a different file. The Tauri dialog plugin only offers
-        // OK / Cancel — we frame it as "save first?" so cancelling
-        // keeps the user on the dirty file rather than discarding it.
+        // picks a different file. The host's confirm dialog only
+        // offers OK / Cancel — we frame it as "save first?" so
+        // cancelling keeps the user on the dirty file rather than
+        // discarding it.
         if (state.dirty && state.activeFilePath && state.activeFilePath !== path) {
             const dirtyPath = state.activeFilePath;
             const dirtySource = state.source;
-            const proceed = await ask(
+            const proceed = await service.confirm(
                 `Save changes to "${dirtyPath}" before switching?`,
                 {
                     title: "Unsaved changes",
-                    kind: "warning",
                     okLabel: "Save and switch",
                     cancelLabel: "Cancel",
                 },
@@ -209,7 +235,7 @@ export const useStudio = create<StudioState>((set, get) => ({
             // touch the store after the save if the user hasn't moved
             // on yet (a second switch could race with the dialog).
             try {
-                const v = await api.saveFile(dirtyPath, dirtySource);
+                const v = await service.saveFile(dirtyPath, dirtySource);
                 if (get().activeFilePath === dirtyPath) {
                     set({ validation: v, dirty: false });
                 }
@@ -242,13 +268,13 @@ export const useStudio = create<StudioState>((set, get) => ({
         // after the switch doesn't pause on the previous recipe's
         // steps. The per-recipe set arrives via `loadRecipeBreakpoints`
         // below and overwrites this.
-        api.setBreakpoints([]).catch((e) =>
+        service.setBreakpoints([]).catch((e) =>
             set({ runError: `set_breakpoints failed: ${String(e)}` }),
         );
         if (path === null) return;
         // Load source for any file the user picked. Errors surface in
         // the store via setRunError; no silent swallowing.
-        api.loadFile(path)
+        service.loadFile(path)
             .then((s) => {
                 // Guard against a faster-arriving second selection
                 // landing here before this promise resolves — only
@@ -260,11 +286,11 @@ export const useStudio = create<StudioState>((set, get) => ({
             .catch((e) => set({ runError: String(e) }));
         const slug = slugOf(path);
         if (slug) {
-            api.loadRecipeBreakpoints(slug)
+            service.loadRecipeBreakpoints(slug)
                 .then((steps) => {
                     if (get().activeFilePath === path) {
                         set({ breakpoints: new Set(steps) });
-                        return api.setBreakpoints(steps);
+                        return service.setBreakpoints(steps);
                     }
                     return undefined;
                 })
@@ -467,6 +493,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     debugPause: (p) => set({ paused: p }),
     debugClearPause: () => set({ paused: null }),
     toggleBreakpoint: (step) => {
+        const service = get().service;
         const cur = get().breakpoints;
         const slug = slugOf(get().activeFilePath ?? "");
         const next = new Set(cur);
@@ -475,32 +502,41 @@ export const useStudio = create<StudioState>((set, get) => ({
         set({ breakpoints: next });
         const steps = [...next];
         if (slug) {
-            api.setRecipeBreakpoints(slug, steps).catch((e) =>
+            service.setRecipeBreakpoints(slug, steps).catch((e) =>
                 console.warn("set_recipe_breakpoints failed", e),
             );
         } else {
-            api.setBreakpoints(steps).catch((e) =>
+            service.setBreakpoints(steps).catch((e) =>
                 console.warn("set_breakpoints failed", e),
             );
         }
     },
     clearBreakpoints: () => {
+        const service = get().service;
         set({ breakpoints: new Set() });
         const slug = slugOf(get().activeFilePath ?? "");
         if (slug) {
-            api.setRecipeBreakpoints(slug, []).catch((e) =>
+            service.setRecipeBreakpoints(slug, []).catch((e) =>
                 console.warn("set_recipe_breakpoints failed", e),
             );
         } else {
-            api.setBreakpoints([]).catch((e) =>
+            service.setBreakpoints([]).catch((e) =>
                 console.warn("set_breakpoints failed", e),
             );
         }
     },
     setPauseIterations: (enabled) => {
+        const service = get().service;
         set({ pauseIterations: enabled });
-        api.setPauseIterations(enabled).catch((e) =>
+        service.setPauseIterations(enabled).catch((e) =>
             console.warn("set_pause_iterations failed", e),
         );
     },
 }));
+
+/// Install a concrete service into the global store + Context. Both the
+/// Tauri main.tsx and the hub IDE's main.tsx call this before mounting
+/// the React tree. Idempotent: re-installing replaces the prior service.
+export function installStudioService(service: StudioService): void {
+    useStudio.setState({ service });
+}

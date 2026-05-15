@@ -8,9 +8,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import {
     Braces,
     Camera,
@@ -47,7 +44,11 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { api, type FileNode, type Health, type Run, type WorkspaceInfo } from "@/lib/api";
+import type { FileNode } from "@/bindings/FileNode";
+import type { Health } from "@/bindings/Health";
+import type { Run } from "@/bindings/Run";
+import type { WorkspaceInfo } from "@/bindings/WorkspaceInfo";
+import { useStudioService, type StudioService, type Unsubscribe } from "@/lib/services";
 import { shortenHome, slugOf } from "@/lib/path";
 import { currentWorkspaceKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
@@ -59,44 +60,40 @@ import { X } from "lucide-react";
 
 // ── module-scope context-menu plumbing ──────────────────────────────
 //
-// Tauri's menu event for delete-recipe is fired against the active
+// The host's menu event for delete-recipe is fired against the active
 // recipe slug. Registering inside a render-time effect collides with
-// React.StrictMode's double-mount (transformCallback fires sync, the
-// unlisten promise resolves async). Mirror the workaround from the
-// previous sidebar: register once per module, update a pendingHandler
-// slot on every mount.
+// React.StrictMode's double-mount; register once per module, update a
+// pendingHandler slot on every mount.
 
 let pendingHandler: ((slug: string) => void) | null = null;
-let listenerHandle: Promise<UnlistenFn> | null = null;
+let listenerUnsubscribe: Unsubscribe | null = null;
 
-function ensureMenuListener() {
-    if (listenerHandle) return;
-    listenerHandle = listen<string>("menu:recipe_delete", (e) => {
-        pendingHandler?.(e.payload);
+function ensureMenuListener(service: StudioService) {
+    if (listenerUnsubscribe) return;
+    listenerUnsubscribe = service.onMenuEvent("menu:recipe_delete", (payload) => {
+        if (typeof payload === "string") pendingHandler?.(payload);
     });
     if (import.meta.hot) {
-        import.meta.hot.dispose(async () => {
-            const un = await listenerHandle;
-            un?.();
-            listenerHandle = null;
+        import.meta.hot.dispose(() => {
+            listenerUnsubscribe?.();
+            listenerUnsubscribe = null;
             pendingHandler = null;
         });
     }
 }
 
-async function performDelete(slug: string, qc: QueryClient) {
-    const confirmed = await ask(
+async function performDelete(slug: string, qc: QueryClient, service: StudioService) {
+    const confirmed = await service.confirm(
         `Delete "${slug}"? The recipe and its fixtures will be removed permanently.`,
         {
             title: "Delete recipe",
-            kind: "warning",
             okLabel: "Delete",
             cancelLabel: "Cancel",
         },
     );
     if (!confirmed) return;
     try {
-        await api.deleteRecipe(slug);
+        await service.deleteRecipe(slug);
         await qc.invalidateQueries({ queryKey: ["files"] });
         const active = useStudio.getState().activeFilePath;
         if (active && slugOf(active) === slug) {
@@ -111,24 +108,25 @@ async function performDelete(slug: string, qc: QueryClient) {
 
 export function Sidebar() {
     const qc = useQueryClient();
+    const service = useStudioService();
 
     const workspace = useQuery({
         queryKey: currentWorkspaceKey(),
-        queryFn: api.currentWorkspace,
+        queryFn: () => service.currentWorkspace(),
     });
     const files = useQuery({
         queryKey: ["files"],
-        queryFn: api.listWorkspaceFiles,
+        queryFn: () => service.listWorkspaceFiles(),
         refetchInterval: 4_000,
     });
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
         refetchInterval: 5_000,
     });
     const daemon = useQuery({
         queryKey: ["daemon"],
-        queryFn: api.daemonStatus,
+        queryFn: () => service.daemonStatus(),
         refetchInterval: 2_000,
     });
 
@@ -136,12 +134,12 @@ export function Sidebar() {
     // pending handler slot on every render so the latest QueryClient
     // is captured.
     useEffect(() => {
-        ensureMenuListener();
-        pendingHandler = (slug) => void performDelete(slug, qc);
+        ensureMenuListener(service);
+        pendingHandler = (slug) => void performDelete(slug, qc, service);
         return () => {
             pendingHandler = null;
         };
-    }, [qc]);
+    }, [qc, service]);
 
     const fileChildren: FileNode[] = useMemo(() => {
         const root = files.data;
@@ -169,7 +167,7 @@ export function Sidebar() {
                     loading={files.isLoading}
                     onNewFile={async () => {
                         try {
-                            const slug = await api.createRecipe();
+                            const slug = await service.createRecipe();
                             await qc.invalidateQueries({ queryKey: ["files"] });
                             await useStudio
                                 .getState()
@@ -336,6 +334,7 @@ function RunsSection({ runs, loading }: { runs: Run[]; loading: boolean }) {
 }
 
 function RunRow({ run }: { run: Run }) {
+    const service = useStudioService();
     // Subscribe to the per-row derived boolean instead of the global
     // ids: only this row re-renders when selection moves on/off it.
     const active = useStudio(
@@ -375,7 +374,7 @@ function RunRow({ run }: { run: Run }) {
                         type="button"
                         onClick={(e) => {
                             e.stopPropagation();
-                            api.triggerRun(run.id)
+                            service.triggerRun(run.id)
                                 .catch((err) =>
                                     console.warn("trigger_run failed", err),
                                 );
@@ -637,6 +636,7 @@ function FileRow({
     node: FileNode & { kind: "file" };
     depth: number;
 }) {
+    const service = useStudioService();
     // Subscribe to per-leaf-derived booleans so flipping the active
     // file (or dirtying the buffer) only re-renders the two rows
     // whose answer changed, not every sibling in the tree.
@@ -661,7 +661,7 @@ function FileRow({
                 // and fixtures have no per-row context menu yet.
                 if (!slug) return;
                 e.preventDefault();
-                invoke("show_recipe_context_menu", { slug }).catch((err) =>
+                service.showRecipeContextMenu(slug).catch((err) =>
                     console.warn("context menu failed", err),
                 );
             }}

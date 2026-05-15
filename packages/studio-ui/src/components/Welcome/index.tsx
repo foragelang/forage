@@ -9,7 +9,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Folder, Plus } from "lucide-react";
 
-import { api, type RecentWorkspace } from "@/lib/api";
+import type { RecentWorkspace } from "@/bindings/RecentWorkspace";
+import { useStudioService } from "@/lib/services";
 import { recentWorkspacesKey } from "@/lib/queryKeys";
 import {
     newWorkspaceAction,
@@ -135,10 +136,14 @@ function formatLastOpened(opened_at: number): string {
 
 export function Welcome() {
     const qc = useQueryClient();
-    const version = useQuery({ queryKey: ["studio-version"], queryFn: api.version });
+    const service = useStudioService();
+    const version = useQuery({
+        queryKey: ["studio-version"],
+        queryFn: () => service.version(),
+    });
     const recents = useQuery({
         queryKey: recentWorkspacesKey(),
-        queryFn: api.listRecentWorkspaces,
+        queryFn: () => service.listRecentWorkspaces(),
     });
 
     const recentEntries = recents.data ?? [];

@@ -8,22 +8,21 @@
 //! here.
 
 import type { QueryClient } from "@tanstack/react-query";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
-import { api } from "./api";
 import { slugOf } from "./path";
 import { currentWorkspaceKey, recentWorkspacesKey } from "./queryKeys";
 import { useStudio } from "./store";
 
 export async function saveActive() {
+    const state = useStudio.getState();
     // Capture the path/source we're writing to at call time. If the
     // user switches files between dispatch and the save's resolution,
     // the post-await state writes would otherwise land on the *new*
     // file — corrupting its validation/dirty flag.
-    const { activeFilePath: path, source } = useStudio.getState();
+    const { activeFilePath: path, source, service } = state;
     if (!path) return;
     try {
-        const v = await api.saveFile(path, source);
+        const v = await service.saveFile(path, source);
         if (useStudio.getState().activeFilePath === path) {
             useStudio.getState().setValidation(v);
             useStudio.getState().markClean();
@@ -39,7 +38,7 @@ export async function runActive(replay: boolean) {
     // Capture the path so the post-await writebacks below can detect
     // a file switch and skip the writes — running state for the
     // original file would otherwise corrupt the new file's view.
-    const { activeFilePath: path, running } = useStudio.getState();
+    const { activeFilePath: path, running, service } = useStudio.getState();
     if (!path) {
         console.warn("runActive: no active file");
         return;
@@ -56,7 +55,7 @@ export async function runActive(replay: boolean) {
     if (useStudio.getState().activeFilePath !== path) return;
     useStudio.getState().runBegin();
     try {
-        const r = await api.runRecipe(slug, replay);
+        const r = await service.runRecipe(slug, replay);
         if (useStudio.getState().activeFilePath !== path) return;
         if (r.ok && r.snapshot) {
             useStudio.getState().setSnapshot(r.snapshot);
@@ -75,22 +74,23 @@ export async function runActive(replay: boolean) {
 }
 
 export function cancelActive() {
-    const { running, paused } = useStudio.getState();
+    const { running, paused, service } = useStudio.getState();
     if (!running) return;
     // If we're paused in the debugger, the cancellation has to go
     // through the debugger too — the engine task is awaiting on the
     // resume oneshot and won't see the cancel notify until it wakes.
     if (paused) {
-        api.debugResume("stop").catch((e) =>
+        service.debugResume("stop").catch((e) =>
             console.warn("debug stop failed", e),
         );
     }
-    api.cancelRun().catch((e) => console.warn("cancel failed", e));
+    service.cancelRun().catch((e) => console.warn("cancel failed", e));
 }
 
 export async function createAndOpenRecipe(qc: QueryClient) {
+    const service = useStudio.getState().service;
     try {
-        const slug = await api.createRecipe();
+        const slug = await service.createRecipe();
         qc.invalidateQueries({ queryKey: ["files"] });
         await useStudio.getState().setActiveFilePath(`${slug}/recipe.forage`);
     } catch (e) {
@@ -103,19 +103,15 @@ export async function createAndOpenRecipe(qc: QueryClient) {
 /// recents bucket so the Welcome view reflects the freshly-opened entry
 /// next time the user returns.
 async function pickWorkspaceDirectory(title: string): Promise<string | null> {
-    const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title,
-    });
-    return typeof picked === "string" ? picked : null;
+    return useStudio.getState().service.pickDirectory(title);
 }
 
 export async function openWorkspaceAction(qc: QueryClient) {
+    const service = useStudio.getState().service;
     const path = await pickWorkspaceDirectory("Open workspace");
     if (!path) return;
     try {
-        await api.openWorkspace(path);
+        await service.openWorkspace(path);
         await Promise.all([
             qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
@@ -126,10 +122,11 @@ export async function openWorkspaceAction(qc: QueryClient) {
 }
 
 export async function newWorkspaceAction(qc: QueryClient) {
+    const service = useStudio.getState().service;
     const path = await pickWorkspaceDirectory("New workspace");
     if (!path) return;
     try {
-        await api.newWorkspace(path);
+        await service.newWorkspace(path);
         await Promise.all([
             qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
@@ -140,8 +137,9 @@ export async function newWorkspaceAction(qc: QueryClient) {
 }
 
 export async function openRecentWorkspaceAction(qc: QueryClient, path: string) {
+    const service = useStudio.getState().service;
     try {
-        await api.openWorkspace(path);
+        await service.openWorkspace(path);
         await Promise.all([
             qc.invalidateQueries({ queryKey: currentWorkspaceKey() }),
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
@@ -152,8 +150,9 @@ export async function openRecentWorkspaceAction(qc: QueryClient, path: string) {
 }
 
 export async function closeWorkspaceAction(qc: QueryClient) {
+    const service = useStudio.getState().service;
     try {
-        await api.closeWorkspace();
+        await service.closeWorkspace();
         await qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
     } catch (e) {
         useStudio.getState().setRunError(String(e));

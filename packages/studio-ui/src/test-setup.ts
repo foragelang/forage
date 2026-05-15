@@ -2,8 +2,9 @@
 //! `@tauri-apps/api/core` doesn't reach for `window.__TAURI_INTERNALS__`
 //! at module-load time — the harness has no Tauri host.
 //!
-//! Tests that need to assert against specific `invoke()` calls can
-//! override `window.__TAURI_INTERNALS__.invoke` per-test.
+//! Tests that need to assert against backend calls inject a fake
+//! StudioService via `installStudioService` and `StudioServiceProvider`
+//! rather than reaching for Tauri's IPC bridge directly.
 
 import "@testing-library/jest-dom/vitest";
 

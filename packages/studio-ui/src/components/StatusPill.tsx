@@ -8,7 +8,7 @@ import { type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { Health } from "@/lib/api";
+import type { Health } from "@/bindings/Health";
 
 type HealthVariant = "success" | "warning" | "destructive" | "ghost";
 

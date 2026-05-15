@@ -21,7 +21,7 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { api } from "@/lib/api";
+import { useStudioService } from "@/lib/services";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
@@ -29,18 +29,19 @@ import { useStudio } from "@/lib/store";
 const PAGE_STEP = 100;
 
 export function RecordsPane() {
+    const service = useStudioService();
     const activeFilePath = useStudio((s) => s.activeFilePath);
     const slug = activeFilePath ? slugOf(activeFilePath) : null;
 
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
         enabled: !!slug,
     });
     const run = runs.data?.find((r) => r.recipe_slug === slug);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 1 }),
-        queryFn: () => api.listScheduledRuns(run!.id, { limit: 1 }),
+        queryFn: () => service.listScheduledRuns(run!.id, { limit: 1 }),
         enabled: !!run,
     });
     const latest = history.data?.[0] ?? null;
@@ -108,6 +109,7 @@ function RecordsTable({
     scheduledRunId: string;
     typeName: string;
 }) {
+    const service = useStudioService();
     const [limit, setLimit] = useState(PAGE_STEP);
     // Reset the limit when the user switches type — otherwise paging
     // state from one type leaks into the next.
@@ -117,7 +119,7 @@ function RecordsTable({
 
     const records = useQuery({
         queryKey: ["records", scheduledRunId, typeName, limit],
-        queryFn: () => api.loadRunRecords(scheduledRunId, typeName, limit),
+        queryFn: () => service.loadRunRecords(scheduledRunId, typeName, limit),
     });
 
     const rows = (records.data ?? []) as Array<Record<string, unknown>>;

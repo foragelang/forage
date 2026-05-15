@@ -30,12 +30,10 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sparkline } from "@/components/Sparkline";
 import { StatusPill } from "@/components/StatusPill";
-import {
-    api,
-    type ProgressUnit,
-    type RunEvent,
-    type ScheduledRun,
-} from "@/lib/api";
+import type { ProgressUnit } from "@/bindings/ProgressUnit";
+import type { RunEvent } from "@/bindings/RunEvent";
+import type { ScheduledRun } from "@/bindings/ScheduledRun";
+import { useStudioService } from "@/lib/services";
 import { emitRevealLine } from "@/lib/editorCommands";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
@@ -43,18 +41,19 @@ import { useStudio, type EmitBurst, type LogEntry } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function RunPane() {
+    const service = useStudioService();
     const activeFilePath = useStudio((s) => s.activeFilePath);
     const slug = activeFilePath ? slugOf(activeFilePath) : null;
 
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
         enabled: !!slug,
     });
     const run = runs.data?.find((r) => r.recipe_slug === slug);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 30 }),
-        queryFn: () => api.listScheduledRuns(run!.id, { limit: 30 }),
+        queryFn: () => service.listScheduledRuns(run!.id, { limit: 30 }),
         enabled: !!run,
     });
     const scheduledRuns = history.data ?? [];
@@ -69,7 +68,7 @@ export function RunPane() {
     // flash through Variant / PriceObservation rows.
     const progressUnit = useQuery({
         queryKey: ["progressUnit", slug ?? ""],
-        queryFn: () => api.recipeProgressUnit(slug!),
+        queryFn: () => service.recipeProgressUnit(slug!),
         enabled: !!slug,
     });
     // Push the inferred unit into the store so `runAppend` can filter

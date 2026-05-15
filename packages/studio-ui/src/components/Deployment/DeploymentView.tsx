@@ -27,12 +27,10 @@ import {
 } from "@/components/ui/table";
 import { StatusPill } from "@/components/StatusPill";
 import { TrendCard } from "@/components/TrendCard";
-import {
-    api,
-    type Outcome,
-    type Run,
-    type ScheduledRun,
-} from "@/lib/api";
+import type { Outcome } from "@/bindings/Outcome";
+import type { Run } from "@/bindings/Run";
+import type { ScheduledRun } from "@/bindings/ScheduledRun";
+import { useStudioService } from "@/lib/services";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -43,11 +41,12 @@ import { ScheduleEditor } from "./ScheduleEditor";
 type Range = "60" | "7d" | "30d" | "90d";
 
 export function DeploymentView() {
+    const service = useStudioService();
     const runId = useStudio((s) => s.activeRunId);
 
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
     });
     const run = runs.data?.find((r) => r.id === runId) ?? null;
 
@@ -55,7 +54,7 @@ export function DeploymentView() {
     const limit = rangeToLimit(range);
     const history = useQuery({
         queryKey: scheduledRunsKey(runId ?? "", { limit }),
-        queryFn: () => api.listScheduledRuns(runId!, { limit }),
+        queryFn: () => service.listScheduledRuns(runId!, { limit }),
         enabled: !!runId,
     });
     const scheduledRuns = history.data ?? [];
@@ -102,6 +101,7 @@ function DepHeader({
     scheduledRuns: ScheduledRun[];
 }) {
     const qc = useQueryClient();
+    const service = useStudioService();
     const [editing, setEditing] = useState(false);
     const latest = scheduledRuns[0] ?? null;
     const okCount = scheduledRuns.slice(0, 30).filter((r) => r.outcome === "ok")
@@ -109,7 +109,7 @@ function DepHeader({
     const failCount = scheduledRuns.slice(0, 30).length - okCount;
 
     const triggerNow = useMutation({
-        mutationFn: () => api.triggerRun(run.id),
+        mutationFn: () => service.triggerRun(run.id),
         onSuccess: () => {
             // Cache buckets are keyed by `["scheduledRuns", runId, { limit }]`
             // — multiple panes hold separate buckets per limit, so a flat
@@ -125,7 +125,7 @@ function DepHeader({
     });
     const togglePause = useMutation({
         mutationFn: () =>
-            api.configureRun(run.recipe_slug, {
+            service.configureRun(run.recipe_slug, {
                 cadence: run.cadence,
                 output: run.output,
                 enabled: !run.enabled,

@@ -1,11 +1,11 @@
 //! Inline schedule editor — drops below the deployment header when
 //! toggled. Three cadence cards (Manual / Interval / Cron) plus an
-//! output path picker. Save calls `api.configureRun` and invalidates
-//! the runs query so the header + sidebar pick up the change.
+//! output path picker. Save calls `service.configureRun` and
+//! invalidates the runs query so the header + sidebar pick up the
+//! change.
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { open } from "@tauri-apps/plugin-dialog";
 import cronstrue from "cronstrue";
 import { Folder } from "lucide-react";
 
@@ -21,13 +21,11 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import {
-    api,
-    type Cadence,
-    type Run,
-    type RunConfig,
-    type TimeUnit,
-} from "@/lib/api";
+import type { Cadence } from "@/bindings/Cadence";
+import type { Run } from "@/bindings/Run";
+import type { RunConfig } from "@/bindings/RunConfig";
+import type { TimeUnit } from "@/bindings/TimeUnit";
+import { useStudioService } from "@/lib/services";
 import { cn } from "@/lib/utils";
 
 type Mode = "manual" | "interval" | "cron";
@@ -89,6 +87,7 @@ export function ScheduleEditor({
     onClose: () => void;
 }) {
     const qc = useQueryClient();
+    const service = useStudioService();
     const [draft, setDraft] = useState<Draft>(() => draftOf(run));
 
     // Reset draft when the underlying run changes (e.g. another tab
@@ -100,17 +99,17 @@ export function ScheduleEditor({
 
     const save = useMutation({
         mutationFn: async (cfg: RunConfig) =>
-            api.configureRun(run.recipe_slug, cfg),
+            service.configureRun(run.recipe_slug, cfg),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ["runs"] });
             onClose();
         },
     });
 
-    // The daemon's `validate_cron` is the parser of record. We debounce
-    // the call by 200ms so a typing user doesn't fire a Tauri command
-    // on every keystroke. `cronstrue` is kept around purely as a
-    // humanizer for the preview line — if it disagrees with the daemon
+    // The daemon's `validate_cron` is the parser of record. Debounce the
+    // call by 200ms so a typing user doesn't fire a backend command on
+    // every keystroke. `cronstrue` is kept around purely as a humanizer
+    // for the preview line — if it disagrees with the daemon
     // (different grammar) we still gate on the daemon.
     const [cronError, setCronError] = useState<string | null>(null);
     useEffect(() => {
@@ -124,7 +123,7 @@ export function ScheduleEditor({
         }
         let cancelled = false;
         const id = window.setTimeout(() => {
-            api.validateCron(draft.cron).then(
+            service.validateCron(draft.cron).then(
                 () => {
                     if (!cancelled) setCronError(null);
                 },
@@ -141,7 +140,7 @@ export function ScheduleEditor({
             cancelled = true;
             window.clearTimeout(id);
         };
-    }, [draft.mode, draft.cron]);
+    }, [draft.mode, draft.cron, service]);
 
     const cronHumanized = useMemo(() => {
         if (draft.mode !== "cron" || !draft.cron) return null;
@@ -345,6 +344,7 @@ function OutputSection({
     output: string;
     onChange: (p: string) => void;
 }) {
+    const service = useStudioService();
     return (
         <div className="space-y-2">
             <Label className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -360,8 +360,10 @@ function OutputSection({
                     variant="ghost"
                     size="sm"
                     onClick={async () => {
-                        const folder = await open({ directory: true, multiple: false });
-                        if (typeof folder === "string") {
+                        const folder = await service.pickDirectory(
+                            "Pick output folder",
+                        );
+                        if (folder) {
                             // Replace the parent folder while keeping the file name.
                             const filename = output.split("/").pop() ?? "out.sqlite";
                             onChange(`${folder}/${filename}`);

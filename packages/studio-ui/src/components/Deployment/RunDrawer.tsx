@@ -32,7 +32,9 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { StatusPill } from "@/components/StatusPill";
-import { api, type Run, type ScheduledRun } from "@/lib/api";
+import type { Run } from "@/bindings/Run";
+import type { ScheduledRun } from "@/bindings/ScheduledRun";
+import { useStudioService } from "@/lib/services";
 import { useStudio } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -282,11 +284,12 @@ function RecordsTable({
     scheduledRunId: string;
     typeName: string;
 }) {
+    const service = useStudioService();
     const [limit, setLimit] = useState(PAGE_STEP);
     useEffect(() => setLimit(PAGE_STEP), [scheduledRunId, typeName]);
     const records = useQuery({
         queryKey: ["records", scheduledRunId, typeName, limit],
-        queryFn: () => api.loadRunRecords(scheduledRunId, typeName, limit),
+        queryFn: () => service.loadRunRecords(scheduledRunId, typeName, limit),
     });
 
     if (records.isLoading && !records.data) {

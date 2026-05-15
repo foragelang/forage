@@ -30,13 +30,16 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { api, type DebugAction, type DebugScope, type PausePayload } from "@/lib/api";
+import type { DebugScope } from "@/bindings/DebugScope";
+import type { PausePayload } from "@/bindings/PausePayload";
+import { useStudioService, type DebugAction } from "@/lib/services";
 import { useStudio } from "@/lib/store";
 
 /// Bottom panel attached to the editor pane. Renders the engine's
 /// paused scope and the resume controls. Mounted only when
 /// `paused !== null` — EditorView handles that gating.
 export function DebuggerPanel() {
+    const service = useStudioService();
     const paused = useStudio((s) => s.paused);
     const debugClearPause = useStudio((s) => s.debugClearPause);
     const breakpoints = useStudio((s) => s.breakpoints);
@@ -56,7 +59,7 @@ export function DebuggerPanel() {
     const resume = async (action: DebugAction) => {
         debugClearPause();
         try {
-            await api.debugResume(action);
+            await service.debugResume(action);
         } catch (e) {
             console.warn("debug resume failed", e);
         }

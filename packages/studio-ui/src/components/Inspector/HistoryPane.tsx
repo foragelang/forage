@@ -16,17 +16,16 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusPill } from "@/components/StatusPill";
 import { TrendCard } from "@/components/TrendCard";
-import {
-    api,
-    type Health,
-    type ScheduledRun,
-} from "@/lib/api";
+import type { Health } from "@/bindings/Health";
+import type { ScheduledRun } from "@/bindings/ScheduledRun";
+import { useStudioService } from "@/lib/services";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio, type LogEntry } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function HistoryPane() {
+    const service = useStudioService();
     const activeFilePath = useStudio((s) => s.activeFilePath);
     const slug = activeFilePath ? slugOf(activeFilePath) : null;
     const runLog = useStudio((s) => s.runLog);
@@ -34,13 +33,13 @@ export function HistoryPane() {
 
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
         enabled: !!slug,
     });
     const run = runs.data?.find((r) => r.recipe_slug === slug);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 30 }),
-        queryFn: () => api.listScheduledRuns(run!.id, { limit: 30 }),
+        queryFn: () => service.listScheduledRuns(run!.id, { limit: 30 }),
         enabled: !!run,
     });
     const scheduledRuns = history.data ?? [];

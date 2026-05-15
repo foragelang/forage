@@ -6,7 +6,7 @@ import { EditorView } from "@/components/EditorView";
 import { BootSplash, Welcome } from "@/components/Welcome";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { useStudioEffects } from "@/hooks/useStudioEffects";
-import { api } from "@/lib/api";
+import { useStudioService } from "@/lib/services";
 import { currentWorkspaceKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 
@@ -20,9 +20,10 @@ export function App() {
     // includes the workspace-lifecycle listeners, so it has to run
     // regardless of which branch is rendered below.
     useStudioEffects();
+    const service = useStudioService();
     const ws = useQuery({
         queryKey: currentWorkspaceKey(),
-        queryFn: api.currentWorkspace,
+        queryFn: () => service.currentWorkspace(),
     });
     if (ws.isPending) return <BootSplash />;
     if (ws.data === null || ws.data === undefined) return <Welcome />;

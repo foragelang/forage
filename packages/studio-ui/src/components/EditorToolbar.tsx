@@ -25,7 +25,8 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { api, type Run } from "@/lib/api";
+import type { Run } from "@/bindings/Run";
+import { useStudioService } from "@/lib/services";
 import { slugOf } from "@/lib/path";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
@@ -115,6 +116,7 @@ function Crumbs({ path }: { path: string | null }) {
 /// Status pill derived from running/paused/dirty/latest-scheduled-run.
 /// Renders nothing in the idle-clean state.
 function ToolbarStatus() {
+    const service = useStudioService();
     const running = useStudio((s) => s.running);
     const paused = useStudio((s) => s.paused);
     const dirty = useStudio((s) => s.dirty);
@@ -123,12 +125,12 @@ function ToolbarStatus() {
 
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
     });
     const run = runs.data?.find((r) => r.recipe_slug === slug);
     const scheduledRuns = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 1 }),
-        queryFn: () => api.listScheduledRuns(run!.id, { limit: 1 }),
+        queryFn: () => service.listScheduledRuns(run!.id, { limit: 1 }),
         enabled: !!run,
     });
     const latest = scheduledRuns.data?.[0];
@@ -204,9 +206,10 @@ function RunningBadge() {
 /// Configure-run button instead — clicking it starts a live run, and
 /// the daemon's `ensure_run` creates the entry on first success.
 function RunsChipOrConfigure({ slug }: { slug: string }) {
+    const service = useStudioService();
     const runs = useQuery({
         queryKey: ["runs"],
-        queryFn: api.listRuns,
+        queryFn: () => service.listRuns(),
     });
     const run = runs.data?.find((r) => r.recipe_slug === slug);
     if (!run) {

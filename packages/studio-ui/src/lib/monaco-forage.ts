@@ -11,7 +11,7 @@
 
 import type * as Monaco from "monaco-editor";
 
-import { api } from "./api";
+import { useStudio } from "./store";
 
 export const FORAGE_LANG_ID = "forage";
 
@@ -35,8 +35,9 @@ let dictionaryReady: Promise<Dictionary> | null = null;
 
 function loadDictionary(): Promise<Dictionary> {
     if (dictionaryReady) return dictionaryReady;
-    dictionaryReady = api
-        .languageDictionary()
+    dictionaryReady = useStudio
+        .getState()
+        .service.languageDictionary()
         .then((d) => {
             const dict: Dictionary = {
                 keywords: d.keywords,
@@ -144,11 +145,13 @@ function applyDictionary(monaco: typeof Monaco, dict: Dictionary) {
             // are reflected; (line, col) is 0-based on the Rust side
             // while Monaco is 1-based.
             try {
-                const info = await api.recipeHover(
-                    model.getValue(),
-                    position.lineNumber - 1,
-                    position.column - 1,
-                );
+                const info = await useStudio
+                    .getState()
+                    .service.recipeHover(
+                        model.getValue(),
+                        position.lineNumber - 1,
+                        position.column - 1,
+                    );
                 if (!info) return null;
                 return {
                     contents: [{ value: info.markdown, isTrusted: false }],

@@ -13,11 +13,9 @@ import { AlertTriangle, CheckCircle2, CircleAlert, CircleX } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-    api,
-    type Diagnostic,
-    type StepLocation,
-} from "@/lib/api";
+import type { Diagnostic } from "@/bindings/Diagnostic";
+import type { StepLocation } from "@/bindings/StepLocation";
+import { useStudioService } from "@/lib/services";
 import { onRevealLine } from "@/lib/editorCommands";
 import { FORAGE_LANG_ID, registerForageLanguage } from "@/lib/monaco-forage";
 import { slugOf } from "@/lib/path";
@@ -29,12 +27,13 @@ type IEditor = MonacoNs.editor.IStandaloneCodeEditor;
 /// Studio store via `setValidation` so the editor's marker effect picks
 /// it up and re-paints squigglies without waiting for a save.
 function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
+    const service = useStudioService();
     const setValidation = useStudio((s) => s.setValidation);
     useEffect(() => {
         if (!slug) return;
         let cancelled = false;
         const id = window.setTimeout(() => {
-            api.validateRecipe(source)
+            service.validateRecipe(source)
                 .then((v) => {
                     if (!cancelled) setValidation(v);
                 })
@@ -44,19 +43,21 @@ function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
             cancelled = true;
             window.clearTimeout(id);
         };
-    }, [source, slug, delayMs, setValidation]);
+    }, [source, slug, delayMs, setValidation, service]);
 }
 
-/// Subscribe to the parser-driven outline of the current source. Debounced
-/// so we don't fire a Tauri command on every keystroke. The backend
-/// returns an empty outline when the source doesn't parse, which is
-/// fine — the gutter just shows nothing until the syntax is valid.
+/// Subscribe to the parser-driven outline of the current source.
+/// Debounced so we don't fire a backend call on every keystroke. The
+/// backend returns an empty outline when the source doesn't parse,
+/// which is fine — the gutter just shows nothing until the syntax is
+/// valid.
 function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
+    const service = useStudioService();
     const [steps, setSteps] = useState<StepLocation[]>([]);
     useEffect(() => {
         let cancelled = false;
         const id = window.setTimeout(() => {
-            api.recipeOutline(source)
+            service.recipeOutline(source)
                 .then((o) => {
                     if (!cancelled) setSteps(o.steps);
                 })
@@ -66,7 +67,7 @@ function useRecipeOutline(source: string, delayMs = 150): StepLocation[] {
             cancelled = true;
             window.clearTimeout(id);
         };
-    }, [source, delayMs]);
+    }, [source, delayMs, service]);
     return steps;
 }
 
