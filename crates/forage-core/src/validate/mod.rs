@@ -2554,9 +2554,8 @@ emit Item { }
 
     #[test]
     fn recipe_without_output_decl_skips_missing_from_output_check() {
-        // Pre-migration recipes with no `output` clause still validate.
-        // The grammar keeps `output` optional in the AST; downstream
-        // sub-plans (composition) will tighten the constraint.
+        // The `output` clause is optional in the AST; when it is absent
+        // the validator skips the emit-vs-output check entirely.
         let src = r#"
             recipe "legacy"
             engine http
@@ -2573,7 +2572,7 @@ emit Item { }
     }
 
     #[test]
-    fn output_diagnostic_anchors_at_the_output_clause() {
+    fn missing_from_output_diagnostic_anchors_at_emit_site() {
         let src = "recipe \"anchor\"\nengine http\noutput Product\ntype Product { id: String }\ntype Variant { id: String }\nstep list { method \"GET\" url \"https://x.test\" }\nfor $p in $list[*] {\n    emit Variant { id \u{2190} $p.id }\n}\n";
         let r = parse(src).unwrap();
         let cat = TypeCatalog::from_file(&r);

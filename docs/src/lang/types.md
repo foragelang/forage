@@ -174,7 +174,6 @@ the `output` clause; the validator rejects mismatches with
 indexes — `producers_of(Product)` resolves against the declared
 signature, not the runtime emit set.
 
-The clause is optional in the AST today; pre-migration recipes still
-parse and validate without one. Future sub-plans tighten the
-constraint when composition (`recipeA | recipeB`) lands and the
-output signature becomes load-bearing for type-checking pipes.
+The clause is optional in the AST; a recipe without an `output`
+declaration parses and validates, and the validator skips the
+emit-vs-output check entirely.

@@ -121,9 +121,9 @@ block. Validator-enforced constraints (not parser-enforced):
   names surface as `UnknownType`. Every `emit T { … }` whose `T`
   is not in the declared list is rejected with `MissingFromOutput`.
   Listed types with no corresponding `emit` warn as
-  `UnusedInOutput`. The output clause is optional in the AST today
-  (pre-migration recipes parse without it); the validator skips the
-  emit-vs-output check entirely when the clause is absent.
+  `UnusedInOutput`. The output clause is optional in the AST; the
+  validator skips the emit-vs-output check entirely when the clause
+  is absent.
 - **Order is free.** The header may appear anywhere among the other
   forms; the parser collects each kind into its slot on the
   `ForageFile` AST regardless of position.
