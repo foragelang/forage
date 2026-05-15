@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::DaemonError;
 use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun, Trigger};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Open the daemon DB and apply any pending schema migrations.
 /// Returns the connection plus the pre-migration `schema_version` so
@@ -139,6 +139,21 @@ fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
         )?;
     }
 
+    // v4: per-run input bindings live on the row itself. The legacy
+    // path read `<workspace>/<slug>/recipe.forage/.../fixtures/inputs.json`
+    // off disk at fire time, which doesn't exist after the Phase-10
+    // flat-shape migration. Inputs are now an explicit field set
+    // through `configure_run`. Default is an empty JSON object; that
+    // matches the legacy "no file → empty map" outcome for runs that
+    // never had inputs.
+    if current < 4 {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE runs ADD COLUMN inputs_json TEXT NOT NULL DEFAULT '{}';
+            "#,
+        )?;
+    }
+
     if current < SCHEMA_VERSION {
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?1)",
@@ -153,9 +168,10 @@ fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
 pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError> {
     let cadence_json = serde_json::to_string(&run.cadence)?;
     let health = health_to_str(run.health);
+    let inputs_json = serde_json::to_string(&run.inputs)?;
     conn.execute(
-        "INSERT INTO runs(id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO runs(id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             run.id,
             run.recipe_name,
@@ -166,6 +182,7 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             health,
             run.next_run,
             run.deployed_version,
+            inputs_json,
         ],
     )?;
     Ok(())
@@ -174,6 +191,7 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
 pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError> {
     let cadence_json = serde_json::to_string(&run.cadence)?;
     let health = health_to_str(run.health);
+    let inputs_json = serde_json::to_string(&run.inputs)?;
     let changed = conn.execute(
         "UPDATE runs SET
             recipe_name      = ?2,
@@ -183,7 +201,8 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             output_path      = ?6,
             health           = ?7,
             next_run         = ?8,
-            deployed_version = ?9
+            deployed_version = ?9,
+            inputs_json      = ?10
          WHERE id = ?1",
         params![
             run.id,
@@ -195,6 +214,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             health,
             run.next_run,
             run.deployed_version,
+            inputs_json,
         ],
     )?;
     if changed == 0 {
@@ -215,7 +235,7 @@ pub(crate) fn delete_run(conn: &Connection, run_id: &str) -> Result<(), DaemonEr
 
 pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
          FROM runs WHERE id = ?1",
         params![run_id],
         row_to_run,
@@ -227,7 +247,7 @@ pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Ru
 
 pub(crate) fn get_run_by_name(conn: &Connection, name: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
          FROM runs WHERE recipe_name = ?1",
         params![name],
         row_to_run,
@@ -239,7 +259,7 @@ pub(crate) fn get_run_by_name(conn: &Connection, name: &str) -> Result<Option<Ru
 
 pub(crate) fn list_runs(conn: &Connection) -> Result<Vec<Run>, DaemonError> {
     let mut stmt = conn.prepare(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
          FROM runs ORDER BY recipe_name ASC",
     )?;
     let mut out = Vec::new();
@@ -260,6 +280,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
     let health: String = r.get(6)?;
     let next_run: Option<i64> = r.get(7)?;
     let deployed_version: Option<i64> = r.get(8)?;
+    let inputs_json: String = r.get(9)?;
 
     let cadence: Cadence = match serde_json::from_str(&cadence_json) {
         Ok(c) => c,
@@ -282,6 +303,19 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         }
         None => None,
     };
+    let inputs: indexmap::IndexMap<String, serde_json::Value> = match serde_json::from_str(
+        &inputs_json,
+    ) {
+        Ok(serde_json::Value::Object(obj)) => obj.into_iter().collect(),
+        Ok(other) => {
+            return Ok(Err(DaemonError::Corrupt {
+                detail: format!(
+                    "inputs_json must be a JSON object for run {id}, got {other:?}"
+                ),
+            }));
+        }
+        Err(e) => return Ok(Err(DaemonError::Serde(e))),
+    };
 
     Ok(Ok(Run {
         id,
@@ -293,6 +327,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         health,
         next_run,
         deployed_version,
+        inputs,
     }))
 }
 

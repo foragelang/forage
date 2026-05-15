@@ -183,6 +183,7 @@ export function ScheduleEditor({
                                 cadence: cadenceFromDraft(draft),
                                 output: draft.output,
                                 enabled: draft.enabled,
+                                inputs: run.inputs,
                             })
                         }
                     >

@@ -201,6 +201,7 @@ fn deploy_updates_run_pointer_when_run_exists() {
         cadence: Cadence::Manual,
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert!(run.deployed_version.is_none());
@@ -226,6 +227,7 @@ async fn run_once_without_deployment_fails_cleanly() {
         cadence: Cadence::Manual,
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 
@@ -272,6 +274,7 @@ async fn run_once_uses_deployed_source() {
         cadence: Cadence::Manual,
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert_eq!(run.deployed_version, Some(1));
@@ -393,6 +396,7 @@ async fn scheduled_run_recipe_version_round_trips() {
         cadence: Cadence::Manual,
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 
@@ -508,6 +512,9 @@ fn opening_a_v1_database_runs_the_migration() {
     assert_eq!(runs[0].id, "legacy");
     assert_eq!(runs[0].recipe_name, "old-slug");
     assert!(runs[0].deployed_version.is_none());
+    // v4 added `inputs_json` with a default of `'{}'`; legacy rows
+    // must round-trip as an empty map.
+    assert!(runs[0].inputs.is_empty());
 
     // The new table is queryable (returns empty for a never-deployed
     // recipe). If the migration didn't add it, this would fail at the

@@ -30,6 +30,7 @@ fn cron_top_of_each_hour_parses_and_computes_next_fire() {
         health: Health::Unknown,
         next_run: None,
         deployed_version: None,
+        inputs: indexmap::IndexMap::new(),
     };
 
     // Anchor `now` deterministically at 2030-01-01 03:17:23 UTC; the
@@ -70,6 +71,7 @@ async fn configure_run_rejects_bad_cron() {
             .join("data")
             .join(format!("{recipe_name}.sqlite")),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let err = daemon
         .configure_run(recipe_name, cfg)
@@ -101,6 +103,7 @@ async fn corrupted_stored_cron_records_synthetic_failure() {
             .join("data")
             .join(format!("{recipe_name}.sqlite")),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 

@@ -379,6 +379,7 @@ impl Daemon {
                     enabled: cfg.enabled,
                     cadence: cfg.cadence,
                     output: cfg.output,
+                    inputs: cfg.inputs,
                     // Re-enabling a previously-paused run clears the
                     // Paused label but we don't have its real health
                     // yet — first scheduler fire will refresh it.
@@ -413,6 +414,7 @@ impl Daemon {
                         },
                         next_run: None,
                         deployed_version,
+                        inputs: cfg.inputs,
                     }
                 }
             };
@@ -456,6 +458,7 @@ impl Daemon {
             cadence: Cadence::Manual,
             output: default_output,
             enabled: true,
+            inputs: IndexMap::new(),
         };
         self.configure_run(name, cfg)
     }

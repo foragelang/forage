@@ -1961,6 +1961,7 @@ for $i in $list.items[*] {
             cadence: Cadence::Manual,
             output: ws_root.join(".forage").join("data").join("items.sqlite"),
             enabled: true,
+            inputs: indexmap::IndexMap::new(),
         };
         let created = daemon
             .configure_run(slug, cfg.clone())
@@ -2016,6 +2017,7 @@ for $i in $list.items[*] {
             cadence: Cadence::Manual,
             output: ws_root.join(".forage").join("data").join("items.sqlite"),
             enabled: true,
+            inputs: indexmap::IndexMap::new(),
         };
         let run = daemon.configure_run(slug, cfg).expect("configure_run");
         deploy_from_disk(&daemon, &ws_root, slug);
@@ -2175,6 +2177,7 @@ for $i in $list.items[*] {
             cadence: Cadence::Manual,
             output: ws_root.join(".forage").join("data").join("bar.sqlite"),
             enabled: true,
+            inputs: indexmap::IndexMap::new(),
         };
         let run = daemon.configure_run("bar", cfg).expect("configure_run");
         assert_eq!(run.recipe_name, "bar");

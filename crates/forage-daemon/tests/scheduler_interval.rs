@@ -102,6 +102,7 @@ async fn interval_run_fires_when_clock_advances() {
         },
         output,
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon
         .configure_run(recipe_name, cfg)
@@ -144,6 +145,7 @@ fn build_run(recipe_name: &str, cadence: Cadence, next_run: Option<i64>) -> fora
         health: forage_daemon::Health::Unknown,
         next_run,
         deployed_version: None,
+        inputs: indexmap::IndexMap::new(),
     }
 }
 

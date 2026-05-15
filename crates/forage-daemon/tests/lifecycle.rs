@@ -31,6 +31,7 @@ async fn open_configure_trigger_persist() {
         cadence: Cadence::Manual,
         output: output.clone(),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let run = daemon
         .configure_run(recipe_name, cfg)

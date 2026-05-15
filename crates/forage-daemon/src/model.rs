@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -52,6 +53,13 @@ pub struct Run {
     /// the first deploy.
     #[ts(type = "number | null")]
     pub deployed_version: Option<u32>,
+    /// Per-run input bindings, passed to the engine on every scheduled
+    /// fire. The shape is a JSON object — keys are the `input` names
+    /// the recipe declares, values are the literal JSON the engine
+    /// converts to `EvalValue` at execute time. Empty map for recipes
+    /// with no inputs.
+    #[ts(type = "Record<string, unknown>")]
+    pub inputs: IndexMap<String, serde_json::Value>,
 }
 
 /// How often the daemon should fire a `Run`.
@@ -168,6 +176,11 @@ pub struct RunConfig {
     #[ts(type = "string")]
     pub output: PathBuf,
     pub enabled: bool,
+    /// Per-run input bindings — see `Run::inputs`. Callers carry the
+    /// existing `Run.inputs` here on partial updates (cadence-only
+    /// changes); an empty map clears any previously-set inputs.
+    #[ts(type = "Record<string, unknown>")]
+    pub inputs: IndexMap<String, serde_json::Value>,
 }
 
 /// Metadata for one frozen deployed version of a recipe. The source

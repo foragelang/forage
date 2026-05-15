@@ -8,7 +8,6 @@
 //! render a failure row in the history table. Only setup-level errors
 //! (DB corruption, missing run row) bubble out as `Err`.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use forage_core::ast::EngineKind;
@@ -180,15 +179,15 @@ async fn execute(
     // since deploy would surface above in `forage_core::parse`.
     let catalog: TypeCatalog = deployed.catalog.into();
 
-    // Inputs live on disk next to the user's edit-folder recipe.
-    // Drafts and deployed versions share inputs intentionally — the
-    // user wants to iterate on a recipe's fixture without redeploying
-    // each time.
-    let recipe_path = run
-        .workspace_root
-        .join(&run.recipe_name)
-        .join("recipe.forage");
-    let inputs = load_inputs(&recipe_path);
+    // Inputs come from the explicit `Run.inputs` field set via
+    // `configure_run`. Recipes that declare `input` bindings must have
+    // them configured on the row — there's no implicit filesystem
+    // fallback.
+    let inputs: IndexMap<String, EvalValue> = run
+        .inputs
+        .iter()
+        .map(|(k, v)| (k.clone(), EvalValue::from(v)))
+        .collect();
     let secrets = load_secrets(&recipe);
 
     let tables = derive_schema(&recipe, &catalog);
@@ -308,29 +307,6 @@ fn write_records(
         )?;
     }
     tx.commit()
-}
-
-/// Inputs convention matches the CLI / Studio: per-recipe
-/// `fixtures/inputs.json` sitting next to the `recipe.forage`. Absent
-/// file → empty input map.
-fn load_inputs(recipe_path: &Path) -> IndexMap<String, EvalValue> {
-    let Some(dir) = recipe_path.parent() else {
-        return IndexMap::new();
-    };
-    let path = dir.join("fixtures").join("inputs.json");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return IndexMap::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return IndexMap::new();
-    };
-    let mut out = IndexMap::new();
-    if let serde_json::Value::Object(o) = value {
-        for (k, v) in o {
-            out.insert(k, EvalValue::from(&v));
-        }
-    }
-    out
 }
 
 /// Secrets convention matches the CLI / Studio: each declared secret

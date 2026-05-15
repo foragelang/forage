@@ -117,6 +117,7 @@ fn deploy_and_default_output_anchor_on_header_name() {
         cadence: Cadence::Manual,
         output: daemon.default_output_path(recipe_name),
         enabled: true,
+        inputs: indexmap::IndexMap::new(),
     };
     let updated = daemon
         .configure_run(recipe_name, cfg)
