@@ -35,7 +35,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use forage_core::{
-    EvalValue, ForageFile, RecipeSignatures, SerializableCatalog, Snapshot, TypeCatalog,
+    EvalValue, ForageFile, RecipeSignatures, RunOptions, SerializableCatalog, Snapshot,
+    TypeCatalog,
 };
 use forage_http::{ProgressSink, RunEvent};
 use indexmap::IndexMap;
@@ -103,6 +104,7 @@ pub trait LiveBrowserDriver: Send + Sync {
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
         progress: Arc<dyn ProgressSink>,
+        options: &RunOptions,
     ) -> Result<Snapshot, BrowserDriverError>;
 }
 

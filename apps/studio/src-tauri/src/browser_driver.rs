@@ -52,6 +52,7 @@ pub async fn run_live(
     inputs: indexmap::IndexMap<String, EvalValue>,
     secrets: indexmap::IndexMap<String, String>,
     opts: LiveRunOptions,
+    run_options: &RunOptions,
 ) -> Result<Snapshot, String> {
     let cfg = recipe
         .browser
@@ -207,15 +208,8 @@ pub async fn run_live(
     }
 
     // Route through the replay engine.
-    run_browser_replay(
-        recipe,
-        catalog,
-        &restitched,
-        inputs,
-        secrets,
-        &RunOptions::default(),
-    )
-    .map_err(|e| format!("{e}"))
+    run_browser_replay(recipe, catalog, &restitched, inputs, secrets, run_options)
+        .map_err(|e| format!("{e}"))
 }
 
 fn render_url(

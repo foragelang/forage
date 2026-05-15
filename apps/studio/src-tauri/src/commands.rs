@@ -514,6 +514,7 @@ pub async fn run_recipe(
                 inputs,
                 secrets,
                 LiveRunOptions::default(),
+                &run_options,
             )
             .await
         }

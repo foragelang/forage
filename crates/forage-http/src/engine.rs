@@ -1804,4 +1804,123 @@ for $i in $list.items[*] {
             "expected slot-missing diagnostic; got {msg}",
         );
     }
+
+    /// `RunOptions::sample_limit` caps each top-level `for` at the
+    /// requested count. The recipe iterates over 100 items; the engine
+    /// stops the loop after the fifth, so the snapshot carries exactly
+    /// five records.
+    #[tokio::test]
+    async fn sample_limit_caps_top_level_for_loop() {
+        let mut items = String::from("[");
+        for i in 0..100 {
+            if i > 0 {
+                items.push(',');
+            }
+            items.push_str(&format!(r#"{{"id":"r-{i}"}}"#));
+        }
+        items.push(']');
+
+        let src = r#"
+            recipe "sampled"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $i in $list[*] {
+                emit Item { id ← $i.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let exchange = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: items,
+        });
+        let transport = ReplayTransport::new(vec![exchange]);
+        let engine = Engine::new(&transport);
+        let options = RunOptions {
+            sample_limit: Some(5),
+        };
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &options)
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 5);
+        // First five items, in source order — confirms the cap chops
+        // the tail rather than reshuffling.
+        let ids: Vec<&str> = snap
+            .records
+            .iter()
+            .filter_map(|r| match r.fields.get("id") {
+                Some(JSONValue::String(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["r-0", "r-1", "r-2", "r-3", "r-4"]);
+    }
+
+    /// Nested for-loops always run fully — `sample_limit` only caps the
+    /// outermost loop. A recipe that emits one record per
+    /// `(category, item)` pair with 3 categories × 4 items inside, capped
+    /// at sample 2, yields 2 * 4 = 8 records (two outer iterations,
+    /// each iterating the full inner array).
+    #[tokio::test]
+    async fn sample_limit_only_caps_outermost_loop() {
+        let src = r#"
+            recipe "nested-sample"
+            engine http
+            type Item { id: String }
+            step list {
+                method "GET"
+                url "https://api.example.com/items"
+            }
+            for $cat in $list[*] {
+                for $i in $cat.items[*] {
+                    emit Item { id ← $i.id }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let body = r#"[
+            {"items":[{"id":"a1"},{"id":"a2"},{"id":"a3"},{"id":"a4"}]},
+            {"items":[{"id":"b1"},{"id":"b2"},{"id":"b3"},{"id":"b4"}]},
+            {"items":[{"id":"c1"},{"id":"c2"},{"id":"c3"},{"id":"c4"}]}
+        ]"#;
+        let exchange = Capture::Http(HttpExchange {
+            url: "https://api.example.com/items".into(),
+            method: "GET".into(),
+            request_headers: IndexMap::new(),
+            request_body: None,
+            status: 200,
+            response_headers: IndexMap::new(),
+            body: body.into(),
+        });
+        let transport = ReplayTransport::new(vec![exchange]);
+        let engine = Engine::new(&transport);
+        let options = RunOptions {
+            sample_limit: Some(2),
+        };
+        let snap = engine
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &options)
+            .await
+            .unwrap();
+        assert_eq!(snap.records.len(), 8);
+        let ids: Vec<&str> = snap
+            .records
+            .iter()
+            .filter_map(|r| match r.fields.get("id") {
+                Some(JSONValue::String(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"]);
+    }
 }

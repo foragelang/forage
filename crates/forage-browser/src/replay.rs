@@ -351,4 +351,61 @@ mod tests {
         assert!(titles.iter().any(|t| t.contains("Inception")));
         assert!(titles.iter().any(|t| t.contains("Matrix")));
     }
+
+    /// `RunOptions::sample_limit` caps the top-level `captures.match`
+    /// iteration: the capture body's outermost `for` stops after the
+    /// requested count. The capture array carries 50 items; with
+    /// `sample_limit = Some(3)` the snapshot lands three records.
+    #[test]
+    fn sample_limit_caps_capture_iteration() {
+        let mut items = String::from("[");
+        for i in 0..50 {
+            if i > 0 {
+                items.push(',');
+            }
+            items.push_str(&format!(r#"{{"id":"r-{i}"}}"#));
+        }
+        items.push(']');
+
+        let src = r#"
+            recipe "sampled"
+            engine browser
+            type Item { id: String }
+            browser {
+                initialURL: "https://example.com"
+                observe:    "example.com/api"
+                paginate browserPaginate.scroll {
+                    until: noProgressFor(2)
+                    maxIterations: 5
+                }
+                captures.match {
+                    urlPattern: "example.com/api/items"
+                    for $r in $[*] {
+                        emit Item { id ← $r.id }
+                    }
+                }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = TypeCatalog::from_file(&recipe);
+        let cap = Capture::Browser(BrowserCapture::Match {
+            url: "https://example.com/api/items".into(),
+            method: "GET".into(),
+            status: 200,
+            body: items,
+        });
+        let options = RunOptions {
+            sample_limit: Some(3),
+        };
+        let snap = run_browser_replay(
+            &recipe,
+            &catalog,
+            &[cap],
+            IndexMap::new(),
+            IndexMap::new(),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(snap.records.len(), 3);
+    }
 }

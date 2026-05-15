@@ -355,7 +355,14 @@ async fn run_scraping(
                     version: Some(version),
                 })?;
             driver
-                .run_live(recipe, catalog, inputs, secrets, sink.clone())
+                .run_live(
+                    recipe,
+                    catalog,
+                    inputs,
+                    secrets,
+                    sink.clone(),
+                    &RunOptions::default(),
+                )
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("browser: {e}"),
