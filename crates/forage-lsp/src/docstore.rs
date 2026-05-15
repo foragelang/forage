@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use forage_core::ForageFile;
 use forage_core::parse::ParseError;
-use forage_core::validate;
+use forage_core::validate::{WorkspaceFileRef, validate, validate_workspace_shared};
 use forage_core::workspace::{self, TypeCatalog, Workspace, WorkspaceError, WorkspaceFileKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
@@ -205,7 +205,6 @@ fn build_diagnostics(
     live_sources: &HashMap<PathBuf, String>,
 ) -> (Option<ForageFile>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let _ = path; // path only matters when validating against catalogs of other files
     let parsed = match forage_core::parse::parse(source) {
         Ok(p) => p,
         Err(e) => {
@@ -221,7 +220,33 @@ fn build_diagnostics(
         }
     };
     let report = validate(&parsed, &catalog);
-    for issue in &report.issues {
+    push_issues(&mut diagnostics, line_map, report.issues.iter());
+
+    // Cross-file pass: only meaningful inside a workspace. Build the
+    // full slice of parsed siblings (preferring live buffers over disk)
+    // and pick out the issues anchored on *this* file.
+    if let (Some(ws), Some(focal_path)) = (workspace, path) {
+        let canonical = focal_path.canonicalize();
+        let focal_path = canonical.as_deref().unwrap_or(focal_path);
+        let siblings = load_workspace_siblings(ws, focal_path, &parsed, live_sources);
+        let refs: Vec<WorkspaceFileRef<'_>> = siblings
+            .iter()
+            .map(|(p, f)| WorkspaceFileRef { path: p, file: f })
+            .collect();
+        let by_path = validate_workspace_shared(&refs);
+        if let Some(issues) = by_path.get(focal_path) {
+            push_issues(&mut diagnostics, line_map, issues.iter());
+        }
+    }
+    (Some(parsed), diagnostics)
+}
+
+fn push_issues<'a>(
+    diagnostics: &mut Vec<Diagnostic>,
+    line_map: &LineMap,
+    issues: impl Iterator<Item = &'a forage_core::ValidationIssue>,
+) {
+    for issue in issues {
         let severity = match issue.severity {
             forage_core::Severity::Error => DiagnosticSeverity::ERROR,
             forage_core::Severity::Warning => DiagnosticSeverity::WARNING,
@@ -242,7 +267,48 @@ fn build_diagnostics(
             ..Default::default()
         });
     }
-    (Some(parsed), diagnostics)
+}
+
+/// Build the slice the cross-file shared-decl pass wants: every
+/// parseable file in the workspace, with the focal file substituted by
+/// the just-parsed AST so the user sees collisions against unsaved
+/// edits. Siblings prefer live buffer contents over disk for the same
+/// reason `build_catalog` does.
+fn load_workspace_siblings(
+    ws: &Workspace,
+    focal_path: &std::path::Path,
+    focal_file: &ForageFile,
+    live_sources: &HashMap<PathBuf, String>,
+) -> Vec<(PathBuf, ForageFile)> {
+    let mut out: Vec<(PathBuf, ForageFile)> = Vec::with_capacity(ws.files.len() + 1);
+    let mut focal_seen = false;
+    for entry in &ws.files {
+        let canonical = entry.path.canonicalize().unwrap_or(entry.path.clone());
+        if canonical == focal_path {
+            out.push((canonical, focal_file.clone()));
+            focal_seen = true;
+            continue;
+        }
+        let source = match live_sources.get(&canonical) {
+            Some(s) => s.clone(),
+            None => match std::fs::read_to_string(&entry.path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
+        };
+        let Ok(parsed) = forage_core::parse::parse(&source) else {
+            continue;
+        };
+        out.push((canonical, parsed));
+    }
+    if !focal_seen {
+        // The focal file lives outside the workspace's `scan_dir`
+        // listing (e.g. an untitled buffer the user gave a path to that
+        // isn't on disk yet). Still include it so its own share decls
+        // participate in the pass.
+        out.push((focal_path.to_path_buf(), focal_file.clone()));
+    }
+    out
 }
 
 fn build_catalog(

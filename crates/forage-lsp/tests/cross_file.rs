@@ -255,6 +255,82 @@ fn declarations_file_validates_its_own_duplicates() {
     );
 }
 
+/// Two files in the same workspace both declare `share fn upper(...)`.
+/// The cross-file pass must surface `DuplicateSharedDeclaration` on
+/// both of them — the LSP's per-file diagnostics carry workspace-wide
+/// share collisions, not just file-local validator output. Use a `fn`
+/// (not a `type`) so the workspace's type-catalog dedup doesn't
+/// pre-empt the share-collision check.
+#[test]
+fn duplicate_share_decl_across_files_surfaces_through_lsp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
+    let a_path = root.join("a.forage");
+    let b_path = root.join("b.forage");
+    write(&a_path, "share fn upper($x) { $x }\n");
+    write(&b_path, "share fn upper($x) { $x }\n");
+
+    let store = DocStore::new();
+    let a_uri = Url::from_file_path(&a_path).unwrap();
+    let b_uri = Url::from_file_path(&b_path).unwrap();
+
+    // Opening A on its own surfaces a collision (b.forage is read from
+    // disk during the cross-file pass).
+    let a_diags = store.upsert(a_uri.clone(), fs::read_to_string(&a_path).unwrap());
+    let a_dup: Vec<_> = a_diags
+        .iter()
+        .filter(|d| {
+            d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("share fn 'upper'")
+        })
+        .collect();
+    assert_eq!(
+        a_dup.len(),
+        1,
+        "expected DuplicateSharedDeclaration on a.forage; got {a_diags:?}"
+    );
+
+    // Opening B then surfaces the collision on its side too.
+    let b_diags = store.upsert(b_uri.clone(), fs::read_to_string(&b_path).unwrap());
+    let b_dup: Vec<_> = b_diags
+        .iter()
+        .filter(|d| {
+            d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("share fn 'upper'")
+        })
+        .collect();
+    assert_eq!(
+        b_dup.len(),
+        1,
+        "expected DuplicateSharedDeclaration on b.forage; got {b_diags:?}"
+    );
+
+    // refresh_workspace republishes both — confirm both still carry
+    // the collision, matching the LSP server's did_change fan-out.
+    let ws_root = forage_core::workspace::discover(&a_path)
+        .expect("workspace")
+        .root;
+    let refreshed = store.refresh_workspace(&ws_root);
+    for (uri, diags) in refreshed {
+        let dup: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("share fn 'upper'")
+            })
+            .collect();
+        assert_eq!(
+            dup.len(),
+            1,
+            "expected DuplicateSharedDeclaration on {uri}; got {diags:?}",
+        );
+    }
+}
+
 /// A declarations file referencing an unknown record type should
 /// surface an unresolved-reference diagnostic against the workspace
 /// catalog.

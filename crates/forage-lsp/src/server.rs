@@ -101,14 +101,13 @@ impl LanguageServer for ForageLsp {
             .publish_diagnostics(uri.clone(), diags, None)
             .await;
 
-        // If the edited document is a declarations file, every open
-        // recipe in the same workspace needs to be re-validated against
-        // the new catalog. The recipe arm gets its own diagnostics from
-        // the upsert above and doesn't need fanout.
-        if matches!(
-            self.store.workspace_kind_for(&uri),
-            Some(forage_core::workspace::WorkspaceFileKind::Declarations)
-        ) {
+        // Fan out to every other open doc in the same workspace. Any
+        // edit can shift cross-file state: a declarations-file change
+        // moves the catalog every recipe sees, and a recipe-file change
+        // can add or remove a `share` declaration that affects sibling
+        // cross-file diagnostics. The upserted doc already received its
+        // own diagnostics; siblings need a fresh pass.
+        if self.store.workspace_kind_for(&uri).is_some() {
             if let Some(root) = workspace_root_for(&uri) {
                 let refreshed = self.store.refresh_workspace(&root);
                 for (other_uri, diags) in refreshed {

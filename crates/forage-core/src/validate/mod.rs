@@ -35,11 +35,15 @@ pub struct WorkspaceFileRef<'a> {
 /// whenever two files declare a `share`d type/enum/fn with the same
 /// name. The check is symmetric — both colliding files surface the
 /// diagnostic. File-local (non-`share`d) declarations never participate.
-pub fn validate_workspace_shared(files: &[WorkspaceFileRef<'_>]) -> ValidationReport {
+///
+/// Returns a map keyed by the file path that owns each issue. Callers
+/// (the LSP docstore, Studio's per-file save) consume only the slice
+/// matching the file they're publishing diagnostics for.
+pub fn validate_workspace_shared(
+    files: &[WorkspaceFileRef<'_>],
+) -> std::collections::HashMap<std::path::PathBuf, Vec<ValidationIssue>> {
     use std::collections::HashMap;
     use std::path::PathBuf;
-
-    let mut issues: Vec<ValidationIssue> = Vec::new();
 
     // Kind discriminator: types, enums, and fns live in separate
     // namespaces — a `share type Foo` and a `share enum Foo` don't
@@ -74,17 +78,17 @@ pub fn validate_workspace_shared(files: &[WorkspaceFileRef<'_>]) -> ValidationRe
         }
     }
 
-    emit_share_collisions("type", types, &mut issues);
-    emit_share_collisions("enum", enums, &mut issues);
-    emit_share_collisions("fn", fns, &mut issues);
-
-    ValidationReport { issues }
+    let mut out: HashMap<PathBuf, Vec<ValidationIssue>> = HashMap::new();
+    emit_share_collisions("type", types, &mut out);
+    emit_share_collisions("enum", enums, &mut out);
+    emit_share_collisions("fn", fns, &mut out);
+    out
 }
 
 fn emit_share_collisions(
     kind_word: &str,
     sites_by_name: std::collections::HashMap<&str, Vec<(std::path::PathBuf, Span)>>,
-    issues: &mut Vec<ValidationIssue>,
+    out: &mut std::collections::HashMap<std::path::PathBuf, Vec<ValidationIssue>>,
 ) {
     for (name, sites) in sites_by_name {
         if sites.len() <= 1 {
@@ -96,7 +100,7 @@ fn emit_share_collisions(
                 .filter(|(p, _)| p != path)
                 .map(|(p, _)| p.display().to_string())
                 .collect();
-            issues.push(ValidationIssue {
+            out.entry(path.clone()).or_default().push(ValidationIssue {
                 severity: Severity::Error,
                 code: ValidationCode::DuplicateSharedDeclaration,
                 message: format!(
@@ -2052,7 +2056,7 @@ emit Item { }
         let file_b = parse(src_b).unwrap();
         let path_a = std::path::PathBuf::from("/ws/a.forage");
         let path_b = std::path::PathBuf::from("/ws/b.forage");
-        let rep = validate_workspace_shared(&[
+        let by_path = validate_workspace_shared(&[
             WorkspaceFileRef {
                 path: &path_a,
                 file: &file_a,
@@ -2062,15 +2066,17 @@ emit Item { }
                 file: &file_b,
             },
         ]);
-        let dup_errors: Vec<_> = rep
-            .errors()
-            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
-            .collect();
-        assert_eq!(
-            dup_errors.len(),
-            2,
-            "expected a DuplicateSharedDeclaration on both files; got {:?}",
-            rep.issues,
+        assert!(
+            by_path.get(&path_a).is_some_and(|v| v
+                .iter()
+                .any(|i| i.code == ValidationCode::DuplicateSharedDeclaration)),
+            "expected DuplicateSharedDeclaration on file A; got {by_path:?}",
+        );
+        assert!(
+            by_path.get(&path_b).is_some_and(|v| v
+                .iter()
+                .any(|i| i.code == ValidationCode::DuplicateSharedDeclaration)),
+            "expected DuplicateSharedDeclaration on file B; got {by_path:?}",
         );
     }
 
@@ -2085,7 +2091,7 @@ emit Item { }
         let file_b = parse(src_b).unwrap();
         let path_a = std::path::PathBuf::from("/ws/a.forage");
         let path_b = std::path::PathBuf::from("/ws/b.forage");
-        let rep = validate_workspace_shared(&[
+        let by_path = validate_workspace_shared(&[
             WorkspaceFileRef {
                 path: &path_a,
                 file: &file_a,
@@ -2096,9 +2102,8 @@ emit Item { }
             },
         ]);
         assert!(
-            !rep.has_errors(),
-            "single share + file-local must not collide; got {:?}",
-            rep.issues,
+            by_path.is_empty(),
+            "single share + file-local must not collide; got {by_path:?}",
         );
     }
 
@@ -2110,7 +2115,7 @@ emit Item { }
         let file_b = parse(src_b).unwrap();
         let path_a = std::path::PathBuf::from("/ws/a.forage");
         let path_b = std::path::PathBuf::from("/ws/b.forage");
-        let rep = validate_workspace_shared(&[
+        let by_path = validate_workspace_shared(&[
             WorkspaceFileRef {
                 path: &path_a,
                 file: &file_a,
@@ -2120,11 +2125,8 @@ emit Item { }
                 file: &file_b,
             },
         ]);
-        let dup_errors: Vec<_> = rep
-            .errors()
-            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
-            .collect();
-        assert_eq!(dup_errors.len(), 2);
+        assert!(by_path.get(&path_a).is_some_and(|v| v.len() == 1));
+        assert!(by_path.get(&path_b).is_some_and(|v| v.len() == 1));
     }
 
     #[test]
@@ -2135,7 +2137,7 @@ emit Item { }
         let file_b = parse(src_b).unwrap();
         let path_a = std::path::PathBuf::from("/ws/a.forage");
         let path_b = std::path::PathBuf::from("/ws/b.forage");
-        let rep = validate_workspace_shared(&[
+        let by_path = validate_workspace_shared(&[
             WorkspaceFileRef {
                 path: &path_a,
                 file: &file_a,
@@ -2145,10 +2147,7 @@ emit Item { }
                 file: &file_b,
             },
         ]);
-        let dup_errors: Vec<_> = rep
-            .errors()
-            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
-            .collect();
-        assert_eq!(dup_errors.len(), 2);
+        assert!(by_path.get(&path_a).is_some_and(|v| v.len() == 1));
+        assert!(by_path.get(&path_b).is_some_and(|v| v.len() == 1));
     }
 }

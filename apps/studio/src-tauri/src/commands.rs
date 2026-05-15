@@ -1192,7 +1192,116 @@ pub fn save_file(
     let target = resolve_new_in_workspace(&state, &path)?;
     let root = workspace_root_canonical(&state)?;
     std::fs::write(&target, &source).map_err(|e| e.to_string())?;
-    Ok(validate_path(&root, &target, &source))
+    let mut outcome = validate_path(&root, &target, &source);
+    append_workspace_shared_diagnostics(&root, &target, &source, &mut outcome);
+    Ok(outcome)
+}
+
+/// Run the cross-file `DuplicateSharedDeclaration` pass over every
+/// `.forage` file under `root`, then append the issues that target the
+/// just-saved file to its outcome. Re-loads the workspace from disk so
+/// the slice reflects the buffer we just wrote, not the cached Studio
+/// view.
+fn append_workspace_shared_diagnostics(
+    root: &Path,
+    saved_path: &Path,
+    source: &str,
+    outcome: &mut ValidationOutcome,
+) {
+    let ws = match forage_core::workspace::load(root) {
+        Ok(ws) => ws,
+        Err(e) => {
+            // The save itself succeeded; the cross-file pass is one
+            // step on top. Surfacing the workspace load failure into
+            // every saved-file outcome would be confusing — the
+            // workspace-level error is a separate, latent issue. Log
+            // it so it's not invisible.
+            tracing::warn!(
+                error = %e,
+                root = %root.display(),
+                "skipping cross-file shared-decl pass: workspace re-load failed"
+            );
+            return;
+        }
+    };
+    let focal = match parse(source) {
+        Ok(f) => f,
+        // The focal source already failed to parse; `validate_path`
+        // surfaced that parse error. Skipping the cross-file pass is
+        // correct — no AST means no shared decls to compare.
+        Err(_) => return,
+    };
+    let canonical_saved = saved_path
+        .canonicalize()
+        .unwrap_or_else(|_| saved_path.to_path_buf());
+
+    let mut entries: Vec<(std::path::PathBuf, forage_core::ForageFile)> =
+        Vec::with_capacity(ws.files.len() + 1);
+    let mut focal_seen = false;
+    for entry in &ws.files {
+        let canonical = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
+        if canonical == canonical_saved {
+            entries.push((canonical, focal.clone()));
+            focal_seen = true;
+            continue;
+        }
+        let src = match std::fs::read_to_string(&entry.path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    path = %entry.path.display(),
+                    "skipping sibling in cross-file shared-decl pass: read failed",
+                );
+                continue;
+            }
+        };
+        let parsed = match parse(&src) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    path = %entry.path.display(),
+                    "skipping sibling in cross-file shared-decl pass: parse failed",
+                );
+                continue;
+            }
+        };
+        entries.push((canonical, parsed));
+    }
+    if !focal_seen {
+        entries.push((canonical_saved.clone(), focal));
+    }
+    let refs: Vec<forage_core::validate::WorkspaceFileRef<'_>> = entries
+        .iter()
+        .map(|(p, f)| forage_core::validate::WorkspaceFileRef { path: p, file: f })
+        .collect();
+    let by_path = forage_core::validate::validate_workspace_shared(&refs);
+    let Some(issues) = by_path.get(&canonical_saved) else {
+        return;
+    };
+    let line_map = LineMap::new(source);
+    for issue in issues {
+        let r = line_map.range(issue.span.clone());
+        let sev = match issue.severity {
+            forage_core::Severity::Error => "error",
+            forage_core::Severity::Warning => "warning",
+        };
+        outcome.diagnostics.push(Diagnostic {
+            severity: sev,
+            code: format!("{:?}", issue.code),
+            message: issue.message.clone(),
+            start_line: r.start.line,
+            start_col: r.start.character,
+            end_line: r.end.line,
+            end_col: r.end.character,
+        });
+    }
+    outcome.diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
+    outcome.ok = !outcome.diagnostics.iter().any(|d| d.severity == "error");
 }
 
 /// Resolve a path that must already exist inside the workspace.
@@ -2013,6 +2122,50 @@ for $i in $list.items[*] {
             "declarations file should validate clean: {outcome:?}"
         );
         assert!(outcome.diagnostics.is_empty());
+    }
+
+    use super::append_workspace_shared_diagnostics;
+
+    /// Saving a second file that declares `share fn upper(...)` when a
+    /// sibling already declares the same share decl must surface
+    /// `DuplicateSharedDeclaration` against the just-saved file — the
+    /// cross-file pass is wired into the save outcome, not just the
+    /// per-file validator. `fn` chosen over `type` so the workspace
+    /// type-catalog's cross-file dedup doesn't pre-empt this check.
+    #[test]
+    fn save_surfaces_workspace_share_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("a.forage"), "share fn upper($x) { $x }\n").unwrap();
+
+        // Simulate `save_file` on b.forage. After writing the focal
+        // file, the helper sees both files on disk and routes the
+        // collision back to b.forage's outcome.
+        let b_path = root.join("b.forage");
+        let b_src = "share fn upper($x) { $x }\n";
+        std::fs::write(&b_path, b_src).unwrap();
+        let mut outcome = validate_path(root, &b_path, b_src);
+        assert!(
+            outcome.ok,
+            "per-file validator alone should still pass on b.forage: {outcome:?}",
+        );
+        append_workspace_shared_diagnostics(root, &b_path, b_src, &mut outcome);
+        assert!(
+            !outcome.ok,
+            "cross-file share collision must mark b.forage as failed: {outcome:?}",
+        );
+        assert!(
+            outcome
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "DuplicateSharedDeclaration"),
+            "expected DuplicateSharedDeclaration; got {outcome:?}",
+        );
     }
 
     use super::{
