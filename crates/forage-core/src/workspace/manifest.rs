@@ -20,28 +20,34 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-/// `forage.toml` shape. Every field declared without `#[serde(default)]`
-/// is required on parse — a manifest that omits `description`,
-/// `category`, or `tags` is malformed and fails to load. New
-/// workspaces created in-code use the `Default` impl, which serialises
-/// to a manifest where all required fields are present (with empty
-/// string / empty list values); the round-trip succeeds because the
-/// keys are emitted, just empty.
+/// `forage.toml` shape. Every field is optional at parse — the only
+/// things a workspace must declare to open are nothing. Publish
+/// metadata (description / category / tags) defaults to empty values
+/// and is validated for non-emptiness at publish time, not at load
+/// time. (The C3 audit fix made these required-on-parse; that conflated
+/// "publish-ready" with "workspace-loadable" and broke every existing
+/// workspace that pre-dates the schema change. See the followup
+/// product plan: these fields probably want to move off the workspace
+/// manifest and into per-recipe metadata, since each recipe in a
+/// workspace can be published independently.)
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Manifest {
     /// Publish slug — `"author/name"`. `None` until the workspace
     /// becomes publishable.
     pub name: Option<String>,
-    /// One-line description shown in the hub listing. Required on
-    /// parse; the publish path enforces a non-empty value (per the
-    /// hub-api shape).
+    /// One-line description shown in the hub listing. Empty string
+    /// when unset; the publish path bails with a clear error if
+    /// empty at publish time.
+    #[serde(default)]
     pub description: String,
     /// Hub category — matches the `category` segment on the listing
-    /// surface. Required on parse; lowercase kebab-case, validated
-    /// server-side.
+    /// surface. Empty string when unset; lowercase kebab-case,
+    /// validated server-side at publish time.
+    #[serde(default)]
     pub category: String,
-    /// Search tags. Required on parse; empty list when unset.
+    /// Search tags. Empty list when unset.
+    #[serde(default)]
     pub tags: Vec<String>,
     /// Map from `"author/slug"` to integer hub version. Optional on
     /// parse because a workspace without deps is common.
@@ -129,39 +135,36 @@ mod tests {
 
     #[test]
     fn deps_only_manifest_parses() {
-        // `name` is the only field that's actually optional on parse —
-        // a workspace can carry [deps] without being publishable.
-        // `description`, `category`, `tags` are required.
+        // Every workspace-loadable manifest must parse, including ones
+        // that pre-date the publish-metadata schema. Workspace identity
+        // (name, deps) is the load-time concern; publish metadata
+        // (description, category, tags) is enforced at publish time.
         let src = r#"
-            description = ""
-            category = ""
-            tags = []
             [deps]
             "dima/shared-types" = 7
         "#;
         let m = parse_manifest(src).unwrap();
         assert!(m.name.is_none());
+        assert!(m.description.is_empty());
+        assert!(m.category.is_empty());
+        assert!(m.tags.is_empty());
         assert_eq!(m.deps.len(), 1);
     }
 
     #[test]
-    fn missing_deps_table_defaults_to_empty() {
-        let m = parse_manifest(
-            "name = \"dima/cannabis\"\ndescription = \"x\"\ncategory = \"x\"\ntags = []\n",
-        )
-        .unwrap();
+    fn empty_manifest_parses_with_defaults() {
+        let m = parse_manifest("").unwrap();
+        assert!(m.name.is_none());
+        assert!(m.description.is_empty());
+        assert!(m.category.is_empty());
+        assert!(m.tags.is_empty());
         assert!(m.deps.is_empty());
     }
 
     #[test]
-    fn missing_required_fields_fail_to_parse() {
-        // Greenfield rule: no `#[serde(default)]` on description /
-        // category / tags. A manifest that omits them is malformed.
-        assert!(parse_manifest("name = \"x/y\"\n").is_err());
-        assert!(parse_manifest("description = \"x\"\n").is_err());
-        assert!(
-            parse_manifest("description = \"x\"\ncategory = \"y\"\n").is_err()
-        );
+    fn missing_deps_table_defaults_to_empty() {
+        let m = parse_manifest("name = \"dima/cannabis\"\n").unwrap();
+        assert!(m.deps.is_empty());
     }
 
     #[test]
