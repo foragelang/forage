@@ -52,6 +52,12 @@ impl PublishError {
                 your_base,
                 message,
             },
+            // A server-issued 401 means the token is expired/revoked;
+            // the UI's affordance is the same as "no local token"
+            // (re-banner the sign-in flow), so collapse both into
+            // NotSignedIn rather than letting a stale token fall
+            // through to a generic toast.
+            HubError::Api { status: 401, message, .. } => PublishError::NotSignedIn { message },
             other => PublishError::Other {
                 message: other.to_string(),
             },
@@ -351,5 +357,29 @@ mod tests {
     fn parse_clone_url_rejects_zero_version() {
         assert!(parse_clone_url("forage://clone/alice/zen-leaf?version=0").is_err());
         assert!(parse_clone_url("forage://clone/alice/zen-leaf?version=abc").is_err());
+    }
+
+    /// A server-issued 401 (expired/revoked token) must surface as
+    /// `NotSignedIn` so the UI rebanners the sign-in flow. A 403 or
+    /// any other API error stays generic — only 401 means "you need
+    /// to authenticate."
+    #[test]
+    fn server_401_maps_to_not_signed_in() {
+        let mapped = PublishError::from_hub_error(HubError::Api {
+            status: 401,
+            code: "unauthenticated".into(),
+            message: "token expired".into(),
+        });
+        match mapped {
+            PublishError::NotSignedIn { message } => assert_eq!(message, "token expired"),
+            other => panic!("expected NotSignedIn, got {other:?}"),
+        }
+
+        let other = PublishError::from_hub_error(HubError::Api {
+            status: 403,
+            code: "forbidden".into(),
+            message: "no permission".into(),
+        });
+        assert!(matches!(other, PublishError::Other { .. }));
     }
 }
