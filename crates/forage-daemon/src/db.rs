@@ -24,18 +24,22 @@ use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun,
 
 const SCHEMA_VERSION: i64 = 3;
 
-/// Apply pending migrations against `conn`. Idempotent: the `_meta`
-/// row gates each step, so running this against a fully-current DB is
-/// a no-op.
-pub(crate) fn open_connection(daemon_dir: &Path) -> Result<Connection, DaemonError> {
+/// Open the daemon DB and apply any pending schema migrations.
+/// Returns the connection plus the pre-migration `schema_version` so
+/// the caller can run data-layer fixups gated on the same transition
+/// the schema step gated on.
+pub(crate) fn open_connection(daemon_dir: &Path) -> Result<(Connection, i64), DaemonError> {
     std::fs::create_dir_all(daemon_dir)?;
     let db_path = daemon_dir.join("daemon.sqlite");
     let conn = Connection::open(&db_path).map_err(DaemonError::Sqlite)?;
-    apply_migrations(&conn)?;
-    Ok(conn)
+    let pre = apply_migrations(&conn)?;
+    Ok((conn, pre))
 }
 
-fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
+/// Apply pending migrations against `conn`. Idempotent: the `_meta`
+/// row gates each step, so running this against a fully-current DB is
+/// a no-op. Returns the pre-migration `schema_version`.
+fn apply_migrations(conn: &Connection) -> Result<i64, DaemonError> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS _meta (
@@ -141,7 +145,7 @@ fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
             params![SCHEMA_VERSION.to_string()],
         )?;
     }
-    Ok(())
+    Ok(current)
 }
 
 // --- runs ----------------------------------------------------------------

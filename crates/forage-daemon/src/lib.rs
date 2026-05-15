@@ -23,6 +23,7 @@ mod db;
 mod deployments;
 mod error;
 mod health;
+mod migrate;
 mod model;
 mod output;
 mod run;
@@ -209,7 +210,15 @@ impl Daemon {
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, DaemonError> {
         let daemon_dir = workspace_root.join(".forage");
-        let conn = db::open_connection(&daemon_dir)?;
+        let (conn, pre_migration_version) = db::open_connection(&daemon_dir)?;
+        // Phase 4 transition: when the schema bump from <3 to v3 runs,
+        // walk the workspace and reconcile any row / file / dir whose
+        // basename is still a pre-Phase-4 path-derived slug to the
+        // recipe's header name. One-shot — once the schema is v3
+        // (set by `apply_migrations`) the gate stays closed.
+        if pre_migration_version < 3 {
+            migrate::migrate_legacy_keying(&conn, &workspace_root)?;
+        }
         let deployments_dir = daemon_dir.join("deployments");
         std::fs::create_dir_all(&deployments_dir)?;
         Ok(Arc::new(Self {
