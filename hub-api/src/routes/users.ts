@@ -63,7 +63,7 @@ export async function getProfile(
         login: author,
         name,
         avatar_url: avatarUrl,
-        created_at: createdAt ?? 0,
+        created_at: createdAt,
         package_count: packageRefs.length,
         star_count: starCount,
     }

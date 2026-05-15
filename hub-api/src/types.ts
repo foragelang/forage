@@ -167,11 +167,16 @@ export interface ListStarsResponse {
 }
 
 // `GET /v1/users/:author` — public profile.
+//
+// `created_at` is the parsed OAuth-record createdAt timestamp.
+// `null` when the user came in through an admin-token publish and
+// has no OAuth record — the absence is surfaced honestly rather
+// than defaulted to 0.
 export interface Profile {
     login: string
     name: string | null
     avatar_url: string | null
-    created_at: number
+    created_at: number | null
     package_count: number
     star_count: number
 }
