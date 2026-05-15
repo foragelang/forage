@@ -130,6 +130,7 @@ function DepHeader({
                 output: run.output,
                 enabled: !run.enabled,
                 inputs: run.inputs,
+                output_format: run.output_format,
             }),
         onSuccess: () => qc.invalidateQueries({ queryKey: ["runs"] }),
     });

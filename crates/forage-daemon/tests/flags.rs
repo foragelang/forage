@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags};
+use forage_daemon::{Cadence, Daemon, Outcome, OutputFormat, RunConfig, RunFlags};
 use forage_replay::{Capture, HttpExchange, write_jsonl};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -66,6 +66,7 @@ async fn sample_limit_caps_recorded_emit_counts() {
         output: ws_root.join(".forage").join("data").join("sample.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
@@ -124,6 +125,7 @@ async fn replay_flag_plays_recipe_against_fixtures() {
         output: ws_root.join(".forage").join("data").join("replay.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
@@ -167,6 +169,7 @@ async fn ephemeral_flag_skips_persistent_output_store() {
         output: persistent.clone(),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
@@ -226,6 +229,7 @@ async fn dev_preset_applies_sample_and_ephemeral_together() {
         output: persistent.clone(),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
@@ -296,6 +300,7 @@ async fn all_three_flags_compose() {
         output: persistent.clone(),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 

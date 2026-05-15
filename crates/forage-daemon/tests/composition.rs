@@ -2,7 +2,7 @@
 //! composed recipe, verify that records flow upstream → downstream
 //! and the final snapshot lands in the daemon's output store.
 
-use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags};
+use forage_daemon::{Cadence, Daemon, Outcome, OutputFormat, RunConfig, RunFlags};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -89,6 +89,7 @@ async fn composition_runs_chain_and_emits_downstream_records() {
         output: ws_root.join(".forage").join("data").join("composed.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run("composed", cfg).expect("configure_run");
     let sr = daemon.trigger_run(&run.id, RunFlags::prod()).await.expect("trigger_run");
@@ -155,6 +156,7 @@ compose "composed" | "enrich-products"
         output: ws_root.join(".forage").join("data").join("double.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon
         .configure_run("double-composed", cfg)

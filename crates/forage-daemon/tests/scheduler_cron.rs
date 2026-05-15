@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use chrono::{Datelike, TimeZone, Timelike, Utc};
-use forage_daemon::{Cadence, Daemon, Health, Outcome, RunConfig, next_fire_for, validate_cron};
+use forage_daemon::{
+    Cadence, Daemon, Health, Outcome, OutputFormat, RunConfig, next_fire_for, validate_cron,
+};
 
 mod common;
 use common::{StubClock, init_workspace};
@@ -31,6 +33,7 @@ fn cron_top_of_each_hour_parses_and_computes_next_fire() {
         next_run: None,
         deployed_version: None,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
 
     // Anchor `now` deterministically at 2030-01-01 03:17:23 UTC; the
@@ -72,6 +75,7 @@ async fn configure_run_rejects_bad_cron() {
             .join(format!("{recipe_name}.sqlite")),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let err = daemon
         .configure_run(recipe_name, cfg)
@@ -104,6 +108,7 @@ async fn corrupted_stored_cron_records_synthetic_failure() {
             .join(format!("{recipe_name}.sqlite")),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 

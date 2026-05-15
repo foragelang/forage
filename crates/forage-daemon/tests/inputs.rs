@@ -1,7 +1,7 @@
 //! Per-Run inputs flow from `RunConfig.inputs` through the daemon
 //! into the engine. The only path is the explicit field on the row.
 
-use forage_daemon::{Cadence, Daemon, Outcome, RunConfig, RunFlags};
+use forage_daemon::{Cadence, Daemon, Outcome, OutputFormat, RunConfig, RunFlags};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -66,6 +66,7 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
         output: ws_root.join(".forage").join("data").join("items.sqlite"),
         enabled: true,
         inputs,
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
@@ -84,4 +85,3 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
         Some("acme"),
     );
 }
-

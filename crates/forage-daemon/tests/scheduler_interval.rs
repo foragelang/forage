@@ -14,7 +14,8 @@
 use std::time::Duration;
 
 use forage_daemon::{
-    Cadence, Daemon, RunConfig, TimeUnit, advance_next_run, interval_ms, next_fire_for,
+    Cadence, Daemon, OutputFormat, RunConfig, TimeUnit, advance_next_run, interval_ms,
+    next_fire_for,
 };
 mod common;
 use common::{StubClock, deploy_disk_recipe, init_workspace};
@@ -103,6 +104,7 @@ async fn interval_run_fires_when_clock_advances() {
         output,
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon
         .configure_run(recipe_name, cfg)
@@ -146,6 +148,7 @@ fn build_run(recipe_name: &str, cadence: Cadence, next_run: Option<i64>) -> fora
         next_run,
         deployed_version: None,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     }
 }
 

@@ -48,8 +48,8 @@ use tokio::task::JoinHandle;
 // ts-rs generates matching TypeScript from them.
 pub use error::{DaemonError, DeployError, RunError};
 pub use model::{
-    Cadence, DaemonStatus, DeployedVersion, Health, Outcome, Run, RunConfig, RunFlags,
-    ScheduledRun, TimeUnit, Trigger,
+    Cadence, DaemonStatus, DeployedVersion, Health, Outcome, OutputFormat, Run, RunConfig,
+    RunFlags, ScheduledRun, TimeUnit, Trigger,
 };
 
 // Drift derivation. The constants and `derive_health` are part of the
@@ -375,6 +375,7 @@ impl Daemon {
                     cadence: cfg.cadence,
                     output: cfg.output,
                     inputs: cfg.inputs,
+                    output_format: cfg.output_format,
                     // Re-enabling a previously-paused run clears the
                     // Paused label but we don't have its real health
                     // yet — first scheduler fire will refresh it.
@@ -410,6 +411,7 @@ impl Daemon {
                         next_run: None,
                         deployed_version,
                         inputs: cfg.inputs,
+                        output_format: cfg.output_format,
                     }
                 }
             };
@@ -461,6 +463,7 @@ impl Daemon {
             output: default_output,
             enabled: true,
             inputs: IndexMap::new(),
+            output_format: OutputFormat::default(),
         };
         self.configure_run(name, cfg)
     }

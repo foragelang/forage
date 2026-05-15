@@ -8,7 +8,7 @@ use std::path::Path;
 
 use forage_core::SerializableCatalog;
 use forage_daemon::{
-    Cadence, Daemon, DeployError, Outcome, RunConfig, RunFlags,
+    Cadence, Daemon, DeployError, Outcome, OutputFormat, RunConfig, RunFlags,
 };
 
 mod common;
@@ -219,6 +219,7 @@ fn deploy_updates_run_pointer_when_run_exists() {
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert!(run.deployed_version.is_none());
@@ -250,6 +251,7 @@ async fn run_once_without_deployment_fails_cleanly() {
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 
@@ -307,6 +309,7 @@ async fn run_once_uses_deployed_source() {
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert_eq!(run.deployed_version, Some(1));
@@ -451,6 +454,7 @@ async fn scheduled_run_recipe_version_round_trips() {
         output: ws_root.join(".forage").join("data").join("ok.sqlite"),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
 

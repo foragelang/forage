@@ -60,6 +60,27 @@ pub struct Run {
     /// with no inputs.
     #[ts(type = "Record<string, unknown>")]
     pub inputs: IndexMap<String, serde_json::Value>,
+    /// Wire format consumers request when reading this Run's
+    /// snapshots back. The daemon's output store stores typed columns
+    /// either way; the format only changes how the in-memory snapshot
+    /// is rendered when handed back to a caller (Studio, hub-api, the
+    /// CLI's read-back path). `Json` is the canonical snapshot shape;
+    /// `JsonLd` runs the result through `Snapshot::to_jsonld()` using
+    /// the recipe's alignment metadata.
+    pub output_format: OutputFormat,
+}
+
+/// Snapshot wire shape. The daemon stores the same typed columns
+/// regardless — this is purely a render-time choice consumers express
+/// on the Run. Default `Json` keeps existing callers untouched;
+/// `JsonLd` opts a Run into JSON-LD rendering on every read-back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    #[default]
+    Json,
+    Jsonld,
 }
 
 /// How often the daemon should fire a `Run`.
@@ -181,6 +202,10 @@ pub struct RunConfig {
     /// changes); an empty map clears any previously-set inputs.
     #[ts(type = "Record<string, unknown>")]
     pub inputs: IndexMap<String, serde_json::Value>,
+    /// Wire format for snapshot read-back — mirrors `Run.output_format`.
+    /// Defaults to `Json`; clients flip a Run into JSON-LD by sending
+    /// `Jsonld` here.
+    pub output_format: OutputFormat,
 }
 
 /// Invocation-level toggles every `run_once` accepts. Three orthogonal

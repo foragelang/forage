@@ -184,6 +184,7 @@ export function ScheduleEditor({
                                 output: draft.output,
                                 enabled: draft.enabled,
                                 inputs: run.inputs,
+                                output_format: run.output_format,
                             })
                         }
                     >

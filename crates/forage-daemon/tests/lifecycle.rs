@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use forage_daemon::{Cadence, Daemon, Health, Outcome, RunConfig, RunFlags, Trigger};
+use forage_daemon::{
+    Cadence, Daemon, Health, Outcome, OutputFormat, RunConfig, RunFlags, Trigger,
+};
 
 mod common;
 use common::{deploy_disk_recipe, init_workspace};
@@ -32,6 +34,7 @@ async fn open_configure_trigger_persist() {
         output: output.clone(),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let run = daemon
         .configure_run(recipe_name, cfg)
@@ -74,6 +77,51 @@ async fn open_configure_trigger_persist() {
         .load_records(&sr.id, "Item", 10)
         .expect("load_records");
     assert_eq!(records.len(), 2);
+}
+
+/// The Run's `output_format` field is durable: a `configure_run` with
+/// `Jsonld` round-trips through SQLite and shows up on subsequent
+/// `get_run` reads. The daemon's stored typed columns are untouched —
+/// only the render-time hint moves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_format_round_trips_through_configure() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_root = tmp.path().to_path_buf();
+    let recipe_name = "fixture-fmt";
+    init_workspace(&ws_root, recipe_name, RECIPE_OK);
+    let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+    let output = ws_root.join(".forage").join("data").join("fmt.sqlite");
+
+    let cfg = RunConfig {
+        cadence: Cadence::Manual,
+        output: output.clone(),
+        enabled: true,
+        inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::Jsonld,
+    };
+    let configured = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
+    assert_eq!(configured.output_format, OutputFormat::Jsonld);
+
+    let read_back = daemon
+        .get_run(&configured.id)
+        .expect("get_run")
+        .expect("run exists");
+    assert_eq!(read_back.output_format, OutputFormat::Jsonld);
+
+    // Flipping back to the default Json also persists.
+    let cfg = RunConfig {
+        cadence: Cadence::Manual,
+        output,
+        enabled: true,
+        inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::Json,
+    };
+    let updated = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run update");
+    assert_eq!(updated.output_format, OutputFormat::Json);
 }
 
 fn rewrite_url(path: &Path, url: &str) {

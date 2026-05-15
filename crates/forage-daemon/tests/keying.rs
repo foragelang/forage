@@ -7,7 +7,7 @@
 
 mod common;
 
-use forage_daemon::{Cadence, Daemon, RunConfig};
+use forage_daemon::{Cadence, Daemon, OutputFormat, RunConfig};
 
 const RECIPE_AMAZON: &str = r#"recipe "amazon-products"
 engine http
@@ -121,6 +121,7 @@ fn deploy_and_default_output_anchor_on_header_name() {
         output: daemon.default_output_path(recipe_name),
         enabled: true,
         inputs: indexmap::IndexMap::new(),
+        output_format: OutputFormat::default(),
     };
     let updated = daemon
         .configure_run(recipe_name, cfg)

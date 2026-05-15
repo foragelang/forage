@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::DaemonError;
-use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun, Trigger};
+use crate::model::{
+    Cadence, DeployedVersion, Health, Outcome, OutputFormat, Run, ScheduledRun, Trigger,
+};
 
 /// Open the daemon DB and ensure the schema is in place.
 pub(crate) fn open_connection(daemon_dir: &Path) -> Result<Connection, DaemonError> {
@@ -47,7 +49,8 @@ fn init_schema(conn: &Connection) -> Result<(), DaemonError> {
             health           TEXT NOT NULL,
             next_run         INTEGER,
             deployed_version INTEGER,
-            inputs_json      TEXT NOT NULL
+            inputs_json      TEXT NOT NULL,
+            output_format    TEXT NOT NULL
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS runs_recipe_name ON runs(recipe_name);
@@ -86,9 +89,10 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
     let cadence_json = serde_json::to_string(&run.cadence)?;
     let health = health_to_str(run.health);
     let inputs_json = serde_json::to_string(&run.inputs)?;
+    let output_format = output_format_to_str(run.output_format);
     conn.execute(
-        "INSERT INTO runs(id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO runs(id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json, output_format)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             run.id,
             run.recipe_name,
@@ -100,6 +104,7 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             run.next_run,
             run.deployed_version,
             inputs_json,
+            output_format,
         ],
     )?;
     Ok(())
@@ -109,6 +114,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
     let cadence_json = serde_json::to_string(&run.cadence)?;
     let health = health_to_str(run.health);
     let inputs_json = serde_json::to_string(&run.inputs)?;
+    let output_format = output_format_to_str(run.output_format);
     let changed = conn.execute(
         "UPDATE runs SET
             recipe_name      = ?2,
@@ -119,7 +125,8 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             health           = ?7,
             next_run         = ?8,
             deployed_version = ?9,
-            inputs_json      = ?10
+            inputs_json      = ?10,
+            output_format    = ?11
          WHERE id = ?1",
         params![
             run.id,
@@ -132,6 +139,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
             run.next_run,
             run.deployed_version,
             inputs_json,
+            output_format,
         ],
     )?;
     if changed == 0 {
@@ -152,7 +160,7 @@ pub(crate) fn delete_run(conn: &Connection, run_id: &str) -> Result<(), DaemonEr
 
 pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json, output_format
          FROM runs WHERE id = ?1",
         params![run_id],
         row_to_run,
@@ -164,7 +172,7 @@ pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Ru
 
 pub(crate) fn get_run_by_name(conn: &Connection, name: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json, output_format
          FROM runs WHERE recipe_name = ?1",
         params![name],
         row_to_run,
@@ -176,7 +184,7 @@ pub(crate) fn get_run_by_name(conn: &Connection, name: &str) -> Result<Option<Ru
 
 pub(crate) fn list_runs(conn: &Connection) -> Result<Vec<Run>, DaemonError> {
     let mut stmt = conn.prepare(
-        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json
+        "SELECT id, recipe_name, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version, inputs_json, output_format
          FROM runs ORDER BY recipe_name ASC",
     )?;
     let mut out = Vec::new();
@@ -198,6 +206,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
     let next_run: Option<i64> = r.get(7)?;
     let deployed_version: Option<i64> = r.get(8)?;
     let inputs_json: String = r.get(9)?;
+    let output_format: String = r.get(10)?;
 
     let cadence: Cadence = match serde_json::from_str(&cadence_json) {
         Ok(c) => c,
@@ -233,6 +242,14 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         }
         Err(e) => return Ok(Err(DaemonError::Serde(e))),
     };
+    let output_format = match output_format_from_str(&output_format) {
+        Some(f) => f,
+        None => {
+            return Ok(Err(DaemonError::Corrupt {
+                detail: format!("unknown output_format '{output_format}' for run {id}"),
+            }));
+        }
+    };
 
     Ok(Ok(Run {
         id,
@@ -245,6 +262,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         next_run,
         deployed_version,
         inputs,
+        output_format,
     }))
 }
 
@@ -527,6 +545,21 @@ fn outcome_from_str(s: &str) -> Option<Outcome> {
     Some(match s {
         "ok" => Outcome::Ok,
         "fail" => Outcome::Fail,
+        _ => return None,
+    })
+}
+
+fn output_format_to_str(f: OutputFormat) -> &'static str {
+    match f {
+        OutputFormat::Json => "json",
+        OutputFormat::Jsonld => "jsonld",
+    }
+}
+
+fn output_format_from_str(s: &str) -> Option<OutputFormat> {
+    Some(match s {
+        "json" => OutputFormat::Json,
+        "jsonld" => OutputFormat::Jsonld,
         _ => return None,
     })
 }
