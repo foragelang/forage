@@ -87,6 +87,12 @@ impl ColumnStorage {
 /// site, deduplicates by type name, and resolves each name against
 /// the merged `catalog`.
 ///
+/// Composition recipes have no `emit` statements of their own — their
+/// records arrive via the chain's final stage. The declared `output`
+/// signature drives the schema in that case so the output store
+/// knows which tables to create up front, before the run produces
+/// records.
+///
 /// A reachable `emit Foo` whose `Foo` isn't in the catalog is a
 /// validation error that should be caught upstream; here we skip it
 /// to avoid panicking — the run already failed validation before
@@ -96,6 +102,13 @@ pub fn derive_schema(recipe: &ForageFile, catalog: &TypeCatalog) -> Vec<TableDef
     collect_emit_types(recipe.body.statements(), &mut emit_types);
     if let Some(b) = &recipe.browser {
         collect_browser_emit_types(b, &mut emit_types);
+    }
+    if recipe.body.composition().is_some() {
+        if let Some(out) = &recipe.output {
+            for name in &out.types {
+                emit_types.insert(name.clone());
+            }
+        }
     }
 
     emit_types
