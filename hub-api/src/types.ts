@@ -25,6 +25,97 @@ export interface Env {
     R2_FALLBACK_THRESHOLD_BYTES?: string
 }
 
+// --- Types ---------------------------------------------------------------
+
+// `<ontology>/<term>` alignment URI declared on a hub type or on one of
+// its fields. Stored as-parsed; the hub treats unknown ontologies
+// opaquely (per the program plan's "alignment ontology registry: open"
+// decision) and indexes well-known prefixes separately. The string
+// shape stays intact so a client that round-trips a type sees exactly
+// what was published.
+export interface AlignmentUri {
+    ontology: string
+    term: string
+}
+
+// One field's alignment record on a TypeVersion. Field name plus the
+// optional alignment URI it carries (mirrors the per-field `aligns`
+// clause in the Forage source).
+export interface TypeFieldAlignment {
+    field: string
+    alignment: AlignmentUri | null
+}
+
+// Type metadata. One record per (author, name). Identity at the hub is
+// `@author/Name`; the name segment matches the bare type name from the
+// source (e.g. `Product`, not `product`).
+export interface TypeMetadata {
+    author: string
+    name: string
+    description: string
+    category: string
+    tags: string[]
+    created_at: number
+    latest_version: number
+    // GitHub login of whoever first published this type. Required.
+    // Publish requires the caller to match (or be admin).
+    owner_login: string
+}
+
+// Atomic type-version artifact. Carries the source of one `share type
+// Name { … }` block plus the parsed alignments extracted from that
+// source (the hub uses the latter for type-shaped queries and JSON-LD
+// rendering; clients can parse the source themselves).
+//
+// `base_version` is the version the publisher rebased from. For first
+// publish (v1) it is `null`; the server only succeeds if the (author,
+// name) does not exist yet. For subsequent versions, the server
+// requires `base_version == latest_version`, else 409 — same shape as
+// recipe publish.
+export interface TypeVersion {
+    author: string
+    name: string
+    version: number
+    // UTF-8 source of the type declaration. Always begins with
+    // `share type Name` — file-local declarations are not publishable
+    // as standalone types.
+    source: string
+    // Type-level alignments declared on the type (`aligns …` clauses
+    // between the type keyword and the opening brace).
+    alignments: AlignmentUri[]
+    // Per-field alignments. One entry per declared field; entries with
+    // no alignment carry `alignment: null` so the hub side has the
+    // full field set for indexing.
+    field_alignments: TypeFieldAlignment[]
+    base_version: number | null
+    published_at: number
+    published_by: string
+}
+
+// One row in `GET /v1/types/:author/:name/versions`. Light history
+// listing — no source or alignment payload.
+export interface TypeVersionSummary {
+    version: number
+    published_at: number
+    published_by: string
+}
+
+// `GET /v1/types` listing row. Light metadata only.
+export interface TypeListing {
+    author: string
+    name: string
+    description: string
+    category: string
+    tags: string[]
+    created_at: number
+    latest_version: number
+}
+
+export interface ListTypesResponse {
+    items: TypeListing[]
+    next_cursor: string | null
+}
+
 // --- Packages ------------------------------------------------------------
 
 // One `.forage` declaration file shipped inside a version artifact.
@@ -146,6 +237,25 @@ export interface PublishRequest {
     decls: PackageFile[]
     fixtures: PackageFixture[]
     snapshot: PackageSnapshot | null
+    base_version: number | null
+}
+
+// `POST /v1/types/:author/:name/versions` — publish a type version.
+//
+// Same `base_version` semantics as recipe publish: `null` for v1; the
+// stored `latest_version` for subsequent versions; mismatch yields 409.
+//
+// Content-hash dedup runs server-side: if `source` hashes to the same
+// digest as the current latest version, the server returns 200 with
+// the existing version number rather than allocating v(N+1). Recipes
+// that re-publish unchanged types get stable pins this way.
+export interface PublishTypeRequest {
+    description: string
+    category: string
+    tags: string[]
+    source: string
+    alignments: AlignmentUri[]
+    field_alignments: TypeFieldAlignment[]
     base_version: number | null
 }
 

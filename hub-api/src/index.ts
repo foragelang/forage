@@ -9,6 +9,14 @@ import {
     validateSegment,
     validateSegments,
 } from './routes/packages'
+import {
+    listTypes,
+    getTypeDetail,
+    listTypeVersions,
+    getTypeVersionArtifact,
+    publishTypeVersion,
+    validateTypeName,
+} from './routes/types'
 import { addStar, removeStar, getStars } from './routes/stars'
 import { recordDownload } from './routes/downloads'
 import { createFork } from './routes/forks'
@@ -89,6 +97,11 @@ async function route(
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
         if (limit !== null) return limit
         return listPackages(request, env)
+    }
+    if (path === '/v1/types' && request.method === 'GET') {
+        const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+        if (limit !== null) return limit
+        return listTypes(request, env)
     }
     if (path === '/v1/categories' && request.method === 'GET') {
         const limit = await rateLimit(env, 'read', callerKey(request, null), request)
@@ -201,6 +214,53 @@ async function route(
             const limit = await rateLimit(env, 'social', key, request)
             if (limit !== null) return limit
             return createFork(request, env, author, slug)
+        }
+    }
+
+    // ----- /v1/types/:author/:name[/versions[/:n]] -----------------------
+    const typeMatch = path.match(/^\/v1\/types\/([^/]+)\/([^/]+)(?:\/(versions)(?:\/([^/]+))?)?$/)
+    if (typeMatch !== null) {
+        const author = decodeURIComponent(typeMatch[1])
+        const name = decodeURIComponent(typeMatch[2])
+        if (!validateSegment(author)) {
+            return jsonError(400, 'bad_slug', `invalid author: ${author}`, {}, request)
+        }
+        if (!validateTypeName(name)) {
+            return jsonError(400, 'bad_type_name', `invalid type name: ${name}`, {}, request)
+        }
+        const sub = typeMatch[3] ?? null
+        const subArg = typeMatch[4] ?? null
+
+        if (sub === null) {
+            if (request.method !== 'GET') {
+                return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
+            }
+            const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+            if (limit !== null) return limit
+            return getTypeDetail(request, env, author, name)
+        }
+
+        if (sub === 'versions') {
+            if (subArg === null && request.method === 'GET') {
+                const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+                if (limit !== null) return limit
+                return listTypeVersions(request, env, author, name)
+            }
+            if (subArg === null && request.method === 'POST') {
+                const caller = await identifyCaller(request, env)
+                const key = caller !== null && caller.kind === 'user'
+                    ? caller.login
+                    : callerKey(request, null)
+                const limit = await rateLimit(env, 'publish', key, request)
+                if (limit !== null) return limit
+                return publishTypeVersion(request, env, author, name)
+            }
+            if (subArg !== null && request.method === 'GET') {
+                const limit = await rateLimit(env, 'read', callerKey(request, null), request)
+                if (limit !== null) return limit
+                return getTypeVersionArtifact(request, env, author, name, subArg)
+            }
+            return jsonError(405, 'method_not_allowed', `${request.method} not allowed`, {}, request)
         }
     }
 

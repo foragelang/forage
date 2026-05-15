@@ -1,10 +1,15 @@
 // Helpers shared across the worker tests. Bring a user identity by
 // signing a real JWT against the test signing key, and build canonical
-// PublishRequest / ForkRequest payloads inline so each test stays
-// readable.
+// PublishRequest / PublishTypeRequest / ForkRequest payloads inline so
+// each test stays readable.
 
 import worker from '../src/index'
-import type { Env, PublishRequest, ForkRequest } from '../src/types'
+import type {
+    Env,
+    PublishRequest,
+    PublishTypeRequest,
+    ForkRequest,
+} from '../src/types'
 import { signAccessToken } from '../src/jwt'
 import {
     env,
@@ -81,6 +86,26 @@ export function publishRequest(
         decls: [],
         fixtures: [],
         snapshot: null,
+        base_version: null,
+        ...overrides,
+    }
+}
+
+// Build a canonical PublishTypeRequest body. The type's header name
+// must match the URL `:name` segment — `publishTypeVersion` enforces
+// this — so the helper takes the type name as a first argument and
+// stamps it inside the source.
+export function publishTypeRequest(
+    name: string,
+    overrides: Partial<PublishTypeRequest> = {},
+): PublishTypeRequest {
+    return {
+        description: 'Sample type',
+        category: 'shared-types',
+        tags: ['test'],
+        source: `share type ${name} {\n    id: String\n}\n`,
+        alignments: [],
+        field_alignments: [],
         base_version: null,
         ...overrides,
     }

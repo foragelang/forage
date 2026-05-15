@@ -3,6 +3,8 @@ import type {
     PackageMetadata,
     PackageVersion,
     Star,
+    TypeMetadata,
+    TypeVersion,
 } from './types'
 
 // Storage layout.
@@ -14,12 +16,22 @@ import type {
 //                                          at the same JSON in R2 (used when
 //                                          the artifact exceeds the R2
 //                                          fallback threshold).
+//   type:<author>:<name>                 → TypeMetadata JSON
+//   tver:<author>:<name>:<n>             → TypeVersion JSON (small; never
+//                                          spills to R2 — a single type
+//                                          declaration plus alignments
+//                                          easily fits inline)
+//   thash:<author>:<name>:<sha>          → version number (content-hash dedup
+//                                          index for re-publishing the same
+//                                          source body)
 //   star:<author>:<slug>:<user>          → "" (presence)
 //   stars_by:<user>:<author>:<slug>      → ISO timestamp (presence + when)
 //   idx:packages                         → JSON array of "<author>/<slug>"
 //   idx:cat:<category>                   → JSON array of "<author>/<slug>"
 //   idx:user_packages:<author>           → JSON array of "<author>/<slug>"
 //   idx:categories                       → JSON array of category strings
+//   idx:types                            → JSON array of "<author>/<name>"
+//   idx:user_types:<author>              → JSON array of "<author>/<name>"
 //
 // R2 (only when the version artifact is large):
 //   versions/<author>/<slug>/<n>.json    → PackageVersion JSON
@@ -55,6 +67,11 @@ function r2FallbackThreshold(env: Env): number {
 const PKG_KEY = (author: string, slug: string) => `pkg:${author}:${slug}`
 const VER_KEY = (author: string, slug: string, n: number) =>
     `ver:${author}:${slug}:${n}`
+const TYPE_KEY = (author: string, name: string) => `type:${author}:${name}`
+const TYPE_VER_KEY = (author: string, name: string, n: number) =>
+    `tver:${author}:${name}:${n}`
+const TYPE_HASH_KEY = (author: string, name: string, sha: string) =>
+    `thash:${author}:${name}:${sha}`
 const STAR_KEY = (author: string, slug: string, user: string) =>
     `star:${author}:${slug}:${user}`
 const STARS_BY_KEY = (user: string, author: string, slug: string) =>
@@ -67,6 +84,8 @@ const IDX_PACKAGES = 'idx:packages'
 const IDX_CATEGORIES = 'idx:categories'
 const IDX_CATEGORY = (category: string) => `idx:cat:${category}`
 const IDX_USER_PACKAGES = (author: string) => `idx:user_packages:${author}`
+const IDX_TYPES = 'idx:types'
+const IDX_USER_TYPES = (author: string) => `idx:user_types:${author}`
 
 const R2_VERSION_KEY = (author: string, slug: string, n: number) =>
     `versions/${author}/${slug}/${n}.json`
@@ -174,6 +193,83 @@ export async function getVersion(
         return JSON.parse(body) as PackageVersion
     }
     return parsed as PackageVersion
+}
+
+// --- Type metadata + versions --------------------------------------------
+
+export async function getType(
+    env: Env,
+    author: string,
+    name: string,
+): Promise<TypeMetadata | null> {
+    const raw = await env.METADATA.get(TYPE_KEY(author, name))
+    if (raw === null) return null
+    return JSON.parse(raw) as TypeMetadata
+}
+
+export async function putType(
+    env: Env,
+    meta: TypeMetadata,
+): Promise<void> {
+    await env.METADATA.put(TYPE_KEY(meta.author, meta.name), JSON.stringify(meta))
+}
+
+// Type-version artifacts are small (one type declaration plus alignment
+// arrays) and ride exclusively in KV — the R2 fallback that recipe
+// versions use for fixture-heavy artifacts has no analog here.
+export async function getTypeVersion(
+    env: Env,
+    author: string,
+    name: string,
+    n: number,
+): Promise<TypeVersion | null> {
+    const raw = await env.METADATA.get(TYPE_VER_KEY(author, name, n))
+    if (raw === null) return null
+    return JSON.parse(raw) as TypeVersion
+}
+
+export async function putTypeVersion(
+    env: Env,
+    version: TypeVersion,
+): Promise<void> {
+    await env.METADATA.put(
+        TYPE_VER_KEY(version.author, version.name, version.version),
+        JSON.stringify(version),
+    )
+}
+
+// Content-hash dedup: record `(sha → version)` so a re-publish of the
+// same source body short-circuits to the existing version number
+// instead of allocating v(N+1). Recipes that re-publish unchanged
+// types get stable pins this way.
+export async function putTypeHash(
+    env: Env,
+    author: string,
+    name: string,
+    sha: string,
+    version: number,
+): Promise<void> {
+    await env.METADATA.put(
+        TYPE_HASH_KEY(author, name, sha),
+        String(version),
+    )
+}
+
+export async function getTypeHash(
+    env: Env,
+    author: string,
+    name: string,
+    sha: string,
+): Promise<number | null> {
+    const raw = await env.METADATA.get(TYPE_HASH_KEY(author, name, sha))
+    if (raw === null) return null
+    const n = parseInt(raw, 10)
+    if (!Number.isFinite(n) || n < 1) {
+        throw new Error(
+            `type-hash index for ${author}/${name}/${sha} holds invalid version: ${raw}`,
+        )
+    }
+    return n
 }
 
 // --- Star presence + reverse index ---------------------------------------
@@ -355,6 +451,36 @@ export async function indexRemoveCategory(
     if (remaining.length === 0) {
         await removeFromIndex(env, IDX_CATEGORIES, category)
     }
+}
+
+// Type indexes. Same eventually-consistent pattern as the package
+// indexes above: append-only `string[]` lists in KV, scanned in full
+// by `listTypes`.
+export async function indexAddType(
+    env: Env,
+    author: string,
+    name: string,
+): Promise<void> {
+    await appendToIndex(env, IDX_TYPES, ref(author, name))
+}
+
+export async function indexAddUserType(
+    env: Env,
+    author: string,
+    name: string,
+): Promise<void> {
+    await appendToIndex(env, IDX_USER_TYPES(author), ref(author, name))
+}
+
+export async function listTypesIndex(env: Env): Promise<string[]> {
+    return listIndex(env, IDX_TYPES)
+}
+
+export async function listUserTypesIndex(
+    env: Env,
+    author: string,
+): Promise<string[]> {
+    return listIndex(env, IDX_USER_TYPES(author))
 }
 
 export async function listIndex(env: Env, key: string): Promise<string[]> {
