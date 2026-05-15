@@ -30,7 +30,25 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 
 use crate::error::DaemonError;
-use forage_core::workspace::{discover, slug_from_path};
+use forage_core::workspace::discover;
+
+/// Path-derived slug for a `.forage` file inside `root`. Mirrors how
+/// the Studio wire used to key recipes before Phase 7: legacy
+/// `<root>/<slug>/recipe.forage` files derive `<slug>` from the
+/// containing folder; anything else falls back to the file stem. The
+/// only consumer is this legacy-keying reconciliation pass — every
+/// other surface in the workspace now keys on the recipe header name.
+fn slug_from_path(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let components: Vec<_> = rel.components().collect();
+    if components.len() == 2
+        && let (Some(dir), Some(file)) = (components.first(), components.get(1))
+        && file.as_os_str() == "recipe.forage"
+    {
+        return Some(dir.as_os_str().to_string_lossy().into_owned());
+    }
+    path.file_stem().map(|s| s.to_string_lossy().into_owned())
+}
 
 /// Apply the legacy-slug → header-name reconciliation. `workspace_root`
 /// hosts both the source `.forage` files (driving the lookup table)

@@ -317,29 +317,6 @@ fn scan_dir(dir: &Path, out: &mut Vec<WorkspaceFileEntry>) -> Result<(), Workspa
     Ok(())
 }
 
-/// Path-derived slug for a `.forage` file inside `root`. The daemon
-/// now keys on the recipe's header name (Phase 4); this helper
-/// survives because the Studio wire still ships path-derived slugs
-/// from JS and the daemon-open migration still needs to map legacy
-/// slug-keyed state to the new keying. Phases 6 / 7 retire the wire
-/// shape, and only after both land can this helper go away.
-///
-/// - `<root>/<slug>/recipe.forage` → `<slug>` (the legacy Studio layout).
-/// - any other path → the file stem (`<root>/foo.forage` → `foo`).
-///
-/// Returns `None` only when the path has no recoverable stem.
-pub fn slug_from_path(root: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    let components: Vec<_> = rel.components().collect();
-    if components.len() == 2
-        && let (Some(dir), Some(file)) = (components.first(), components.get(1))
-        && file.as_os_str() == "recipe.forage"
-    {
-        return Some(dir.as_os_str().to_string_lossy().into_owned());
-    }
-    path.file_stem().map(|s| s.to_string_lossy().into_owned())
-}
-
 impl Workspace {
     /// All recipe-bearing files in the workspace, in path order. A
     /// recipe is any `.forage` file that parsed clean *and* declares a
