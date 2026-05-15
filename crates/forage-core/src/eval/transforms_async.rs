@@ -268,7 +268,7 @@ fn json_num(v: &EvalValue) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::{Evaluator, NoTransport, Scope, TransportContext, default_registry};
+    use crate::eval::{Evaluator, Scope, TransportContext, default_registry};
     use crate::ast::{ExtractionExpr, JSONValue};
     use serde_json::Value as JsonValue;
 
@@ -468,9 +468,6 @@ mod tests {
                 if name == "wikidataEntity"),
             "got {err:?}",
         );
-        // Pure sentinel — exercise NoTransport in a no-op call to keep
-        // it in the unused-warning shield.
-        let _ = NoTransport;
     }
 
     #[test]
