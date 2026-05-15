@@ -50,7 +50,7 @@ require('lspconfig.configs').forage = {
     default_config = {
         cmd = { 'forage', 'lsp' },
         filetypes = { 'forage' },
-        root_dir = util.root_pattern('Cargo.toml', '.git'),
+        root_dir = util.root_pattern('forage.toml', '.git'),
     },
 }
 lspconfig.forage.setup({})
