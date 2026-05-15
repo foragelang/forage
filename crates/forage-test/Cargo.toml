@@ -1,6 +1,6 @@
 [package]
 name = "forage-test"
-description = "Shared-recipes test harness + golden snapshots."
+description = "Parity-fixture loader for the cross-implementation recipe test vectors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,5 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-forage-core  = { workspace = true }
-
 serde        = { workspace = true }
 serde_json   = { workspace = true }
-thiserror    = { workspace = true }
-
-[dev-dependencies]
-insta        = { workspace = true }
