@@ -1,0 +1,476 @@
+# Forage grammar
+
+The complete grammar of the `.forage` language as implemented in
+`crates/forage-core/src/parse/`. This document describes the surface
+syntax — the parser produces an AST defined in
+`crates/forage-core/src/ast/`. Expression *semantics* (numeric
+coercion, regex dialect, string built-ins, etc.) live in
+`notes/expression-language.md`.
+
+Notation:
+
+- `:=` introduces a production. `|` alternates. `?` is optional, `*`
+  zero-or-more, `+` one-or-more, `(...)` groups.
+- Terminals appear quoted (`'foo'`) or as uppercase token names
+  (`STRING`, `INT`, etc.). Non-terminals are lowercase.
+- The grammar is recursive-descent (`parse_*` functions in
+  `crates/forage-core/src/parse/parser.rs`); no operator-precedence
+  tables outside what's shown here.
+
+## Lexical alphabet
+
+Tokens produced by the lexer at `crates/forage-core/src/parse/lexer.rs`:
+
+**Punctuation and brackets**
+
+```
+'{'  '}'  '('  ')'  '['  ']'  ','  ';'  ':'  '.'  '?'  '?.'  '[*]'
+'|'  '←'  '→'  '='  '>'  '<'  '!'  '+'  '-'  '*'  '/'  '%'
+```
+
+`[*]` is a single token (the wildcard), not `[`+`*`+`]`. `←` (U+2190)
+and `→` (U+2192) are single characters.
+
+**Path heads**
+
+```
+'$'                  (DollarRoot — used as `$.field`)
+'$input'             (DollarInput)
+'$secret'            (DollarSecret — always followed by `.<name>`)
+'$<ident>'           (DollarVar — captures the identifier)
+```
+
+**Literals**
+
+```
+STRING               "..." (may contain {...} interpolations)
+INT                  -?[0-9]+
+FLOAT                -?[0-9]+\.[0-9]+
+BOOL                 'true' | 'false'
+NULL                 'null'
+DATE                 YYYY-MM-DD
+REGEX                /pattern/flags        (flags ⊆ {i,m,s,u})
+```
+
+**Identifiers**
+
+```
+Ident                lowercase-starting identifier
+TypeName             uppercase-starting identifier
+Keyword              reserved word (see KEYWORDS list in token.rs)
+```
+
+Field-position identifiers may be keywords (`name`, `value`,
+`headers`, etc.) — the parser accepts a keyword wherever a field
+name is expected.
+
+Comments: `//` to end-of-line and `/* ... */` block. Stripped by the
+lexer.
+
+## Top-level file
+
+A `.forage` file is either a single recipe or a header-less
+declarations file (workspace-root sibling declarations).
+
+```
+workspace_file       := recipe | declarations_file
+
+declarations_file    := ( type_decl | enum_decl )*
+
+recipe               := 'recipe' STRING
+                        'engine' engine_kind
+                        decl*
+
+engine_kind          := 'http' | 'browser'
+
+decl                 := type_decl
+                      | enum_decl
+                      | input_decl
+                      | secret_decl
+                      | fn_decl
+                      | auth_block
+                      | browser_block
+                      | expect_block
+                      | statement
+```
+
+A recipe header occupies the top of the file flat — there is no
+surrounding `{ }` block. Every subsequent declaration belongs to
+that recipe. A file may declare exactly one recipe. A declarations
+file is rejected if it contains anything other than `type` / `enum`
+declarations.
+
+## Type, enum, input, secret
+
+```
+type_decl            := 'type' TypeName '{' field_list '}'
+
+field_list           := ( field ( ';' | ',' )? )*
+
+field                := field_name ':' field_type '?'?
+
+field_name           := Ident | Keyword
+
+field_type           := 'String' | 'Int' | 'Double' | 'Bool'
+                      | '[' field_type ']'
+                      | 'Ref' '<' TypeName '>'
+                      | TypeName
+
+enum_decl            := 'enum' TypeName '{' enum_variants '}'
+
+enum_variants        := ( variant ( ',' | ';' )? )*
+
+variant              := Ident | TypeName
+
+input_decl           := 'input' field_name ':' field_type '?'?
+
+secret_decl          := 'secret' Ident
+```
+
+`field_type`'s bare `TypeName` is either a record reference or an
+enum reference — the validator resolves it against the type catalog.
+The lexer's `TYPE_KEYWORDS` (`String`/`Int`/`Double`/`Bool`) are
+reserved as keywords; user types are arbitrary uppercase identifiers.
+
+## Function declarations
+
+```
+fn_decl              := 'fn' Ident '(' param_list? ')'
+                        '{' fn_body '}'
+
+param_list           := DollarVar ( ',' DollarVar )*
+
+fn_body              := let_binding* extraction
+
+let_binding          := 'let' DollarVar '=' extraction ( ';' )?
+```
+
+`$input` and `$secret` are reserved roots and cannot be used as
+parameter or let-binding names. `let` is fn-body-only — not legal
+inside step bodies, emit bindings, or top-level expressions. A fn
+body always ends in a single trailing expression that is the
+return value.
+
+## Statements
+
+```
+statement            := step | emit | for_loop
+
+emit                 := 'emit' TypeName '{' emit_binding_list '}' bind_suffix?
+
+emit_binding_list    := ( emit_binding ( ';' | ',' )? )*
+
+emit_binding         := field_name '←' extraction
+
+bind_suffix          := 'as' DollarVar
+
+for_loop             := 'for' DollarVar 'in' extraction
+                        '{' statement* '}'
+
+step                 := 'step' field_name '{' step_field* '}'
+
+step_field           := 'method'  ':' STRING
+                      | 'url'     ':' STRING
+                      | 'headers' '{' header_kv_list '}'
+                      | 'body' '.' body_kind '{' body_contents '}'
+                      | 'paginate' pagination_block
+                      | 'extract' '.' 'regex' '{' regex_extract_body '}'
+
+header_kv_list       := ( STRING ':' STRING ( ',' | ';' )? )*
+
+body_kind            := 'json' | 'form' | 'raw'
+
+body_contents        := json_body_kvs       (when body_kind = 'json')
+                      | form_body_kvs       (when body_kind = 'form')
+                      | STRING              (when body_kind = 'raw')
+
+json_body_kvs        := ( body_key ':' body_value ( ',' | ';' )? )*
+
+form_body_kvs        := ( STRING ':' body_value ( ',' | ';' )? )*
+
+body_key             := Ident | Keyword | STRING
+
+body_value           := '{' json_body_kvs '}'
+                      | '[' ( body_value ( ',' body_value )* )? ']'
+                      | 'case' path 'of' '{' body_case_arms '}'
+                      | path
+                      | literal
+                      | STRING                          (template if contains '{')
+
+body_case_arms       := ( case_label '→' body_value ( ',' | ';' )? )*
+
+regex_extract_body   := ( 'pattern' ':' STRING
+                        | 'groups'  ':' '[' STRING* ']' )
+                        ( ',' | ';' )?
+```
+
+A `step` requires `method` and `url` (validated post-parse). `url`
+strings are templates — `{...}` segments are re-lexed as
+`extraction`s; literal text is preserved. The same applies to header
+values, `body.json` values typed as `STRING`, and `body.raw`.
+
+An `emit … as $v` introduces `$v` into the enclosing lexical scope
+with type `Ref<TypeName>`. Subsequent statements in the same scope
+can reference `$v`.
+
+## Pagination
+
+HTTP-side pagination on a `step`:
+
+```
+pagination_block     := 'paginate' pagination_strategy '{' paginate_field* '}'
+
+pagination_strategy  := 'pageWithTotal' | 'untilEmpty' | 'cursor'
+
+paginate_field       := 'items'           ':' path
+                      | 'total'           ':' path
+                      | 'cursorPath'      ':' path
+                      | 'pageParam'       ':' STRING
+                      | 'cursorParam'     ':' STRING
+                      | 'pageSize'        ':' INT
+                      | 'pageZeroIndexed' ':' BOOL
+```
+
+Required-field validation happens post-parse based on the strategy:
+
+- `pageWithTotal` needs `items`, `total`, `pageParam`.
+- `untilEmpty` needs `items`, `pageParam`.
+- `cursor` needs `items`, `cursorPath`, `cursorParam`.
+
+## Auth
+
+```
+auth_block           := 'auth' '.' auth_strategy
+
+auth_strategy        := static_header | html_prime | session
+
+static_header        := 'staticHeader' '{' static_header_fields '}'
+
+static_header_fields := ( ( 'name'  ':' STRING
+                          | 'value' ':' STRING ) ( ',' | ';' )? )*
+
+html_prime           := 'htmlPrime' '{' html_prime_fields '}'
+
+html_prime_fields    := ( ( ( 'step' | 'stepName' ) ':' ( Ident | STRING )
+                          | 'nonceVar'   ':' STRING
+                          | 'ajaxUrlVar' ':' STRING ) ( ',' | ';' )? )*
+
+session              := 'session' '.' session_variant '{' session_fields '}'
+
+session_variant      := 'formLogin' | 'bearerLogin' | 'cookiePersist'
+
+session_fields       := ( session_field ( ',' | ';' )? )*
+
+session_field        := 'url'              ':' STRING
+                      | 'method'           ':' STRING
+                      | 'body' '.' body_kind '{' body_contents '}'
+                      | 'tokenPath'        ':' path
+                      | 'headerName'       ':' STRING
+                      | 'headerPrefix'     ':' STRING
+                      | 'sourcePath'       ':' STRING
+                      | 'format'           ':' ( STRING | Ident | Keyword )
+                      | 'captureCookies'   ':' BOOL
+                      | 'maxReauthRetries' ':' INT
+                      | 'cache'            ':' INT
+                      | 'cacheEncrypted'   ':' BOOL
+                      | 'requiresMFA'      ':' BOOL
+                      | 'mfaFieldName'     ':' STRING
+```
+
+Required-field validation per session variant is post-parse;
+`formLogin` and `bearerLogin` require `url`; `bearerLogin` requires
+`tokenPath`; `cookiePersist` requires `sourcePath`.
+
+## Browser block
+
+```
+browser_block        := 'browser' '{' browser_field* '}'
+
+browser_field        := 'initialURL'    ':' STRING
+                      | 'observe'       ':' STRING
+                      | 'ageGate' '.' 'autoFill' '{' age_gate_fields '}'
+                      | 'dismissals' '{' dismissals_fields '}'
+                      | 'warmupClicks' ':' '[' STRING* ']'
+                      | 'paginate' browser_paginate
+                      | 'captures' '.' ( 'match' | 'document' )
+                                       '{' capture_body '}'
+                      | 'interactive' interactive_block
+
+age_gate_fields      := ( ( 'dob'                ':' DATE
+                          | 'reloadAfter'        ':' BOOL
+                          | 'reloadAfterSubmit'  ':' BOOL ) ( ',' | ';' )? )*
+
+dismissals_fields    := ( ( 'maxIterations' ':' INT
+                          | 'extraLabels'   ':' '[' STRING* ']' )
+                          ( ',' | ';' )? )*
+
+browser_paginate     := 'paginate' ( '.' | 'browserPaginate' '.' )
+                        ( 'scroll' | 'replay' )
+                        '{' browser_paginate_fields '}'
+
+browser_paginate_fields :=
+                        ( ( 'until' ':' 'noProgressFor' '(' INT ')'
+                          | 'maxIterations'  ':' INT
+                          | 'iterationDelay' ':' ( FLOAT | INT )
+                          | 'seedFilter'     ':' STRING )
+                          ( ',' | ';' )? )*
+
+capture_body         := match_capture_body | document_capture_body
+
+match_capture_body   := 'urlPattern' ':' STRING
+                        'for' DollarVar 'in' extraction
+                        '{' statement* '}'
+
+document_capture_body := 'for' DollarVar 'in' extraction
+                         '{' statement* '}'
+
+interactive_block    := 'interactive' '{' interactive_fields '}'
+
+interactive_fields   := ( ( 'bootstrapURL'         ':' STRING
+                          | 'cookieDomains'        ':' '[' STRING* ']'
+                          | 'sessionExpiredPattern' ':' STRING )
+                          ( ',' | ';' )? )*
+```
+
+Browser blocks require `initialURL`, `observe`, and `paginate`; the
+rest are optional. Only one `captures.document` is allowed per
+browser block; `captures.match` may repeat.
+
+## Expectations
+
+```
+expect_block         := 'expect' '{'
+                        'records' '.' 'where' '('
+                          'typeName' '==' STRING
+                        ')' '.' 'count' cmp_op INT
+                        '}'
+
+cmp_op               := '>' '='?           (Gt or Ge)
+                      | '<' '='?           (Lt or Le)
+                      | '=' '='            (Eq)
+                      | '!' '='            (Ne)
+```
+
+Only the `records.where(typeName == "...").count <op> N` form is
+supported today. Any other shape is a parse error.
+
+## Expressions
+
+The expression grammar drives emit field bindings, step body values,
+template interpolations, fn bodies, and case branches. Identical
+across all those contexts.
+
+```
+extraction           := pipe
+
+pipe                 := additive ( '|' transform_call )*
+
+additive             := multiplicative ( ( '+' | '-' ) multiplicative )*
+
+multiplicative       := unary ( ( '*' | '/' | '%' ) unary )*
+
+unary                := '-' unary
+                      | postfix
+
+postfix              := primary ( '[' extraction ']' )*       (only on Call/StructLiteral)
+
+primary              := 'case' path 'of' '{' case_arms '}'
+                      | struct_literal
+                      | regex_literal
+                      | '(' extraction ')'
+                      | call
+                      | path
+                      | literal
+
+struct_literal       := '{' ( struct_field ( ',' | ';' )? )* '}'
+
+struct_field         := field_name ':' extraction
+
+regex_literal        := REGEX
+
+call                 := Ident '(' arg_list? ')'
+
+arg_list             := extraction ( ',' extraction )*
+
+transform_call       := ( Ident | Keyword ) ( '(' arg_list? ')' )?
+
+case_arms            := ( case_arm ( ',' | ';' )? )*
+
+case_arm             := case_label '→' extraction
+
+case_label           := Ident | TypeName | Keyword
+                      | BOOL | NULL | INT | STRING
+
+literal              := STRING | INT | FLOAT | BOOL | NULL
+
+path                 := path_head path_step*
+
+path_head            := '$'                              (Current)
+                      | '$input'                         (Input)
+                      | '$secret' '.' Ident              (Secret access)
+                      | DollarVar                        (loop var, emit binding, fn param)
+
+path_step            := '.'  path_field                  (field access)
+                      | '?.' path_field                  (optional-chained access)
+                      | '[' INT ']'                      (literal index, null-tolerant)
+                      | '[*]'                            (iterate / map)
+
+path_field           := Ident | TypeName | Keyword
+```
+
+Precedence is low-to-high in the rule order above. `|` (pipe) is
+lowest so `$x * 28 | toString` reads as `($x * 28) | toString`.
+
+The path-level `[N]` postfix only accepts a literal integer and is
+null-tolerant; the expression-level `[expr]` postfix accepts any
+expression but is strict (out-of-bounds raises an error). They're
+distinct productions — the path form rides under `path_step`, the
+expression form under `postfix`.
+
+A `STRING` that contains a `{` becomes a template — every `{...}`
+segment is re-lexed and parsed as an `extraction`. Templates appear
+wherever a string literal appears in step bodies, URLs, headers, raw
+bodies, and string-typed emit bindings.
+
+## Reserved words
+
+A complete list of keywords lives in `KEYWORDS` at
+`crates/forage-core/src/parse/token.rs`. The parser uses two
+categories:
+
+- **Reserved at top level** as statement / declaration heads:
+  `recipe`, `engine`, `type`, `enum`, `fn`, `input`, `secret`,
+  `auth`, `browser`, `step`, `for`, `in`, `emit`, `as`, `case`, `of`,
+  `let`, `expect`.
+- **Reserved inside structured forms** as field keys:
+  `method`, `url`, `headers`, `body`, `json`, `form`, `raw`,
+  `extract`, `regex`, `groups`, `paginate`, `pageWithTotal`,
+  `untilEmpty`, `cursor`, `items`, `total`, `pageParam`, `pageSize`,
+  `cursorPath`, `cursorParam`, `pageZeroIndexed`, …
+  Many of these can appear as field / path / call names in
+  expression position (`field_name`, `path_field`, transform name) —
+  the parser accepts `Keyword` there in addition to `Ident`.
+
+The lexer's `TYPE_KEYWORDS` (`String`, `Int`, `Double`, `Bool`) are
+reserved as type-position keywords. `Ref` is a contextual keyword
+in type position only.
+
+## Notes
+
+- **One recipe per file.** Multiple `recipe "..."` headers are a
+  parse error.
+- **Order within a recipe is free** after the header. Types, enums,
+  inputs, secrets, fn declarations, auth, browser config,
+  expectations, and statements can intermix at the top level — the
+  parser collects each kind into its own list on the `Recipe` AST.
+- **Field-position keywords.** `name`, `value`, `headers`, etc. are
+  keywords reserved at structured-form sites but accepted as field
+  names elsewhere. The parser's `expect_field_name` and
+  `expect_case_label` accept both `Ident` and `Keyword`.
+- **`$page` is reserved at runtime** (engine-injected loop var) but
+  not at parse time. The validator (`ReservedParam`) rejects fn
+  declarations that name `$page`.
+- **Greenfield, not stable.** The grammar evolves; this document is
+  re-generated whenever the parser changes. Production rules in the
+  parser have doc comments tracking each non-terminal — keep them in
+  sync.
