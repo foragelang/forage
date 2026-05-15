@@ -18,7 +18,7 @@ import type { StepLocation } from "@/bindings/StepLocation";
 import { useStudioService } from "@/lib/services";
 import { onRevealLine } from "@/lib/editorCommands";
 import { FORAGE_LANG_ID, registerForageLanguage } from "@/lib/monaco-forage";
-import { slugOf } from "@/lib/path";
+import { useRecipeNameOf } from "@/hooks/useRecipes";
 import { useStudio, type StepStat } from "@/lib/store";
 
 type IEditor = MonacoNs.editor.IStandaloneCodeEditor;
@@ -26,11 +26,11 @@ type IEditor = MonacoNs.editor.IStandaloneCodeEditor;
 /// Validate the source on every change, debounced. Result lands in the
 /// Studio store via `setValidation` so the editor's marker effect picks
 /// it up and re-paints squigglies without waiting for a save.
-function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
+function useLiveValidation(source: string, recipeName: string | null, delayMs = 250) {
     const service = useStudioService();
     const setValidation = useStudio((s) => s.setValidation);
     useEffect(() => {
-        if (!slug) return;
+        if (!recipeName) return;
         let cancelled = false;
         const id = window.setTimeout(() => {
             service.validateRecipe(source)
@@ -43,7 +43,7 @@ function useLiveValidation(source: string, slug: string | null, delayMs = 250) {
             cancelled = true;
             window.clearTimeout(id);
         };
-    }, [source, slug, delayMs, setValidation, service]);
+    }, [source, recipeName, delayMs, setValidation, service]);
 }
 
 /// Subscribe to the parser-driven outline of the current source.
@@ -80,7 +80,7 @@ export function EditorPane() {
     const paused = useStudio((s) => s.paused);
     const toggleBreakpoint = useStudio((s) => s.toggleBreakpoint);
     const stepStats = useStudio((s) => s.stepStats);
-    const slug = activeFilePath ? slugOf(activeFilePath) : null;
+    const recipeName = useRecipeNameOf(activeFilePath);
     const monacoRef = useRef<Monaco | null>(null);
     const editorRef = useRef<IEditor | null>(null);
     const decorationsRef = useRef<string[]>([]);
@@ -88,7 +88,7 @@ export function EditorPane() {
         null,
     );
 
-    useLiveValidation(source, slug);
+    useLiveValidation(source, recipeName);
     const stepLocations = useRecipeOutline(source);
 
     // Map for the gutter click handler: clicked line → step name (if any).

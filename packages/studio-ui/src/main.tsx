@@ -14,7 +14,7 @@ const queryClient = new QueryClient();
 // The hub IDE bundle constructs HubStudioService at its own boot site;
 // this file is Studio-specific.
 const service = new TauriStudioService();
-installStudioService(service);
+installStudioService(service, queryClient);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

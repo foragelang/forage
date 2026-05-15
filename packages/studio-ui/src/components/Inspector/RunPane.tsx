@@ -35,7 +35,7 @@ import type { RunEvent } from "@/bindings/RunEvent";
 import type { ScheduledRun } from "@/bindings/ScheduledRun";
 import { useStudioService } from "@/lib/services";
 import { emitRevealLine } from "@/lib/editorCommands";
-import { slugOf } from "@/lib/path";
+import { useRecipeNameOf } from "@/hooks/useRecipes";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio, type EmitBurst, type LogEntry } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -43,14 +43,14 @@ import { cn } from "@/lib/utils";
 export function RunPane() {
     const service = useStudioService();
     const activeFilePath = useStudio((s) => s.activeFilePath);
-    const slug = activeFilePath ? slugOf(activeFilePath) : null;
+    const name = useRecipeNameOf(activeFilePath);
 
     const runs = useQuery({
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
-        enabled: !!slug,
+        enabled: !!name,
     });
-    const run = runs.data?.find((r) => r.recipe_name === slug);
+    const run = runs.data?.find((r) => r.recipe_name === name);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 30 }),
         queryFn: () => service.listScheduledRuns(run!.id, { limit: 30 }),
@@ -67,9 +67,9 @@ export function RunPane() {
     // and to filter the activity log so non-unit emits don't make it
     // flash through Variant / PriceObservation rows.
     const progressUnit = useQuery({
-        queryKey: ["progressUnit", slug ?? ""],
-        queryFn: () => service.recipeProgressUnit(slug!),
-        enabled: !!slug,
+        queryKey: ["progressUnit", name ?? ""],
+        queryFn: () => service.recipeProgressUnit(name!),
+        enabled: !!name,
     });
     // Push the inferred unit into the store so `runAppend` can filter
     // the activity log to unit-type emits only. Pre-empts the

@@ -4,14 +4,17 @@
 //! scratch state and the path-based view routing.)
 
 import { create } from "zustand";
+import type { QueryClient } from "@tanstack/react-query";
 
 import type { PausePayload } from "../bindings/PausePayload";
 import type { ProgressUnit } from "../bindings/ProgressUnit";
+import type { RecipeStatus } from "../bindings/RecipeStatus";
 import type { RunEvent } from "../bindings/RunEvent";
 import type { Snapshot } from "../bindings/Snapshot";
 import type { ValidationOutcome } from "../bindings/ValidationOutcome";
 import type { StudioService } from "./services/StudioService";
-import { slugOf } from "./path";
+import { recipeNameOf } from "./path";
+import { recipeStatusesKey } from "./queryKeys";
 
 export type View = "editor" | "deployment";
 export type InspectorMode = "run" | "history" | "records";
@@ -93,6 +96,12 @@ type StudioState = {
     // path, and never read `service` from the store directly.
     service: StudioService;
 
+    // The React Query client, installed at boot alongside the service.
+    // Store reducers use it to look up the recipe-name for a path
+    // (`recipeStatusesKey`); without it, breakpoint loading on file
+    // switch would have nowhere to fetch the workspace recipes.
+    queryClient: QueryClient | null;
+
     // Top-level routing.
     view: View;
     activeFilePath: string | null;
@@ -164,6 +173,17 @@ type StudioState = {
     setPauseIterations: (enabled: boolean) => void;
 };
 
+/// Look up the recipe header name for a workspace-relative `path`
+/// against the recipe-statuses query cache. Returns null when the
+/// cache hasn't populated yet, the path isn't a parsed recipe, or no
+/// QueryClient is installed. Callers that need the name (breakpoint
+/// load on file switch, etc.) treat a null result as "this path
+/// isn't recipe-scoped" and skip the recipe-keyed call.
+function recipeNameForPath(state: StudioState, path: string): string | null {
+    const recipes = state.queryClient?.getQueryData<RecipeStatus[]>(recipeStatusesKey());
+    return recipeNameOf(path, recipes);
+}
+
 /// Placeholder service used before `installStudioService` runs. Every
 /// method throws; tests and the boot path must replace it. Keeps the
 /// store typing honest — no `Optional<StudioService>` to thread.
@@ -182,6 +202,7 @@ const UNINSTALLED_SERVICE: StudioService = new Proxy({} as StudioService, {
 
 export const useStudio = create<StudioState>((set, get) => ({
     service: UNINSTALLED_SERVICE,
+    queryClient: null,
     view: "editor",
     activeFilePath: null,
     activeRunId: null,
@@ -284,9 +305,9 @@ export const useStudio = create<StudioState>((set, get) => ({
                 }
             })
             .catch((e) => set({ runError: String(e) }));
-        const slug = slugOf(path);
-        if (slug) {
-            service.loadRecipeBreakpoints(slug)
+        const name = recipeNameForPath(get(), path);
+        if (name) {
+            service.loadRecipeBreakpoints(name)
                 .then((steps) => {
                     if (get().activeFilePath === path) {
                         set({ breakpoints: new Set(steps) });
@@ -493,16 +514,17 @@ export const useStudio = create<StudioState>((set, get) => ({
     debugPause: (p) => set({ paused: p }),
     debugClearPause: () => set({ paused: null }),
     toggleBreakpoint: (step) => {
-        const service = get().service;
-        const cur = get().breakpoints;
-        const slug = slugOf(get().activeFilePath ?? "");
+        const state = get();
+        const { service, activeFilePath } = state;
+        const cur = state.breakpoints;
+        const name = activeFilePath ? recipeNameForPath(state, activeFilePath) : null;
         const next = new Set(cur);
         if (next.has(step)) next.delete(step);
         else next.add(step);
         set({ breakpoints: next });
         const steps = [...next];
-        if (slug) {
-            service.setRecipeBreakpoints(slug, steps).catch((e) =>
+        if (name) {
+            service.setRecipeBreakpoints(name, steps).catch((e) =>
                 console.warn("set_recipe_breakpoints failed", e),
             );
         } else {
@@ -512,11 +534,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         }
     },
     clearBreakpoints: () => {
-        const service = get().service;
+        const state = get();
+        const { service, activeFilePath } = state;
         set({ breakpoints: new Set() });
-        const slug = slugOf(get().activeFilePath ?? "");
-        if (slug) {
-            service.setRecipeBreakpoints(slug, []).catch((e) =>
+        const name = activeFilePath ? recipeNameForPath(state, activeFilePath) : null;
+        if (name) {
+            service.setRecipeBreakpoints(name, []).catch((e) =>
                 console.warn("set_recipe_breakpoints failed", e),
             );
         } else {
@@ -534,9 +557,16 @@ export const useStudio = create<StudioState>((set, get) => ({
     },
 }));
 
-/// Install a concrete service into the global store + Context. Both the
-/// Tauri main.tsx and the hub IDE's main.tsx call this before mounting
-/// the React tree. Idempotent: re-installing replaces the prior service.
-export function installStudioService(service: StudioService): void {
-    useStudio.setState({ service });
+/// Install a concrete service + QueryClient into the global store.
+/// Both the Tauri main.tsx and the hub IDE's main.tsx call this
+/// before mounting the React tree. Idempotent: re-installing
+/// replaces the prior pair. The QueryClient gives store reducers
+/// access to the workspace-recipes cache for path → recipe-name
+/// lookups; without it, breakpoint loading on file switch can't
+/// resolve which recipe to fetch.
+export function installStudioService(
+    service: StudioService,
+    queryClient: QueryClient,
+): void {
+    useStudio.setState({ service, queryClient });
 }

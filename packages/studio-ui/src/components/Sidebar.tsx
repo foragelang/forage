@@ -46,11 +46,13 @@ import { cn } from "@/lib/utils";
 
 import type { FileNode } from "@/bindings/FileNode";
 import type { Health } from "@/bindings/Health";
+import type { RecipeStatus } from "@/bindings/RecipeStatus";
 import type { Run } from "@/bindings/Run";
 import type { WorkspaceInfo } from "@/bindings/WorkspaceInfo";
 import { useStudioService, type StudioService, type Unsubscribe } from "@/lib/services";
-import { shortenHome, slugOf } from "@/lib/path";
-import { currentWorkspaceKey } from "@/lib/queryKeys";
+import { recipeNameOf, shortenHome } from "@/lib/path";
+import { useRecipes } from "@/hooks/useRecipes";
+import { currentWorkspaceKey, recipeStatusesKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 import {
     closeWorkspaceAction,
@@ -61,11 +63,11 @@ import { X } from "lucide-react";
 // ── module-scope context-menu plumbing ──────────────────────────────
 //
 // The host's menu event for delete-recipe is fired against the active
-// recipe slug. Registering inside a render-time effect collides with
+// recipe name. Registering inside a render-time effect collides with
 // React.StrictMode's double-mount; register once per module, update a
 // pendingHandler slot on every mount.
 
-let pendingHandler: ((slug: string) => void) | null = null;
+let pendingHandler: ((name: string) => void) | null = null;
 let listenerUnsubscribe: Unsubscribe | null = null;
 
 function ensureMenuListener(service: StudioService) {
@@ -82,9 +84,9 @@ function ensureMenuListener(service: StudioService) {
     }
 }
 
-async function performDelete(slug: string, qc: QueryClient, service: StudioService) {
+async function performDelete(name: string, qc: QueryClient, service: StudioService) {
     const confirmed = await service.confirm(
-        `Delete "${slug}"? The recipe and its fixtures will be removed permanently.`,
+        `Delete "${name}"? The recipe and its fixtures will be removed permanently.`,
         {
             title: "Delete recipe",
             okLabel: "Delete",
@@ -93,14 +95,18 @@ async function performDelete(slug: string, qc: QueryClient, service: StudioServi
     );
     if (!confirmed) return;
     try {
-        await service.deleteRecipe(slug);
-        await qc.invalidateQueries({ queryKey: ["files"] });
+        await service.deleteRecipe(name);
+        await Promise.all([
+            qc.invalidateQueries({ queryKey: ["files"] }),
+            qc.invalidateQueries({ queryKey: recipeStatusesKey() }),
+        ]);
         const active = useStudio.getState().activeFilePath;
-        if (active && slugOf(active) === slug) {
+        const recipes = qc.getQueryData<RecipeStatus[]>(recipeStatusesKey());
+        if (active && recipeNameOf(active, recipes) === name) {
             void useStudio.getState().setActiveFilePath(null);
         }
     } catch (e) {
-        console.error("[sidebar] delete failed", slug, e);
+        console.error("[sidebar] delete failed", name, e);
     }
 }
 
@@ -135,7 +141,7 @@ export function Sidebar() {
     // is captured.
     useEffect(() => {
         ensureMenuListener(service);
-        pendingHandler = (slug) => void performDelete(slug, qc, service);
+        pendingHandler = (name) => void performDelete(name, qc, service);
         return () => {
             pendingHandler = null;
         };
@@ -167,11 +173,19 @@ export function Sidebar() {
                     loading={files.isLoading}
                     onNewFile={async () => {
                         try {
-                            const slug = await service.createRecipe();
-                            await qc.invalidateQueries({ queryKey: ["files"] });
+                            // `create_recipe` returns the directory it
+                            // wrote `recipe.forage` into. The template
+                            // sets `recipe "<dir>"` so the
+                            // listRecipeStatuses join lands on the
+                            // first refetch.
+                            const dir = await service.createRecipe();
+                            await Promise.all([
+                                qc.invalidateQueries({ queryKey: ["files"] }),
+                                qc.invalidateQueries({ queryKey: recipeStatusesKey() }),
+                            ]);
                             await useStudio
                                 .getState()
-                                .setActiveFilePath(`${slug}/recipe.forage`);
+                                .setActiveFilePath(`${dir}/recipe.forage`);
                         } catch (e) {
                             useStudio.getState().setRunError(String(e));
                         }
@@ -644,7 +658,8 @@ function FileRow({
     const isDirty = useStudio(
         (s) => s.dirty && s.activeFilePath === node.path,
     );
-    const slug = slugOf(node.path);
+    const recipes = useRecipes().data;
+    const recipeName = recipeNameOf(node.path, recipes);
     const indent = 4 + depth * 12;
     return (
         <button
@@ -657,11 +672,11 @@ function FileRow({
                 void useStudio.getState().setActiveFilePath(node.path);
             }}
             onContextMenu={(e) => {
-                // Only recipe rows have a backing slug; declarations
-                // and fixtures have no per-row context menu yet.
-                if (!slug) return;
+                // Only recipe rows have a context menu; declarations
+                // and fixtures have no per-row menu yet.
+                if (!recipeName) return;
                 e.preventDefault();
-                service.showRecipeContextMenu(slug).catch((err) =>
+                service.showRecipeContextMenu(recipeName).catch((err) =>
                     console.warn("context menu failed", err),
                 );
             }}

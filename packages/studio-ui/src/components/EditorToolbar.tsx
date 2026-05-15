@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 import type { Run } from "@/bindings/Run";
 import { useStudioService } from "@/lib/services";
-import { slugOf } from "@/lib/path";
+import { useRecipeNameOf } from "@/hooks/useRecipes";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 import { cancelActive, runActive, saveActive } from "@/lib/studioActions";
@@ -36,7 +36,7 @@ export function EditorToolbar() {
     const activeFilePath = useStudio((s) => s.activeFilePath);
     const running = useStudio((s) => s.running);
     const disabled = !activeFilePath;
-    const slug = activeFilePath ? slugOf(activeFilePath) : null;
+    const name = useRecipeNameOf(activeFilePath);
     return (
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
             <SidebarTrigger />
@@ -44,8 +44,8 @@ export function EditorToolbar() {
             <Crumbs path={activeFilePath} />
             <ToolbarStatus />
             <div className="ml-auto flex items-center gap-1">
-                {!running && slug && <RunsChipOrConfigure slug={slug} />}
-                {(!running && slug) && (
+                {!running && name && <RunsChipOrConfigure name={name} />}
+                {(!running && name) && (
                     <Separator orientation="vertical" className="!h-4 mx-1" />
                 )}
                 {running ? (
@@ -91,6 +91,7 @@ export function EditorToolbar() {
 }
 
 function Crumbs({ path }: { path: string | null }) {
+    const name = useRecipeNameOf(path);
     if (!path) {
         return (
             <span className="font-mono text-sm text-muted-foreground select-text">
@@ -98,13 +99,12 @@ function Crumbs({ path }: { path: string | null }) {
             </span>
         );
     }
-    const slug = slugOf(path);
-    if (slug) {
+    if (name) {
         return (
             <div className="flex items-baseline gap-1.5 text-sm select-text">
                 <span className="font-mono italic text-muted-foreground">recipes</span>
                 <span className="text-muted-foreground/60">/</span>
-                <span className="font-mono text-foreground">{slug}</span>
+                <span className="font-mono text-foreground">{name}</span>
             </div>
         );
     }
@@ -121,13 +121,13 @@ function ToolbarStatus() {
     const paused = useStudio((s) => s.paused);
     const dirty = useStudio((s) => s.dirty);
     const activeFilePath = useStudio((s) => s.activeFilePath);
-    const slug = activeFilePath ? slugOf(activeFilePath) : null;
+    const name = useRecipeNameOf(activeFilePath);
 
     const runs = useQuery({
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
     });
-    const run = runs.data?.find((r) => r.recipe_name === slug);
+    const run = runs.data?.find((r) => r.recipe_name === name);
     const scheduledRuns = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 1 }),
         queryFn: () => service.listScheduledRuns(run!.id, { limit: 1 }),
@@ -202,16 +202,16 @@ function RunningBadge() {
 }
 
 /// The Runs chip is the inline shortcut to the Deployment view. If
-/// there is no `Run` for the current recipe slug, we render the
+/// there is no `Run` for the current recipe name, we render the
 /// Configure-run button instead — clicking it starts a live run, and
 /// the daemon's `ensure_run` creates the entry on first success.
-function RunsChipOrConfigure({ slug }: { slug: string }) {
+function RunsChipOrConfigure({ name }: { name: string }) {
     const service = useStudioService();
     const runs = useQuery({
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
     });
-    const run = runs.data?.find((r) => r.recipe_name === slug);
+    const run = runs.data?.find((r) => r.recipe_name === name);
     if (!run) {
         return (
             <Tooltip>

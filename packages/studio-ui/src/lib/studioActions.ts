@@ -9,8 +9,9 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 
-import { slugOf } from "./path";
-import { currentWorkspaceKey, recentWorkspacesKey } from "./queryKeys";
+import type { RecipeStatus } from "../bindings/RecipeStatus";
+import { recipeNameOf } from "./path";
+import { currentWorkspaceKey, recentWorkspacesKey, recipeStatusesKey } from "./queryKeys";
 import { useStudio } from "./store";
 
 export async function saveActive() {
@@ -38,24 +39,25 @@ export async function runActive(replay: boolean) {
     // Capture the path so the post-await writebacks below can detect
     // a file switch and skip the writes — running state for the
     // original file would otherwise corrupt the new file's view.
-    const { activeFilePath: path, running, service } = useStudio.getState();
+    const { activeFilePath: path, running, service, queryClient } = useStudio.getState();
     if (!path) {
         console.warn("runActive: no active file");
         return;
     }
     if (running) return;
-    const slug = slugOf(path);
-    if (!slug) {
-        console.warn(`runActive: not a recipe path: ${path}`);
+    const recipes = queryClient?.getQueryData<RecipeStatus[]>(recipeStatusesKey());
+    const name = recipeNameOf(path, recipes);
+    if (!name) {
+        console.warn(`runActive: no recipe at path: ${path}`);
         return;
     }
     await saveActive();
-    // Bail if the save's await let a file switch land — the slug
+    // Bail if the save's await let a file switch land — the recipe
     // we're about to run no longer matches the user's active buffer.
     if (useStudio.getState().activeFilePath !== path) return;
     useStudio.getState().runBegin();
     try {
-        const r = await service.runRecipe(slug, replay);
+        const r = await service.runRecipe(name, replay);
         if (useStudio.getState().activeFilePath !== path) return;
         if (r.ok && r.snapshot) {
             useStudio.getState().setSnapshot(r.snapshot);
@@ -90,9 +92,15 @@ export function cancelActive() {
 export async function createAndOpenRecipe(qc: QueryClient) {
     const service = useStudio.getState().service;
     try {
-        const slug = await service.createRecipe();
+        // `create_recipe` returns the directory name it wrote
+        // `recipe.forage` into. The recipe header name matches the
+        // dir name because the template writes `recipe "<dir>"`, so
+        // the activeFilePath join against listRecipeStatuses lands
+        // cleanly on the first refetch.
+        const dir = await service.createRecipe();
         qc.invalidateQueries({ queryKey: ["files"] });
-        await useStudio.getState().setActiveFilePath(`${slug}/recipe.forage`);
+        qc.invalidateQueries({ queryKey: recipeStatusesKey() });
+        await useStudio.getState().setActiveFilePath(`${dir}/recipe.forage`);
     } catch (e) {
         useStudio.getState().setRunError(String(e));
     }

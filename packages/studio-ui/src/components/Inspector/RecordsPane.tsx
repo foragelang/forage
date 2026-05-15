@@ -22,7 +22,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { useStudioService } from "@/lib/services";
-import { slugOf } from "@/lib/path";
+import { useRecipeNameOf } from "@/hooks/useRecipes";
 import { scheduledRunsKey } from "@/lib/queryKeys";
 import { useStudio } from "@/lib/store";
 
@@ -31,14 +31,14 @@ const PAGE_STEP = 100;
 export function RecordsPane() {
     const service = useStudioService();
     const activeFilePath = useStudio((s) => s.activeFilePath);
-    const slug = activeFilePath ? slugOf(activeFilePath) : null;
+    const name = useRecipeNameOf(activeFilePath);
 
     const runs = useQuery({
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
-        enabled: !!slug,
+        enabled: !!name,
     });
-    const run = runs.data?.find((r) => r.recipe_name === slug);
+    const run = runs.data?.find((r) => r.recipe_name === name);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 1 }),
         queryFn: () => service.listScheduledRuns(run!.id, { limit: 1 }),
