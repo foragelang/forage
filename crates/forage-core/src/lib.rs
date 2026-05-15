@@ -16,7 +16,9 @@ pub mod workspace;
 
 pub use ast::{ForageFile, RecipeHeader};
 pub use error::{ForageError, ForageResult};
-pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
+pub use eval::{
+    EvalError, EvalValue, Evaluator, RunOptions, Scope, TransformRegistry, default_registry,
+};
 pub use parse::parse;
 pub use progress::{ProgressUnit, infer_progress_unit};
 pub use snapshot::{

@@ -10,7 +10,7 @@ use ts_rs::TS;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
-use forage_core::{EvalValue, LineMap, Snapshot, parse, validate};
+use forage_core::{EvalValue, LineMap, RunOptions, Snapshot, parse, validate};
 use forage_http::{
     Debugger, Engine, IterationPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
     RunEvent, StepPause,
@@ -474,6 +474,7 @@ pub async fn run_recipe(
         None
     };
 
+    let run_options = RunOptions::default();
     let snapshot: Result<Snapshot, String> = match (engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
@@ -484,7 +485,7 @@ pub async fn run_recipe(
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, &catalog, inputs, secrets) => r.map_err(|e| format!("{e}")),
+                r = engine.run(&recipe, &catalog, inputs, secrets, &run_options) => r.map_err(|e| format!("{e}")),
             }
         }
         (EngineKind::Http, false) => {
@@ -496,11 +497,11 @@ pub async fn run_recipe(
             tokio::select! {
                 biased;
                 _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, &catalog, inputs, secrets) => r.map_err(|e| format!("{e}")),
+                r = engine.run(&recipe, &catalog, inputs, secrets, &run_options) => r.map_err(|e| format!("{e}")),
             }
         }
         (EngineKind::Browser, true) => {
-            run_browser_replay(&recipe, &catalog, &captures, inputs, secrets)
+            run_browser_replay(&recipe, &catalog, &captures, inputs, secrets, &run_options)
                 .map_err(|e| format!("{e}"))
         }
         (EngineKind::Browser, false) => {

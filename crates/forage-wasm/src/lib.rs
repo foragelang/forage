@@ -9,8 +9,8 @@ use forage_core::ast::Statement;
 use forage_core::parse::{KEYWORDS, TYPE_KEYWORDS};
 use forage_core::validate::BUILTIN_TRANSFORMS;
 use forage_core::{
-    EvalValue, LineMap, Snapshot, TypeCatalog, infer_progress_unit, parse as core_parse,
-    validate as core_validate,
+    EvalValue, LineMap, RunOptions, Snapshot, TypeCatalog, infer_progress_unit,
+    parse as core_parse, validate as core_validate,
 };
 use forage_http::{Engine, ReplayTransport};
 use forage_lsp::intel::hover_at;
@@ -366,7 +366,7 @@ pub async fn run_replay_inner(
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     engine
-        .run(&recipe, &catalog, inputs, secrets)
+        .run(&recipe, &catalog, inputs, secrets, &RunOptions::default())
         .await
         .map_err(|e| ReplayError::Run(e.to_string()))
 }

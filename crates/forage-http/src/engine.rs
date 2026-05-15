@@ -19,7 +19,7 @@ use crate::transport::{HttpRequest, HttpResponse, Transport};
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot, TypeCatalog};
+use forage_core::{EvalValue, Evaluator, Record, RunOptions, Scope, Snapshot, TypeCatalog};
 
 /// Records to seed a downstream recipe with — the upstream stage's
 /// emissions, threaded into the next stage's input slot at run
@@ -100,8 +100,9 @@ impl<'t> Engine<'t> {
         catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
+        options: &RunOptions,
     ) -> HttpResult<Snapshot> {
-        self.run_with_prior(recipe, catalog, inputs, secrets, PriorRecords::default())
+        self.run_with_prior(recipe, catalog, inputs, secrets, options, PriorRecords::default())
             .await
     }
 
@@ -120,6 +121,7 @@ impl<'t> Engine<'t> {
         catalog: &TypeCatalog,
         mut inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
+        options: &RunOptions,
         prior: PriorRecords,
     ) -> HttpResult<Snapshot> {
         let started = Instant::now();
@@ -145,7 +147,7 @@ impl<'t> Engine<'t> {
             bind_prior_records(recipe, &prior, &mut inputs)?;
         }
 
-        self.run_inner(recipe, catalog, inputs, secrets)
+        self.run_inner(recipe, catalog, inputs, secrets, options)
             .await
             .inspect(|snap| {
                 debug!(
@@ -179,6 +181,7 @@ impl<'t> Engine<'t> {
         catalog: &TypeCatalog,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
+        options: &RunOptions,
     ) -> HttpResult<Snapshot> {
         let registry =
             TransformRegistry::with_user_fns(default_registry(), recipe.functions.clone());
@@ -225,6 +228,11 @@ impl<'t> Engine<'t> {
             &mut requests_made,
             &mut emit_counts,
             &mut step_index,
+            options,
+            // Top-level body: outermost for-loops here are the sample
+            // unit. Inside `run_statements`, a recursive call inside a
+            // for-loop's body flips this to false.
+            true,
         )
         .await?;
         // No source on hand at engine boundary — line annotations get
@@ -246,6 +254,8 @@ impl<'t> Engine<'t> {
         requests_made: &'a mut u32,
         emit_counts: &'a mut IndexMap<String, usize>,
         step_index: &'a mut usize,
+        options: &'a RunOptions,
+        top_level: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResult<()>> + Send + 'a>> {
         Box::pin(async move {
             for s in body {
@@ -278,7 +288,7 @@ impl<'t> Engine<'t> {
                         ..
                     } => {
                         let collection_val = evaluator.eval_extraction(collection, scope)?;
-                        let items = match collection_val {
+                        let mut items = match collection_val {
                             EvalValue::Array(xs) => xs,
                             EvalValue::NodeList(xs) => {
                                 xs.into_iter().map(EvalValue::Node).collect()
@@ -286,6 +296,9 @@ impl<'t> Engine<'t> {
                             EvalValue::Null => Vec::new(),
                             other => vec![other],
                         };
+                        if top_level {
+                            options.cap_top_level(&mut items);
+                        }
                         let total = items.len();
                         for (idx, item) in items.into_iter().enumerate() {
                             scope.push_frame();
@@ -324,6 +337,8 @@ impl<'t> Engine<'t> {
                                 requests_made,
                                 emit_counts,
                                 step_index,
+                                options,
+                                false,
                             )
                             .await?;
                             scope.current = saved_current;
@@ -781,7 +796,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -836,7 +851,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![page1, page2]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 4);
@@ -916,7 +931,7 @@ mod tests {
         };
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -967,7 +982,7 @@ mod tests {
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -1032,7 +1047,7 @@ mod tests {
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1193,7 +1208,7 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         };
         let snap = Engine::new(&transport)
-            .run(&recipe, &catalog, inputs, IndexMap::new())
+            .run(&recipe, &catalog, inputs, IndexMap::new(), &RunOptions::default())
             .await
             .expect("run ok");
 
@@ -1268,7 +1283,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![]);
         let engine = Engine::new(&transport);
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1329,7 +1344,7 @@ mod tests {
         let mut secrets = IndexMap::new();
         secrets.insert("token".to_string(), "shhh".to_string());
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), secrets)
+            .run(&recipe, &catalog, IndexMap::new(), secrets, &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 1);
@@ -1393,7 +1408,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -1440,7 +1455,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 3);
@@ -1506,7 +1521,7 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -1551,7 +1566,7 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
 
@@ -1654,7 +1669,7 @@ for $i in $list.items[*] {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
             .await
             .unwrap();
 
@@ -1735,6 +1750,7 @@ for $i in $list.items[*] {
                 &catalog,
                 IndexMap::new(),
                 IndexMap::new(),
+                &RunOptions::default(),
                 prior,
             )
             .await
@@ -1777,6 +1793,7 @@ for $i in $list.items[*] {
                 &catalog,
                 IndexMap::new(),
                 IndexMap::new(),
+                &RunOptions::default(),
                 prior,
             )
             .await

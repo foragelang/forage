@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use forage_core::ast::{EngineKind, RecipeBody};
-use forage_core::{EvalValue, ForageFile, Record, TypeCatalog};
+use forage_core::{EvalValue, ForageFile, Record, RunOptions, TypeCatalog};
 use forage_http::{Engine, LiveTransport, PriorRecords};
 use indexmap::IndexMap;
 
@@ -320,7 +320,7 @@ async fn run_scraping(
             })?;
             let engine = Engine::new(&transport).with_progress(sink.clone());
             engine
-                .run_with_prior(recipe, catalog, inputs, secrets, prior)
+                .run_with_prior(recipe, catalog, inputs, secrets, &RunOptions::default(), prior)
                 .await
                 .map_err(|e| RunFailure {
                     message: format!("engine: {e}"),

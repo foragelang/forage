@@ -18,6 +18,39 @@ use indexmap::IndexMap;
 
 use crate::ast::*;
 
+/// Knobs the for-loop walker reads off the engine on every run.
+///
+/// The wider runtime "what flags did the user pass for this invocation"
+/// shape (replay / ephemeral on top of sample_limit) lives at the
+/// daemon layer — the engine's only sampling concern is how to cap a
+/// top-level `for` over a captured array. Replay is realized at the
+/// transport layer; ephemeral is a daemon output-store choice. Keeping
+/// the engine's options narrow means a downstream consumer can sample
+/// without pulling in transport-shaped state.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Cap each top-level `for $x in $arr[*]` iteration at this many
+    /// items. `None` = no cap. Nested for-loops always run fully — the
+    /// outermost loop is the recipe's record-producing unit; capping
+    /// nested loops would chop the fields of an individual record
+    /// (e.g. all of a product's variants), which is rarely what the
+    /// playground wants.
+    pub sample_limit: Option<u32>,
+}
+
+impl RunOptions {
+    /// Apply the sample cap to a top-level for-loop's items vector,
+    /// trimming it down to `sample_limit` when set. A `None` cap or a
+    /// cap larger than the vector is a no-op.
+    pub fn cap_top_level(&self, items: &mut Vec<EvalValue>) {
+        if let Some(limit) = self.sample_limit
+            && (items.len() as u64) > limit as u64
+        {
+            items.truncate(limit as usize);
+        }
+    }
+}
+
 pub struct Evaluator<'r> {
     pub registry: &'r TransformRegistry,
 }

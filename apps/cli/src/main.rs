@@ -10,7 +10,7 @@ use owo_colors::OwoColorize;
 use forage_browser::run_browser_replay;
 use forage_core::ast::{EngineKind, JSONValue};
 use forage_core::workspace::{self, Workspace, WorkspaceError, fixtures_path, snapshot_path};
-use forage_core::{EvalValue, ForageFile, Snapshot, parse, validate};
+use forage_core::{EvalValue, ForageFile, RunOptions, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{
     AuthStore, AuthTokens, HubClient, HubError, device::run_device_flow, fetch_to_cache,
@@ -403,13 +403,14 @@ async fn run(
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
+    let options = RunOptions::default();
     let snapshot = match (resolved.engine_kind()?, replay) {
         (EngineKind::Http, true) => {
             let captures = load_captures_for(&resolved)?;
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
-                .run(&resolved.file, &catalog, inputs, secrets)
+                .run(&resolved.file, &catalog, inputs, secrets, &options)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
@@ -417,14 +418,21 @@ async fn run(
             let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
             let engine = Engine::new(&transport);
             engine
-                .run(&resolved.file, &catalog, inputs, secrets)
+                .run(&resolved.file, &catalog, inputs, secrets, &options)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, true) => {
             let captures = load_captures_for(&resolved)?;
-            run_browser_replay(&resolved.file, &catalog, &captures, inputs, secrets)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
+            run_browser_replay(
+                &resolved.file,
+                &catalog,
+                &captures,
+                inputs,
+                secrets,
+                &options,
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, false) => {
             bail!(
@@ -462,7 +470,7 @@ async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Res
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     let produced = engine
-        .run(&resolved.file, &catalog, inputs, secrets)
+        .run(&resolved.file, &catalog, inputs, secrets, &RunOptions::default())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -515,7 +523,7 @@ async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
     let transport = RecordingTransport::new(live);
     let engine = Engine::new(&transport);
     let snapshot = engine
-        .run(&resolved.file, &catalog, inputs, secrets)
+        .run(&resolved.file, &catalog, inputs, secrets, &RunOptions::default())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 

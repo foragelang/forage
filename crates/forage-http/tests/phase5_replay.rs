@@ -7,7 +7,7 @@
 use std::fs;
 
 use forage_core::workspace::fixtures_path;
-use forage_core::{TypeCatalog, parse};
+use forage_core::{RunOptions, TypeCatalog, parse};
 use forage_http::Engine;
 use forage_http::transport::ReplayTransport;
 use forage_replay::{Capture, HttpExchange, read_jsonl, write_jsonl};
@@ -75,7 +75,7 @@ async fn replay_reads_underscore_fixtures_layout() {
     let transport = ReplayTransport::new(loaded);
     let engine = Engine::new(&transport);
     let snapshot = engine
-        .run(&recipe, &catalog, IndexMap::new(), IndexMap::new())
+        .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
         .await
         .expect("engine run");
 

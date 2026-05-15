@@ -10,7 +10,7 @@ use regex::Regex;
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot, TypeCatalog};
+use forage_core::{EvalValue, Evaluator, Record, RunOptions, Scope, Snapshot, TypeCatalog};
 use forage_replay::{BrowserCapture, Capture};
 
 use crate::error::{BrowserError, BrowserResult};
@@ -38,6 +38,7 @@ impl<'r> ReplayEngine<'r> {
         &self,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
+        options: &RunOptions,
     ) -> BrowserResult<Snapshot> {
         let cfg = self
             .recipe
@@ -57,7 +58,7 @@ impl<'r> ReplayEngine<'r> {
 
         // Top-level body (e.g. Jane's `emit Dispensary` before captures).
         for s in self.recipe.body.statements() {
-            run_statement(s, &evaluator, &mut scope, &mut snapshot)?;
+            run_statement(s, &evaluator, &mut scope, &mut snapshot, options, true)?;
         }
 
         // For each captures.match rule: filter the capture list, run the
@@ -77,7 +78,9 @@ impl<'r> ReplayEngine<'r> {
                     scope.current = Some(parsed);
 
                     // Evaluate the iter_path against the current scope, then
-                    // for-loop the body over the resulting array.
+                    // for-loop the body over the resulting array. The
+                    // capture-rule iteration *is* the top-level loop for a
+                    // browser recipe — it's the per-record producer.
                     let collection = evaluator.eval_extraction(&cap_rule.iter_path, &scope)?;
                     run_for_each_item(
                         collection,
@@ -86,6 +89,8 @@ impl<'r> ReplayEngine<'r> {
                         &evaluator,
                         &mut scope,
                         &mut snapshot,
+                        options,
+                        true,
                     )?;
 
                     scope.current = saved;
@@ -112,6 +117,8 @@ impl<'r> ReplayEngine<'r> {
                         &evaluator,
                         &mut scope,
                         &mut snapshot,
+                        options,
+                        true,
                     )?;
 
                     scope.current = saved;
@@ -136,8 +143,9 @@ pub fn run_browser_replay(
     captures: &[Capture],
     inputs: IndexMap<String, EvalValue>,
     secrets: IndexMap<String, String>,
+    options: &RunOptions,
 ) -> BrowserResult<Snapshot> {
-    ReplayEngine::new(recipe, catalog, captures).run(inputs, secrets)
+    ReplayEngine::new(recipe, catalog, captures).run(inputs, secrets, options)
 }
 
 fn run_statement(
@@ -145,6 +153,8 @@ fn run_statement(
     evaluator: &Evaluator<'_>,
     scope: &mut Scope,
     snapshot: &mut Snapshot,
+    options: &RunOptions,
+    top_level: bool,
 ) -> BrowserResult<()> {
     match s {
         Statement::Step(_) => Ok(()),
@@ -156,11 +166,21 @@ fn run_statement(
             ..
         } => {
             let collection_val = evaluator.eval_extraction(collection, scope)?;
-            run_for_each_item(collection_val, body, variable, evaluator, scope, snapshot)
+            run_for_each_item(
+                collection_val,
+                body,
+                variable,
+                evaluator,
+                scope,
+                snapshot,
+                options,
+                top_level,
+            )
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_for_each_item(
     collection: EvalValue,
     body: &[Statement],
@@ -168,20 +188,25 @@ fn run_for_each_item(
     evaluator: &Evaluator<'_>,
     scope: &mut Scope,
     snapshot: &mut Snapshot,
+    options: &RunOptions,
+    top_level: bool,
 ) -> BrowserResult<()> {
-    let items = match collection {
+    let mut items = match collection {
         EvalValue::Array(xs) => xs,
         EvalValue::NodeList(xs) => xs.into_iter().map(EvalValue::Node).collect(),
         EvalValue::Null => Vec::new(),
         other => vec![other],
     };
+    if top_level {
+        options.cap_top_level(&mut items);
+    }
     for item in items {
         scope.push_frame();
         scope.bind(variable, item.clone());
         let saved = scope.current.clone();
         scope.current = Some(item);
         for s in body {
-            run_statement(s, evaluator, scope, snapshot)?;
+            run_statement(s, evaluator, scope, snapshot, options, false)?;
         }
         scope.current = saved;
         scope.pop_frame();
@@ -261,9 +286,15 @@ mod tests {
             status: 200,
             body: r#"{"items":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#.into(),
         });
-        let snap =
-            run_browser_replay(&recipe, &catalog, &[cap], IndexMap::new(), IndexMap::new())
-                .unwrap();
+        let snap = run_browser_replay(
+            &recipe,
+            &catalog,
+            &[cap],
+            IndexMap::new(),
+            IndexMap::new(),
+            &RunOptions::default(),
+        )
+        .unwrap();
         assert_eq!(snap.records.len(), 3);
     }
 
@@ -299,9 +330,15 @@ mod tests {
             "#
             .into(),
         });
-        let snap =
-            run_browser_replay(&recipe, &catalog, &[cap], IndexMap::new(), IndexMap::new())
-                .unwrap();
+        let snap = run_browser_replay(
+            &recipe,
+            &catalog,
+            &[cap],
+            IndexMap::new(),
+            IndexMap::new(),
+            &RunOptions::default(),
+        )
+        .unwrap();
         assert_eq!(snap.records.len(), 2);
         let titles: Vec<String> = snap
             .records
