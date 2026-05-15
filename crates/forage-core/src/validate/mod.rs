@@ -315,6 +315,22 @@ pub enum ValidationCode {
     /// each link to a single concrete type so the input lookup is
     /// well-defined; multi-output composition is a future extension.
     MultiOutputComposeStage,
+    /// `type Child extends Parent@vN` whose parent name is not in the
+    /// type catalog. For workspace-local references this means the
+    /// parent isn't declared in this file or in any sibling's
+    /// `share`d declarations; for hub-dep references it means the
+    /// lockfile pin's cached source body never made it into the
+    /// workspace's `<cache>/types/<author>/<Name>/<v>.forage` slot.
+    UnknownExtendedType,
+    /// A child type redeclares a parent field with an incompatible
+    /// type (e.g. parent has `name: String`, child has `name: Int`).
+    /// Same-name redeclaration with the same type is a field override
+    /// — not a finding; this code only fires on a type mismatch.
+    IncompatibleExtension,
+    /// `extends` chain forms a cycle (`A extends B`, `B extends A`).
+    /// The catalog can't resolve the effective shape without an
+    /// acyclic chain.
+    CircularExtension,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -490,6 +506,7 @@ impl<'a> Validator<'a> {
         self.check_recipe_context();
         self.check_duplicates();
         self.check_alignments();
+        self.check_extensions();
         self.check_engine_consistency();
         self.check_user_fns();
         self.check_references();
@@ -556,6 +573,128 @@ impl<'a> Validator<'a> {
                     "{where_} declares an alignment with an empty term (missing '/term' after ontology)",
                 ),
             );
+        }
+    }
+
+    /// Verify every `extends` clause across the file's type declarations.
+    /// Three diagnostics live here:
+    ///   - `UnknownExtendedType`: parent name absent from the catalog.
+    ///   - `CircularExtension`: chain walks back to the child.
+    ///   - `IncompatibleExtension`: child redeclares a parent field
+    ///     with a different type (same-type redeclaration is an
+    ///     override — the validator allows it because it preserves
+    ///     field-level alignment overrides per the program plan).
+    ///
+    /// Catalog lookup is by bare name. The author segment on the
+    /// extension reference is informational at validate time —
+    /// workspace catalogs key by bare name even for hub-cached types,
+    /// so the resolution path is the same for `extends Name@v1` and
+    /// `extends @upstream/Name@v1`. The validator surfaces a missing
+    /// parent the same way in both cases; what the author segment buys
+    /// is precision in the diagnostic message.
+    fn check_extensions(&mut self) {
+        for ty in &self.file.types.clone() {
+            let Some(ext) = ty.extends.clone() else {
+                continue;
+            };
+            self.with_span(ext.span.clone(), |v| {
+                let qualified = match &ext.author {
+                    Some(a) => format!("@{a}/{}@v{}", ext.name, ext.version),
+                    None => format!("{}@v{}", ext.name, ext.version),
+                };
+                let Some(parent) = v.catalog.ty(&ext.name).cloned() else {
+                    v.err_here(
+                        ValidationCode::UnknownExtendedType,
+                        format!(
+                            "type '{}' extends '{qualified}' but no such type is visible to this file",
+                            ty.name,
+                        ),
+                    );
+                    return;
+                };
+                v.check_extension_cycle(&ty.name, &parent);
+                v.check_extension_compatibility(ty, &parent);
+            });
+        }
+    }
+
+    /// Walk `parent.extends` until either the chain hits `child` (a
+    /// cycle), the chain ends (no `extends`), or the chain hits a
+    /// node whose parent is missing from the catalog (the
+    /// `UnknownExtendedType` rule already flagged it).
+    fn check_extension_cycle(&mut self, child: &str, parent: &RecipeType) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        seen.insert(child.to_string());
+        let mut cur = parent.clone();
+        loop {
+            if cur.name == child {
+                self.err_here(
+                    ValidationCode::CircularExtension,
+                    format!(
+                        "type '{child}' extends '{}' which transitively extends '{child}' — chains must be acyclic",
+                        parent.name,
+                    ),
+                );
+                return;
+            }
+            if !seen.insert(cur.name.clone()) {
+                // A cycle that doesn't include `child` exists upstream.
+                // The validator pass for the cycle's own member types
+                // will surface it from their own perspective; reporting
+                // it here too would double up.
+                return;
+            }
+            let Some(next_ext) = cur.extends.clone() else {
+                return;
+            };
+            let Some(next) = self.catalog.ty(&next_ext.name).cloned() else {
+                return;
+            };
+            cur = next;
+        }
+    }
+
+    /// For every parent field that the child also declares, the child's
+    /// field type must be identical to the parent's. Same-type
+    /// redeclaration is allowed (it's how a child overrides a
+    /// field-level alignment); a different type is an extension
+    /// violation. New fields on the child — fields the parent never
+    /// declared — are fine and define the child's added shape.
+    ///
+    /// Optionality must match too: a child can't loosen `name: String`
+    /// to `name: String?` without breaking adapter recipes that round-
+    /// trip a parent record through the child.
+    fn check_extension_compatibility(&mut self, child: &RecipeType, parent: &RecipeType) {
+        for parent_field in &parent.fields {
+            let Some(child_field) = child.field(&parent_field.name) else {
+                continue;
+            };
+            if child_field.ty != parent_field.ty {
+                self.err_here(
+                    ValidationCode::IncompatibleExtension,
+                    format!(
+                        "type '{}' redeclares field '{}' as a different type than parent '{}' (parent: {}, child: {})",
+                        child.name,
+                        parent_field.name,
+                        parent.name,
+                        describe_field_type(&parent_field.ty),
+                        describe_field_type(&child_field.ty),
+                    ),
+                );
+            }
+            if child_field.optional != parent_field.optional {
+                self.err_here(
+                    ValidationCode::IncompatibleExtension,
+                    format!(
+                        "type '{}' redeclares field '{}' with a different optionality than parent '{}' (parent: {}, child: {})",
+                        child.name,
+                        parent_field.name,
+                        parent.name,
+                        if parent_field.optional { "optional" } else { "required" },
+                        if child_field.optional { "optional" } else { "required" },
+                    ),
+                );
+            }
         }
     }
 
@@ -1581,6 +1720,22 @@ impl<'a> Validator<'a> {
             }
             FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
         }
+    }
+}
+
+/// Render a `FieldType` as the surface syntax the recipe author wrote.
+/// Used in extension diagnostics so a `parent: String, child: Int`
+/// mismatch points at the two surface forms instead of debug-prints.
+fn describe_field_type(t: &FieldType) -> String {
+    match t {
+        FieldType::String => "String".into(),
+        FieldType::Int => "Int".into(),
+        FieldType::Double => "Double".into(),
+        FieldType::Bool => "Bool".into(),
+        FieldType::Array(inner) => format!("[{}]", describe_field_type(inner)),
+        FieldType::Record(name) => name.clone(),
+        FieldType::EnumRef(name) => name.clone(),
+        FieldType::Ref(name) => format!("Ref<{name}>"),
     }
 }
 
@@ -2805,6 +2960,185 @@ emit Item { }
             "distinct ontologies must not collide; got {:?}",
             rep.issues,
         );
+    }
+
+    #[test]
+    fn extends_missing_parent_flagged_as_unknown_extended_type() {
+        let src = r#"
+            share type Child extends Missing@v1 {
+                extra: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::UnknownExtendedType)
+            .expect("UnknownExtendedType");
+        assert!(
+            issue.message.contains("Missing@v1"),
+            "diagnostic names the missing parent: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn extends_hub_dep_missing_parent_quotes_author_qualified_form() {
+        let src = r#"
+            share type Child extends @upstream/JobPosting@v1 {
+                salaryMin: Int?
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::UnknownExtendedType)
+            .expect("UnknownExtendedType");
+        assert!(
+            issue.message.contains("@upstream/JobPosting@v1"),
+            "diagnostic uses the author-qualified form: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn extends_field_type_mismatch_flagged_as_incompatible_extension() {
+        // Child redeclares `name` with a different scalar type — a
+        // narrowing the parent's adapters can't honor. Same-type
+        // redeclaration (field-alignment override) is the override
+        // path tested below.
+        let src = r#"
+            share type Parent { id: String, name: String }
+            share type Child extends Parent@v1 {
+                id: String
+                name: Int
+                extra: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::IncompatibleExtension)
+            .expect("IncompatibleExtension");
+        assert!(
+            issue.message.contains("'name'")
+                && issue.message.contains("parent: String")
+                && issue.message.contains("child: Int"),
+            "diagnostic names the field and both sides: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn extends_optionality_mismatch_flagged_as_incompatible_extension() {
+        // Loosening required → optional breaks adapters that assume a
+        // parent record's required field is always present.
+        let src = r#"
+            share type Parent { id: String, name: String }
+            share type Child extends Parent@v1 {
+                id: String
+                name: String?
+                extra: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::IncompatibleExtension)
+            .expect("IncompatibleExtension");
+        assert!(
+            issue.message.contains("optionality"),
+            "diagnostic mentions optionality: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn extends_same_type_redeclaration_is_field_override() {
+        // Same field type + same optionality: that's an override —
+        // typically used so the child can swap the parent's
+        // field-level alignment. Must not surface
+        // `IncompatibleExtension`.
+        let src = r#"
+            share type Parent {
+                id:   String
+                name: String aligns schema.org/name
+            }
+            share type Child extends Parent@v1 {
+                id:   String
+                name: String aligns wikidata/P2561
+                extra: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        assert!(
+            !rep.errors().any(|i| i.code == ValidationCode::IncompatibleExtension),
+            "same-type redeclaration is an override, not a violation: {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn extends_self_immediate_flagged_as_circular_extension() {
+        let src = r#"
+            share type Loop extends Loop@v1 { extra: String }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let issue = rep
+            .errors()
+            .find(|i| i.code == ValidationCode::CircularExtension)
+            .expect("CircularExtension");
+        assert!(
+            issue.message.contains("Loop"),
+            "diagnostic names the cycle entry: {}",
+            issue.message,
+        );
+    }
+
+    #[test]
+    fn extends_two_step_cycle_flagged_as_circular_extension() {
+        let src = r#"
+            share type A extends B@v1 { extra: String }
+            share type B extends A@v1 { other: String }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        let cycle_count = rep
+            .errors()
+            .filter(|i| i.code == ValidationCode::CircularExtension)
+            .count();
+        assert!(cycle_count >= 1, "expected at least one CircularExtension; got {:?}", rep.issues);
+    }
+
+    #[test]
+    fn extends_clean_chain_has_no_errors() {
+        let src = r#"
+            share type Parent
+                aligns schema.org/Product
+            {
+                id:   String
+                name: String aligns schema.org/name
+            }
+            share type Child extends Parent@v1 {
+                extra: String
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat, &RecipeSignatures::default());
+        assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
 
     /// Distinct recipe names across files don't collide. A header-less
