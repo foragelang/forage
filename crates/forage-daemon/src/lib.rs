@@ -44,8 +44,8 @@ use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-// Wire types — Studio (Phase 3) carries these through Tauri commands
-// and ts-rs generates matching TypeScript from them.
+// Wire types — Studio carries these through Tauri commands and
+// ts-rs generates matching TypeScript from them.
 pub use error::{DaemonError, DeployError, RunError};
 pub use model::{
     Cadence, DaemonStatus, DeployedVersion, Health, Outcome, Run, RunConfig, RunFlags,
@@ -59,8 +59,8 @@ pub use model::{
 pub use health::{PRIOR_WINDOW, derive_health};
 
 // Output-store API. `OutputStore` and `derive_schema` are how Studio
-// (Phase 3) and any other host inspect / write a Run's emitted rows
-// without holding the full daemon state.
+// and any other host inspect / write a Run's emitted rows without
+// holding the full daemon state.
 pub use output::{
     ColumnDef, ColumnStorage, OutputStore, TableDef, WriteTx, derive_schema, load_records,
 };
@@ -356,9 +356,8 @@ impl Daemon {
         output::load_records(&output, scheduled_run_id, type_name, limit)
     }
 
-    /// Create-or-update a Run for the given recipe name. Matches the
-    /// "auto-create on first Run live" pattern Studio adopted in
-    /// Phase 3 — `name` is the canonical key here, not a generated id.
+    /// Create-or-update a Run for the given recipe name. The recipe
+    /// header name is the canonical key; there is no generated id.
     pub fn configure_run(&self, name: &str, cfg: RunConfig) -> Result<Run, DaemonError> {
         // Reject bad cron expressions up front so we don't store
         // unparseable state. Interval / Manual don't need validation.
