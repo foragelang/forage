@@ -171,7 +171,7 @@ impl<'t> Engine<'t> {
         let mut emit_counts: IndexMap<String, usize> = IndexMap::new();
         let mut step_index: usize = 0;
         self.run_statements(
-            &recipe.body,
+            recipe.body.statements(),
             recipe,
             &auth_state,
             &evaluator,

@@ -359,7 +359,7 @@ struct Validator<'a> {
 impl<'a> Validator<'a> {
     fn new(file: &'a ForageFile, catalog: &'a TypeCatalog) -> Self {
         let mut known_vars = std::collections::HashSet::new();
-        collect_bindings(&file.body, &mut known_vars);
+        collect_bindings(file.body.statements(), &mut known_vars);
         if let Some(b) = &file.browser {
             for cap in &b.captures {
                 known_vars.insert(cap.iter_var.clone());
@@ -701,6 +701,7 @@ impl<'a> Validator<'a> {
             let referenced = self
                 .file
                 .body
+                .statements()
                 .iter()
                 .any(|s| matches!(s, Statement::Step(st) if &st.name == step_name));
             if !referenced {
@@ -759,11 +760,18 @@ impl<'a> Validator<'a> {
                 "expect block requires a `recipe \"<name>\" engine <kind>` header",
             );
         }
-        for s in &self.file.body.clone() {
+        for s in &self.file.body.statements().to_vec() {
             self.err(
                 s.span().clone(),
                 ValidationCode::RecipeContextWithoutHeader,
                 "statements (step / for / emit) require a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        if let Some(c) = self.file.body.composition() {
+            self.err(
+                c.span.clone(),
+                ValidationCode::RecipeContextWithoutHeader,
+                "`compose` requires a `recipe \"<name>\" engine <kind>` header",
             );
         }
         if !self.file.secrets.is_empty() {
@@ -790,7 +798,7 @@ impl<'a> Validator<'a> {
     // --- name resolution ---------------------------------------------------
 
     fn check_references(&mut self) {
-        for s in self.file.body.clone() {
+        for s in self.file.body.statements().to_vec() {
             self.check_statement(&s);
         }
         if let Some(b) = &self.file.browser {
@@ -1312,7 +1320,7 @@ impl<'a> Validator<'a> {
             }
         }
         let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        collect_emitted_types(&self.file.body, &mut emitted);
+        collect_emitted_types(self.file.body.statements(), &mut emitted);
         if let Some(b) = &self.file.browser {
             for cap in &b.captures {
                 collect_emitted_types(&cap.body, &mut emitted);

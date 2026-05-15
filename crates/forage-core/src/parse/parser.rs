@@ -231,7 +231,8 @@ impl Parser {
         let mut functions: Vec<FnDecl> = Vec::new();
         let mut auth: Option<AuthStrategy> = None;
         let mut browser: Option<BrowserConfig> = None;
-        let mut body: Vec<Statement> = Vec::new();
+        let mut statements: Vec<Statement> = Vec::new();
+        let mut composition: Option<Composition> = None;
         let mut expectations: Vec<Expectation> = Vec::new();
 
         while self.peek().is_some() {
@@ -294,7 +295,13 @@ impl Parser {
                     "expect" => expectations.push(self.parse_expect_block()?),
                     "fn" => functions.push(self.parse_fn_decl_shared(false)?),
                     "step" | "for" | "emit" => {
-                        body.push(self.parse_statement()?);
+                        statements.push(self.parse_statement()?);
+                    }
+                    "compose" => {
+                        if composition.is_some() {
+                            return Err(self.generic("duplicate compose block"));
+                        }
+                        composition = Some(self.parse_composition()?);
                     }
                     other => return Err(self.generic(&format!("unexpected keyword '{other}'"))),
                 },
@@ -308,6 +315,23 @@ impl Parser {
             }
         }
 
+        // Resolve the file's body kind. Composition and scraping
+        // statements are mutually exclusive; co-occurrence is rejected
+        // here so downstream consumers can rely on the invariant. A
+        // file with neither is `Empty` (header-less declarations file
+        // or a recipe header with no body yet — the validator catches
+        // the latter as `RecipeContextWithoutHeader` upstream).
+        let body = match (statements.is_empty(), composition) {
+            (true, None) => RecipeBody::Empty,
+            (false, None) => RecipeBody::Scraping(statements),
+            (true, Some(c)) => RecipeBody::Composition(c),
+            (false, Some(_)) => {
+                return Err(self.generic(
+                    "recipe body must be scraping statements OR a `compose` chain, not both",
+                ));
+            }
+        };
+
         Ok(ForageFile {
             recipe_headers,
             types,
@@ -320,6 +344,73 @@ impl Parser {
             browser,
             body,
             expectations,
+        })
+    }
+
+    /// composition := 'compose' recipe_ref ( '|' recipe_ref )+
+    ///
+    /// A composition body is a chain of recipe references joined by
+    /// `|`. Two or more stages are required — a single-stage "chain"
+    /// is just calling the inner recipe directly, and the parser
+    /// rejects that shape so authors get a clear message instead of
+    /// the composition silently degrading.
+    fn parse_composition(&mut self) -> Result<Composition, ParseError> {
+        let start = self.current_span().start;
+        self.expect_keyword("compose")?;
+        let mut stages = vec![self.parse_recipe_ref()?];
+        while self.eat_punct(&Token::Pipe) {
+            stages.push(self.parse_recipe_ref()?);
+        }
+        if stages.len() < 2 {
+            return Err(self.generic(
+                "compose requires at least two stages joined by `|` (a single recipe isn't a composition)",
+            ));
+        }
+        Ok(Composition {
+            stages,
+            span: self.span_to_here(start),
+        })
+    }
+
+    /// recipe_ref := STRING
+    ///
+    /// Recipe references are string literals so they can carry any
+    /// recipe header name (recipe headers are `recipe "<name>"`, and
+    /// names commonly contain hyphens — `"scrape-amazon"`). A
+    /// reference starting with `@` is a namespaced hub-dep reference
+    /// (`"@author/name"`); the leading `@` is split off, the part
+    /// before the `/` becomes the author, and the part after is the
+    /// recipe name.
+    fn parse_recipe_ref(&mut self) -> Result<RecipeRef, ParseError> {
+        let start = self.current_span().start;
+        let s = self.expect_string()?;
+        let (author, name) = if let Some(rest) = s.strip_prefix('@') {
+            match rest.split_once('/') {
+                Some((author, name)) if !author.is_empty() && !name.is_empty() => {
+                    (Some(author.to_string()), name.to_string())
+                }
+                _ => {
+                    return Err(ParseError::Generic {
+                        span: self.span_to_here(start),
+                        message: format!(
+                            "recipe reference '@{rest}' is malformed — expected `@author/name`",
+                        ),
+                    });
+                }
+            }
+        } else {
+            (None, s)
+        };
+        if name.is_empty() {
+            return Err(ParseError::Generic {
+                span: self.span_to_here(start),
+                message: "recipe reference name is empty".into(),
+            });
+        }
+        Ok(RecipeRef {
+            author,
+            name,
+            span: self.span_to_here(start),
         })
     }
 

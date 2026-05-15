@@ -174,6 +174,7 @@ fn check_summary(file: &str, recipe: &ForageFile, expected: &Summary, failures: 
     }
     let step_names: Vec<String> = recipe
         .body
+        .statements()
         .iter()
         .filter_map(|s| match s {
             Statement::Step(st) => Some(st.name.clone()),

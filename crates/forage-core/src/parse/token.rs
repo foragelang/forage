@@ -158,6 +158,7 @@ pub const KEYWORDS: &[&str] = &[
     "for",
     "in",
     "emit",
+    "compose",
     "case",
     "of",
     "let",

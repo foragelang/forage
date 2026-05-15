@@ -56,7 +56,7 @@ impl<'r> ReplayEngine<'r> {
         snapshot.set_record_types(self.catalog.types_sorted());
 
         // Top-level body (e.g. Jane's `emit Dispensary` before captures).
-        for s in &self.recipe.body {
+        for s in self.recipe.body.statements() {
             run_statement(s, &evaluator, &mut scope, &mut snapshot)?;
         }
 

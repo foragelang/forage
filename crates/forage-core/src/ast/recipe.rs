@@ -20,6 +20,13 @@ use crate::ast::types::{InputDecl, OutputDecl, RecipeEnum, RecipeType};
 /// `DuplicateRecipeHeader` when there are two or more, and
 /// `RecipeContextWithoutHeader` when recipe-context forms (auth,
 /// browser, expect, statements) appear in a header-less file.
+///
+/// `body` is the recipe's body: either a sequence of scraping
+/// statements (`step` / `for` / `emit`) or a composition expression
+/// (`compose A | B | …`). Composition is itself a recipe body kind; a
+/// composed recipe shares the same header, the same publishable shape,
+/// and the same lifecycle as a scraping recipe — there is no separate
+/// `pipeline` citizen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForageFile {
     pub recipe_headers: Vec<RecipeHeader>,
@@ -39,7 +46,7 @@ pub struct ForageFile {
     pub functions: Vec<FnDecl>,
     pub auth: Option<AuthStrategy>,
     pub browser: Option<BrowserConfig>,
-    pub body: Vec<Statement>,
+    pub body: RecipeBody,
     pub expectations: Vec<Expectation>,
 }
 
@@ -152,6 +159,77 @@ impl Statement {
             Statement::ForLoop { span, .. } => span,
         }
     }
+}
+
+/// A recipe's body. Two kinds:
+///
+/// - `Scraping`: a sequence of `step` / `for` / `emit` statements that
+///   drive the HTTP or browser engine. The historical recipe shape.
+/// - `Composition`: a chain of recipe references joined by `|`. The
+///   runtime invokes each referenced recipe in turn, feeding the
+///   records emitted by stage N as the input to stage N+1.
+///
+/// `Empty` is the header-less / declarations-only file case and the
+/// transient pre-body state. The validator's
+/// `RecipeContextWithoutHeader` rule already covers header-less files
+/// with body content; `Empty` keeps the AST honest about what's
+/// absent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum RecipeBody {
+    #[default]
+    Empty,
+    Scraping(Vec<Statement>),
+    Composition(Composition),
+}
+
+impl RecipeBody {
+    /// Statements when the body is scraping; empty slice otherwise.
+    /// Callers that iterate over steps / emits accept the empty case as
+    /// "this body has no statements to walk."
+    pub fn statements(&self) -> &[Statement] {
+        match self {
+            RecipeBody::Scraping(s) => s,
+            RecipeBody::Empty | RecipeBody::Composition(_) => &[],
+        }
+    }
+
+    /// Composition when the body is one; `None` otherwise.
+    pub fn composition(&self) -> Option<&Composition> {
+        match self {
+            RecipeBody::Composition(c) => Some(c),
+            _ => None,
+        }
+    }
+}
+
+/// A composition body: `compose <ref> ( '|' <ref> )+`. Stages are
+/// recipe references resolved at validate time against the workspace's
+/// recipe catalog. The runtime walks the chain in order, feeding the
+/// records emitted by stage N as the input to stage N+1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Composition {
+    pub stages: Vec<RecipeRef>,
+    /// Source range covering the `compose` keyword through the last
+    /// stage reference.
+    #[serde(default)]
+    pub span: Span,
+}
+
+/// One stage in a composition: a recipe reference. Bare names
+/// (`scrape-amazon`) resolve to workspace-local recipes; namespaced
+/// references (`@author/recipe-name`) resolve to hub-dep recipes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeRef {
+    /// Hub author when the reference is namespaced (`@author/name`);
+    /// `None` for workspace-local references.
+    pub author: Option<String>,
+    /// Recipe name as it appears in the source.
+    pub name: String,
+    /// Source range covering the reference (`scrape-amazon` or
+    /// `@author/name`).
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

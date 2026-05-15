@@ -56,9 +56,10 @@ pub struct ProgressUnit {
 /// loops execute one after another; the final one is the bottleneck
 /// for completion).
 pub fn infer_progress_unit(recipe: &ForageFile) -> Option<ProgressUnit> {
+    let statements = recipe.body.statements();
     let mut compounds: Vec<(usize, ProgressUnit)> = Vec::new();
     let mut emit_bearings: Vec<(usize, ProgressUnit)> = Vec::new();
-    collect_candidates(&recipe.body, 0, &mut compounds, &mut emit_bearings);
+    collect_candidates(statements, 0, &mut compounds, &mut emit_bearings);
 
     if let Some(u) = pick_outermost_last_wins(compounds) {
         return Some(u);
@@ -66,8 +67,7 @@ pub fn infer_progress_unit(recipe: &ForageFile) -> Option<ProgressUnit> {
     if let Some(u) = pick_outermost_last_wins(emit_bearings) {
         return Some(u);
     }
-    let here: Vec<String> = recipe
-        .body
+    let here: Vec<String> = statements
         .iter()
         .filter_map(|s| match s {
             Statement::Emit(e) => Some(e.type_name.clone()),

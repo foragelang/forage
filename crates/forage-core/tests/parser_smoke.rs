@@ -40,7 +40,7 @@ fn parses_tiny_http_recipe() {
     assert_eq!(r.inputs.len(), 1);
     assert_eq!(r.inputs[0].name, "limit");
     assert!(matches!(r.inputs[0].ty, FieldType::Int));
-    assert_eq!(r.body.len(), 2); // step + for
+    assert_eq!(r.body.statements().len(), 2); // step + for
     assert_eq!(r.expectations.len(), 1);
 }
 
@@ -88,7 +88,7 @@ fn parses_tiny_browser_recipe() {
 #[test]
 fn template_interpolation_renders_to_parts() {
     let r = parse(TINY_HTTP).expect("parse");
-    let Statement::Step(step) = &r.body[0] else {
+    let Statement::Step(step) = &r.body.statements()[0] else {
         panic!("expected step")
     };
     // url template: "https://example.com/items?limit={$input.limit}"
@@ -142,7 +142,8 @@ for $i in $list.items[*] {
     let in_span = &r.inputs[0].span;
     assert_eq!(&src[in_span.clone()], "input term: String");
 
-    let Statement::Step(step) = &r.body[0] else {
+    let stmts = r.body.statements();
+    let Statement::Step(step) = &stmts[0] else {
         panic!("expected step")
     };
     let step_text = &src[step.span.clone()];
@@ -153,7 +154,7 @@ for $i in $list.items[*] {
         span: for_span,
         body: for_body,
         ..
-    } = &r.body[1]
+    } = &stmts[1]
     else {
         panic!("expected for-loop")
     };
@@ -261,7 +262,7 @@ fn parses_emit_with_as_binding() {
         }
     "#;
     let r = parse(src).expect("parse");
-    let Statement::ForLoop { body, .. } = &r.body[1] else {
+    let Statement::ForLoop { body, .. } = &r.body.statements()[1] else {
         panic!("expected for-loop");
     };
     let Statement::Emit(em) = &body[0] else {
@@ -282,7 +283,7 @@ fn parses_emit_without_as_binding() {
         }
     "#;
     let r = parse(src).expect("parse");
-    let Statement::ForLoop { body, .. } = &r.body[1] else {
+    let Statement::ForLoop { body, .. } = &r.body.statements()[1] else {
         panic!("expected for-loop");
     };
     let Statement::Emit(em) = &body[0] else {
@@ -637,6 +638,104 @@ fn duplicate_output_decl_is_a_parse_error() {
         output Item
         output Item
         type Item { id: String }
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn parses_compose_body_as_composition() {
+    let src = r#"
+        recipe "enriched-products"
+        engine http
+        type Product { id: String }
+        output Product
+        compose "scrape-amazon" | "enrich-wikidata"
+    "#;
+    let r = parse(src).expect("parse");
+    let RecipeBody::Composition(c) = &r.body else {
+        panic!("expected composition body, got {:?}", r.body);
+    };
+    assert_eq!(c.stages.len(), 2);
+    assert_eq!(c.stages[0].name, "scrape-amazon");
+    assert_eq!(c.stages[0].author, None);
+    assert_eq!(c.stages[1].name, "enrich-wikidata");
+    assert_eq!(c.stages[1].author, None);
+    // The body slot has no scraping statements when the recipe is a
+    // composition.
+    assert!(r.body.statements().is_empty());
+}
+
+#[test]
+fn parses_namespaced_recipe_reference() {
+    let src = r#"
+        recipe "lifted"
+        engine http
+        type Product { id: String }
+        output Product
+        compose "scrape-amazon" | "@upstream/enrich-products"
+    "#;
+    let r = parse(src).expect("parse");
+    let RecipeBody::Composition(c) = &r.body else {
+        panic!("expected composition body");
+    };
+    assert_eq!(c.stages.len(), 2);
+    assert_eq!(c.stages[1].author.as_deref(), Some("upstream"));
+    assert_eq!(c.stages[1].name, "enrich-products");
+}
+
+#[test]
+fn three_stage_composition_parses() {
+    let src = r#"
+        recipe "three-stage"
+        engine http
+        type Product { id: String }
+        output Product
+        compose "a" | "b" | "c"
+    "#;
+    let r = parse(src).expect("parse");
+    let RecipeBody::Composition(c) = &r.body else {
+        panic!("expected composition body");
+    };
+    let names: Vec<&str> = c.stages.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn single_stage_compose_is_rejected() {
+    // A single recipe isn't a composition; the parser refuses the
+    // shape so authors get a clear message instead of the composition
+    // silently degrading into "call that one recipe."
+    let src = r#"
+        recipe "lonely"
+        engine http
+        compose "scrape-amazon"
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn malformed_namespaced_reference_is_rejected() {
+    // `@foo` (no slash) is structurally wrong — the validator can't
+    // turn it into a hub-resolvable identity. Catch it at parse time
+    // so the author sees the problem on the offending stage.
+    let src = r#"
+        recipe "malformed"
+        engine http
+        compose "@no-slash" | "downstream"
+    "#;
+    assert!(parse(src).is_err());
+}
+
+#[test]
+fn compose_alongside_scraping_statements_is_a_parse_error() {
+    // The two body kinds are mutually exclusive; mixing them produces
+    // a parse error so the AST can rely on the invariant.
+    let src = r#"
+        recipe "mixed"
+        engine http
+        type Item { id: String }
+        step list { method "GET" url "https://example.com" }
+        compose "a" | "b"
     "#;
     assert!(parse(src).is_err());
 }

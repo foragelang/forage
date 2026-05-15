@@ -93,7 +93,7 @@ impl ColumnStorage {
 /// reaching this point.
 pub fn derive_schema(recipe: &ForageFile, catalog: &TypeCatalog) -> Vec<TableDef> {
     let mut emit_types: BTreeSet<String> = BTreeSet::new();
-    collect_emit_types(&recipe.body, &mut emit_types);
+    collect_emit_types(recipe.body.statements(), &mut emit_types);
     if let Some(b) = &recipe.browser {
         collect_browser_emit_types(b, &mut emit_types);
     }

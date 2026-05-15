@@ -15,7 +15,7 @@ fn eval_first_binding(src: &str, scope: Scope) -> EvalValue {
     let r = parse(src).expect("parse");
     let registry = TransformRegistry::with_user_fns(default_registry(), r.functions.clone());
     let ev = Evaluator::new(&registry);
-    let Statement::Emit(em) = &r.body[0] else {
+    let Statement::Emit(em) = &r.body.statements()[0] else {
         panic!("expected top-level emit");
     };
     ev.eval_extraction(&em.bindings[0].expr, &scope)

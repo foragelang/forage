@@ -295,7 +295,7 @@ impl LanguageServer for ForageLsp {
             }
             // Steps too — they're top-level locatable nodes now.
             #[allow(deprecated)]
-            for s in &r.body {
+            for s in r.body.statements() {
                 if let forage_core::ast::Statement::Step(step) = s {
                     out.push(SymbolInformation {
                         name: format!("step {}", step.name),

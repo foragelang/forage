@@ -563,7 +563,7 @@ mod tests {
         let registry = default_registry();
         let ev = Evaluator::new(registry);
         // The fixture wraps an extraction in `emit` so we can grab the expression.
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!("expected emit")
         };
         let scope = Scope::new();
@@ -602,7 +602,7 @@ mod tests {
                 .into_iter()
                 .collect();
         let scope = Scope::new().with_inputs(inputs);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
@@ -623,7 +623,7 @@ mod tests {
         let registry = default_registry();
         let ev = Evaluator::new(registry);
         let scope = Scope::new();
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
@@ -648,7 +648,7 @@ mod tests {
         .unwrap();
         let registry = default_registry();
         let ev = Evaluator::new(registry);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
 
@@ -723,7 +723,7 @@ mod tests {
             "xs",
             EvalValue::Array(vec![mk("alpha"), mk("beta"), mk("alpha")]),
         );
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
@@ -765,7 +765,7 @@ mod tests {
                     .collect(),
             ),
         );
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
@@ -791,7 +791,7 @@ mod tests {
                 .into_iter()
                 .collect();
         let scope = Scope::new().with_inputs(inputs);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let v = ev.eval_extraction(&em.bindings[0].expr, &scope).unwrap();
@@ -803,7 +803,7 @@ mod tests {
         let registry =
             TransformRegistry::with_user_fns(default_registry(), r.functions.clone());
         let ev = Evaluator::new(&registry);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!("expected emit, got {:?}", r.body);
         };
         ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap()
@@ -862,7 +862,7 @@ mod tests {
         .unwrap();
         let registry = default_registry();
         let ev = Evaluator::new(registry);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();
@@ -894,7 +894,7 @@ mod tests {
         .unwrap();
         let registry = default_registry();
         let ev = Evaluator::new(registry);
-        let Statement::Emit(em) = &r.body[0] else {
+        let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
         let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();

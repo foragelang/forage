@@ -82,7 +82,7 @@ pub fn hover_at(source: &str, line: u32, col: u32) -> Option<HoverInfo> {
             Statement::Emit(_) => false,
         })
     }
-    if find_step(&r.body, &word) {
+    if find_step(r.body.statements(), &word) {
         return Some(HoverInfo {
             markdown: format!("**step `{word}`**"),
         });

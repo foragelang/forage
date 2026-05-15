@@ -191,7 +191,7 @@ pub fn recipe_outline_inner(source: &str) -> Vec<StepLocation> {
     };
     let line_map = LineMap::new(source);
     let mut steps = Vec::new();
-    collect_step_locations(&recipe.body, &line_map, &mut steps);
+    collect_step_locations(recipe.body.statements(), &line_map, &mut steps);
     steps
 }
 
