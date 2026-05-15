@@ -1,8 +1,10 @@
 //! Transport abstraction for the HTTP engine.
 //!
 //! `Transport` is the async trait the engine drives; `ReplayTransport`
-//! reads captures from a JSONL fixture file (or in-memory list).
-//! A live `reqwest`-backed transport lives in `client.rs`.
+//! replays an in-memory capture list. Callers load the list via
+//! `forage_replay::read_jsonl` (disk) or `parse_jsonl` (in-memory
+//! string) and pass it to [`ReplayTransport::new`]. A live
+//! `reqwest`-backed transport lives in `client.rs`.
 
 use async_trait::async_trait;
 use indexmap::IndexMap;
@@ -51,20 +53,6 @@ impl ReplayTransport {
             })
             .collect();
         Self { fixtures }
-    }
-
-    pub fn from_jsonl(jsonl: &str) -> HttpResult<Self> {
-        let mut caps = Vec::new();
-        for line in jsonl.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let c: Capture = serde_json::from_str(line)
-                .map_err(|e| HttpError::Generic(format!("fixture parse: {e}")))?;
-            caps.push(c);
-        }
-        Ok(Self::new(caps))
     }
 }
 

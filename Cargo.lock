@@ -1580,6 +1580,7 @@ dependencies = [
  "forage-core",
  "forage-http",
  "forage-lsp",
+ "forage-replay",
  "indexmap 2.14.0",
  "serde",
  "serde-wasm-bindgen",

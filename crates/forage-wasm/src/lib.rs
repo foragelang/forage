@@ -357,8 +357,9 @@ pub async fn run_replay_inner(
         return Err(ReplayError::Validation(messages));
     }
 
-    let transport =
-        ReplayTransport::from_jsonl(captures_jsonl).map_err(|e| ReplayError::Captures(e.to_string()))?;
+    let captures = forage_replay::parse_jsonl(captures_jsonl)
+        .map_err(|e| ReplayError::Captures(e.to_string()))?;
+    let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     engine
         .run(&recipe, inputs, secrets)
