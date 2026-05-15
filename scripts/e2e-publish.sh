@@ -25,15 +25,19 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Workspace manifest. Publishes need `name = "<author>/<slug>"`.
+# Workspace manifest. Publishes need `name = "<author>/<…>"`, a
+# `description`, and a `category`; the slug on the hub is the recipe
+# header name (`smoke-test`).
 cat > "$TMP/forage.toml" <<'EOF'
-name = "smoke/smoke-test"
+name = "smoke/scratch"
+description = "publish smoke test"
+category = "smoke"
+tags = []
 
 [deps]
 EOF
 
-mkdir -p "$TMP/smoke-test"
-cat > "$TMP/smoke-test/recipe.forage" <<'EOF'
+cat > "$TMP/smoke-test.forage" <<'EOF'
 recipe "smoke-test"
 engine http
 
@@ -52,11 +56,11 @@ for $i in $list[*] {
 EOF
 
 echo "==> forage publish (dry-run)"
-"$FORAGE" publish "$TMP"
+(cd "$TMP" && "$FORAGE" publish smoke-test)
 
 if [[ -n "${FORAGE_HUB_TOKEN:-}" && -n "${FORAGE_HUB_URL:-}" ]]; then
     echo "==> forage publish --publish (live POST)"
-    "$FORAGE" publish "$TMP" --publish --hub "$FORAGE_HUB_URL"
+    (cd "$TMP" && "$FORAGE" publish smoke-test --publish --hub "$FORAGE_HUB_URL")
     echo "==> verifying round-trip via GET"
     curl -fsSL "$FORAGE_HUB_URL/v1/packages/smoke/smoke-test" >/dev/null
     echo "    OK"
