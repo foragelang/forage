@@ -163,26 +163,65 @@ impl HubClient {
         // needs to render the rebase prompt — pluck those off here and
         // return the typed variant instead of folding them into the
         // generic Api error.
+        //
+        // A response whose body doesn't decode as the documented
+        // envelope (missing `error.code`, missing `error.message`, or
+        // — for a 409 stale_base — missing `latest_version`) surfaces
+        // as `ServerMalformed` rather than guessing a default; a
+        // silent `"ERROR"` / `0` here would lie to the UI and hide a
+        // real server bug.
         let parsed: Option<serde_json::Value> = serde_json::from_str(&text).ok();
         let envelope = parsed.as_ref().and_then(|v| v.get("error"));
-        let code = envelope
-            .and_then(|e| e.get("code"))
-            .and_then(|c| c.as_str())
-            .unwrap_or("ERROR")
-            .to_string();
-        let message = envelope
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-            .unwrap_or(text.as_str())
-            .to_string();
+        let Some(envelope) = envelope else {
+            return Err(HubError::ServerMalformed {
+                detail: format!(
+                    "{url} returned {} but body lacks a top-level `error` object: {text:?}",
+                    status.as_u16()
+                ),
+            });
+        };
+        let code = match envelope.get("code").and_then(|c| c.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return Err(HubError::ServerMalformed {
+                    detail: format!(
+                        "{url} returned {} but error envelope lacks `code`: {text:?}",
+                        status.as_u16()
+                    ),
+                });
+            }
+        };
+        let message = match envelope.get("message").and_then(|m| m.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return Err(HubError::ServerMalformed {
+                    detail: format!(
+                        "{url} returned {} but error envelope lacks `message`: {text:?}",
+                        status.as_u16()
+                    ),
+                });
+            }
+        };
         if status.as_u16() == 409 && code == "stale_base" {
-            let latest_version = envelope
-                .and_then(|e| e.get("latest_version"))
+            let latest_version = match envelope
+                .get("latest_version")
                 .and_then(|n| n.as_u64())
                 .map(|n| n as u32)
-                .unwrap_or(0);
+            {
+                Some(v) => v,
+                None => {
+                    return Err(HubError::ServerMalformed {
+                        detail: format!(
+                            "{url} returned 409 stale_base without `latest_version`: {text:?}"
+                        ),
+                    });
+                }
+            };
+            // `your_base` is genuinely optional — the server returns
+            // it when the caller sent a base_version, and omits it
+            // for first-publish attempts. Stay with Option<u32> here.
             let your_base = envelope
-                .and_then(|e| e.get("your_base"))
+                .get("your_base")
                 .and_then(|n| n.as_u64())
                 .map(|n| n as u32);
             return Err(HubError::StaleBase {
@@ -196,5 +235,123 @@ impl HubClient {
             code,
             message,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A response body that decodes as JSON but lacks the top-level
+    /// `error` object surfaces as `ServerMalformed`. The old code
+    /// invented a `code = "ERROR"` and a generic message, which
+    /// hid the fact that the server was returning a non-conforming
+    /// envelope.
+    #[tokio::test]
+    async fn malformed_envelope_surfaces_server_malformed() {
+        let server = MockServer::start().await;
+        // Body is JSON but doesn't match the envelope shape.
+        Mock::given(method("GET"))
+            .and(path("/v1/packages/x/y"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({ "oops": true })))
+            .mount(&server)
+            .await;
+
+        let client = HubClient::new(server.uri());
+        let err = client.get_package("x", "y").await.unwrap_err();
+        match err {
+            HubError::ServerMalformed { detail } => {
+                assert!(detail.contains("error"), "detail must name the missing field: {detail}");
+            }
+            other => panic!("expected ServerMalformed, got {other:?}"),
+        }
+    }
+
+    /// A 409 stale_base whose envelope is missing `latest_version`
+    /// is a hub bug — surface it as `ServerMalformed`, not as
+    /// `StaleBase { latest_version: 0 }` (which would tell the UI
+    /// the hub is at v0 and let the regression go silent).
+    #[tokio::test]
+    async fn stale_base_without_latest_version_surfaces_malformed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/packages/x/y/versions"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": {
+                    "code": "stale_base",
+                    "message": "behind",
+                    // latest_version intentionally missing
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = HubClient::new(server.uri()).with_token("t");
+        let payload = PublishRequest {
+            description: "d".into(),
+            category: "c".into(),
+            tags: vec![],
+            recipe: "r".into(),
+            decls: vec![],
+            fixtures: vec![],
+            snapshot: None,
+            base_version: Some(1),
+        };
+        let err = client.publish_version("x", "y", &payload).await.unwrap_err();
+        match err {
+            HubError::ServerMalformed { detail } => {
+                assert!(
+                    detail.contains("latest_version"),
+                    "detail must name the missing field: {detail}",
+                );
+            }
+            other => panic!("expected ServerMalformed, got {other:?}"),
+        }
+    }
+
+    /// A well-formed envelope still produces a clean Api / StaleBase
+    /// error — the strict decoder doesn't regress the happy path.
+    #[tokio::test]
+    async fn well_formed_stale_base_still_parses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/packages/x/y/versions"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": {
+                    "code": "stale_base",
+                    "message": "behind",
+                    "latest_version": 7,
+                    "your_base": 3,
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = HubClient::new(server.uri()).with_token("t");
+        let payload = PublishRequest {
+            description: "d".into(),
+            category: "c".into(),
+            tags: vec![],
+            recipe: "r".into(),
+            decls: vec![],
+            fixtures: vec![],
+            snapshot: None,
+            base_version: Some(3),
+        };
+        let err = client.publish_version("x", "y", &payload).await.unwrap_err();
+        match err {
+            HubError::StaleBase {
+                latest_version,
+                your_base,
+                ..
+            } => {
+                assert_eq!(latest_version, 7);
+                assert_eq!(your_base, Some(3));
+            }
+            other => panic!("expected StaleBase, got {other:?}"),
+        }
     }
 }

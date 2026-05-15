@@ -36,6 +36,11 @@ pub enum PublishError {
     },
     /// Caller hit the publish path without a signed-in account.
     NotSignedIn { message: String },
+    /// The server responded with a body that doesn't match the
+    /// documented error envelope. Different from `Other` because the
+    /// UI can render a "report-this-bug" affordance: a malformed
+    /// envelope means the hub itself is broken, not the caller.
+    ServerMalformed { detail: String },
     /// Anything else — parse failure, transport error, server 5xx.
     Other { message: String },
 }
@@ -58,6 +63,10 @@ impl PublishError {
             // NotSignedIn rather than letting a stale token fall
             // through to a generic toast.
             HubError::Api { status: 401, message, .. } => PublishError::NotSignedIn { message },
+            // A malformed error envelope is a hub bug, not a caller
+            // bug — surface it under its own discriminant so the UI
+            // can render the right affordance.
+            HubError::ServerMalformed { detail } => PublishError::ServerMalformed { detail },
             other => PublishError::Other {
                 message: other.to_string(),
             },

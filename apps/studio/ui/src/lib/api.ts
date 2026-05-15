@@ -162,7 +162,8 @@ export const api = {
      * fixtures + snapshot + base_version) and posts it; on 409 the
      * promise rejects with a typed `PublishError` whose `kind`
      * discriminator distinguishes `stale_base` from `not_signed_in` /
-     * `other`. Callers should `catch` and dispatch off the kind.
+     * `server_malformed` / `other`. Callers should `catch` and
+     * dispatch off the kind.
      */
     publishRecipe: (args: {
         author: string;

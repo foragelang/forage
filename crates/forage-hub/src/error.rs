@@ -30,6 +30,14 @@ pub enum HubError {
     },
     #[error("hub transport: {0}")]
     Transport(String),
+    /// The server's response decoded as JSON but didn't match the
+    /// documented error envelope (missing `error.code`, missing
+    /// `error.message`, or — for a 409 stale_base — missing
+    /// `latest_version`). Surfaced rather than papered over with
+    /// `unwrap_or` defaults: the caller (or the user) needs to know
+    /// the server is broken.
+    #[error("hub server returned malformed response: {detail}")]
+    ServerMalformed { detail: String },
     #[error("hub auth: {0}")]
     Auth(String),
     #[error("hub I/O: {0}")]

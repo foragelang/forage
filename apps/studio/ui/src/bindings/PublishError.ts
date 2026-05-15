@@ -8,4 +8,4 @@
  * Tauri serializes this as the JS-side discriminated union exported
  * through ts-rs.
  */
-export type PublishError = { "kind": "stale_base", latest_version: number, your_base: number | null, message: string, } | { "kind": "not_signed_in", message: string, } | { "kind": "other", message: string, };
+export type PublishError = { "kind": "stale_base", latest_version: number, your_base: number | null, message: string, } | { "kind": "not_signed_in", message: string, } | { "kind": "server_malformed", detail: string, } | { "kind": "other", message: string, };
