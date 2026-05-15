@@ -145,10 +145,11 @@ pub fn write_jsonl(path: &Path, captures: &[Capture]) -> Result<(), CaptureError
     })?;
     for c in captures {
         let line = serde_json::to_string(c).map_err(CaptureError::Serialize)?;
-        file.write_all(line.as_bytes()).map_err(|source| CaptureError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        file.write_all(line.as_bytes())
+            .map_err(|source| CaptureError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
         file.write_all(b"\n").map_err(|source| CaptureError::Io {
             path: path.to_path_buf(),
             source,

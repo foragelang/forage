@@ -52,11 +52,7 @@ async fn replay_reads_underscore_fixtures_layout() {
         "description = \"\"\ncategory = \"\"\ntags = []\n",
     )
     .unwrap();
-    fs::write(
-        root.join(format!("{RECIPE_NAME}.forage")),
-        RECIPE_SOURCE,
-    )
-    .unwrap();
+    fs::write(root.join(format!("{RECIPE_NAME}.forage")), RECIPE_SOURCE).unwrap();
 
     let captures = vec![Capture::Http(HttpExchange {
         url: "https://example.test/items".into(),

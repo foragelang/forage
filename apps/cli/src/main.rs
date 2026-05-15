@@ -391,10 +391,7 @@ fn load_secrets_from_env(recipe: &forage_core::ForageFile) -> IndexMap<String, S
 /// file's parent directory as the root when no `forage.toml` is found
 /// up the tree (lonely-recipe mode), so a single-file workspace still
 /// resolves captures from a sibling `_fixtures/` directory.
-fn load_captures_for(
-    recipe_file: &Path,
-    recipe: &forage_core::ForageFile,
-) -> Result<Vec<Capture>> {
+fn load_captures_for(recipe_file: &Path, recipe: &forage_core::ForageFile) -> Result<Vec<Capture>> {
     let recipe_name = recipe
         .recipe_name()
         .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\"` header"))?;
