@@ -411,8 +411,12 @@ export class HubStudioService implements StudioService {
         slug: string,
         version: number | "latest",
     ): Promise<PackageVersion> {
+        // `version` is constrained to a number or the literal `"latest"`
+        // and the server's route handler accepts both. Encoding here
+        // documents the contract even though neither value contains
+        // characters that need escaping today.
         return this.fetchJson<PackageVersion>(
-            `${this.hubUrl}/v1/packages/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/versions/${version}`,
+            `${this.hubUrl}/v1/packages/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(String(version))}`,
         );
     }
     async starPackage(author: string, slug: string): Promise<void> {
@@ -492,8 +496,18 @@ export class HubStudioService implements StudioService {
 
     async confirm(
         message: string,
-        _options?: { title?: string; okLabel?: string; cancelLabel?: string },
+        options?: { title?: string; okLabel?: string; cancelLabel?: string },
     ): Promise<boolean> {
+        // `window.confirm` is a native two-button dialog with no API
+        // for custom labels or a title — those `options` get dropped.
+        // Log the drop so a developer sees the limitation here instead
+        // of debugging why their custom labels never showed up.
+        if (options?.title || options?.okLabel || options?.cancelLabel) {
+            console.warn(
+                "HubStudioService.confirm: window.confirm() ignores title/okLabel/cancelLabel; dropping",
+                options,
+            );
+        }
         return window.confirm(message);
     }
     pickDirectory(): Promise<string | null> {
