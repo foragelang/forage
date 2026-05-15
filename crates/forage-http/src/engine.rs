@@ -82,14 +82,20 @@ impl<'t> Engine<'t> {
 
     pub async fn run(
         &self,
-        recipe: &Recipe,
+        recipe: &ForageFile,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
         let started = Instant::now();
-        debug!(recipe = %recipe.name, "▶ run started");
+        // The HTTP engine only runs recipe-bearing files; the validator
+        // (`RecipeContextWithoutHeader`) makes sure every caller has
+        // already rejected header-less files. Pull the name once here.
+        let recipe_name = recipe
+            .recipe_name()
+            .expect("HTTP engine called with a header-less file");
+        debug!(recipe = %recipe_name, "▶ run started");
         self.emit(RunEvent::RunStarted {
-            recipe: recipe.name.clone(),
+            recipe: recipe_name.to_string(),
             replay: false,
         });
 
@@ -97,7 +103,7 @@ impl<'t> Engine<'t> {
             .await
             .inspect(|snap| {
                 debug!(
-                    recipe = %recipe.name,
+                    recipe = %recipe_name,
                     records = snap.records.len(),
                     duration_ms = started.elapsed().as_millis() as u64,
                     "✓ run succeeded"
@@ -109,7 +115,7 @@ impl<'t> Engine<'t> {
             })
             .inspect_err(|e| {
                 debug!(
-                    recipe = %recipe.name,
+                    recipe = %recipe_name,
                     error = %e,
                     duration_ms = started.elapsed().as_millis() as u64,
                     "✗ run failed"
@@ -123,7 +129,7 @@ impl<'t> Engine<'t> {
 
     async fn run_inner(
         &self,
-        recipe: &Recipe,
+        recipe: &ForageFile,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
@@ -180,7 +186,7 @@ impl<'t> Engine<'t> {
     fn run_statements<'a>(
         &'a self,
         body: &'a [Statement],
-        recipe: &'a Recipe,
+        recipe: &'a ForageFile,
         auth_state: &'a AuthState,
         evaluator: &'a Evaluator<'a>,
         scope: &'a mut Scope,
@@ -281,7 +287,7 @@ impl<'t> Engine<'t> {
     async fn run_step(
         &self,
         step: &HTTPStep,
-        recipe: &Recipe,
+        recipe: &ForageFile,
         auth_state: &AuthState,
         evaluator: &Evaluator<'_>,
         scope: &mut Scope,
@@ -492,7 +498,7 @@ impl<'t> Engine<'t> {
     fn build_request(
         &self,
         step: &HTTPStep,
-        recipe: &Recipe,
+        recipe: &ForageFile,
         auth_state: &AuthState,
         evaluator: &Evaluator<'_>,
         scope: &Scope,
@@ -1039,7 +1045,7 @@ mod tests {
             }
         "#;
         let recipe = parse(src).expect("recipe parses");
-        let catalog = forage_core::TypeCatalog::from_recipe(&recipe);
+        let catalog = forage_core::TypeCatalog::from_file(&recipe);
         let validation = forage_core::validate(&recipe, &catalog);
         assert!(
             !validation.has_errors(),

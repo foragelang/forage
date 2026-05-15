@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use forage_core::{EvalValue, Recipe, SerializableCatalog, Snapshot, TypeCatalog};
+use forage_core::{EvalValue, ForageFile, SerializableCatalog, Snapshot, TypeCatalog};
 use forage_http::{ProgressSink, RunEvent};
 use indexmap::IndexMap;
 use rusqlite::{Connection, OptionalExtension};
@@ -96,7 +96,7 @@ pub type BrowserDriverError = Box<dyn std::error::Error + Send + Sync>;
 pub trait LiveBrowserDriver: Send + Sync {
     async fn run_live(
         &self,
-        recipe: &Recipe,
+        recipe: &ForageFile,
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
         progress: Arc<dyn ProgressSink>,

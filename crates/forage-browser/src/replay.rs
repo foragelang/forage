@@ -16,12 +16,12 @@ use forage_replay::{BrowserCapture, Capture};
 use crate::error::{BrowserError, BrowserResult};
 
 pub struct ReplayEngine<'r> {
-    pub recipe: &'r Recipe,
+    pub recipe: &'r ForageFile,
     pub captures: &'r [Capture],
 }
 
 impl<'r> ReplayEngine<'r> {
-    pub fn new(recipe: &'r Recipe, captures: &'r [Capture]) -> Self {
+    pub fn new(recipe: &'r ForageFile, captures: &'r [Capture]) -> Self {
         Self { recipe, captures }
     }
 
@@ -117,7 +117,7 @@ impl<'r> ReplayEngine<'r> {
 }
 
 pub fn run_browser_replay(
-    recipe: &Recipe,
+    recipe: &ForageFile,
     captures: &[Capture],
     inputs: IndexMap<String, EvalValue>,
     secrets: IndexMap<String, String>,

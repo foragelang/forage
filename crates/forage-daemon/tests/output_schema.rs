@@ -42,7 +42,7 @@ for $p in $list.products[*] {
 #[test]
 fn derive_schema_emits_one_table_per_emit_type() {
     let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_recipe(&recipe);
+    let catalog = TypeCatalog::from_file(&recipe);
     let tables = derive_schema(&recipe, &catalog);
     assert_eq!(tables.len(), 1);
     let t = &tables[0];
@@ -67,7 +67,7 @@ fn derive_schema_emits_one_table_per_emit_type() {
 #[test]
 fn output_store_creates_table_with_metadata_columns() {
     let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_recipe(&recipe);
+    let catalog = TypeCatalog::from_file(&recipe);
     let tables = derive_schema(&recipe, &catalog);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");
@@ -111,7 +111,7 @@ fn output_store_creates_table_with_metadata_columns() {
 #[test]
 fn write_record_round_trips_through_load_records() {
     let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_recipe(&recipe);
+    let catalog = TypeCatalog::from_file(&recipe);
     let tables = derive_schema(&recipe, &catalog);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");
@@ -162,7 +162,7 @@ fn write_record_round_trips_through_load_records() {
 #[test]
 fn load_records_excludes_bookkeeping_columns() {
     let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_recipe(&recipe);
+    let catalog = TypeCatalog::from_file(&recipe);
     let tables = derive_schema(&recipe, &catalog);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");

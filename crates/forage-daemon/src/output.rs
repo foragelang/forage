@@ -22,7 +22,7 @@ use std::path::Path;
 
 use forage_core::ast::{
     BrowserConfig, CaptureRule, DocumentCaptureRule, Emission, ExtractionExpr, FieldType,
-    JSONValue, Recipe, RecipeType, Statement,
+    ForageFile, JSONValue, RecipeType, Statement,
 };
 use forage_core::TypeCatalog;
 use rusqlite::{Connection, ToSql, params_from_iter};
@@ -91,7 +91,7 @@ impl ColumnStorage {
 /// validation error that should be caught upstream; here we skip it
 /// to avoid panicking — the run already failed validation before
 /// reaching this point.
-pub fn derive_schema(recipe: &Recipe, catalog: &TypeCatalog) -> Vec<TableDef> {
+pub fn derive_schema(recipe: &ForageFile, catalog: &TypeCatalog) -> Vec<TableDef> {
     let mut emit_types: BTreeSet<String> = BTreeSet::new();
     collect_emit_types(&recipe.body, &mut emit_types);
     if let Some(b) = &recipe.browser {

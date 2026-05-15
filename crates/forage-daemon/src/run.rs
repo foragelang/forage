@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use forage_core::ast::EngineKind;
-use forage_core::{EvalValue, Recipe, TypeCatalog};
+use forage_core::{EvalValue, ForageFile, TypeCatalog};
 use forage_http::{Engine, LiveTransport};
 use indexmap::IndexMap;
 
@@ -212,7 +212,14 @@ async fn execute(
         host: host_progress,
     });
 
-    let snapshot_result = match recipe.engine_kind {
+    let Some(engine_kind) = recipe.engine_kind() else {
+        return Err(RunFailure {
+            message: "deployed source has no recipe header".to_string(),
+            diagnostics: 0,
+            version: Some(version),
+        });
+    };
+    let snapshot_result = match engine_kind {
         EngineKind::Http => {
             let transport = match LiveTransport::new() {
                 Ok(t) => t,
@@ -329,7 +336,7 @@ fn load_inputs(recipe_path: &Path) -> IndexMap<String, EvalValue> {
 /// Secrets convention matches the CLI / Studio: each declared secret
 /// resolves via `FORAGE_SECRET_<NAME>` env var. Unset env vars → not
 /// in the map (the engine treats missing-secret as a recipe error).
-fn load_secrets(recipe: &Recipe) -> IndexMap<String, String> {
+fn load_secrets(recipe: &ForageFile) -> IndexMap<String, String> {
     let mut out = IndexMap::new();
     for s in &recipe.secrets {
         let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
