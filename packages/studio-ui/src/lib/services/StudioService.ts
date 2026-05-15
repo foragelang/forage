@@ -297,8 +297,9 @@ export interface StudioService {
         tags: string[];
     }): Promise<PublishPreview>;
     // Pull `@author/slug` (optionally pinned to a specific version)
-    // into the active workspace. Writes the package files plus a
-    // `.forage-meta.json` sidecar. Mirrors `forage sync` from the CLI.
+    // into the active workspace. Writes the package files plus the
+    // per-recipe hub-sync sidecar under `.forage/sync/`. Mirrors
+    // `forage sync` from the CLI.
     syncFromHub(args: {
         author: string;
         slug: string;
