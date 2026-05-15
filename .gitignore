@@ -13,6 +13,7 @@ node_modules/
 # Frontend build output
 packages/studio-ui/dist/
 hub-site/ide/dist/
+crates/forage-wasm/pkg/
 
 # mdbook output
 docs/out/

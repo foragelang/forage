@@ -4,9 +4,12 @@
     "version": "0.1.0",
     "type": "module",
     "scripts": {
+        "predev": "npm --prefix ../.. run forage-wasm:build",
         "dev": "vite",
+        "prebuild": "npm --prefix ../.. run forage-wasm:build",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
+        "pretest": "npm --prefix ../.. run forage-wasm:build",
         "test": "vitest run",
         "test:watch": "vitest"
     },
