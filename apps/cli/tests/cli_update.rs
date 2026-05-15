@@ -25,6 +25,8 @@ fn artifact(author: &str, slug: &str) -> PackageVersion {
             name: "Product".into(),
             version: 4,
         }],
+        input_type_refs: Vec::new(),
+        output_type_refs: Vec::new(),
         fixtures: vec![PackageFixture {
             name: "captures.jsonl".into(),
             content: String::new(),

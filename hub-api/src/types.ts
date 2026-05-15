@@ -151,6 +151,12 @@ export interface TypeRef {
 // resource; the recipe pins them by `{author, name, version}` in
 // `type_refs`. Sync flows fetch each referenced type into the local
 // type cache.
+//
+// `input_type_refs` and `output_type_refs` partition `type_refs` by
+// the recipe's input / output signatures. A type may appear in both
+// (enrichment recipes like `input T → output T`). The hub uses these
+// to power `producers_of(T)` / `consumers_of(T)` discovery without
+// re-parsing recipe source server-side.
 export interface PackageVersion {
     author: string
     slug: string
@@ -161,6 +167,12 @@ export interface PackageVersion {
     // exact version so a recipe pull is reproducible regardless of
     // upstream type evolution.
     type_refs: TypeRef[]
+    // Subset of `type_refs` the recipe consumes via `input <name>: T`
+    // declarations. Indexed by the hub for `consumers_of(T)`.
+    input_type_refs: TypeRef[]
+    // Subset of `type_refs` the recipe produces via its `output T |
+    // U | …` signature. Indexed by the hub for `producers_of(T)`.
+    output_type_refs: TypeRef[]
     // Captured replay fixtures. Empty array if the package was published
     // without fixtures.
     fixtures: PackageFixture[]
@@ -242,6 +254,11 @@ export interface PublishRequest {
     tags: string[]
     recipe: string
     type_refs: TypeRef[]
+    // Subsets of `type_refs`, computed publisher-side from the parsed
+    // recipe AST. Each ref must also appear in `type_refs` (server
+    // enforces). See `PackageVersion` for semantics.
+    input_type_refs: TypeRef[]
+    output_type_refs: TypeRef[]
     fixtures: PackageFixture[]
     snapshot: PackageSnapshot | null
     base_version: number | null

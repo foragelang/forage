@@ -91,6 +91,8 @@ describe("HubStudioService", () => {
                 tags: [],
                 recipe: "",
                 type_refs: [],
+                input_type_refs: [],
+                output_type_refs: [],
                 fixtures: [],
                 snapshot: null,
                 base_version: 1,

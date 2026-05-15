@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use forage_core::ast::{AlignmentUri as CoreAlignmentUri, RecipeType};
+use forage_core::ast::{AlignmentUri as CoreAlignmentUri, FieldType, RecipeType};
 use forage_core::workspace::{Workspace, fixtures_path, snapshot_path};
 
 use crate::client::HubClient;
@@ -403,6 +403,9 @@ pub fn assemble_publish_plan(
         ))
     })?;
 
+    let parsed_recipe = forage_core::parse(&recipe).map_err(|e| {
+        HubError::Generic(format!("parse recipe {recipe_name:?} for publish: {e}"))
+    })?;
     let types = collect_shared_types(workspace, &recipe)?;
     let fixtures = read_fixtures(&workspace.root, recipe_name)?;
     let snapshot = read_snapshot(&workspace.root, recipe_name)?;
@@ -414,13 +417,41 @@ pub fn assemble_publish_plan(
     // the server-resolved version. We pre-populate `version: 0` so the
     // shape is right; passing a 0 to the hub would fail validation, so
     // the driver MUST overwrite before posting.
-    let type_refs = types
+    let type_refs: Vec<TypeRef> = types
         .iter()
         .map(|t| TypeRef {
             author: author.to_string(),
             name: t.name.clone(),
             version: 0,
         })
+        .collect();
+
+    // Partition the recipe's type pins by the role the recipe gives
+    // each one: input (declared via `input <name>: T?`) or output
+    // (declared in `output T1 | T2 | …`). A single type can be in
+    // both (enrichment recipes like `input T → output T`). Types the
+    // recipe pins but doesn't directly read or emit — `share` types
+    // shipped alongside without participating in the recipe's
+    // signature — appear in `type_refs` only.
+    let mut input_names = std::collections::BTreeSet::new();
+    for inp in &parsed_recipe.inputs {
+        collect_referenced_type_names(&inp.ty, &mut input_names);
+    }
+    let mut output_names = std::collections::BTreeSet::new();
+    if let Some(out) = &parsed_recipe.output {
+        for name in &out.types {
+            output_names.insert(name.clone());
+        }
+    }
+    let input_type_refs: Vec<TypeRef> = type_refs
+        .iter()
+        .filter(|r| input_names.contains(&r.name))
+        .cloned()
+        .collect();
+    let output_type_refs: Vec<TypeRef> = type_refs
+        .iter()
+        .filter(|r| output_names.contains(&r.name))
+        .cloned()
         .collect();
 
     Ok(PublishPlan {
@@ -431,11 +462,31 @@ pub fn assemble_publish_plan(
             tags,
             recipe,
             type_refs,
+            input_type_refs,
+            output_type_refs,
             fixtures,
             snapshot,
             base_version,
         },
     })
+}
+
+/// Walk a [`FieldType`] and collect every record / Ref<T> / enum name
+/// it references into `out`. Recurses through `Array(T)`. Scalars
+/// (`String`, `Int`, etc.) contribute nothing. Used by the publish
+/// flow to surface the named types an `input <name>: T` declaration
+/// pulls in.
+fn collect_referenced_type_names(
+    ty: &FieldType,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match ty {
+        FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
+        FieldType::Array(inner) => collect_referenced_type_names(inner, out),
+        FieldType::Record(name) | FieldType::Ref(name) | FieldType::EnumRef(name) => {
+            out.insert(name.clone());
+        }
+    }
 }
 
 /// Execute a publish plan against the hub. Publishes each type first
@@ -480,6 +531,26 @@ pub async fn publish_from_workspace(
         };
         let resp = client.publish_type_version(author, &ty.name, &req).await?;
         plan.recipe_payload.type_refs[i].version = resp.version;
+    }
+    // Each input/output partition was built from `type_refs` with a
+    // placeholder `version: 0`; thread the server-resolved versions
+    // back through so the recipe publish ships the same pin as
+    // `type_refs`.
+    let resolved_by_name: BTreeMap<String, u32> = plan
+        .recipe_payload
+        .type_refs
+        .iter()
+        .map(|r| (r.name.clone(), r.version))
+        .collect();
+    for r in plan
+        .recipe_payload
+        .input_type_refs
+        .iter_mut()
+        .chain(plan.recipe_payload.output_type_refs.iter_mut())
+    {
+        if let Some(v) = resolved_by_name.get(&r.name) {
+            r.version = *v;
+        }
     }
 
     let resp = client
@@ -908,6 +979,8 @@ mod tests {
                 "recipe \"{slug}\"\nengine http\n\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
             ),
             type_refs,
+            input_type_refs: Vec::new(),
+            output_type_refs: Vec::new(),
             fixtures: vec![PackageFixture {
                 name: "captures.jsonl".into(),
                 content: "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n".into(),
@@ -1066,6 +1139,21 @@ mod tests {
             assert_eq!(r.author, "alice");
             assert_eq!(r.version, 0, "driver overwrites this with the server-resolved version");
         }
+        // `output Product` in the recipe header surfaces in
+        // `output_type_refs`; the unread `Variant` doesn't. Both are
+        // still pinned in `type_refs` because they ride with the
+        // workspace.
+        let output_names: Vec<&str> = plan
+            .recipe_payload
+            .output_type_refs
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(output_names, vec!["Product"]);
+        assert!(
+            plan.recipe_payload.input_type_refs.is_empty(),
+            "recipe with no `input` declarations contributes no input_type_refs",
+        );
     }
 
     #[test]

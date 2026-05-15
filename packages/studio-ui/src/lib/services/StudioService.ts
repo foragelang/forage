@@ -142,6 +142,11 @@ export type PackageVersion = {
     version: number;
     recipe: string;
     type_refs: TypeRef[];
+    // Subsets of `type_refs` partitioned by the recipe's input /
+    // output signatures. The hub uses these to drive
+    // `producers_of(T)` / `consumers_of(T)` discovery.
+    input_type_refs: TypeRef[];
+    output_type_refs: TypeRef[];
     fixtures: PackageFixture[];
     snapshot: PackageSnapshot | null;
     base_version: number | null;
@@ -188,6 +193,8 @@ export type PublishPayload = {
     tags: string[];
     recipe: string;
     type_refs: TypeRef[];
+    input_type_refs: TypeRef[];
+    output_type_refs: TypeRef[];
     fixtures: PackageFixture[];
     snapshot: PackageSnapshot | null;
     base_version: number | null;

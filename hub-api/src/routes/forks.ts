@@ -120,6 +120,12 @@ export async function createFork(
         // shapes their fork uses re-publishes the relevant types under
         // their own author after the fork lands.
         type_refs: upstreamArtifact.type_refs,
+        // Input / output partitions carry over too — the fork's recipe
+        // source is byte-identical to the upstream's, so the same types
+        // play the same roles. The discover indexes pick up the fork as
+        // a producer / consumer alongside the upstream.
+        input_type_refs: upstreamArtifact.input_type_refs,
+        output_type_refs: upstreamArtifact.output_type_refs,
         fixtures: upstreamArtifact.fixtures,
         snapshot: upstreamArtifact.snapshot,
         base_version: null,

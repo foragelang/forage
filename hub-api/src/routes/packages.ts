@@ -316,6 +316,8 @@ export async function publishVersion(
         version: nextVersion,
         recipe: payload.recipe,
         type_refs: payload.type_refs,
+        input_type_refs: payload.input_type_refs,
+        output_type_refs: payload.output_type_refs,
         fixtures: payload.fixtures,
         snapshot: payload.snapshot,
         base_version: payload.base_version,
@@ -418,6 +420,18 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
         const err = validateTypeRef(r, seenRefs)
         if (err !== null) return `type_refs: ${err}`
     }
+    const inputErr = validateTypeRefPartition(
+        payload.input_type_refs,
+        seenRefs,
+        'input_type_refs',
+    )
+    if (inputErr !== null) return inputErr
+    const outputErr = validateTypeRefPartition(
+        payload.output_type_refs,
+        seenRefs,
+        'output_type_refs',
+    )
+    if (outputErr !== null) return outputErr
     if (!Array.isArray(payload.fixtures) || payload.fixtures.length > MAX_FIXTURES_FILES) {
         return `fixtures must be an array of at most ${MAX_FIXTURES_FILES} entries`
     }
@@ -439,6 +453,33 @@ function validatePublish(payload: PublishRequest): ValidatedPublish | string {
         return 'base_version must be null or a non-negative integer'
     }
     return { recipeName }
+}
+
+/// `input_type_refs` / `output_type_refs` must each be an array of
+/// type refs that already appear in `type_refs` (matched by
+/// `author/name`). Versions inside the partition must agree with the
+/// `type_refs` entry — the publisher computes both from the same pin
+/// list, so any disagreement means a bug in the publish driver, not a
+/// shape the hub should silently absorb. Returns `null` on success or
+/// a single-string diagnostic on failure (caller prefixes it).
+function validateTypeRefPartition(
+    refs: TypeRef[] | undefined,
+    allowed: Set<string>,
+    label: 'input_type_refs' | 'output_type_refs',
+): string | null {
+    if (!Array.isArray(refs) || refs.length > MAX_TYPE_REFS) {
+        return `${label} must be an array of at most ${MAX_TYPE_REFS} entries`
+    }
+    const seen = new Set<string>()
+    for (const r of refs) {
+        const err = validateTypeRef(r, seen)
+        if (err !== null) return `${label}: ${err}`
+        const key = `${r.author}/${r.name}`
+        if (!allowed.has(key)) {
+            return `${label}: ${key} not present in type_refs`
+        }
+    }
+    return null
 }
 
 function validateTypeRef(

@@ -67,6 +67,15 @@ pub struct TypeFieldAlignment {
 /// The atomic package version artifact: recipe + type_refs + fixtures +
 /// snapshot ride together. There is no sub-resource that returns one
 /// piece without the others.
+///
+/// `input_type_refs` and `output_type_refs` partition `type_refs` by the
+/// role the recipe gives each type. A type may appear in both
+/// (enrichment recipes like `input T → output T`). A type can also
+/// appear in `type_refs` but in neither input nor output — a
+/// `share`d type the recipe carries through without reading or
+/// emitting (the workspace shipped it alongside the recipe). The hub
+/// reads these two lists to power `producers_of(T)` / `consumers_of(T)`
+/// queries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageVersion {
     pub author: String,
@@ -77,6 +86,14 @@ pub struct PackageVersion {
     /// exact version so a recipe pull is reproducible regardless of
     /// upstream type evolution.
     pub type_refs: Vec<TypeRef>,
+    /// Subset of `type_refs` the recipe consumes via `input <name>: T`
+    /// declarations. The hub indexes recipes by these for
+    /// `consumers_of(T)`.
+    pub input_type_refs: Vec<TypeRef>,
+    /// Subset of `type_refs` the recipe produces via its `output T |
+    /// U | …` signature. The hub indexes recipes by these for
+    /// `producers_of(T)`.
+    pub output_type_refs: Vec<TypeRef>,
     pub fixtures: Vec<PackageFixture>,
     pub snapshot: Option<PackageSnapshot>,
     pub base_version: Option<u32>,
@@ -142,6 +159,11 @@ pub struct TypeVersion {
 /// server preserves it across subsequent publishes against the fork.
 /// Callers that want to know the lineage of a fork they're publishing
 /// against can read it from the `PackageMetadata` response.
+///
+/// `input_type_refs` and `output_type_refs` are subsets of `type_refs`
+/// keyed off the recipe's input / output signatures — the publisher
+/// computes them from the parsed recipe AST so the hub never has to
+/// re-parse `.forage` source server-side. See [`PackageVersion`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublishRequest {
     pub description: String,
@@ -149,6 +171,8 @@ pub struct PublishRequest {
     pub tags: Vec<String>,
     pub recipe: String,
     pub type_refs: Vec<TypeRef>,
+    pub input_type_refs: Vec<TypeRef>,
+    pub output_type_refs: Vec<TypeRef>,
     pub fixtures: Vec<PackageFixture>,
     pub snapshot: Option<PackageSnapshot>,
     pub base_version: Option<u32>,
