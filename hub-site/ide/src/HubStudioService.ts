@@ -510,11 +510,20 @@ export class HubStudioService implements StudioService {
         if (resp.status === 409) {
             const body = await resp.json().catch(() => null);
             const err = body?.error;
-            if (err && typeof err.latest_version === "number") {
+            // Server contract for stale-base 409: `{error: {code,
+            // message, latest_version, your_base}}`. All four fields
+            // are server-controlled. If `message` isn't a string the
+            // body is malformed — surface the raw envelope rather than
+            // masking with a synthetic default.
+            if (
+                err
+                && typeof err.latest_version === "number"
+                && typeof err.message === "string"
+            ) {
                 throw new StaleBaseError(
                     err.latest_version,
                     typeof err.your_base === "number" ? err.your_base : null,
-                    err.message ?? "stale base",
+                    err.message,
                 );
             }
             throw new Error(`${resp.status} ${resp.statusText}: ${JSON.stringify(body)}`);

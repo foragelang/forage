@@ -436,14 +436,21 @@ export class TauriStudioService implements StudioService {
         if (resp.status === 409) {
             // The 409 envelope on publish: {error: {code, message,
             // latest_version, your_base}}. Surface as a typed exception
-            // so the rebase UX can pull the integer fields out.
+            // so the rebase UX can pull the integer fields out. If
+            // `message` is missing the body is malformed — surface the
+            // raw envelope rather than mask it with a synthetic
+            // default.
             const body = await resp.json().catch(() => null);
             const err = body?.error;
-            if (err && typeof err.latest_version === "number") {
+            if (
+                err
+                && typeof err.latest_version === "number"
+                && typeof err.message === "string"
+            ) {
                 throw new StaleBaseError(
                     err.latest_version,
                     typeof err.your_base === "number" ? err.your_base : null,
-                    err.message ?? "stale base",
+                    err.message,
                 );
             }
             throw new Error(`${resp.status} ${resp.statusText}: ${JSON.stringify(body)}`);
