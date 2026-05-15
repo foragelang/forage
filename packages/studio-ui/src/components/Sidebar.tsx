@@ -165,18 +165,20 @@ export function Sidebar() {
 
     const onNewRecipe = async () => {
         try {
-            // `create_recipe` returns the directory it wrote
-            // `recipe.forage` into. The template sets
-            // `recipe "<dir>"` so the listRecipeStatuses join lands
-            // on the first refetch.
-            const dir = await service.createRecipe();
+            // `create_recipe` returns the recipe header name (also
+            // the file stem) for the freshly-scaffolded
+            // `<workspace>/<name>.forage`. Route through
+            // setActiveRecipeName so the store learns the name
+            // immediately — before the recipe-statuses cache
+            // refetches and surfaces the entry.
+            const name = await service.createRecipe();
             await Promise.all([
                 qc.invalidateQueries({ queryKey: ["files"] }),
                 qc.invalidateQueries({ queryKey: recipeStatusesKey() }),
             ]);
             await useStudio
                 .getState()
-                .setActiveFilePath(`${dir}/recipe.forage`);
+                .setActiveRecipeName(name, `${name}.forage`);
         } catch (e) {
             useStudio.getState().setRunError(String(e));
         }

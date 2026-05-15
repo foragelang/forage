@@ -52,30 +52,44 @@ pub fn resolve_recipe_path(ws: &Workspace, name: &str) -> Result<PathBuf, String
         .ok_or_else(|| format!("no recipe named {name:?} in workspace at {}", ws.root.display()))
 }
 
-pub fn create_recipe(root: &Path, template_slug: Option<&str>) -> io::Result<String> {
+/// Scaffold a new recipe at `<root>/<name>.forage` with a `recipe
+/// "<name>" engine http` header. When `name_override` is None, pick
+/// the next-available `untitled-N` (so a fresh workspace starts at
+/// `untitled-1.forage`). Returns the recipe header name (which is also
+/// the file stem) so callers can wire it into the active-recipe
+/// selection without re-parsing.
+pub fn create_recipe(root: &Path, name_override: Option<&str>) -> io::Result<String> {
     fs::create_dir_all(root)?;
-    let base = template_slug.unwrap_or("untitled");
-    let mut n = 1;
-    loop {
-        let candidate = if n == 1 {
-            format!("{base}-1")
-        } else {
-            format!("{base}-{n}")
-        };
-        let candidate_path = root.join(&candidate);
-        if !candidate_path.exists() {
-            fs::create_dir_all(candidate_path.join("fixtures"))?;
-            let source = format!(
-                "recipe \"{candidate}\"\nengine http\n\ntype Item {{\n    id: String\n}}\n\nstep list {{\n    method \"GET\"\n    url    \"https://example.com\"\n}}\n\nfor $i in $list.items[*] {{\n    emit Item {{\n        id ← $i.id\n    }}\n}}\n"
-            );
-            fs::write(candidate_path.join("recipe.forage"), source)?;
+    let name = match name_override {
+        Some(n) => n.to_string(),
+        None => pick_untitled_name(root)?,
+    };
+    let target = root.join(format!("{name}.forage"));
+    if target.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} already exists; refusing to overwrite", target.display()),
+        ));
+    }
+    let body = format!(
+        "recipe \"{name}\" engine http\n\ntype Item {{\n    id: String\n}}\n\nstep list {{\n    method \"GET\"\n    url    \"https://example.com\"\n}}\n\nfor $i in $list.items[*] {{\n    emit Item {{\n        id ← $i.id\n    }}\n}}\n"
+    );
+    fs::write(&target, body)?;
+    Ok(name)
+}
+
+/// Pick the first `untitled-N` whose `.forage` file does not yet exist
+/// in `root`. Counter starts at 1 and caps at 1000 to guard against a
+/// pathological filesystem state.
+fn pick_untitled_name(root: &Path) -> io::Result<String> {
+    for n in 1..=1000 {
+        let candidate = format!("untitled-{n}");
+        let path = root.join(format!("{candidate}.forage"));
+        if !path.exists() {
             return Ok(candidate);
         }
-        n += 1;
-        if n > 1000 {
-            return Err(io::Error::other("too many untitled recipes"));
-        }
     }
+    Err(io::Error::other("too many untitled recipes"))
 }
 
 /// Read the source of the recipe named `name`. Resolves the on-disk

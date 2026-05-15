@@ -230,6 +230,10 @@ export interface StudioService {
     recipeHover(source: string, line: number, col: number): Promise<HoverInfo | null>;
     recipeProgressUnit(name: string): Promise<ProgressUnit | null>;
     languageDictionary(): Promise<LanguageDictionary>;
+    /// Scaffold a new recipe at `<workspace>/<name>.forage` with a
+    /// `recipe "<name>" engine http` header and return the chosen
+    /// recipe header name (also the file stem). The next-available
+    /// `untitled-N` slot wins when no `name` is reserved upstream.
     createRecipe(): Promise<string>;
     deleteRecipe(name: string): Promise<void>;
     /// Joined draft + deployed view across every recipe in the

@@ -92,15 +92,15 @@ export function cancelActive() {
 export async function createAndOpenRecipe(qc: QueryClient) {
     const service = useStudio.getState().service;
     try {
-        // `create_recipe` returns the directory name it wrote
-        // `recipe.forage` into. The recipe header name matches the
-        // dir name because the template writes `recipe "<dir>"`, so
-        // the activeFilePath join against listRecipeStatuses lands
-        // cleanly on the first refetch.
-        const dir = await service.createRecipe();
+        // `create_recipe` returns the recipe header name. The file
+        // is at `<workspace>/<name>.forage`; pass both to the store
+        // so the active selection is set immediately, without
+        // waiting for the recipe-statuses cache to refetch the new
+        // entry.
+        const name = await service.createRecipe();
         qc.invalidateQueries({ queryKey: ["files"] });
         qc.invalidateQueries({ queryKey: recipeStatusesKey() });
-        await useStudio.getState().setActiveFilePath(`${dir}/recipe.forage`);
+        await useStudio.getState().setActiveRecipeName(name, `${name}.forage`);
     } catch (e) {
         useStudio.getState().setRunError(String(e));
     }
