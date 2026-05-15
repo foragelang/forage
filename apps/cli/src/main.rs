@@ -997,7 +997,7 @@ async fn do_publish(
             ws.root.join(workspace::MANIFEST_NAME).display()
         );
     };
-    let (author, _legacy_slug) = split_dep_slug(&name)?;
+    let (author, _slug) = split_dep_slug(&name)?;
     let description = ws.manifest.description.clone();
     let category = ws.manifest.category.clone();
     let tags = ws.manifest.tags.clone();

@@ -1560,9 +1560,6 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, String> {
 ///   * `<root>/<name>.forage` — workspace-aware validation. A
 ///     `.forage` file may declare a recipe or just hold shared types;
 ///     both go through the same validator.
-///   * `<root>/<slug>/recipe.forage` — the pre-Phase-10 legacy
-///     shape. Studio refuses to act against unmigrated workspaces;
-///     the diagnostic points the user at `forage migrate`.
 ///   * any other `.forage` location — unrecognized; surface as a
 ///     diagnostic so the UI doesn't silently treat sidecars as
 ///     declarations.
@@ -2222,8 +2219,8 @@ for $i in $list.items[*] {
         daemon.configure_run(slug, cfg).expect("configure_run");
 
         // The same lookup `run_recipe` performs before calling the
-        // engine. Pre-Phase-10 this read came off
-        // `<slug>/fixtures/inputs.json`; now the row is authoritative.
+        // engine. The configured row is authoritative for inputs;
+        // there's no file-system fallback.
         let run = daemon
             .get_run_by_name(slug)
             .expect("get_run_by_name")
@@ -2248,10 +2245,8 @@ for $i in $list.items[*] {
     /// recipe header (`foo.forage` containing `recipe "bar"`)
     /// surfaces one status entry keyed on `"bar"`, and a deploy made
     /// under that header name shows up paired in the same entry.
-    /// Pre-Phase-4 the join would have used the file basename on the
-    /// draft side and the daemon's path-derived slug on the deployed
-    /// side; the same recipe would have appeared as two unrelated
-    /// entries.
+    /// The join uses the recipe header name on both sides, so the
+    /// file basename is irrelevant to the pairing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_recipe_statuses_joins_on_header_name() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2329,10 +2324,10 @@ for $i in $list.items[*] {
 
     /// A file whose basename (`foo.forage`) differs from its recipe
     /// header (`recipe "bar"`) is reachable end-to-end through the
-    /// recipe-name-keyed wire shape Phase 7 introduced. The
-    /// resolver, the source read, the deploy, the scheduled-run
-    /// trigger, and the recipe-name stamp on the resulting record
-    /// all key on `"bar"`, never on `"foo"`.
+    /// recipe-name-keyed wire shape. The resolver, the source read,
+    /// the deploy, the scheduled-run trigger, and the recipe-name
+    /// stamp on the resulting record all key on `"bar"`, never on
+    /// `"foo"`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foo_forage_with_recipe_bar_round_trips_by_name() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2359,12 +2354,11 @@ for $i in $list.items[*] {
         let ws = forage_core::workspace::load(&ws_root).expect("load workspace");
 
         // The Studio resolver path: name → file path → source. The
-        // helper has to consult `Workspace::recipe_by_name`; if it
-        // ever falls back to the basename it'd hit `foo.forage` via
-        // the slug-derivation that pre-Phase-7 builds used to do.
-        // `Workspace::load` canonicalizes, so compare canonical
-        // paths — the test fixture's path may carry a `/private`
-        // prefix on macOS.
+        // helper has to consult `Workspace::recipe_by_name`; falling
+        // back to the file basename would resolve `"bar"` to nothing
+        // when the file is named `foo.forage`. `Workspace::load`
+        // canonicalizes, so compare canonical paths — the test
+        // fixture's path may carry a `/private` prefix on macOS.
         let resolved = workspace::resolve_recipe_path(&ws, "bar").expect("resolve by name");
         assert_eq!(resolved.canonicalize().unwrap(), foo_path.canonicalize().unwrap());
         let source = workspace::read_source(&ws, "bar").expect("read source by name");
@@ -2460,9 +2454,7 @@ for $i in $list.items[*] {
 
     /// A sidecar `.forage` file deeper than the workspace root is
     /// unclassified — validate_path surfaces a diagnostic instead of
-    /// silently treating it as a declarations file. (Distinct from a
-    /// legacy `<slug>/recipe.forage`, which gets the migration
-    /// prompt; see the unmigrated-workspace test below.)
+    /// silently treating it as a declarations file.
     #[test]
     fn validate_path_rejects_sidecar_forage_in_subfolder() {
         let tmp = tempfile::tempdir().unwrap();

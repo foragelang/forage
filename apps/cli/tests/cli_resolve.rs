@@ -197,9 +197,8 @@ fn new_requires_a_workspace() {
 }
 
 /// `forage test --update` writes the produced snapshot to the
-/// recipe-name-keyed `_snapshots/<recipe>.json` — not next to the
-/// recipe file. Phase 5 moved snapshots into the workspace data
-/// dir; Phase 6 follows suit when the CLI takes a recipe name.
+/// recipe-name-keyed `_snapshots/<recipe>.json` under the workspace
+/// data directory — not next to the recipe source file.
 #[test]
 fn test_update_writes_snapshot_under_underscore_snapshots() {
     let tmp = tempfile::tempdir().unwrap();

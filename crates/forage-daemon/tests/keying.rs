@@ -47,10 +47,9 @@ fn default_output_path_uses_recipe_header_name() {
 }
 
 /// Deploy + ensure_run + output-store path for a workspace whose
-/// on-disk file basename differs from the header name. Pre-Phase-4 the
-/// daemon keyed on a path-derived slug, so the output would have
-/// landed at `data/amazon-scrape.sqlite`; the contract under test is
-/// that it now lands at `data/amazon-products.sqlite`.
+/// on-disk file basename differs from the header name. The output
+/// store lands at `data/<header-name>.sqlite`, not at
+/// `data/<file-basename>.sqlite`.
 #[test]
 fn deploy_and_default_output_anchor_on_header_name() {
     let tmp = tempfile::tempdir().unwrap();

@@ -2,7 +2,7 @@
 //! tempdir, replay against it, and verify the emitted snapshot
 //! matches the captured fixture. The path resolution flows through
 //! `forage_core::workspace::fixtures_path` so every consumer of the
-//! Phase 5 layout exercises the same code path.
+//! `_fixtures/` layout exercises the same code path.
 
 use std::fs;
 
@@ -13,8 +13,8 @@ use forage_http::transport::ReplayTransport;
 use forage_replay::{Capture, HttpExchange, read_jsonl, write_jsonl};
 use indexmap::IndexMap;
 
-const RECIPE_NAME: &str = "phase5-replay";
-const RECIPE_SOURCE: &str = r#"recipe "phase5-replay"
+const RECIPE_NAME: &str = "underscore-fixtures-replay";
+const RECIPE_SOURCE: &str = r#"recipe "underscore-fixtures-replay"
 engine http
 
 type Item {
@@ -37,7 +37,7 @@ for $i in $list.items[*] {
 
 const RESPONSE_BODY: &str = r#"{"items":[{"id":"a","weight":1.5},{"id":"b","weight":2.0}]}"#;
 
-/// Round-trip a JSONL fixture through the Phase 5 path resolution: the
+/// Round-trip a JSONL fixture through the `_fixtures/` layout: the
 /// writer puts the captures at `<root>/_fixtures/<recipe>.jsonl`, the
 /// reader picks them back up via the same helper, and the replay
 /// engine produces the snapshot the recipe declares.

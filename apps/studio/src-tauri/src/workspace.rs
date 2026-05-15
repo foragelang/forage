@@ -3,10 +3,8 @@
 //!
 //! Recipe-scoped reads (source, deletes) key on the recipe header name
 //! and consult `Workspace::recipe_by_name` to find the underlying file.
-//! Recipes live at `<root>/<name>.forage` (the flat shape every
-//! post-Phase-10 surface expects). A workspace that still carries the
-//! pre-Phase-10 `<root>/<slug>/recipe.forage` shape is rejected at the
-//! command boundary with a `forage migrate` prompt.
+//! Recipes live at `<root>/<name>.forage` (the flat shape every other
+//! Studio + CLI surface expects); anything deeper is a sidecar.
 //!
 //! This module also owns the cross-workspace **recents sidecar**: a
 //! JSON file in the OS data dir tracking which workspaces the user has
@@ -444,9 +442,8 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
 
     // `.forage` files at the workspace root carry the recipe or
     // shared-types declarations the toolchain consumes. Anything
-    // deeper (including the legacy `<slug>/recipe.forage` shape) is
-    // unclassified — the UI shows it but action-bound commands
-    // surface the `forage migrate` prompt instead of operating on it.
+    // deeper is unclassified — the UI shows it but action-bound
+    // commands refuse to operate on it.
     if extension == "forage" {
         if components.len() == 1 {
             return FileKind::Declarations;
@@ -454,9 +451,8 @@ fn classify_file(root: &Path, path: &Path) -> FileKind {
         return FileKind::Other;
     }
 
-    // Phase 5 data dirs: per-recipe JSONL captures and the published-run
-    // snapshot live next to the workspace root keyed by recipe header
-    // name.
+    // Per-recipe JSONL captures and the published-run snapshot live
+    // next to the workspace root keyed by recipe header name.
     if components.len() == 2 {
         let parent = components[0].as_str();
         if parent == forage_core::workspace::FIXTURES_DIR && extension == "jsonl" {
@@ -756,7 +752,7 @@ mod tests {
         assert_eq!(name, "untitled-1");
         let path = root.join("untitled-1.forage");
         assert!(path.is_file(), "scaffolded file must exist: {path:?}");
-        // No legacy directory is created alongside the flat file.
+        // No sibling directory is created alongside the flat file.
         assert!(!root.join("untitled-1").exists());
 
         let body = fs::read_to_string(&path).unwrap();

@@ -174,8 +174,8 @@ async fn publish_keys_artifact_on_recipe_header_name() {
 }
 
 /// Dry-run prints the would-POST artifact and exits zero without
-/// hitting the network. The legacy `forage publish` took a workspace
-/// directory; the new shape takes a recipe name.
+/// hitting the network. `forage publish` resolves the recipe by
+/// header name, not by workspace directory.
 #[tokio::test]
 async fn publish_dry_run_resolves_recipe_by_name_without_post() {
     let server = MockServer::start().await;
