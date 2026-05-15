@@ -10,6 +10,7 @@
         "studio:dev": "cd apps/studio && cargo tauri dev",
         "studio:build": "bash scripts/run-studio.sh",
         "forage-wasm:build": "wasm-pack build --target web --release crates/forage-wasm",
+        "bindings:gen": "cargo test --workspace export_bindings --quiet",
         "hub-ide:dev": "npm --prefix hub-site/ide run dev",
         "hub-site:dev": "npm --prefix hub-site run dev",
         "hub-site:build": "npm --prefix hub-site run build"
