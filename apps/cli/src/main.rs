@@ -9,14 +9,14 @@ use owo_colors::OwoColorize;
 
 use forage_browser::run_browser_replay;
 use forage_core::ast::{EngineKind, JSONValue};
-use forage_core::workspace::fixtures_path;
-use forage_core::{EvalValue, Snapshot, parse, validate};
+use forage_core::workspace::{self, Workspace, WorkspaceError, fixtures_path, snapshot_path};
+use forage_core::{EvalValue, ForageFile, Snapshot, parse, validate};
 use forage_http::{Engine, LiveTransport, ReplayTransport};
 use forage_hub::{
     AuthStore, AuthTokens, HubClient, HubError, device::run_device_flow, fetch_to_cache,
-    fork_from_hub, hub_cache_root, publish_from_workspace, sync_from_hub,
+    fork_from_hub, hub_cache_root, publish_recipe_from_workspace, sync_from_hub,
 };
-use forage_replay::Capture;
+use forage_replay::{Capture, HttpExchange, write_jsonl};
 
 #[derive(Parser)]
 #[command(
@@ -31,38 +31,73 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Parse and execute a .forage recipe; print the snapshot.
+    /// Parse and execute a `.forage` recipe; print the snapshot.
     ///
-    /// Discovers the surrounding workspace (ancestor `forage.toml`) and
-    /// validates against the merged catalog. Without a workspace, runs
-    /// in lonely-recipe mode.
+    /// `<recipe>` is a recipe header name (resolved through the
+    /// surrounding workspace's `recipe_by_name`) or, as a fallback, a
+    /// path to a `.forage` file whose contents declare a recipe header.
     Run {
-        /// Recipe path. Accepts either a recipe directory
-        /// (`<slug>/recipe.forage` is appended) or the recipe file itself.
-        recipe_path: PathBuf,
+        /// Recipe header name (primary) or path to a `.forage` file
+        /// (fallback).
+        recipe: String,
         /// Replay against the workspace's `_fixtures/<recipe>.jsonl`
         /// instead of hitting the network.
         #[arg(long)]
         replay: bool,
+        /// Path to a JSON object of input bindings. When omitted the
+        /// recipe runs with no inputs (any `input` declarations without
+        /// defaults must supply a value through this file).
+        #[arg(long)]
+        inputs: Option<PathBuf>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
         output: OutputFormat,
     },
-    /// Run a recipe against fixtures and diff against an expected snapshot.
+    /// Run a recipe against `_fixtures/<recipe>.jsonl` and diff against
+    /// `_snapshots/<recipe>.json`.
     Test {
-        recipe_dir: PathBuf,
-        /// Write the produced snapshot to expected.snapshot.json.
+        /// Recipe header name (primary) or path to a `.forage` file
+        /// (fallback).
+        recipe: String,
+        /// Path to a JSON object of input bindings.
+        #[arg(long)]
+        inputs: Option<PathBuf>,
+        /// Write the produced snapshot to `_snapshots/<recipe>.json`.
         #[arg(long)]
         update: bool,
+    },
+    /// Scaffold `<workspace>/<recipe-name>.forage` at the workspace
+    /// root with a `recipe "<recipe-name>" engine http` header.
+    New {
+        /// Recipe header name. Doubles as the file basename.
+        name: String,
+        /// Engine kind for the new recipe.
+        #[arg(long, value_enum, default_value_t = NewEngine::Http)]
+        engine: NewEngine,
+        /// Workspace root override (defaults to ancestor `forage.toml`).
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Run a recipe live against the network and write the resulting
+    /// HTTP exchanges to `_fixtures/<recipe>.jsonl`. Browser-engine
+    /// recipes still need Forage Studio for live capture.
+    Record {
+        /// Recipe header name (primary) or path to a `.forage` file
+        /// (fallback).
+        recipe: String,
+        /// Path to a JSON object of input bindings.
+        #[arg(long)]
+        inputs: Option<PathBuf>,
     },
     /// Launch a webview and record fetch/XHR exchanges to JSONL. Ships
     /// with Forage Studio (R9) — needs a tao event loop to host wry.
     Capture,
-    /// Build a starter .forage recipe from a captures JSONL file.
+    /// Build a starter `.forage` recipe from a captures JSONL file.
     Scaffold {
         /// Path to a captures.jsonl file.
         captures: PathBuf,
-        /// Recipe name (defaults to the parent directory name).
+        /// Recipe header name for the scaffolded file. Defaults to the
+        /// captures file's parent directory name.
         #[arg(long)]
         name: Option<String>,
     },
@@ -83,14 +118,13 @@ enum Command {
         #[arg(long)]
         hub: Option<String>,
     },
-    /// Push the workspace's recipe to the Forage hub. Requires
-    /// `name = "<author>/<slug>"` in `forage.toml`. Sends the atomic
-    /// per-version artifact (recipe + workspace decls + fixtures +
-    /// snapshot + base_version).
+    /// Push a recipe to the Forage hub by header name. Requires
+    /// `name = "<author>/<anything>"` in `forage.toml` for the author
+    /// segment; the slug on the hub is the recipe's header name.
     Publish {
-        /// Workspace root (defaults to cwd).
-        #[arg(default_value = ".")]
-        dir: PathBuf,
+        /// Recipe header name (primary) or path to a `.forage` file
+        /// (fallback).
+        recipe: String,
         /// Hub URL override (default: $FORAGE_HUB_URL or https://api.foragelang.com).
         #[arg(long)]
         hub: Option<String>,
@@ -166,6 +200,21 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum NewEngine {
+    Http,
+    Browser,
+}
+
+impl NewEngine {
+    fn token(self) -> &'static str {
+        match self {
+            NewEngine::Http => "http",
+            NewEngine::Browser => "browser",
+        }
+    }
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -178,11 +227,24 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     match cli.command {
         Command::Run {
-            recipe_path,
+            recipe,
             replay,
+            inputs,
             output,
-        } => rt.block_on(run(&recipe_path, replay, output)),
-        Command::Test { recipe_dir, update } => rt.block_on(test(&recipe_dir, update)),
+        } => rt.block_on(run(&recipe, replay, inputs.as_deref(), output)),
+        Command::Test {
+            recipe,
+            inputs,
+            update,
+        } => rt.block_on(test(&recipe, inputs.as_deref(), update)),
+        Command::New {
+            name,
+            engine,
+            workspace,
+        } => do_new(&name, engine, workspace.as_deref()),
+        Command::Record { recipe, inputs } => {
+            rt.block_on(record(&recipe, inputs.as_deref()))
+        }
         Command::Capture => {
             println!(
                 "{} `forage capture` opens a real webview and ships with Forage Studio (R9). Use Studio for now.",
@@ -194,11 +256,11 @@ fn main() -> Result<()> {
         Command::Init { dir } => do_init(&dir),
         Command::Update { dir, hub } => rt.block_on(do_update(&dir, hub)),
         Command::Publish {
-            dir,
+            recipe,
             hub,
             publish,
             token,
-        } => rt.block_on(do_publish(&dir, hub, publish, token)),
+        } => rt.block_on(do_publish(&recipe, hub, publish, token)),
         Command::Sync {
             spec,
             dir,
@@ -219,22 +281,135 @@ fn main() -> Result<()> {
     }
 }
 
-async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<()> {
-    let (recipe_dir, recipe_file) = resolve_recipe_dir(recipe_path)?;
-    let recipe = load_recipe_at(&recipe_dir, &recipe_file)?;
-    let inputs = load_inputs(&recipe_dir)?;
-    let secrets = load_secrets_from_env(&recipe);
+/// A recipe resolved from a CLI string argument. The variant records
+/// how resolution succeeded so callers can light up workspace-only
+/// features (catalog merge, `_fixtures/` lookup) when a workspace
+/// surrounds the recipe.
+struct ResolvedRecipe {
+    /// Recipe header name. Always present — the resolver only succeeds
+    /// for recipe-bearing files.
+    name: String,
+    /// Path to the `.forage` file on disk.
+    path: PathBuf,
+    /// Parsed AST.
+    file: ForageFile,
+    /// Workspace containing the recipe, if any. `None` for a lonely
+    /// path-argument resolve where no ancestor `forage.toml` exists.
+    workspace: Option<Workspace>,
+}
 
-    let engine_kind = recipe
-        .engine_kind()
-        .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\" engine <kind>` header"))?;
-    let snapshot = match (engine_kind, replay) {
+impl ResolvedRecipe {
+    /// Directory the workspace data dirs (`_fixtures/`, `_snapshots/`)
+    /// hang off. When a workspace surrounds the recipe, the workspace
+    /// root; otherwise the recipe file's parent directory so a
+    /// lonely-mode caller still resolves data files alongside the
+    /// recipe.
+    fn data_root(&self) -> PathBuf {
+        match &self.workspace {
+            Some(ws) => ws.root.clone(),
+            None => self
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        }
+    }
+
+    fn engine_kind(&self) -> Result<EngineKind> {
+        self.file.engine_kind().ok_or_else(|| {
+            anyhow::anyhow!(
+                "recipe {:?} has no `recipe \"<name>\" engine <kind>` header",
+                self.name
+            )
+        })
+    }
+}
+
+/// Resolve a CLI recipe argument to a parsed recipe.
+///
+/// Rule:
+///
+/// 1. Discover a surrounding workspace from cwd. If found, try
+///    `Workspace::recipe_by_name(arg)`.
+/// 2. If that misses, treat `arg` as a path. A path that resolves to a
+///    `.forage` file whose contents declare a recipe header wins.
+/// 3. Otherwise error with both attempts mentioned so the user can
+///    tell whether they typoed the name or the path.
+///
+/// The resolver does not consult the workspace's catalog or run the
+/// validator — that's the caller's job, scoped to whichever subcommand
+/// is being invoked. The resolver's only job is to land on a parsed,
+/// recipe-bearing `ForageFile`.
+fn resolve_recipe(arg: &str) -> Result<ResolvedRecipe> {
+    let cwd = std::env::current_dir().context("resolving current directory")?;
+    let workspace = workspace::discover(&cwd);
+
+    if let Some(ws) = &workspace
+        && let Some(rref) = ws.recipe_by_name(arg)
+    {
+        return Ok(ResolvedRecipe {
+            name: rref.name().to_string(),
+            path: rref.path.to_path_buf(),
+            file: rref.file.clone(),
+            workspace: workspace.clone(),
+        });
+    }
+
+    let candidate = Path::new(arg);
+    if candidate.is_file() {
+        let source = std::fs::read_to_string(candidate)
+            .with_context(|| format!("reading {}", candidate.display()))?;
+        let file = parse(&source).map_err(|e| anyhow::anyhow!("parse {}: {e}", candidate.display()))?;
+        let Some(name) = file.recipe_name().map(str::to_string) else {
+            bail!(
+                "{} is a `.forage` file but declares no `recipe \"<name>\"` header",
+                candidate.display()
+            );
+        };
+        let path = candidate
+            .canonicalize()
+            .with_context(|| format!("canonicalizing {}", candidate.display()))?;
+        let workspace = workspace::discover(&path);
+        return Ok(ResolvedRecipe {
+            name,
+            path,
+            file,
+            workspace,
+        });
+    }
+
+    match &workspace {
+        Some(ws) => bail!(
+            "no recipe named {:?} in workspace {}, and no file at {:?}",
+            arg,
+            ws.root.display(),
+            arg
+        ),
+        None => bail!(
+            "no workspace in scope and {:?} is not a `.forage` file path",
+            arg
+        ),
+    }
+}
+
+async fn run(
+    recipe_arg: &str,
+    replay: bool,
+    inputs_path: Option<&Path>,
+    output: OutputFormat,
+) -> Result<()> {
+    let resolved = resolve_recipe(recipe_arg)?;
+    validate_resolved(&resolved)?;
+    let inputs = load_inputs(inputs_path)?;
+    let secrets = load_secrets_from_env(&resolved.file);
+
+    let snapshot = match (resolved.engine_kind()?, replay) {
         (EngineKind::Http, true) => {
-            let captures = load_captures_for(&recipe_file, &recipe)?;
+            let captures = load_captures_for(&resolved)?;
             let transport = ReplayTransport::new(captures);
             let engine = Engine::new(&transport);
             engine
-                .run(&recipe, inputs, secrets)
+                .run(&resolved.file, inputs, secrets)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
@@ -242,13 +417,13 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
             let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
             let engine = Engine::new(&transport);
             engine
-                .run(&recipe, inputs, secrets)
+                .run(&resolved.file, inputs, secrets)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, true) => {
-            let captures = load_captures_for(&recipe_file, &recipe)?;
-            run_browser_replay(&recipe, &captures, inputs, secrets)
+            let captures = load_captures_for(&resolved)?;
+            run_browser_replay(&resolved.file, &captures, inputs, secrets)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
         (EngineKind::Browser, false) => {
@@ -277,36 +452,34 @@ async fn run(recipe_path: &Path, replay: bool, output: OutputFormat) -> Result<(
     Ok(())
 }
 
-async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
-    let recipe_file = recipe_dir.join("recipe.forage");
-    let recipe = load_recipe(recipe_dir)?;
-    if recipe.engine_kind().is_none() {
-        bail!(
-            "`forage test` requires a file with a `recipe \"<name>\" engine <kind>` header; \
-             a header-less declarations file can't be run"
-        );
-    }
-    let inputs = load_inputs(recipe_dir)?;
-    let secrets = load_secrets_from_env(&recipe);
-    let captures = load_captures_for(&recipe_file, &recipe)?;
+async fn test(recipe_arg: &str, inputs_path: Option<&Path>, update: bool) -> Result<()> {
+    let resolved = resolve_recipe(recipe_arg)?;
+    validate_resolved(&resolved)?;
+    let _engine_kind = resolved.engine_kind()?; // surface header-less files early
+    let inputs = load_inputs(inputs_path)?;
+    let secrets = load_secrets_from_env(&resolved.file);
+    let captures = load_captures_for(&resolved)?;
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     let produced = engine
-        .run(&recipe, inputs, secrets)
+        .run(&resolved.file, inputs, secrets)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let expected_path = recipe_dir.join("expected.snapshot.json");
-    if update || !expected_path.exists() {
+    let snap_path = snapshot_path(&resolved.data_root(), &resolved.name);
+    if update || !snap_path.exists() {
+        if let Some(parent) = snap_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let j = serde_json::to_string_pretty(&produced)?;
-        std::fs::write(&expected_path, &j)?;
-        println!("{} {}", "wrote".green(), expected_path.display());
+        std::fs::write(&snap_path, &j)?;
+        println!("{} {}", "wrote".green(), snap_path.display());
         return Ok(());
     }
-    let raw = std::fs::read_to_string(&expected_path)?;
+    let raw = std::fs::read_to_string(&snap_path)?;
     let expected: Snapshot = serde_json::from_str(&raw)?;
     if expected == produced {
-        println!("{} matches expected snapshot", "ok:".green());
+        println!("{} matches {}", "ok:".green(), snap_path.display());
         return Ok(());
     }
     let a = serde_json::to_string_pretty(&expected)?;
@@ -324,58 +497,139 @@ async fn test(recipe_dir: &Path, update: bool) -> Result<()> {
     std::process::exit(1);
 }
 
-fn load_recipe(dir: &Path) -> Result<forage_core::ForageFile> {
-    load_recipe_at(dir, &dir.join("recipe.forage"))
+async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
+    let resolved = resolve_recipe(recipe_arg)?;
+    validate_resolved(&resolved)?;
+    let inputs = load_inputs(inputs_path)?;
+    let secrets = load_secrets_from_env(&resolved.file);
+
+    match resolved.engine_kind()? {
+        EngineKind::Http => {}
+        EngineKind::Browser => bail!(
+            "browser-engine `forage record` needs a real WebView and ships with \
+             Forage Studio (R9); the CLI can only record HTTP-engine recipes for now"
+        ),
+    }
+
+    let live = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let transport = RecordingTransport::new(live);
+    let engine = Engine::new(&transport);
+    let snapshot = engine
+        .run(&resolved.file, inputs, secrets)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let path = fixtures_path(&resolved.data_root(), &resolved.name);
+    let captures = transport.into_captures();
+    write_jsonl(&path, &captures).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "{} {} captures → {}",
+        "recorded".green(),
+        captures.len(),
+        path.display()
+    );
+    if snapshot.diagnostic.has_content() {
+        eprintln!(
+            "{} run completed but the diagnostic report is non-empty; \
+             captures still written so a replay shows the same trace.",
+            "note:".yellow()
+        );
+    }
+    Ok(())
 }
 
-fn load_recipe_at(_dir: &Path, path: &Path) -> Result<forage_core::ForageFile> {
-    let source =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let recipe = parse(&source).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
-    let catalog = build_catalog_for(path, &recipe)?;
-    let report = validate(&recipe, &catalog);
+/// `LiveTransport` wrapper that mirrors every exchange into a JSONL
+/// capture buffer. Only the recording side knows the request URL +
+/// method (the live transport's response carries neither), so we wrap
+/// rather than read back out.
+struct RecordingTransport {
+    inner: LiveTransport,
+    captures: tokio::sync::Mutex<Vec<Capture>>,
+}
+
+impl RecordingTransport {
+    fn new(inner: LiveTransport) -> Self {
+        Self {
+            inner,
+            captures: tokio::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn into_captures(self) -> Vec<Capture> {
+        self.captures.into_inner()
+    }
+}
+
+#[async_trait::async_trait]
+impl forage_http::Transport for RecordingTransport {
+    async fn fetch(
+        &self,
+        req: forage_http::HttpRequest,
+    ) -> forage_http::HttpResult<forage_http::HttpResponse> {
+        let url = req.url.clone();
+        let method = req.method.clone();
+        let request_headers = req.headers.clone();
+        let request_body = req
+            .body
+            .as_ref()
+            .and_then(|b| String::from_utf8(b.clone()).ok());
+        let resp = self.inner.fetch(req).await?;
+        let exchange = HttpExchange {
+            url,
+            method,
+            request_headers,
+            request_body,
+            status: resp.status,
+            response_headers: resp.headers.clone(),
+            body: resp.body_str().to_string(),
+        };
+        self.captures.lock().await.push(Capture::Http(exchange));
+        Ok(resp)
+    }
+}
+
+/// Validate the resolved recipe against the workspace catalog (or its
+/// own file-local catalog in lonely-recipe mode). Surfaces validator
+/// errors and bails before any engine runs.
+fn validate_resolved(resolved: &ResolvedRecipe) -> Result<()> {
+    let catalog = match &resolved.workspace {
+        Some(ws) => ws
+            .catalog(&resolved.file, |p| std::fs::read_to_string(p))
+            .map_err(|e: WorkspaceError| anyhow::anyhow!("workspace catalog: {e}"))?,
+        None => forage_core::TypeCatalog::from_file(&resolved.file),
+    };
+    let report = validate(&resolved.file, &catalog);
     if report.has_errors() {
         for e in report.errors() {
             eprintln!("{} {}", "validate:".red(), e.message);
         }
         bail!("recipe failed validation");
     }
-    Ok(recipe)
+    Ok(())
 }
 
-/// Build the type catalog for a recipe at `recipe_path`. If the recipe
-/// sits inside a workspace (ancestor `forage.toml`), the catalog folds
-/// in workspace declarations files plus cached hub-dep declarations.
-/// Otherwise lonely-recipe mode — recipe-local types only.
-fn build_catalog_for(
-    recipe_path: &Path,
-    recipe: &forage_core::ForageFile,
-) -> Result<forage_core::TypeCatalog> {
-    if let Some(ws) = forage_core::workspace::discover(recipe_path) {
-        return ws
-            .catalog(recipe, |p| std::fs::read_to_string(p))
-            .map_err(|e| anyhow::anyhow!("workspace catalog: {e}"));
-    }
-    Ok(forage_core::TypeCatalog::from_file(recipe))
-}
-
-fn load_inputs(dir: &Path) -> Result<IndexMap<String, EvalValue>> {
-    let path = dir.join("fixtures").join("inputs.json");
-    if !path.exists() {
+fn load_inputs(path: Option<&Path>) -> Result<IndexMap<String, EvalValue>> {
+    let Some(path) = path else {
         return Ok(IndexMap::new());
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    };
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading inputs file {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing inputs file {}", path.display()))?;
+    let serde_json::Value::Object(o) = value else {
+        bail!(
+            "inputs file {} must hold a JSON object of bindings",
+            path.display()
+        );
+    };
     let mut out = IndexMap::new();
-    if let serde_json::Value::Object(o) = value {
-        for (k, v) in o {
-            out.insert(k, EvalValue::from(&v));
-        }
+    for (k, v) in o {
+        out.insert(k, EvalValue::from(&v));
     }
     Ok(out)
 }
 
-fn load_secrets_from_env(recipe: &forage_core::ForageFile) -> IndexMap<String, String> {
+fn load_secrets_from_env(recipe: &ForageFile) -> IndexMap<String, String> {
     let mut out = IndexMap::new();
     for s in &recipe.secrets {
         let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
@@ -386,23 +640,8 @@ fn load_secrets_from_env(recipe: &forage_core::ForageFile) -> IndexMap<String, S
     out
 }
 
-/// Resolve the workspace root and recipe name for `recipe_file`, then
-/// read `<root>/_fixtures/<recipe>.jsonl`. Falls back to the recipe
-/// file's parent directory as the root when no `forage.toml` is found
-/// up the tree (lonely-recipe mode), so a single-file workspace still
-/// resolves captures from a sibling `_fixtures/` directory.
-fn load_captures_for(recipe_file: &Path, recipe: &forage_core::ForageFile) -> Result<Vec<Capture>> {
-    let recipe_name = recipe
-        .recipe_name()
-        .ok_or_else(|| anyhow::anyhow!("recipe file has no `recipe \"<name>\"` header"))?;
-    let root = match forage_core::workspace::discover(recipe_file) {
-        Some(ws) => ws.root,
-        None => recipe_file
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(".")),
-    };
-    let path = fixtures_path(&root, recipe_name);
+fn load_captures_for(resolved: &ResolvedRecipe) -> Result<Vec<Capture>> {
+    let path = fixtures_path(&resolved.data_root(), &resolved.name);
     forage_replay::read_jsonl(&path).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -520,40 +759,38 @@ fn scaffold_pattern(url: &str) -> String {
     no_query.to_string()
 }
 
-/// Resolve `forage run <path>` to a (recipe-dir, recipe-file) pair.
-///
-/// - A directory: append `recipe.forage` to it.
-/// - A file named `recipe.forage`: use it directly; the recipe dir is
-///   its parent.
-/// - Any other file: surface a clear error. Silently rewriting
-///   `/path/to/foo.forage` into `/path/to/recipe.forage` hides whatever
-///   the user actually meant.
-fn resolve_recipe_dir(path: &Path) -> Result<(PathBuf, PathBuf)> {
-    if path.is_dir() {
-        return Ok((path.to_path_buf(), path.join("recipe.forage")));
+fn do_new(name: &str, engine: NewEngine, workspace_override: Option<&Path>) -> Result<()> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        bail!("invalid recipe name {name:?}: must be non-empty and contain no path separators");
     }
-    if path.is_file() {
-        let leaf = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if leaf == "recipe.forage" {
-            let dir = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            return Ok((dir, path.to_path_buf()));
+    let root = match workspace_override {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let cwd = std::env::current_dir().context("resolving current directory")?;
+            workspace::discover(&cwd)
+                .map(|ws| ws.root)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no workspace in scope (no ancestor `forage.toml` from {})",
+                        cwd.display()
+                    )
+                })?
         }
-        bail!(
-            "forage run requires either a recipe.forage path or a directory containing one; got {}",
-            path.display()
-        );
+    };
+    let target = root.join(format!("{name}.forage"));
+    if target.exists() {
+        bail!("{} already exists; refusing to overwrite", target.display());
     }
-    bail!("recipe path not found: {}", path.display())
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("creating workspace dir {}", root.display()))?;
+    let body = format!("recipe \"{name}\" engine {engine}\n\n", engine = engine.token());
+    std::fs::write(&target, body).with_context(|| format!("writing {}", target.display()))?;
+    println!("{} {}", "wrote".green(), target.display());
+    Ok(())
 }
 
 fn do_init(dir: &Path) -> Result<()> {
-    let path = dir.join(forage_core::workspace::MANIFEST_NAME);
+    let path = dir.join(workspace::MANIFEST_NAME);
     if path.exists() {
         println!(
             "{} {} already exists; leaving untouched",
@@ -563,8 +800,8 @@ fn do_init(dir: &Path) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let manifest = forage_core::workspace::Manifest::default();
-    let body = forage_core::workspace::serialize_manifest(&manifest)
+    let manifest = workspace::Manifest::default();
+    let body = workspace::serialize_manifest(&manifest)
         .map_err(|e| anyhow::anyhow!("serialize manifest: {e}"))?;
     std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     println!("{} {}", "wrote".green(), path.display());
@@ -572,7 +809,7 @@ fn do_init(dir: &Path) -> Result<()> {
 }
 
 async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
-    let ws = forage_core::workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
+    let ws = workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
     let hub = resolve_hub(hub_override);
     if ws.manifest.deps.is_empty() {
         println!("{} [deps] is empty; nothing to do", "note:".dimmed());
@@ -581,7 +818,7 @@ async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
     let client = hub_client(&hub, None);
     let cache_root = hub_cache_root();
 
-    let mut lock = forage_core::workspace::Lockfile::default();
+    let mut lock = workspace::Lockfile::default();
     for (slug, &version) in &ws.manifest.deps {
         let (author, slug_only) = split_dep_slug(slug)?;
         let fetched = fetch_to_cache(&client, &cache_root, author, slug_only, version)
@@ -594,37 +831,43 @@ async fn do_update(dir: &Path, hub_override: Option<String>) -> Result<()> {
         );
         lock.deps.insert(
             slug.clone(),
-            forage_core::workspace::LockedDep {
+            workspace::LockedDep {
                 version,
                 hash: fetched.sha256,
             },
         );
     }
 
-    let lock_body = forage_core::workspace::serialize_lockfile(&lock)
+    let lock_body = workspace::serialize_lockfile(&lock)
         .map_err(|e| anyhow::anyhow!("serialize lockfile: {e}"))?;
-    let lock_path = ws.root.join(forage_core::workspace::LOCKFILE_NAME);
+    let lock_path = ws.root.join(workspace::LOCKFILE_NAME);
     std::fs::write(&lock_path, lock_body)?;
     println!("{} {}", "wrote".green(), lock_path.display());
     Ok(())
 }
 
 async fn do_publish(
-    dir: &Path,
+    recipe_arg: &str,
     hub_override: Option<String>,
     really_publish: bool,
     token_override: Option<String>,
 ) -> Result<()> {
-    let ws = forage_core::workspace::load(dir).map_err(|e| anyhow::anyhow!("workspace: {e}"))?;
-    let Some(name) = ws.manifest.name.clone() else {
+    let resolved = resolve_recipe(recipe_arg)?;
+    let Some(ws) = resolved.workspace.clone() else {
         bail!(
-            "{} requires `name = \"<author>/<slug>\"` in forage.toml",
-            ws.root
-                .join(forage_core::workspace::MANIFEST_NAME)
-                .display()
+            "`forage publish` needs a workspace (`forage.toml`) in scope; \
+             resolved recipe {:?} has none",
+            resolved.name
         );
     };
-    let (author, slug) = split_dep_slug(&name)?;
+    let Some(name) = ws.manifest.name.clone() else {
+        bail!(
+            "{} requires `name = \"<author>/<…>\"` in forage.toml (the author segment \
+             is used; the slug becomes the recipe header name)",
+            ws.root.join(workspace::MANIFEST_NAME).display()
+        );
+    };
+    let (author, _legacy_slug) = split_dep_slug(&name)?;
     let description = ws.manifest.description.clone();
     let category = ws.manifest.category.clone();
     let tags = ws.manifest.tags.clone();
@@ -638,20 +881,23 @@ async fn do_publish(
     let hub = resolve_hub(hub_override);
 
     if !really_publish {
-        let preview =
-            forage_hub::assemble_publish_request(&ws.root, slug, description, category, tags)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let preview = forage_hub::assemble_recipe_publish(
+            &ws,
+            &resolved.name,
+            description,
+            category,
+            tags,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         let bytes = preview.recipe.len()
             + preview.decls.iter().map(|d| d.source.len()).sum::<usize>()
             + preview.fixtures.iter().map(|f| f.content.len()).sum::<usize>();
         println!(
-            "{} would POST atomic artifact ({bytes} bytes total) to {hub}/v1/packages/{author}/{slug}/versions",
+            "{} would POST atomic artifact ({bytes} bytes total) to {hub}/v1/packages/{author}/{recipe}/versions",
             "dry-run:".yellow(),
+            recipe = resolved.name,
         );
-        println!(
-            "    · recipe.forage ({} bytes)",
-            preview.recipe.len()
-        );
+        println!("    · {} ({} bytes)", recipe_file_name(&resolved), preview.recipe.len());
         for f in &preview.decls {
             println!("    · {} ({} bytes)", f.name, f.source.len());
         }
@@ -670,7 +916,16 @@ async fn do_publish(
     }
 
     let client = hub_client(&hub, token_override);
-    match publish_from_workspace(&client, &ws.root, author, slug, description, category, tags).await
+    match publish_recipe_from_workspace(
+        &client,
+        &ws,
+        &resolved.name,
+        author,
+        description,
+        category,
+        tags,
+    )
+    .await
     {
         Ok(resp) => {
             println!(
@@ -697,6 +952,14 @@ async fn do_publish(
         }
         Err(e) => bail!("{e}"),
     }
+}
+
+fn recipe_file_name(resolved: &ResolvedRecipe) -> String {
+    resolved
+        .path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("{}.forage", resolved.name))
 }
 
 async fn do_sync(

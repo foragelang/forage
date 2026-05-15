@@ -1380,6 +1380,7 @@ dependencies = [
  "anyhow",
  "ariadne",
  "assert_cmd",
+ "async-trait",
  "clap",
  "forage-browser",
  "forage-core",

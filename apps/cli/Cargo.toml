@@ -22,6 +22,7 @@ forage-lsp       = { workspace = true, features = ["native"] }
 forage-browser   = { workspace = true }
 
 tokio       = { workspace = true }
+async-trait = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
 indexmap    = { workspace = true }
