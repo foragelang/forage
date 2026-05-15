@@ -517,11 +517,16 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
+    /// Minimal valid manifest for tests that don't care about its
+    /// contents — every required field present with empty values, no
+    /// publishable `name`.
+    const STARTER_MANIFEST: &str = "description = \"\"\ncategory = \"\"\ntags = []\n";
+
     #[test]
     fn discover_walks_ancestors() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         let nested = root.join("a").join("b");
         fs::create_dir_all(&nested).unwrap();
         let ws = discover(&nested).expect("should find workspace");
@@ -538,7 +543,7 @@ mod tests {
     fn workspace_classifies_recipe_and_declarations() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("cannabis.forage"),
             "type Dispensary { id: String }\n",
@@ -574,7 +579,7 @@ mod tests {
     fn catalog_merges_workspace_decls_with_recipe_local() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("cannabis.forage"),
             "type Dispensary { id: String, name: String }\n\
@@ -601,7 +606,7 @@ mod tests {
     fn broken_recipe_is_captured_not_dropped() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         // One good recipe plus one syntactically-broken one. The
         // workspace must still load — the broken one becomes a
         // Broken entry so the daemon can surface it.
@@ -644,7 +649,7 @@ mod tests {
         // it isn't under a `<slug>/recipe.forage` layout.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("shared.forage"),
             // `type` without a name is a parse error.
@@ -665,7 +670,7 @@ mod tests {
     fn duplicate_type_across_decls_files_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(&root.join("a.forage"), "type Product { id: String }\n");
         write(&root.join("b.forage"), "type Product { id: String }\n");
         let recipe_path = root.join("r").join("recipe.forage");
@@ -689,7 +694,7 @@ mod tests {
     fn serializable_catalog_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(&root.join(MANIFEST_NAME), "");
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
         write(
             &root.join("cannabis.forage"),
             "type Dispensary { id: String, name: String? }\n\

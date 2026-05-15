@@ -16,7 +16,12 @@ fn write(path: &Path, body: &str) {
 }
 
 fn workspace_in(tmp: &tempfile::TempDir) -> &Path {
-    write(&tmp.path().join(MANIFEST_NAME), "");
+    // Minimal valid manifest for tests that don't care about its
+    // contents — required fields present with empty values, no name.
+    write(
+        &tmp.path().join(MANIFEST_NAME),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     tmp.path()
 }
 
@@ -178,7 +183,8 @@ fn hub_dep_cache_contributes_types() {
     let root = tmp.path();
     write(
         &root.join(MANIFEST_NAME),
-        "[deps]\n\"dima/shared-types\" = 3\n",
+        "description = \"\"\ncategory = \"\"\ntags = []\n\
+         [deps]\n\"dima/shared-types\" = 3\n",
     );
     let recipe_path = root.join("rec").join("recipe.forage");
     write(&recipe_path, "recipe \"rec\"\nengine http\n");

@@ -1,0 +1,4 @@
+name = "forage/hacker-news"
+description = "Hacker News front page — top 30 stories via the Algolia search API"
+category = "news"
+tags = ["hacker-news", "api"]

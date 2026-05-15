@@ -1,0 +1,4 @@
+name = "forage/onthisday"
+description = "Wikipedia 'On this day' — historical events for a given date"
+category = "reference"
+tags = ["wikipedia", "history", "api"]

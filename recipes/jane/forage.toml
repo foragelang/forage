@@ -1,0 +1,4 @@
+name = "forage/jane"
+description = "Jane platform recipe (frameless embed) — dispensary product menus behind Cloudflare"
+category = "dispensary"
+tags = ["cannabis", "dispensary", "jane", "browser-engine"]

@@ -17,7 +17,12 @@ use forage_daemon::{Clock, Daemon, DeployedVersion};
 
 pub fn init_workspace(ws_root: &Path, slug: &str, recipe_source: &str) {
     std::fs::create_dir_all(ws_root).unwrap();
-    std::fs::write(ws_root.join("forage.toml"), "").unwrap();
+    std::fs::write(
+        ws_root.join("forage.toml"),
+        // Minimal valid manifest: required fields present, no name.
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    )
+    .unwrap();
     let recipe_dir = ws_root.join(slug);
     std::fs::create_dir_all(&recipe_dir).unwrap();
     std::fs::write(recipe_dir.join("recipe.forage"), recipe_source).unwrap();

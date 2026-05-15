@@ -20,25 +20,31 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
+/// `forage.toml` shape. Every field declared without `#[serde(default)]`
+/// is required on parse — a manifest that omits `description`,
+/// `category`, or `tags` is malformed and fails to load. New
+/// workspaces created in-code use the `Default` impl, which serialises
+/// to a manifest where all required fields are present (with empty
+/// string / empty list values); the round-trip succeeds because the
+/// keys are emitted, just empty.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Manifest {
     /// Publish slug — `"author/name"`. `None` until the workspace
     /// becomes publishable.
     pub name: Option<String>,
-    /// One-line description shown in the hub listing. Empty when the
-    /// workspace hasn't filled it in yet; the publish path requires
-    /// a non-empty value (per the hub-api shape).
-    #[serde(default)]
+    /// One-line description shown in the hub listing. Required on
+    /// parse; the publish path enforces a non-empty value (per the
+    /// hub-api shape).
     pub description: String,
     /// Hub category — matches the `category` segment on the listing
-    /// surface. Lowercase kebab-case, validated server-side.
-    #[serde(default)]
+    /// surface. Required on parse; lowercase kebab-case, validated
+    /// server-side.
     pub category: String,
-    /// Search tags. Empty list when unset.
-    #[serde(default)]
+    /// Search tags. Required on parse; empty list when unset.
     pub tags: Vec<String>,
-    /// Map from `"author/slug"` to integer hub version.
+    /// Map from `"author/slug"` to integer hub version. Optional on
+    /// parse because a workspace without deps is common.
     #[serde(default)]
     pub deps: BTreeMap<String, u32>,
 }
@@ -94,7 +100,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_manifest_round_trips() {
+    fn default_manifest_round_trips() {
+        // The in-code Default impl emits required fields with their
+        // empty values; parsing must succeed because the keys are
+        // present.
         let m = Manifest::default();
         let s = serialize_manifest(&m).unwrap();
         let back = parse_manifest(&s).unwrap();
@@ -105,6 +114,9 @@ mod tests {
     fn manifest_with_name_and_deps() {
         let src = r#"
             name = "dima/cannabis"
+            description = "Cannabis-domain shared types"
+            category = "shared-types"
+            tags = ["cannabis"]
             [deps]
             "dima/shared-types" = 3
             "alice/dispensary"  = 1
@@ -117,7 +129,13 @@ mod tests {
 
     #[test]
     fn deps_only_manifest_parses() {
+        // `name` is the only field that's actually optional on parse —
+        // a workspace can carry [deps] without being publishable.
+        // `description`, `category`, `tags` are required.
         let src = r#"
+            description = ""
+            category = ""
+            tags = []
             [deps]
             "dima/shared-types" = 7
         "#;
@@ -128,8 +146,22 @@ mod tests {
 
     #[test]
     fn missing_deps_table_defaults_to_empty() {
-        let m = parse_manifest("name = \"dima/cannabis\"\n").unwrap();
+        let m = parse_manifest(
+            "name = \"dima/cannabis\"\ndescription = \"x\"\ncategory = \"x\"\ntags = []\n",
+        )
+        .unwrap();
         assert!(m.deps.is_empty());
+    }
+
+    #[test]
+    fn missing_required_fields_fail_to_parse() {
+        // Greenfield rule: no `#[serde(default)]` on description /
+        // category / tags. A manifest that omits them is malformed.
+        assert!(parse_manifest("name = \"x/y\"\n").is_err());
+        assert!(parse_manifest("description = \"x\"\n").is_err());
+        assert!(
+            parse_manifest("description = \"x\"\ncategory = \"y\"\n").is_err()
+        );
     }
 
     #[test]

@@ -23,7 +23,10 @@ fn write(path: &Path, body: &str) {
 fn recipe_resolves_type_declared_in_sibling_declarations_file() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     let shared_path = root.join("shared.forage");
     write(&shared_path, "type Item { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
@@ -65,7 +68,10 @@ for $x in $list.items[*] {
 fn editing_declarations_file_revalidates_dependent_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     let shared_path = root.join("shared.forage");
     write(&shared_path, "type Item { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
@@ -133,7 +139,10 @@ for $x in $list.items[*] {
 fn workspace_error_surfaces_as_diagnostic_on_dependent_recipe() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     write(&root.join("a.forage"), "type Item { id: String }\n");
     write(&root.join("b.forage"), "type Item { id: String }\n");
     let recipe_path = root.join("rec").join("recipe.forage");
@@ -171,7 +180,10 @@ step list {
 fn catalog_uses_live_buffer_for_unsaved_declarations() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     let shared_path = root.join("shared.forage");
     // Disk says `OldName`, but the editor will hold `NewName`.
     write(&shared_path, "type OldName { id: String }\n");
@@ -217,7 +229,10 @@ for $x in $list.items[*] {
 fn declarations_file_validates_its_own_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     let shared_path = root.join("shared.forage");
     write(
         &shared_path,
@@ -247,7 +262,10 @@ fn declarations_file_validates_its_own_duplicates() {
 fn declarations_file_flags_unknown_record_references() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write(&root.join("forage.toml"), "");
+    write(
+        &root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
     let shared_path = root.join("shared.forage");
     write(&shared_path, "type Outer { other: Missing }\n");
 

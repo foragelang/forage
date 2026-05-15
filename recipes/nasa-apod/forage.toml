@@ -1,0 +1,4 @@
+name = "forage/nasa-apod"
+description = "NASA Astronomy Picture of the Day — fetch the archive for a date range"
+category = "science"
+tags = ["nasa", "astronomy", "api"]

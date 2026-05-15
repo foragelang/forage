@@ -1,0 +1,4 @@
+name = "forage/usgs-earthquakes"
+description = "USGS earthquakes — every M4.5+ event from the past week"
+category = "science"
+tags = ["usgs", "earthquakes", "geojson", "api"]

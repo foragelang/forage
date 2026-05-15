@@ -685,7 +685,11 @@ mod tests {
         let root = tmp.path();
 
         // Files at the root.
-        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         fs::write(
             root.join("cannabis.forage"),
             "type Dispensary { id: String }\n",
@@ -798,7 +802,11 @@ mod tests {
     fn build_file_tree_paths_are_workspace_relative() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         fs::write(root.join("cannabis.forage"), "").unwrap();
         let recipe_dir = root.join("trilogy-rec");
         fs::create_dir_all(recipe_dir.join("fixtures")).unwrap();
@@ -860,7 +868,11 @@ mod tests {
     fn build_file_tree_orders_folders_first() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        fs::write(root.join("forage.toml"), "").unwrap();
+        fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         fs::write(root.join("z.forage"), "").unwrap();
         fs::create_dir_all(root.join("a-folder")).unwrap();
         fs::write(root.join("a-folder").join("recipe.forage"), "").unwrap();
@@ -889,6 +901,9 @@ mod tests {
         fs::write(
             root.join("forage.toml"),
             r#"name = "dima/cannabis"
+            description = "Cannabis-domain shared types"
+            category = "shared-types"
+            tags = ["cannabis"]
             [deps]
             "dima/shared-types" = 3
             "#,
@@ -975,7 +990,11 @@ mod tests {
                 .map(|_| {
                     let d = tempfile::tempdir().unwrap();
                     // Write a forage.toml so `exists()` returns true.
-                    fs::write(d.path().join("forage.toml"), "").unwrap();
+                    fs::write(
+                        d.path().join("forage.toml"),
+                        "description = \"\"\ncategory = \"\"\ntags = []\n",
+                    )
+                    .unwrap();
                     d
                 })
                 .collect();
@@ -1002,12 +1021,20 @@ mod tests {
     fn read_recents_drops_entries_whose_path_is_missing() {
         with_data_dir(|| {
             let stable = tempfile::tempdir().unwrap();
-            fs::write(stable.path().join("forage.toml"), "").unwrap();
+            fs::write(
+                stable.path().join("forage.toml"),
+                "description = \"\"\ncategory = \"\"\ntags = []\n",
+            )
+            .unwrap();
             record_recent(stable.path(), "stable".into(), 1).unwrap();
             // Record a second entry, then delete the directory so the
             // recents file points at a now-missing path.
             let throwaway = tempfile::tempdir().unwrap();
-            fs::write(throwaway.path().join("forage.toml"), "").unwrap();
+            fs::write(
+                throwaway.path().join("forage.toml"),
+                "description = \"\"\ncategory = \"\"\ntags = []\n",
+            )
+            .unwrap();
             let throwaway_path = throwaway.path().to_path_buf();
             record_recent(&throwaway_path, "gone".into(), 0).unwrap();
             drop(throwaway);
@@ -1023,7 +1050,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(
             tmp.path().join("forage.toml"),
-            "name = \"dima/zen-leaf\"\n",
+            "name = \"dima/zen-leaf\"\ndescription = \"\"\ncategory = \"\"\ntags = []\n",
         )
         .unwrap();
         let ws = forage_core::workspace::load(tmp.path()).unwrap();
@@ -1037,7 +1064,11 @@ mod tests {
         // randomized suffix doesn't make this test flaky.
         let inner = tmp.path().join("my-recipes");
         fs::create_dir_all(&inner).unwrap();
-        fs::write(inner.join("forage.toml"), "").unwrap();
+        fs::write(
+            inner.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         let ws = forage_core::workspace::load(&inner).unwrap();
         assert_eq!(derive_workspace_name(&ws), "my-recipes");
     }

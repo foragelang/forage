@@ -1806,7 +1806,11 @@ for $i in $list.items[*] {
 
     fn write_workspace(root: &Path, slug: &str, recipe_source: &str) {
         std::fs::create_dir_all(root.join(slug)).unwrap();
-        std::fs::write(root.join("forage.toml"), "").unwrap();
+        std::fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         std::fs::write(root.join(slug).join("recipe.forage"), recipe_source).unwrap();
     }
 
