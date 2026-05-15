@@ -85,29 +85,30 @@ class FakeStudioService implements StudioService {
     recipeHover(source: string, line: number, col: number) {
         return this.call("recipeHover", [source, line, col]);
     }
-    recipeProgressUnit(slug: string) { return this.call("recipeProgressUnit", [slug]); }
+    recipeProgressUnit(name: string) { return this.call("recipeProgressUnit", [name]); }
     languageDictionary() { return this.call("languageDictionary", []); }
     createRecipe() { return this.call("createRecipe", []); }
-    deleteRecipe(slug: string) { return this.call("deleteRecipe", [slug]); }
+    deleteRecipe(name: string) { return this.call("deleteRecipe", [name]); }
+    listRecipeStatuses() { return this.call("listRecipeStatuses", []); }
 
     // Run
-    runRecipe(slug: string, replay: boolean) { return this.call("runRecipe", [slug, replay]); }
+    runRecipe(name: string, replay: boolean) { return this.call("runRecipe", [name, replay]); }
     cancelRun() { return this.call("cancelRun", []); }
     debugResume(action: string) { return this.call("debugResume", [action]); }
     setPauseIterations(enabled: boolean) { return this.call("setPauseIterations", [enabled]); }
     setBreakpoints(steps: string[]) { return this.call("setBreakpoints", [steps]); }
-    setRecipeBreakpoints(slug: string, steps: string[]) {
-        return this.call("setRecipeBreakpoints", [slug, steps]);
+    setRecipeBreakpoints(name: string, steps: string[]) {
+        return this.call("setRecipeBreakpoints", [name, steps]);
     }
-    loadRecipeBreakpoints(slug: string) {
-        return this.call("loadRecipeBreakpoints", [slug]);
+    loadRecipeBreakpoints(name: string) {
+        return this.call("loadRecipeBreakpoints", [name]);
     }
 
     // Daemon
     daemonStatus() { return this.call("daemonStatus", []); }
     listRuns() { return this.call("listRuns", []); }
     getRun(id: string) { return this.call("getRun", [id]); }
-    configureRun(slug: string, cfg: unknown) { return this.call("configureRun", [slug, cfg]); }
+    configureRun(name: string, cfg: unknown) { return this.call("configureRun", [name, cfg]); }
     removeRun(id: string) { return this.call("removeRun", [id]); }
     triggerRun(id: string) { return this.call("triggerRun", [id]); }
     listScheduledRuns(id: string, opts?: unknown) {
@@ -148,8 +149,8 @@ class FakeStudioService implements StudioService {
 
     // Bookkeeping
     version() { return this.call("version", []); }
-    showRecipeContextMenu(slug: string) {
-        return this.call("showRecipeContextMenu", [slug]);
+    showRecipeContextMenu(name: string) {
+        return this.call("showRecipeContextMenu", [name]);
     }
 
     // Events — return immediately-no-op unsubscribes; the test
@@ -168,10 +169,7 @@ class FakeStudioService implements StudioService {
     async revealInFileManager(): Promise<void> { return undefined; }
 }
 
-function wrap(service: StudioService, children: React.ReactNode) {
-    const qc = new QueryClient({
-        defaultOptions: { queries: { retry: false, gcTime: 0 } },
-    });
+function wrap(service: StudioService, qc: QueryClient, children: React.ReactNode) {
     return render(
         <StudioServiceProvider service={service}>
             <QueryClientProvider client={qc}>
@@ -188,9 +186,16 @@ async function importApp() {
 
 describe("App top-level branch", () => {
     let service: FakeStudioService;
+    let qc: QueryClient;
     beforeEach(() => {
         service = new FakeStudioService();
-        installStudioService(service);
+        qc = new QueryClient({
+            defaultOptions: { queries: { retry: false, gcTime: 0 } },
+        });
+        // The store reads the QueryClient for path → recipe-name
+        // lookups; tests use the same client as the React tree so
+        // store reads see whatever the components render against.
+        installStudioService(service, qc);
     });
     afterEach(() => cleanup());
 
@@ -200,7 +205,7 @@ describe("App top-level branch", () => {
         service.setHandler("version", "0.0.0");
 
         const App = await importApp();
-        wrap(service, <App />);
+        wrap(service, qc, <App />);
 
         // Welcome's header text and the two action buttons are
         // distinctive enough to assert that branch landed.
@@ -234,7 +239,7 @@ describe("App top-level branch", () => {
         service.setHandler("version", "0.0.0");
 
         const App = await importApp();
-        wrap(service, <App />);
+        wrap(service, qc, <App />);
 
         // The Welcome tagline is the strongest negative signal — if
         // it's missing, the App branched to StudioShell.
@@ -250,7 +255,7 @@ describe("App top-level branch", () => {
         service.setHandler("version", "0.0.0");
 
         const App = await importApp();
-        wrap(service, <App />);
+        wrap(service, qc, <App />);
 
         await screen.findByText("Open workspace");
         // The section header is uppercased in the rendered DOM
@@ -272,7 +277,7 @@ describe("App top-level branch", () => {
         service.setHandler("version", "0.0.0");
 
         const App = await importApp();
-        wrap(service, <App />);
+        wrap(service, qc, <App />);
 
         const row = await screen.findByText("Recipes");
         row.closest("button")!.click();
