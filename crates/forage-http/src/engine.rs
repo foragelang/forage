@@ -21,6 +21,20 @@ use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
 use forage_core::{EvalValue, Evaluator, Record, Scope, Snapshot, TypeCatalog};
 
+/// Records to seed a downstream recipe with — the upstream stage's
+/// emissions, threaded into the next stage's input slot at run
+/// boundary. `RunInput::default()` is the standalone-recipe case (no
+/// prior); composition stages 2+ pass the prior stage's `records`.
+#[derive(Debug, Default, Clone)]
+pub struct PriorRecords {
+    pub records: Vec<Record>,
+    /// The downstream recipe's output type that the prior records
+    /// claim to be. The engine matches against the recipe's input
+    /// declarations to find the slot to bind them to. Empty when no
+    /// prior records flow.
+    pub type_name: String,
+}
+
 /// Engine knobs.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -87,6 +101,27 @@ impl<'t> Engine<'t> {
         inputs: IndexMap<String, EvalValue>,
         secrets: IndexMap<String, String>,
     ) -> HttpResult<Snapshot> {
+        self.run_with_prior(recipe, catalog, inputs, secrets, PriorRecords::default())
+            .await
+    }
+
+    /// Same as `run`, but seeded with a stream of upstream records.
+    /// Composition stages 2+ feed the prior stage's records here; the
+    /// engine binds them to the recipe's input slot whose declared
+    /// type matches `prior.type_name` (either `[T]` for batched
+    /// consumption or `T` for single-record consumption).
+    ///
+    /// When `prior.records` is empty the engine behaves identically
+    /// to `run` — composition stage 1 (with no upstream) and every
+    /// non-composed recipe call land here.
+    pub async fn run_with_prior(
+        &self,
+        recipe: &ForageFile,
+        catalog: &TypeCatalog,
+        mut inputs: IndexMap<String, EvalValue>,
+        secrets: IndexMap<String, String>,
+        prior: PriorRecords,
+    ) -> HttpResult<Snapshot> {
         let started = Instant::now();
         // The HTTP engine only runs recipe-bearing files; the validator
         // (`RecipeContextWithoutHeader`) makes sure every caller has
@@ -99,6 +134,16 @@ impl<'t> Engine<'t> {
             recipe: recipe_name.to_string(),
             replay: false,
         });
+
+        // Bind the prior records into the input slot whose declared
+        // type matches the upstream output. The validator's
+        // `IncompatiblePipeStage` rule should have caught the
+        // mismatch before we get here — but a missing slot at run
+        // time is still a real error, so fail loudly rather than
+        // silently dropping records.
+        if !prior.records.is_empty() {
+            bind_prior_records(recipe, &prior, &mut inputs)?;
+        }
 
         self.run_inner(recipe, catalog, inputs, secrets)
             .await
@@ -626,6 +671,58 @@ fn apply_regex_extract(ex: &RegexExtract, body: &str, scope: &mut Scope) -> Http
         }
     }
     Ok(())
+}
+
+/// Bind a batch of upstream records into the recipe's matching input
+/// slot. Looks for an `input <name>: [T]` decl (the batched form) or
+/// `input <name>: T` (single-record consumption); errors when no slot
+/// matches `prior.type_name`. The validator should reject this shape
+/// before reaching the engine — when it does fire here, it means a
+/// caller skipped validation or an unsigned recipe was deployed.
+fn bind_prior_records(
+    recipe: &ForageFile,
+    prior: &PriorRecords,
+    inputs: &mut IndexMap<String, EvalValue>,
+) -> HttpResult<()> {
+    let upstream = prior.type_name.as_str();
+    let batched = recipe.inputs.iter().find(|i| match &i.ty {
+        FieldType::Array(inner) => matches!(inner.as_ref(), FieldType::Record(n) if n == upstream),
+        _ => false,
+    });
+    if let Some(decl) = batched {
+        let values: Vec<EvalValue> = prior.records.iter().map(EvalValue::from).collect();
+        inputs.insert(decl.name.clone(), EvalValue::Array(values));
+        return Ok(());
+    }
+    let single = recipe
+        .inputs
+        .iter()
+        .find(|i| matches!(&i.ty, FieldType::Record(n) if n == upstream));
+    if let Some(decl) = single {
+        let only = match prior.records.len() {
+            0 => return Ok(()),
+            1 => EvalValue::from(&prior.records[0]),
+            n => {
+                return Err(HttpError::Generic(format!(
+                    "recipe '{}' declares input '{}' as a single {} but the upstream stage emitted {} records; declare the input as `[{}]` to consume them as a batch",
+                    recipe.recipe_name().unwrap_or("<unknown>"),
+                    decl.name,
+                    upstream,
+                    n,
+                    upstream,
+                )));
+            }
+        };
+        inputs.insert(decl.name.clone(), only);
+        return Ok(());
+    }
+    Err(HttpError::Generic(format!(
+        "recipe '{}' has no input slot for upstream type '{}'; declare `input <name>: [{}]` (or `: {}`) to receive records from the prior stage",
+        recipe.recipe_name().unwrap_or("<unknown>"),
+        upstream,
+        upstream,
+        upstream,
+    )))
 }
 
 fn parse_response_body(url: &str, resp: &HttpResponse) -> HttpResult<EvalValue> {
@@ -1584,5 +1681,110 @@ for $i in $list.items[*] {
         let id_alignment = id_field.alignment.as_ref().expect("id alignment");
         assert_eq!(id_alignment.ontology, "schema.org");
         assert_eq!(id_alignment.term, "identifier");
+    }
+
+    /// `run_with_prior` binds the upstream records into the recipe's
+    /// `[T]` input slot. The downstream recipe then iterates over the
+    /// input and re-emits / transforms — no HTTP fetch required for
+    /// the records themselves. Pin this so composition stages 2+ can
+    /// rely on the input arriving where the validator promised.
+    #[tokio::test]
+    async fn run_with_prior_binds_records_into_matching_input() {
+        let src = r#"
+            recipe "downstream"
+            engine http
+            type Product { id: String }
+            input prior: [Product]
+            output Product
+            for $p in $input.prior {
+                emit Product { id ← $p.id }
+            }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let prior = PriorRecords {
+            records: vec![
+                Record {
+                    id: "rec-0".into(),
+                    type_name: "Product".into(),
+                    fields: [(
+                        "id".to_string(),
+                        JSONValue::String("upstream-a".into()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+                Record {
+                    id: "rec-1".into(),
+                    type_name: "Product".into(),
+                    fields: [(
+                        "id".to_string(),
+                        JSONValue::String("upstream-b".into()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            type_name: "Product".into(),
+        };
+        let transport = ReplayTransport::new(vec![]);
+        let engine = Engine::new(&transport);
+        let snap = engine
+            .run_with_prior(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                prior,
+            )
+            .await
+            .unwrap();
+        let ids: Vec<&str> = snap
+            .records
+            .iter()
+            .map(|r| match r.fields.get("id") {
+                Some(JSONValue::String(s)) => s.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(ids, vec!["upstream-a", "upstream-b"]);
+    }
+
+    #[tokio::test]
+    async fn run_with_prior_errors_when_no_matching_input_slot() {
+        let src = r#"
+            recipe "no-slot"
+            engine http
+            type Product { id: String }
+            output Product
+            emit Product { id ← "x" }
+        "#;
+        let recipe = parse(src).unwrap();
+        let catalog = lonely_catalog(&recipe);
+        let prior = PriorRecords {
+            records: vec![Record {
+                id: "rec-0".into(),
+                type_name: "Product".into(),
+                fields: IndexMap::new(),
+            }],
+            type_name: "Product".into(),
+        };
+        let transport = ReplayTransport::new(vec![]);
+        let engine = Engine::new(&transport);
+        let err = engine
+            .run_with_prior(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                prior,
+            )
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no input slot"),
+            "expected slot-missing diagnostic; got {msg}",
+        );
     }
 }

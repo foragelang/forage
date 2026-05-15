@@ -124,6 +124,26 @@ impl EvalValue {
     }
 }
 
+impl From<&crate::snapshot::Record> for EvalValue {
+    /// Project a snapshot `Record` back into an `EvalValue::Object`
+    /// suitable for binding into a downstream recipe's scope. The
+    /// record's synthetic `_id` rides through as a string field so
+    /// composed recipes can address upstream records by their stable
+    /// id (and `Ref<T>` field values continue to resolve via the same
+    /// path).
+    fn from(rec: &crate::snapshot::Record) -> Self {
+        let mut out: IndexMap<String, EvalValue> = IndexMap::new();
+        out.insert(
+            "_id".into(),
+            EvalValue::String(rec.id.clone()),
+        );
+        for (k, v) in &rec.fields {
+            out.insert(k.clone(), EvalValue::from(v.clone()));
+        }
+        EvalValue::Object(out)
+    }
+}
+
 impl From<JSONValue> for EvalValue {
     fn from(v: JSONValue) -> Self {
         match v {
