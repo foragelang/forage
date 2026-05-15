@@ -607,8 +607,7 @@ impl<'a> Validator<'a> {
         if self.file.recipe_header().is_some() {
             return;
         }
-        if let Some(auth) = self.file.auth.as_ref() {
-            let _ = auth;
+        if self.file.auth.is_some() {
             self.err_recipe(
                 ValidationCode::RecipeContextWithoutHeader,
                 "auth block requires a `recipe \"<name>\" engine <kind>` header",

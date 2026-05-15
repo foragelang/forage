@@ -1,12 +1,10 @@
-//! Forage parser — token stream → `Recipe`.
+//! Forage parser — token stream → `ForageFile`.
 //!
 //! Currently a hand-rolled recursive-descent parser over the token vector.
 //! Wrapped with a public `parse(source)` that runs the lexer first and
 //! aggregates lex + parse errors with spans.
 //!
-//! The grammar is documented inline near each `parse_*` function and
-//! tracks `Sources/Forage/Parser/Parser.swift` closely; tests in
-//! `tests/parser_recipes.rs` exercise every in-tree recipe.
+//! The grammar is documented inline near each `parse_*` function.
 
 use thiserror::Error;
 

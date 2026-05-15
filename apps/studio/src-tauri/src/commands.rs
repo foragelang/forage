@@ -2116,8 +2116,7 @@ for $i in $list.items[*] {
     /// A sidecar `.forage` file two-deep that isn't named
     /// `recipe.forage` is unclassified — validate_path must surface
     /// that as a diagnostic instead of silently treating it as a
-    /// declarations file (which is what would happen if it slipped
-    /// through to `parse_workspace_file`).
+    /// declarations file.
     #[test]
     fn validate_path_rejects_sidecar_forage_in_recipe_folder() {
         let tmp = tempfile::tempdir().unwrap();
