@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use forage_core::workspace::{fixtures_path, snapshot_path};
+
 use crate::client::HubClient;
 use crate::error::{HubError, HubResult};
 use crate::types::{
@@ -63,9 +65,10 @@ pub struct SyncOutcome {
 /// counter. The version defaults to `latest` when `version` is `None`.
 ///
 /// The on-disk layout matches what `forage-core`'s workspace loader
-/// expects: `<slug>/recipe.forage`, `<slug>/fixtures/captures.jsonl`,
-/// `<slug>/snapshot.json`, decls at their declared paths. The sidecar
-/// hides under `.forage-meta.json`.
+/// expects: `<slug>/recipe.forage`, decls at their declared paths
+/// under `workspace_root`, captures at `_fixtures/<recipe>.jsonl`,
+/// snapshot at `_snapshots/<recipe>.json`. The sidecar hides under
+/// `.forage-meta.json`.
 ///
 /// The destination must be empty (or contain only the sidecar's old
 /// copy). Refusing to overwrite avoids clobbering an in-progress edit
@@ -112,8 +115,12 @@ pub async fn sync_from_hub(
     }
 
     // Workspace sync: decls live at the workspace root so the
-    // workspace loader's root-only declarations rule picks them up.
-    materialize_version(&recipe_dir, workspace_root, &artifact)?;
+    // workspace loader's root-only declarations rule picks them up;
+    // captures and snapshot land in the workspace-level data dirs
+    // keyed by the recipe's header name.
+    let recipe_name = recipe_name_from_source(&artifact.recipe, &recipe_dir)?;
+    write_recipe_and_decls(&recipe_dir, workspace_root, &artifact)?;
+    write_fixtures_and_snapshot(workspace_root, &recipe_name, &artifact)?;
 
     let forked_from = client
         .get_package(&artifact.author, &artifact.slug)
@@ -171,8 +178,10 @@ pub async fn fetch_to_cache(
     let dir = cache_root.join(author).join(slug).join(version.to_string());
     // Dep cache: decls live inside the version-pinned subtree so
     // `scan_package_declarations` (which walks `cache/<author>/<slug>/
-    // <version>/` recursively) finds them.
-    materialize_version(&dir, &dir, &artifact)?;
+    // <version>/` recursively) finds them. Fixtures and snapshots are
+    // run-time concerns the dep-cache reader never touches, so skip
+    // them here — the cache stays a pure source-files-only mirror.
+    write_recipe_and_decls(&dir, &dir, &artifact)?;
     let sha = sha256_hex(&serde_json::to_string(&artifact)?);
     Ok(FetchedPackage { dir, sha256: sha })
 }
@@ -244,10 +253,11 @@ pub fn assemble_publish_request(
             format!("read {}: {e}", recipe_path.display()),
         ))
     })?;
+    let recipe_name = recipe_name_from_source(&recipe, &recipe_dir)?;
 
     let decls = read_workspace_decls(workspace_root)?;
-    let fixtures = read_fixtures(&recipe_dir)?;
-    let snapshot = read_snapshot(&recipe_dir)?;
+    let fixtures = read_fixtures(workspace_root, &recipe_name)?;
+    let snapshot = read_snapshot(workspace_root, &recipe_name)?;
     let meta = read_meta(&recipe_dir)?;
     let base_version = meta.map(|m| m.base_version);
 
@@ -321,13 +331,12 @@ pub fn write_meta(recipe_dir: &Path, meta: &ForageMeta) -> HubResult<()> {
 
 // --- Materialization -----------------------------------------------
 
-/// Lay the atomic `PackageVersion` artifact out on disk under
-/// `recipe_dir`, with decls written under `decls_root`:
-///
-/// - `recipe.forage` ← `artifact.recipe`
-/// - `<decls.name>` files relative to `decls_root` ← `artifact.decls`
-/// - `fixtures/captures.jsonl` ← merged JSONL from `artifact.fixtures[*].content`
-/// - `snapshot.json` ← `artifact.snapshot` (omitted when null)
+/// Lay the source half of an atomic `PackageVersion` artifact on disk:
+/// the recipe file at `<recipe_dir>/recipe.forage` plus every decl
+/// rooted at `decls_root`. Used by both `sync_from_hub` (workspace
+/// destination) and `fetch_to_cache` (hub cache subtree); only the
+/// former goes on to write data-dir files via
+/// [`write_fixtures_and_snapshot`].
 ///
 /// `decls_root` differs by caller because the two consumers walk decls
 /// from different roots:
@@ -344,7 +353,7 @@ pub fn write_meta(recipe_dir: &Path, meta: &ForageMeta) -> HubResult<()> {
 /// declared `nested/shared.forage` lands at `<decls_root>/nested/...`).
 /// `sanitize_member` rejects absolute names and `..` segments so a
 /// hostile artifact can't escape the root.
-fn materialize_version(
+fn write_recipe_and_decls(
     recipe_dir: &Path,
     decls_root: &Path,
     artifact: &PackageVersion,
@@ -365,12 +374,31 @@ fn materialize_version(
         }
         fs::write(&target, &f.source)?;
     }
+    Ok(())
+}
 
-    // Fixtures get folded into a single captures.jsonl — the studio +
-    // CLI replay path reads one merged file per recipe.
-    let fixtures_dir = recipe_dir.join("fixtures");
-    fs::create_dir_all(&fixtures_dir)?;
+/// Lay the data half of the artifact under the workspace's recipe-name-
+/// keyed data dirs:
+///
+/// - `<workspace_root>/_fixtures/<recipe>.jsonl` ← merged JSONL from
+///   `artifact.fixtures[*].content`
+/// - `<workspace_root>/_snapshots/<recipe>.json` ← `artifact.snapshot`
+///   (omitted when null)
+///
+/// The fixtures merge concatenates every `PackageFixture.content` blob
+/// with a separating newline; the hub wire format historically allows
+/// multiple fixture entries per package, but the workspace stores one
+/// JSONL stream per recipe.
+fn write_fixtures_and_snapshot(
+    workspace_root: &Path,
+    recipe_name: &str,
+    artifact: &PackageVersion,
+) -> HubResult<()> {
     if !artifact.fixtures.is_empty() {
+        let path = fixtures_path(workspace_root, recipe_name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let mut merged = String::new();
         for f in &artifact.fixtures {
             // Each fixture's content is already JSONL; concatenate
@@ -380,14 +408,38 @@ fn materialize_version(
                 merged.push('\n');
             }
         }
-        fs::write(fixtures_dir.join("captures.jsonl"), merged)?;
+        fs::write(&path, merged)?;
     }
 
     if let Some(s) = &artifact.snapshot {
+        let path = snapshot_path(workspace_root, recipe_name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let body = serde_json::to_string_pretty(s)?;
-        fs::write(recipe_dir.join("snapshot.json"), body)?;
+        fs::write(&path, body)?;
     }
     Ok(())
+}
+
+/// Parse `source` and pull the recipe's header name out for keying the
+/// workspace's data dirs. A failing parse or a header-less artifact is
+/// a publish-side bug — the hub-api rejects publishes without a
+/// `recipe "..."` header — but we surface a structured error here so
+/// the sync path doesn't silently land captures in `_fixtures/.jsonl`.
+fn recipe_name_from_source(source: &str, recipe_dir: &Path) -> HubResult<String> {
+    let parsed = forage_core::parse(source).map_err(|e| {
+        HubError::Generic(format!(
+            "parse synced recipe at {}: {e}",
+            recipe_dir.display()
+        ))
+    })?;
+    parsed.recipe_name().map(str::to_string).ok_or_else(|| {
+        HubError::Generic(format!(
+            "synced recipe at {} has no `recipe \"<name>\"` header",
+            recipe_dir.display()
+        ))
+    })
 }
 
 /// Validate a decl `name` and join it onto `root`. Rejects absolute
@@ -490,25 +542,45 @@ fn read_workspace_decls(workspace_root: &Path) -> HubResult<Vec<PackageFile>> {
     Ok(out)
 }
 
-fn read_fixtures(recipe_dir: &Path) -> HubResult<Vec<PackageFixture>> {
-    let captures = recipe_dir.join("fixtures").join("captures.jsonl");
+/// Read the workspace's per-recipe JSONL captures file and wrap its
+/// raw bytes as a single `PackageFixture` for the publish wire. The
+/// wire format historically allows multiple fixture entries per
+/// package; today every consumer reads one JSONL stream per recipe,
+/// so we ship a single entry called `captures.jsonl` to keep the
+/// hub-side validation regex stable.
+fn read_fixtures(workspace_root: &Path, recipe_name: &str) -> HubResult<Vec<PackageFixture>> {
+    let path = fixtures_path(workspace_root, recipe_name);
     let mut out = Vec::new();
-    if captures.exists() {
-        let content = fs::read_to_string(&captures)?;
-        out.push(PackageFixture {
-            name: "captures.jsonl".into(),
-            content,
-        });
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            out.push(PackageFixture {
+                name: "captures.jsonl".into(),
+                content,
+            });
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(HubError::Io(io::Error::new(
+                e.kind(),
+                format!("read {}: {e}", path.display()),
+            )));
+        }
     }
     Ok(out)
 }
 
-fn read_snapshot(recipe_dir: &Path) -> HubResult<Option<PackageSnapshot>> {
-    let path = recipe_dir.join("snapshot.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path)?;
+fn read_snapshot(workspace_root: &Path, recipe_name: &str) -> HubResult<Option<PackageSnapshot>> {
+    let path = snapshot_path(workspace_root, recipe_name);
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(HubError::Io(io::Error::new(
+                e.kind(),
+                format!("read {}: {e}", path.display()),
+            )));
+        }
+    };
     // The on-disk snapshot is `forage_core::Snapshot` (records as a Vec
     // with `_id` + `typeName`); the hub stores per-type record arrays
     // + counts. Convert.
@@ -568,30 +640,36 @@ mod tests {
         }
     }
 
+    /// A workspace-side sync lays the recipe + decls in the legacy
+    /// nested shape and the fixtures + snapshot in the workspace-level
+    /// data dirs keyed by the recipe's header name.
     #[test]
-    fn materialize_lays_out_workspace_files() {
+    fn sync_writes_workspace_files_in_phase5_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
         let recipe_dir = ws.join("zen-leaf");
         let art = artifact("alice", "zen-leaf", 4);
-        // Workspace-style call: decls go to the workspace root.
-        materialize_version(&recipe_dir, ws, &art).unwrap();
+        write_recipe_and_decls(&recipe_dir, ws, &art).unwrap();
+        let recipe_name = recipe_name_from_source(&art.recipe, &recipe_dir).unwrap();
+        write_fixtures_and_snapshot(ws, &recipe_name, &art).unwrap();
 
         assert!(recipe_dir.join("recipe.forage").is_file());
         assert!(ws.join("shared.forage").is_file());
-        assert!(recipe_dir.join("fixtures").join("captures.jsonl").is_file());
-        assert!(recipe_dir.join("snapshot.json").is_file());
+        assert!(ws.join("_fixtures").join("zen-leaf.jsonl").is_file());
+        assert!(ws.join("_snapshots").join("zen-leaf.json").is_file());
+        // No legacy data dirs under the recipe folder.
+        assert!(!recipe_dir.join("fixtures").exists());
+        assert!(!recipe_dir.join("snapshot.json").exists());
     }
 
+    /// A dep-cache fetch writes the source half only — fixtures and
+    /// snapshots are run-time concerns the cache never reads.
     #[test]
-    fn materialize_dep_cache_keeps_decls_in_version_subtree() {
+    fn fetch_to_cache_writes_source_only() {
         let tmp = tempfile::tempdir().unwrap();
         let version_dir = tmp.path().join("alice").join("zen-leaf").join("4");
         let art = artifact("alice", "zen-leaf", 4);
-        // Dep-cache-style call: recipe_dir and decls_root are the same
-        // version-pinned directory, which is what
-        // `scan_package_declarations` walks recursively.
-        materialize_version(&version_dir, &version_dir, &art).unwrap();
+        write_recipe_and_decls(&version_dir, &version_dir, &art).unwrap();
 
         assert!(version_dir.join("recipe.forage").is_file());
         // shared.forage lands INSIDE the version dir, not in the
@@ -605,6 +683,9 @@ mod tests {
                 .exists(),
             "decls must not leak into the slug-level directory",
         );
+        // Cache never holds data dirs.
+        assert!(!version_dir.join("_fixtures").exists());
+        assert!(!version_dir.join("_snapshots").exists());
     }
 
     #[test]

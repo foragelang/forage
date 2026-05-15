@@ -97,16 +97,12 @@ async fn sync_materializes_workspace_with_sidecar() {
     assert_eq!(outcome.meta.slug, "zen-leaf");
     assert_eq!(outcome.meta.base_version, 1);
 
-    // Recipe + decls + fixtures land on disk where the workspace
-    // loader expects them.
+    // Recipe + decls land on disk in the Phase 1 shape (nested under
+    // the slug folder); captures and snapshot land in the workspace-
+    // level data dirs keyed by recipe name.
     assert!(ws.join("zen-leaf").join("recipe.forage").is_file());
     assert!(ws.join("shared.forage").is_file());
-    assert!(
-        ws.join("zen-leaf")
-            .join("fixtures")
-            .join("captures.jsonl")
-            .is_file()
-    );
+    assert!(ws.join("_fixtures").join("zen-leaf.jsonl").is_file());
 
     // The sidecar carries the publish-back base_version.
     let meta = read_meta(&ws.join("zen-leaf")).unwrap().unwrap();
@@ -326,19 +322,23 @@ async fn fork_then_sync_round_trip() {
 #[tokio::test]
 async fn assemble_request_matches_disk_state() {
     // Walks the assembly path directly: write recipe + decls +
-    // fixtures + snapshot + sidecar, then assert the request shape.
+    // fixtures + snapshot + sidecar in the Phase 5 workspace layout,
+    // then assert the request shape.
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
     let slug = "zen-leaf";
-    std::fs::create_dir_all(ws.join(slug).join("fixtures")).unwrap();
+    // The recipe header name is what keys the data dirs.
+    let recipe_name = "zen-leaf";
+    std::fs::create_dir_all(ws.join(slug)).unwrap();
     std::fs::write(
         ws.join(slug).join("recipe.forage"),
         "recipe \"zen-leaf\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
     )
     .unwrap();
     std::fs::write(ws.join("shared.forage"), "type Shared { id: String }\n").unwrap();
+    std::fs::create_dir_all(ws.join("_fixtures")).unwrap();
     std::fs::write(
-        ws.join(slug).join("fixtures").join("captures.jsonl"),
+        ws.join("_fixtures").join(format!("{recipe_name}.jsonl")),
         "{\"line\":1}\n",
     )
     .unwrap();
@@ -352,8 +352,9 @@ async fn assemble_request_matches_disk_state() {
         }],
         diagnostic: forage_core::DiagnosticReport::default(),
     };
+    std::fs::create_dir_all(ws.join("_snapshots")).unwrap();
     std::fs::write(
-        ws.join(slug).join("snapshot.json"),
+        ws.join("_snapshots").join(format!("{recipe_name}.json")),
         serde_json::to_string(&core_snapshot).unwrap(),
     )
     .unwrap();
