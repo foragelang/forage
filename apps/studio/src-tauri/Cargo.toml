@@ -28,7 +28,7 @@ forage-replay    = { workspace = true }
 forage-browser   = { workspace = true }
 forage-hub       = { workspace = true }
 forage-keychain  = { workspace = true }
-forage-lsp       = { workspace = true }
+forage-lsp       = { workspace = true, features = ["native"] }
 
 # Tauri
 tauri        = { version = "2.8", features = [] }

@@ -33,7 +33,7 @@ forage-daemon   = { path = "crates/forage-daemon",   version = "0.1.0" }
 forage-hub      = { path = "crates/forage-hub",      version = "0.1.0" }
 forage-keychain = { path = "crates/forage-keychain", version = "0.1.0" }
 forage-replay   = { path = "crates/forage-replay",   version = "0.1.0" }
-forage-lsp      = { path = "crates/forage-lsp",      version = "0.1.0" }
+forage-lsp      = { path = "crates/forage-lsp",      version = "0.1.0", default-features = false }
 forage-wasm     = { path = "crates/forage-wasm",     version = "0.1.0" }
 forage-test     = { path = "crates/forage-test",     version = "0.1.0" }
 

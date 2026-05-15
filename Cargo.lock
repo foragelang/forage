@@ -1579,6 +1579,7 @@ version = "0.1.0"
 dependencies = [
  "forage-core",
  "forage-http",
+ "forage-lsp",
  "indexmap 2.14.0",
  "serde",
  "serde-wasm-bindgen",

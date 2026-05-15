@@ -5,11 +5,15 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
+use forage_core::ast::Statement;
+use forage_core::parse::{KEYWORDS, TYPE_KEYWORDS};
+use forage_core::validate::BUILTIN_TRANSFORMS;
 use forage_core::{
-    EvalValue, Snapshot, TypeCatalog, ast::WorkspaceFile, parse as core_parse,
-    parse_workspace_file, validate as core_validate,
+    EvalValue, LineMap, Snapshot, TypeCatalog, ast::WorkspaceFile, infer_progress_unit,
+    parse as core_parse, parse_workspace_file, validate as core_validate,
 };
 use forage_http::{Engine, ReplayTransport};
+use forage_lsp::intel::hover_at;
 
 #[wasm_bindgen]
 pub fn forage_version() -> String {
@@ -168,6 +172,104 @@ pub fn parse_and_validate(source: &str) -> JsValue {
             }))
             .unwrap_or(JsValue::NULL)
         }
+    }
+}
+
+/// Step name + 0-based source range. Mirrors `commands::StepLocation`
+/// on the Studio side; the hub IDE consumes the same `StepLocation.ts`
+/// binding so both surfaces share one canonical shape.
+#[derive(serde::Serialize)]
+pub struct StepLocation {
+    pub name: String,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// Pure-Rust core of `recipe_outline`. Returns the list of step
+/// locations in source order; empty when parsing fails or the body has
+/// no steps. The wasm wrapper just serializes the result.
+pub fn recipe_outline_inner(source: &str) -> Vec<StepLocation> {
+    let Ok(recipe) = core_parse(source) else {
+        return Vec::new();
+    };
+    let line_map = LineMap::new(source);
+    let mut steps = Vec::new();
+    collect_step_locations(&recipe.body, &line_map, &mut steps);
+    steps
+}
+
+/// Structural outline of a recipe — step name + 0-based source range
+/// for each `step ...` block, in source order. Mirrors the JSON shape
+/// of `apps/studio/src-tauri/src/commands.rs::RecipeOutline` so the
+/// hub IDE consumes the same `bindings/RecipeOutline.ts` Studio does.
+#[wasm_bindgen]
+pub fn recipe_outline(source: &str) -> JsValue {
+    let steps = recipe_outline_inner(source);
+    serde_wasm_bindgen::to_value(&serde_json::json!({ "steps": steps })).unwrap_or(JsValue::NULL)
+}
+
+fn collect_step_locations(body: &[Statement], line_map: &LineMap, out: &mut Vec<StepLocation>) {
+    for s in body {
+        match s {
+            Statement::Step(step) => {
+                let r = line_map.range(step.span.clone());
+                out.push(StepLocation {
+                    name: step.name.clone(),
+                    start_line: r.start.line,
+                    start_col: r.start.character,
+                    end_line: r.end.line,
+                    end_col: r.end.character,
+                });
+            }
+            Statement::ForLoop { body, .. } => {
+                collect_step_locations(body, line_map, out);
+            }
+            Statement::Emit(_) => {}
+        }
+    }
+}
+
+/// Snapshot of the language's reserved word + transform inventory.
+/// Same shape as `apps/studio/src-tauri/src/commands.rs::LanguageDictionary`
+/// so Monaco syntax highlighting / completion can draw from one source
+/// in both Studio and the hub IDE.
+#[wasm_bindgen]
+pub fn language_dictionary() -> JsValue {
+    serde_wasm_bindgen::to_value(&serde_json::json!({
+        "keywords": KEYWORDS,
+        "type_keywords": TYPE_KEYWORDS,
+        "transforms": BUILTIN_TRANSFORMS,
+    }))
+    .unwrap_or(JsValue::NULL)
+}
+
+/// Hover info at (line, col), 0-based. Returns the markdown payload
+/// when the position is on a recognized identifier (transform / type /
+/// input / enum / secret / step name), otherwise `null`. Same shape
+/// as `forage_lsp::intel::HoverInfo` since the hub IDE pulls the binding
+/// straight out of that crate.
+#[wasm_bindgen]
+pub fn recipe_hover(source: &str, line: u32, col: u32) -> JsValue {
+    match hover_at(source, line, col) {
+        Some(info) => serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL),
+        None => JsValue::NULL,
+    }
+}
+
+/// Infer the progress unit (deepest emit-bearing for-loop scope) for
+/// the recipe source. Returns the `ProgressUnit` JSON shape or `null`
+/// on parse failure or when no emit-bearing loop exists. The hub IDE
+/// scopes the run pane's progress bar to this unit's record types.
+#[wasm_bindgen]
+pub fn recipe_progress_unit(source: &str) -> JsValue {
+    let Ok(recipe) = core_parse(source) else {
+        return JsValue::NULL;
+    };
+    match infer_progress_unit(&recipe) {
+        Some(unit) => serde_wasm_bindgen::to_value(&unit).unwrap_or(JsValue::NULL),
+        None => JsValue::NULL,
     }
 }
 

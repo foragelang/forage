@@ -8,18 +8,25 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["native"]
+# tower-lsp + the on-disk docstore. Disabled when building for wasm32;
+# the `intel` module (hover / completion entry points) stays compiled
+# unconditionally so `forage-wasm` can call into it.
+native = ["dep:tokio", "dep:tower-lsp", "dep:walkdir", "dep:thiserror", "dep:tracing", "dep:serde_json"]
+
 [dependencies]
 forage-core  = { workspace = true }
 
-tokio        = { workspace = true, features = ["io-std"] }
-tower-lsp    = { workspace = true }
+tokio        = { workspace = true, features = ["io-std"], optional = true }
+tower-lsp    = { workspace = true, optional = true }
 
 serde        = { workspace = true }
-serde_json   = { workspace = true }
-thiserror    = { workspace = true }
-tracing      = { workspace = true }
+serde_json   = { workspace = true, optional = true }
+thiserror    = { workspace = true, optional = true }
+tracing      = { workspace = true, optional = true }
 ts-rs        = { workspace = true }
-walkdir      = { workspace = true }
+walkdir      = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile     = { workspace = true }

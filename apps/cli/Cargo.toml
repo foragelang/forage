@@ -18,7 +18,7 @@ forage-http      = { workspace = true, features = ["native"] }
 forage-replay    = { workspace = true }
 forage-hub       = { workspace = true }
 forage-keychain  = { workspace = true }
-forage-lsp       = { workspace = true }
+forage-lsp       = { workspace = true, features = ["native"] }
 forage-browser   = { workspace = true }
 
 tokio       = { workspace = true }

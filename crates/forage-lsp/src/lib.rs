@@ -7,10 +7,18 @@
 //! results, no LSP protocol types. Studio's Tauri commands call it
 //! directly; the LSP server in `server` wraps the same functions in
 //! LSP `Hover` / `CompletionItem` shapes for editors that talk LSP.
+//! `forage-wasm` consumes `intel` through `default-features = false`
+//! so the hub IDE can call hover/completion without bringing tower-lsp
+//! or tokio into the wasm bundle.
 
-pub mod docstore;
 pub mod intel;
+
+#[cfg(feature = "native")]
+pub mod docstore;
+#[cfg(feature = "native")]
 pub mod offsets;
+#[cfg(feature = "native")]
 pub mod server;
 
+#[cfg(feature = "native")]
 pub use server::ForageLsp;
