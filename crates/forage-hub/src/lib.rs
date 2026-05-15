@@ -26,7 +26,7 @@ pub mod types;
 
 pub use auth_store::{AuthStore, AuthTokens};
 pub use client::HubClient;
-pub use forage_core::workspace::{hub_cache_root, resolve_dep};
+pub use forage_core::workspace::{hub_cache_root, type_cache_file};
 pub use device::{DevicePollResponse, DeviceStartResponse, poll_device, start_device};
 pub use error::{HubError, HubResult};
 pub use operations::{

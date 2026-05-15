@@ -223,34 +223,34 @@ fn recipe_by_name_finds_recipe() {
 
 #[test]
 #[serial_test::serial]
-fn hub_dep_cache_contributes_types() {
-    // Stand up a cache under FORAGE_HUB_CACHE, drop a one-file package
-    // with a shared type, point the workspace's [deps] at it, and
-    // verify the catalog folds the type in.
+fn hub_cached_type_pins_contribute_types() {
+    // Stand up a type cache under FORAGE_HUB_CACHE, drop a type source
+    // body at the expected `<cache>/types/<author>/<Name>/<v>.forage`
+    // location, pin it from the lockfile's `[types]` table, and verify
+    // the catalog folds the type in.
     let tmp = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(
         &root.join(MANIFEST_NAME),
-        "description = \"\"\ncategory = \"\"\ntags = []\n\
-         [deps]\n\"dima/shared-types\" = 3\n",
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    );
+    write(
+        &root.join(workspace::LOCKFILE_NAME),
+        "[types.\"dima/DispensaryFromHub\"]\nversion = 3\nhash = \"\"\n",
     );
     let recipe_path = root.join("rec.forage");
     write(&recipe_path, "recipe \"rec\"\nengine http\n");
-    let pkg_dir = cache.path().join("dima").join("shared-types").join("3");
+    let cached = workspace::type_cache_file(cache.path(), "dima", "DispensaryFromHub", 3);
     write(
-        &pkg_dir.join("cannabis.forage"),
-        "type DispensaryFromHub { id: String }\n",
+        &cached,
+        "share type DispensaryFromHub {\n    id: String\n}\n",
     );
 
-    // `FORAGE_HUB_CACHE` is process-global; restore it after we exit.
     let prev = std::env::var("FORAGE_HUB_CACHE").ok();
-    // SAFETY: tests run single-threaded by default for env-var
-    // mutation; the harness will serialise this test via the lock on
-    // the env var if needed.
-    // SAFETY: env mutation is unsafe in Rust 2024; tests run
-    // single-threaded per process for this assertion to hold. The
-    // restore at the end keeps the var clean across test reruns.
+    // SAFETY: env mutation is unsafe in Rust 2024; the serial attribute
+    // serialises this test against any other test that mutates the
+    // same var.
     unsafe { std::env::set_var("FORAGE_HUB_CACHE", cache.path()) };
 
     let ws = workspace::load(root).unwrap();

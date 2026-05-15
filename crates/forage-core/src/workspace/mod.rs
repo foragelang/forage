@@ -59,12 +59,19 @@ pub const LOCKFILE_NAME: &str = "forage.lock";
 /// source catalog. `.forage/` is hidden anyway via the dotfile filter.
 const DATA_DIRS: &[&str] = &[FIXTURES_DIR, SNAPSHOTS_DIR];
 
-/// A discovered workspace: root path, parsed manifest, and the list of
-/// `.forage` files inside the tree.
+/// A discovered workspace: root path, parsed manifest, parsed
+/// `forage.lock` (when present), and the list of `.forage` files
+/// inside the tree.
+///
+/// The lockfile is loaded as a sibling of the manifest. A missing
+/// lockfile parses to `Lockfile::default()` so workspaces that don't
+/// declare hub dependencies open without ceremony; an unparseable
+/// lockfile is a structured error.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub root: PathBuf,
     pub manifest: Manifest,
+    pub lockfile: Lockfile,
     pub files: Vec<WorkspaceFileEntry>,
 }
 
@@ -225,6 +232,12 @@ pub enum WorkspaceError {
         #[source]
         source: ManifestError,
     },
+    #[error("malformed lockfile at {path}: {source}")]
+    Lockfile {
+        path: PathBuf,
+        #[source]
+        source: ManifestError,
+    },
     #[error("workspace file at {path} failed to parse: {source}")]
     Parse {
         path: PathBuf,
@@ -261,10 +274,11 @@ pub fn discover(start: &Path) -> Option<Workspace> {
 }
 
 /// Load (or re-load) a workspace rooted at `root`. `root` must contain
-/// a `forage.toml`; the manifest is parsed and the directory tree is
-/// scanned for `.forage` files. The root is canonicalized so callers
-/// can compare roots by equality regardless of how the path was passed
-/// in (relative, symlink, trailing slash, ...).
+/// a `forage.toml`; the manifest is parsed, the optional `forage.lock`
+/// is loaded if present, and the directory tree is scanned for
+/// `.forage` files. The root is canonicalized so callers can compare
+/// roots by equality regardless of how the path was passed in
+/// (relative, symlink, trailing slash, ...).
 pub fn load(root: &Path) -> Result<Workspace, WorkspaceError> {
     let root = root.canonicalize()?;
     let manifest_path = root.join(MANIFEST_NAME);
@@ -273,14 +287,29 @@ pub fn load(root: &Path) -> Result<Workspace, WorkspaceError> {
         path: manifest_path.clone(),
         source,
     })?;
+    let lockfile = load_lockfile(&root)?;
     let mut files = Vec::new();
     scan_dir(&root, &mut files)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Workspace {
         root,
         manifest,
+        lockfile,
         files,
     })
+}
+
+/// Read `forage.lock` if it exists, otherwise return the default
+/// (empty) shape. The lockfile is optional: workspaces that don't
+/// depend on hub-published artifacts open fine without one.
+fn load_lockfile(root: &Path) -> Result<Lockfile, WorkspaceError> {
+    let path = root.join(LOCKFILE_NAME);
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Lockfile::default()),
+        Err(e) => return Err(WorkspaceError::Io(e)),
+    };
+    parse_lockfile(&raw).map_err(|source| WorkspaceError::Lockfile { path, source })
 }
 
 /// Re-scan the workspace tree on disk and refresh `files`. Manifest is
@@ -373,8 +402,10 @@ impl Workspace {
     /// 1. `share`d types/enums from every other workspace file. Files
     ///    contribute only what they `share`; bare `type Foo { … }` stays
     ///    private to its declaring file.
-    /// 2. Cached hub-dep declarations (currently treated as all-visible
-    ///    — see `scan_package_declarations`).
+    /// 2. Hub-cached types from the lockfile's `[types]` pins. Each
+    ///    entry resolves to a `.forage` source body in the type cache
+    ///    (`<cache>/types/<author>/<Name>/<version>.forage`); reading
+    ///    the body and merging its `share` types into the catalog.
     /// 3. Every type/enum in the focal `file`, file-local and `share`d
     ///    alike — a file always sees everything it declared at home.
     ///
@@ -411,19 +442,41 @@ impl Workspace {
             cat.merge_shared(&parsed);
         }
 
-        // 2. Cached hub-dep declarations. Each dep is a package directory
-        //    under the cache root; every header-less `.forage` file
-        //    inside it contributes its types. Hub-deps don't yet have
-        //    author-controlled `share` markers (the typed-hub program
-        //    will revisit this), so all package-level types are visible
-        //    to consumers. Collisions between deps shadow earlier deps
-        //    in iteration order — `manifest.deps` is a BTreeMap keyed by
-        //    slug, so iteration is deterministic.
-        for (slug, version) in &self.manifest.deps {
-            let Some(pkg) = crate::workspace::resolve_dep(slug, *version) else {
+        // 2. Hub-cached types from the lockfile's `[types]` pins. The
+        //    publish/sync flow writes one `.forage` per
+        //    `(author, name, version)` under
+        //    `<cache>/types/<author>/<Name>/<v>.forage`. Pre-1.0 volume
+        //    is small enough that we re-read + re-parse on every catalog
+        //    build; future passes can memoize.
+        let cache = hub_cache_root();
+        for (slug, locked) in &self.lockfile.types {
+            let Some((author, name)) = slug.split_once('/') else {
                 continue;
             };
-            scan_package_declarations(&pkg, &mut cat)?;
+            let path = type_cache_file(&cache, author, name, locked.version);
+            let Ok(src) = fs::read_to_string(&path) else {
+                // A missing cache file means the user hasn't run
+                // `forage update` since the lockfile was written. The
+                // workspace still loads; the catalog just won't have
+                // the missing type. The validator's `UnknownType`
+                // rule surfaces this as a recipe-level diagnostic.
+                tracing::debug!(
+                    type_slug = %slug,
+                    version = locked.version,
+                    cache_path = %path.display(),
+                    "lockfile type pin not in cache",
+                );
+                continue;
+            };
+            let Ok(parsed) = parse(&src) else {
+                tracing::warn!(
+                    type_slug = %slug,
+                    version = locked.version,
+                    "cached type source failed to parse",
+                );
+                continue;
+            };
+            cat.merge_shared(&parsed);
         }
 
         // 3. Focal file: every type/enum, file-local plus `share`d.
@@ -466,39 +519,6 @@ where
     })
 }
 
-fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), WorkspaceError> {
-    if !pkg.is_dir() {
-        return Ok(());
-    }
-    for entry in walkdir::WalkDir::new(pkg).into_iter() {
-        let entry = entry.map_err(|e| io::Error::other(format!("{e}")))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "forage") {
-            continue;
-        }
-        let Ok(src) = fs::read_to_string(path) else {
-            continue;
-        };
-        // Only header-less files contribute shared declarations from a
-        // hub package. Recipe-bearing files inside a published package
-        // are runnable inheritances; their types are file-local.
-        //
-        // TODO(typed-hub): hub-deps don't yet emit `share` markers, so
-        // every type in a header-less package file is treated as
-        // workspace-visible. The typed-hub program will revisit this so
-        // hub packages declare their exports explicitly.
-        if let Ok(file) = parse(&src)
-            && file.recipe_header().is_none()
-        {
-            cat.merge_all(&file);
-        }
-    }
-    Ok(())
-}
-
 // --- Hub cache resolution -------------------------------------------------
 
 /// Where hub-published packages are cached on disk. `~/Library/Forage/
@@ -522,16 +542,15 @@ pub fn hub_cache_root() -> PathBuf {
     PathBuf::from(".forage-cache").join("hub")
 }
 
-/// On-disk location of a fetched hub package, or `None` when the
-/// package isn't cached. Layout:
-/// `<cache>/<author>/<slug>/<version>/`.
-pub fn resolve_dep(slug: &str, version: u32) -> Option<PathBuf> {
-    let (author, name) = slug.split_once('/')?;
-    let dir = hub_cache_root()
+/// On-disk path of a single cached type version. Mirrors the layout
+/// the publish/sync flow writes to:
+/// `<cache>/types/<author>/<Name>/<version>.forage`.
+pub fn type_cache_file(cache_root: &Path, author: &str, name: &str, version: u32) -> PathBuf {
+    cache_root
+        .join("types")
         .join(author)
         .join(name)
-        .join(version.to_string());
-    if dir.is_dir() { Some(dir) } else { None }
+        .join(format!("{version}.forage"))
 }
 
 #[cfg(test)]
@@ -850,6 +869,110 @@ mod tests {
             cat.ty("Product").is_none(),
             "neither file's bare Product should leak into the recipe",
         );
+    }
+
+    /// The catalog pulls hub-cached types in through the lockfile's
+    /// `[types]` pins. Each pin resolves to
+    /// `<cache>/types/<author>/<Name>/<v>.forage`; the workspace loader
+    /// reads + parses the file and folds its `share` types into the
+    /// catalog. Tests serialize against the process-global
+    /// `FORAGE_HUB_CACHE` env var.
+    #[test]
+    fn catalog_folds_hub_cached_type_pins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("hub-cache");
+        let cache_type = type_cache_file(&cache, "alice", "Product", 4);
+        std::fs::create_dir_all(cache_type.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache_type,
+            "share type Product {\n    id: String\n    name: String\n}\n",
+        )
+        .unwrap();
+
+        let ws_root = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws_root).unwrap();
+        std::fs::write(
+            ws_root.join(MANIFEST_NAME),
+            "name = \"bob/uses-product\"\ndescription = \"\"\ncategory = \"x\"\ntags = []\n",
+        )
+        .unwrap();
+        // Lockfile pins @alice/Product@4 in the `[types]` table.
+        std::fs::write(
+            ws_root.join(LOCKFILE_NAME),
+            "[types.\"alice/Product\"]\nversion = 4\nhash = \"\"\n",
+        )
+        .unwrap();
+        let recipe_path = ws_root.join("uses-product.forage");
+        std::fs::write(
+            &recipe_path,
+            "recipe \"uses-product\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
+        )
+        .unwrap();
+
+        let prev = std::env::var("FORAGE_HUB_CACHE").ok();
+        // SAFETY: env mutation is unsafe in Rust 2024; the test runs
+        // serially against the global env. The test restores the prior
+        // value before returning.
+        unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
+
+        let ws = load(&ws_root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+
+        // SAFETY: see above.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("FORAGE_HUB_CACHE", v) },
+            None => unsafe { std::env::remove_var("FORAGE_HUB_CACHE") },
+        }
+
+        let product = cat.ty("Product").expect("hub-cached Product should be in catalog");
+        assert_eq!(product.fields.len(), 2);
+        assert!(product.fields.iter().any(|f| f.name == "name"));
+    }
+
+    /// A lockfile pin pointing at a missing cache file degrades
+    /// gracefully: the workspace still loads, the catalog skips the
+    /// type, and the validator surfaces the missing type at recipe
+    /// validation time via its `UnknownType` rule.
+    #[test]
+    fn missing_cached_type_does_not_break_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("hub-cache");
+        // Intentionally do NOT write the cache file.
+        std::fs::create_dir_all(&cache).unwrap();
+
+        let ws_root = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws_root).unwrap();
+        std::fs::write(
+            ws_root.join(MANIFEST_NAME),
+            "name = \"bob/uses-product\"\ndescription = \"\"\ncategory = \"x\"\ntags = []\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws_root.join(LOCKFILE_NAME),
+            "[types.\"alice/Missing\"]\nversion = 1\nhash = \"\"\n",
+        )
+        .unwrap();
+        let recipe_path = ws_root.join("uses-missing.forage");
+        std::fs::write(
+            &recipe_path,
+            "recipe \"uses-missing\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
+        )
+        .unwrap();
+
+        let prev = std::env::var("FORAGE_HUB_CACHE").ok();
+        // SAFETY: env mutation is unsafe in Rust 2024.
+        unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
+
+        let ws = load(&ws_root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+
+        // SAFETY: see above.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("FORAGE_HUB_CACHE", v) },
+            None => unsafe { std::env::remove_var("FORAGE_HUB_CACHE") },
+        }
+
+        assert!(cat.ty("Missing").is_none());
     }
 
     /// Round-trip a non-trivial catalog through `SerializableCatalog`
