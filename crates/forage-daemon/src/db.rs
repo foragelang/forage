@@ -9,10 +9,10 @@
 //! `run_once` flow (which does its DB work in the same thread between
 //! engine awaits).
 //!
-//! Schema version is tracked in a `_meta` table. Migrations apply in
-//! order at `open` time; greenfield (no compat shims), so when the
-//! schema changes we bump the version, add the migration step, and
-//! existing local databases just re-run the new step.
+//! Greenfield, pre-1.0: there is one schema. When it changes, we edit
+//! the CREATE statements below and the caller is expected to
+//! `rm -rf .forage` to pick the new shape up. No version tracking, no
+//! in-place migration.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,139 +22,61 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::DaemonError;
 use crate::model::{Cadence, DeployedVersion, Health, Outcome, Run, ScheduledRun, Trigger};
 
-const SCHEMA_VERSION: i64 = 4;
-
-/// Open the daemon DB and apply any pending schema migrations.
+/// Open the daemon DB and ensure the schema is in place.
 pub(crate) fn open_connection(daemon_dir: &Path) -> Result<Connection, DaemonError> {
     std::fs::create_dir_all(daemon_dir)?;
     let db_path = daemon_dir.join("daemon.sqlite");
     let conn = Connection::open(&db_path).map_err(DaemonError::Sqlite)?;
-    apply_migrations(&conn)?;
+    init_schema(&conn)?;
     Ok(conn)
 }
 
-/// Apply pending migrations against `conn`. Idempotent: the `_meta`
-/// row gates each step, so running this against a fully-current DB is
-/// a no-op.
-fn apply_migrations(conn: &Connection) -> Result<(), DaemonError> {
+/// Create the daemon schema if the DB is empty. A no-op against an
+/// already-initialized DB; an error against a DB initialized at an
+/// older shape (callers clear `.forage/` to recover).
+fn init_schema(conn: &Connection) -> Result<(), DaemonError> {
     conn.execute_batch(
         r#"
-        CREATE TABLE IF NOT EXISTS _meta (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
+        CREATE TABLE IF NOT EXISTS runs (
+            id               TEXT PRIMARY KEY,
+            recipe_name      TEXT NOT NULL,
+            workspace_root   TEXT NOT NULL,
+            enabled          INTEGER NOT NULL,
+            cadence_json     TEXT NOT NULL,
+            output_path      TEXT NOT NULL,
+            health           TEXT NOT NULL,
+            next_run         INTEGER,
+            deployed_version INTEGER,
+            inputs_json      TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS runs_recipe_name ON runs(recipe_name);
+
+        CREATE TABLE IF NOT EXISTS scheduled_runs (
+            id              TEXT PRIMARY KEY,
+            run_id          TEXT NOT NULL,
+            at              INTEGER NOT NULL,
+            trigger         TEXT NOT NULL,
+            outcome         TEXT NOT NULL,
+            duration_s      REAL NOT NULL,
+            counts_json     TEXT NOT NULL,
+            diagnostics     INTEGER NOT NULL,
+            stall           TEXT,
+            recipe_version  INTEGER,
+            FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS scheduled_runs_run_id_at
+            ON scheduled_runs(run_id, at DESC);
+
+        CREATE TABLE IF NOT EXISTS deployed_versions (
+            recipe_name  TEXT NOT NULL,
+            version      INTEGER NOT NULL,
+            deployed_at  INTEGER NOT NULL,
+            PRIMARY KEY (recipe_name, version)
         );
         "#,
     )?;
-    // A missing `schema_version` row means a fresh DB (version 0); a
-    // present-but-non-integer value is corruption — we refuse to
-    // assume version 0 and re-run migrations destructively.
-    let current: i64 = match conn
-        .query_row(
-            "SELECT value FROM _meta WHERE key = 'schema_version'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-    {
-        Some(raw) => raw.parse::<i64>().map_err(|_| DaemonError::CorruptDb {
-            detail: format!("schema_version is not an integer: {raw:?}"),
-        })?,
-        None => 0,
-    };
-
-    if current < 1 {
-        conn.execute_batch(
-            r#"
-            CREATE TABLE runs (
-                id              TEXT PRIMARY KEY,
-                recipe_slug     TEXT NOT NULL,
-                workspace_root  TEXT NOT NULL,
-                enabled         INTEGER NOT NULL,
-                cadence_json    TEXT NOT NULL,
-                output_path     TEXT NOT NULL,
-                health          TEXT NOT NULL,
-                next_run        INTEGER
-            );
-
-            CREATE UNIQUE INDEX runs_recipe_slug ON runs(recipe_slug);
-
-            CREATE TABLE scheduled_runs (
-                id              TEXT PRIMARY KEY,
-                run_id          TEXT NOT NULL,
-                at              INTEGER NOT NULL,
-                trigger         TEXT NOT NULL,
-                outcome         TEXT NOT NULL,
-                duration_s      REAL NOT NULL,
-                counts_json     TEXT NOT NULL,
-                diagnostics     INTEGER NOT NULL,
-                stall           TEXT,
-                FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
-            );
-
-            CREATE INDEX scheduled_runs_run_id_at
-                ON scheduled_runs(run_id, at DESC);
-            "#,
-        )?;
-    }
-
-    // v2: the daemon becomes the source of truth for deployed
-    // recipe versions. `deployed_versions` tracks one row per
-    // `(slug, version)`; `runs.deployed_version` points at the
-    // version the scheduler should execute. The pointer is `NULL`
-    // until a slug has been deployed at least once — pre-deploy
-    // scheduled fires record a clean "no deployment" failure.
-    if current < 2 {
-        conn.execute_batch(
-            r#"
-            CREATE TABLE deployed_versions (
-                slug         TEXT NOT NULL,
-                version      INTEGER NOT NULL,
-                deployed_at  INTEGER NOT NULL,
-                PRIMARY KEY (slug, version)
-            );
-
-            ALTER TABLE runs ADD COLUMN deployed_version INTEGER;
-            ALTER TABLE scheduled_runs ADD COLUMN recipe_version INTEGER;
-            "#,
-        )?;
-    }
-
-    // v3: the daemon keys on the recipe's header name (was a
-    // path-derived slug). Rename the columns so the schema matches the
-    // in-memory model; pre-1.0, any row whose value is still a stale
-    // slug becomes the user's problem at `rm -rf .forage` time.
-    if current < 3 {
-        conn.execute_batch(
-            r#"
-            ALTER TABLE runs RENAME COLUMN recipe_slug TO recipe_name;
-            DROP INDEX IF EXISTS runs_recipe_slug;
-            CREATE UNIQUE INDEX runs_recipe_name ON runs(recipe_name);
-            ALTER TABLE deployed_versions RENAME COLUMN slug TO recipe_name;
-            "#,
-        )?;
-    }
-
-    // v4: per-run input bindings live on the row itself. The legacy
-    // path read `<workspace>/<slug>/recipe.forage/.../fixtures/inputs.json`
-    // off disk at fire time, which doesn't exist after the Phase-10
-    // flat-shape migration. Inputs are now an explicit field set
-    // through `configure_run`. Default is an empty JSON object; that
-    // matches the legacy "no file → empty map" outcome for runs that
-    // never had inputs.
-    if current < 4 {
-        conn.execute_batch(
-            r#"
-            ALTER TABLE runs ADD COLUMN inputs_json TEXT NOT NULL DEFAULT '{}';
-            "#,
-        )?;
-    }
-
-    if current < SCHEMA_VERSION {
-        conn.execute(
-            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?1)",
-            params![SCHEMA_VERSION.to_string()],
-        )?;
-    }
     Ok(())
 }
 

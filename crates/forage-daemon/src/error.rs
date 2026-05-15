@@ -27,8 +27,6 @@ pub enum DaemonError {
     UnknownDeployment { recipe_name: String, version: u32 },
     #[error("corrupt daemon state: {detail}")]
     Corrupt { detail: String },
-    #[error("corrupt daemon DB: {detail}")]
-    CorruptDb { detail: String },
     #[error("invalid cron expression '{expr}': {detail}")]
     BadCron { expr: String, detail: String },
 }
