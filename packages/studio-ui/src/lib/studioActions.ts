@@ -106,6 +106,14 @@ async function pickWorkspaceDirectory(title: string): Promise<string | null> {
     return useStudio.getState().service.pickDirectory(title);
 }
 
+/// Hook errors into BOTH the store (so the UI banner renders) and the
+/// console (so DevTools shows them with a stack). One-call helper to
+/// avoid forgetting either path.
+function surfaceError(context: string, e: unknown) {
+    console.error(`[studio] ${context}:`, e);
+    useStudio.getState().setRunError(`${context}: ${String(e)}`);
+}
+
 export async function openWorkspaceAction(qc: QueryClient) {
     const service = useStudio.getState().service;
     const path = await pickWorkspaceDirectory("Open workspace");
@@ -117,7 +125,7 @@ export async function openWorkspaceAction(qc: QueryClient) {
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
         ]);
     } catch (e) {
-        useStudio.getState().setRunError(String(e));
+        surfaceError("open workspace failed", e);
     }
 }
 
@@ -132,7 +140,7 @@ export async function newWorkspaceAction(qc: QueryClient) {
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
         ]);
     } catch (e) {
-        useStudio.getState().setRunError(String(e));
+        surfaceError("new workspace failed", e);
     }
 }
 
@@ -145,7 +153,7 @@ export async function openRecentWorkspaceAction(qc: QueryClient, path: string) {
             qc.invalidateQueries({ queryKey: recentWorkspacesKey() }),
         ]);
     } catch (e) {
-        useStudio.getState().setRunError(String(e));
+        surfaceError(`open recent workspace failed (${path})`, e);
     }
 }
 
@@ -155,6 +163,6 @@ export async function closeWorkspaceAction(qc: QueryClient) {
         await service.closeWorkspace();
         await qc.invalidateQueries({ queryKey: currentWorkspaceKey() });
     } catch (e) {
-        useStudio.getState().setRunError(String(e));
+        surfaceError("close workspace failed", e);
     }
 }

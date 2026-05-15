@@ -516,7 +516,9 @@ pub fn recents_path() -> PathBuf {
 ///
 /// Corrupt files log at `warn` and return empty rather than panicking;
 /// the user can keep using the app and the next successful write
-/// replaces the bad file.
+/// replaces the bad file. The pre-filter doesn't log per dropped
+/// entry — that would spam the console every UI poll; the one-time
+/// startup prune (`prune_recents`) handles the loud-once side.
 pub fn read_recents() -> Vec<RecentWorkspace> {
     let path = recents_path();
     let raw = match fs::read_to_string(&path) {
@@ -536,15 +538,36 @@ pub fn read_recents() -> Vec<RecentWorkspace> {
     };
     file.workspaces
         .into_iter()
-        .filter(|w| {
-            if w.path.exists() {
-                true
-            } else {
-                tracing::debug!(path = %w.path.display(), "dropping recent workspace whose path no longer exists");
-                false
-            }
-        })
+        .filter(|w| w.path.exists())
         .collect()
+}
+
+/// One-shot startup prune: read the sidecar, drop entries whose path
+/// is gone, write back if anything changed. Logs at info so the user
+/// sees that stale data was cleared (e.g. tempdirs from old test runs
+/// that leaked into the real recents file). Called from `lib.rs::setup`
+/// during boot; safe to call at any other time too — idempotent.
+pub fn prune_recents() {
+    let raw = read_recents_raw();
+    if raw.is_empty() {
+        return;
+    }
+    let kept: Vec<RecentWorkspace> =
+        raw.iter().filter(|w| w.path.exists()).cloned().collect();
+    let dropped = raw.len() - kept.len();
+    if dropped == 0 {
+        return;
+    }
+    for w in &raw {
+        if !w.path.exists() {
+            tracing::info!(path = %w.path.display(), "recents: dropping stale entry whose path is gone");
+        }
+    }
+    if let Err(e) = write_recents(&kept) {
+        tracing::warn!(error = %e, "recents: prune failed to write back; will retry on next mutation");
+    } else {
+        tracing::info!(dropped, kept = kept.len(), "recents: pruned stale entries at startup");
+    }
 }
 
 /// Atomic write of the recents sidecar. Uses tempfile + rename to mirror

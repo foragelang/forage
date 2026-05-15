@@ -7,11 +7,12 @@
 //! shell and the switcher's amber ring can share them.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Folder, Plus } from "lucide-react";
+import { Folder, Plus, X } from "lucide-react";
 
 import type { RecentWorkspace } from "@/bindings/RecentWorkspace";
 import { useStudioService } from "@/lib/services";
 import { recentWorkspacesKey } from "@/lib/queryKeys";
+import { useStudio } from "@/lib/store";
 import {
     newWorkspaceAction,
     openRecentWorkspaceAction,
@@ -145,6 +146,13 @@ export function Welcome() {
         queryKey: recentWorkspacesKey(),
         queryFn: () => service.listRecentWorkspaces(),
     });
+    // The lifecycle actions (`openWorkspaceAction`, `newWorkspaceAction`,
+    // `openRecentWorkspaceAction`) catch backend errors and stash them
+    // into the store's `runError` slot. Render that here as a banner
+    // so the user actually sees what went wrong — silent failure on
+    // the Welcome screen was the whole point of this fix.
+    const runError = useStudio((s) => s.runError);
+    const clearError = useStudio((s) => s.setRunError);
 
     const recentEntries = recents.data ?? [];
 
@@ -162,6 +170,25 @@ export function Welcome() {
                         Author recipes. Manage runs. Watch data over time.
                     </p>
                 </div>
+
+                {runError && (
+                    <div
+                        role="alert"
+                        className="welcome-error mb-4 flex items-start gap-2 rounded border border-red-500/50 bg-red-500/10 p-3 text-[12px] text-red-300"
+                    >
+                        <div className="flex-1 break-words font-mono">
+                            {runError}
+                        </div>
+                        <button
+                            type="button"
+                            aria-label="Dismiss error"
+                            onClick={() => clearError(null)}
+                            className="shrink-0 rounded p-0.5 text-red-200/80 hover:bg-red-500/20 hover:text-red-100"
+                        >
+                            <X className="size-3" />
+                        </button>
+                    </div>
+                )}
 
                 <div className="welcome-actions mb-[22px] flex flex-col gap-[6px]">
                     <WelcomeAction

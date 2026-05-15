@@ -46,6 +46,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            // Prune stale entries from the recents sidecar at boot —
+            // paths that no longer exist (tempdirs from old test runs
+            // are a common source). One info log per dropped entry,
+            // file rewritten if anything changed. After this, the
+            // every-poll read path doesn't have to filter or log.
+            workspace::prune_recents();
+
             // Studio boots without a workspace. The Welcome screen is
             // the entry point; the user picks Open, New, or a recent
             // workspace to install a daemon. The daemon's lifecycle is
