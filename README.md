@@ -10,9 +10,10 @@ Lives at **foragelang.com**.
 
 ## What you can do today
 
-- Write a `.forage` recipe (one `<slug>/recipe.forage` per recipe in
-  your workspace — `~/Library/Forage/Recipes/` on macOS by convention)
-  and run it end-to-end:
+- Write a `.forage` recipe — one `<name>.forage` file at your workspace
+  root (`~/Library/Forage/Recipes/` on macOS by convention), with the
+  recipe's identity declared in its `recipe "<name>" engine <kind>`
+  header — and run it end-to-end:
 
   ```sh
   cd ~/Library/Forage/Recipes
@@ -25,7 +26,7 @@ Lives at **foragelang.com**.
 - Validate / test recipes with rich diagnostics:
 
   ```sh
-  forage test hacker-news              # diff vs expected.snapshot.json
+  forage test hacker-news              # diff vs _snapshots/hacker-news.json
   forage test hacker-news --update     # snapshot, golden-file workflow
   ```
 
