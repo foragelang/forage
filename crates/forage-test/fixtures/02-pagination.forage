@@ -1,5 +1,6 @@
 recipe "pagination-modes"
 engine http
+output Hit
 
 type Hit { id: String }
 

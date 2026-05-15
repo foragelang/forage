@@ -1,5 +1,6 @@
 recipe "validation-errors"
 engine http
+output Item
 
 type Item { id: String; name: String }
 

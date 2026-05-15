@@ -1,5 +1,6 @@
 recipe "enums-and-case"
 engine http
+output Outcome
 
 type Outcome {
     kind: String
