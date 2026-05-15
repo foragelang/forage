@@ -1,0 +1,45 @@
+// Adapter recipe pattern: `input ParentType -> output ChildType` where
+// the child type extends the parent. Only the additional fields are
+// populated; the parent's fields ride through verbatim via the
+// extension chain so the snapshot carries the inherited shape.
+//
+// The producer-side recipe (the one emitting `JobPosting` records) is
+// composed with this adapter to lift each record onto the enhanced
+// shape:
+//
+//     compose "scrape-job-board" | "to-enhanced"
+//
+// Composition validates because `output JobPosting` (upstream) matches
+// `input postings: [JobPosting]` (downstream). The hub indexes both
+// citizens — `JobPosting` and `EnhancedJobPosting` — and the
+// discover/extends endpoint lists the adapter alongside any other type
+// that extends `@upstream/JobPosting@v1`.
+
+recipe "to-enhanced"
+engine http
+output EnhancedJobPosting
+
+share type JobPosting {
+    id:    String
+    title: String aligns schema.org/title
+}
+
+share type EnhancedJobPosting extends JobPosting@v1
+    aligns schema.org/JobPosting
+{
+    salaryMin: Int?
+    salaryMax: Int?
+    remoteOk:  Bool
+}
+
+input postings: [JobPosting]
+
+for $p in $input.postings[*] {
+    emit EnhancedJobPosting {
+        id        ← $p.id
+        title     ← $p.title
+        salaryMin ← null
+        salaryMax ← null
+        remoteOk  ← false
+    }
+}

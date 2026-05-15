@@ -226,6 +226,27 @@
                     { "typeName": "Variant", "fields": { "label": "unknown", "sizeValue": null, "sizeUnit": null } }
                 ]
             }
+        },
+        {
+            "file": "11-adapter-recipe.forage",
+            "parses": true,
+            "summary": {
+                "name": "to-enhanced",
+                "engineKind": "http",
+                "typeCount": 2,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 1,
+                "stepNames": [],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0
+            },
+            "types": [
+                { "name": "JobPosting", "fieldNames": ["id", "title"], "requiredFieldCount": 2 },
+                { "name": "EnhancedJobPosting", "fieldNames": ["salaryMin", "salaryMax", "remoteOk"], "requiredFieldCount": 1 }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 }
         }
     ]
 }
