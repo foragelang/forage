@@ -1,24 +1,35 @@
 //! Workspace-relative path helpers.
 //!
 //! The store keeps the active file as a path (e.g.
-//! `trilogy-rec/recipe.forage`). Slugs are derived from the path
-//! shape — there is no separate `activeSlug` state. These helpers
-//! keep that derivation in one place.
+//! `trilogy-rec/recipe.forage`). The recipe header name for a path
+//! is whatever the parsed workspace says it is — keyed off the
+//! recipe's `name`, not derived from the directory/filename — so the
+//! lookup is workspace-aware. `recipeNameOf` is that join: given a
+//! file path and the workspace's recipe statuses, find the recipe
+//! header name whose draft sits at that path.
 
-/// Recipe paths are `<slug>/recipe.forage`. Everything else returns
-/// null — declarations, fixtures, manifests, etc. don't have a slug.
-export function slugOf(path: string): string | null {
-    const parts = path.split("/");
-    return parts.length === 2 && parts[1] === "recipe.forage" ? parts[0] : null;
-}
+import type { RecipeStatus } from "@/bindings/RecipeStatus";
 
-export function isRecipe(path: string): boolean {
-    return slugOf(path) !== null;
+/// Recipe header name for the recipe whose draft sits at `path`, or
+/// `null` when `path` is not a parsed recipe in `recipes` (a
+/// declarations file, a fixture, a snapshot, or a broken recipe with
+/// no header). Callers disable any recipe-scoped UI affordance when
+/// this returns null.
+export function recipeNameOf(
+    path: string,
+    recipes: readonly RecipeStatus[] | undefined,
+): string | null {
+    if (!recipes) return null;
+    for (const r of recipes) {
+        if (r.draft.kind === "valid" && r.draft.path === path) return r.name;
+    }
+    return null;
 }
 
 /// A declarations file lives at the workspace root with a `.forage`
-/// extension. Recipes go in `<slug>/recipe.forage`, which is excluded
-/// here by the no-slash check.
+/// extension. Recipes are detected via `recipeNameOf`, which keys off
+/// the parsed workspace; this helper covers the unparsed side of the
+/// classification (declarations sibling to recipes).
 export function isDeclarations(path: string): boolean {
     return !path.includes("/") && path.endsWith(".forage");
 }

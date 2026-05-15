@@ -18,3 +18,10 @@ export const currentWorkspaceKey = () => ["currentWorkspace"] as const;
 /// freshly-opened workspace floats to the top of the list before the
 /// user returns to Welcome.
 export const recentWorkspacesKey = () => ["recentWorkspaces"] as const;
+
+/// Joined draft + deployed view across every recipe in the workspace.
+/// The lookup `recipeNameOf(path, recipes)` reads from this cache to
+/// map a workspace-relative file path to the recipe header name.
+/// Invalidated whenever the file tree changes (Sidebar.tsx) and
+/// dropped on workspace close (useStudioEffects).
+export const recipeStatusesKey = () => ["recipeStatuses"] as const;
