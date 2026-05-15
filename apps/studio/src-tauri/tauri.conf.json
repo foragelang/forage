@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../../../packages/studio-ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../../../packages/studio-ui run dev",
-    "beforeBuildCommand": "npm --prefix ../../../packages/studio-ui run build"
+    "beforeDevCommand": "npm --prefix ../../packages/studio-ui run dev",
+    "beforeBuildCommand": "npm --prefix ../../packages/studio-ui run build"
   },
   "app": {
     "windows": [

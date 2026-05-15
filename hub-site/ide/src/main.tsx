@@ -30,12 +30,13 @@ async function boot() {
     const service = new HubStudioService();
     installStudioService(service);
 
-    // Hash-based routing: `/edit/#/@alice/zen-leaf` opens that package.
-    // VitePress hosts the bundle at `/edit/`, and the path inside the
-    // hash drives which package the IDE loads.
-    const hash = window.location.hash.replace(/^#\//, "");
-    if (hash) {
-        const [author, slug] = hash.split("/");
+    // Path-based routing: `/edit/<author>/<slug>` opens that package.
+    // The Cloudflare Pages `_redirects` rule rewrites any sub-path
+    // under `/edit/` back to `/edit/index.html`; this bundle pulls the
+    // path off `window.location` and resolves the (author, slug) pair.
+    const after = window.location.pathname.replace(/^\/edit\/?/, "");
+    if (after) {
+        const [author, slug] = after.split("/").filter(Boolean);
         if (author && slug) {
             try {
                 const versionArtifact = await service.getPackageVersion(

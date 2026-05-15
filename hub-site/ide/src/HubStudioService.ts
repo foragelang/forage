@@ -270,16 +270,19 @@ export class HubStudioService implements StudioService {
         } as unknown as LanguageDictionary);
     }
     createRecipe(): Promise<string> {
-        throw new NotSupportedByService("createRecipe");
+        return Promise.reject(new NotSupportedByService("createRecipe"));
     }
     deleteRecipe(): Promise<void> {
-        throw new NotSupportedByService("deleteRecipe");
+        return Promise.reject(new NotSupportedByService("deleteRecipe"));
     }
 
     // ── Run (replay only) ───────────────────────────────────────────
 
     async runRecipe(_slug: string, replay: boolean): Promise<RunOutcome> {
         if (!replay) {
+            // Live runs need a real network transport; the hub bundle
+            // doesn't include one. Caller should gate on
+            // `capabilities.liveRun` before reaching here.
             throw new NotSupportedByService("runRecipe(live)");
         }
         if (!this.loaded) {
@@ -332,16 +335,18 @@ export class HubStudioService implements StudioService {
     listRuns(): Promise<Run[]> { return Promise.resolve([]); }
     getRun(): Promise<Run | null> { return Promise.resolve(null); }
     configureRun(): Promise<Run> {
-        throw new NotSupportedByService("configureRun");
+        return Promise.reject(new NotSupportedByService("configureRun"));
     }
-    removeRun(): Promise<void> { throw new NotSupportedByService("removeRun"); }
+    removeRun(): Promise<void> {
+        return Promise.reject(new NotSupportedByService("removeRun"));
+    }
     triggerRun(): Promise<ScheduledRun> {
-        throw new NotSupportedByService("triggerRun");
+        return Promise.reject(new NotSupportedByService("triggerRun"));
     }
     listScheduledRuns(): Promise<ScheduledRun[]> { return Promise.resolve([]); }
     loadRunRecords(): Promise<unknown[]> { return Promise.resolve([]); }
     validateCron(): Promise<void> {
-        throw new NotSupportedByService("validateCron");
+        return Promise.reject(new NotSupportedByService("validateCron"));
     }
 
     // ── Hub publish / auth (no Studio bridge — the IDE uses its own
@@ -374,13 +379,13 @@ export class HubStudioService implements StudioService {
         return Promise.resolve(null);
     }
     authStartDeviceFlow(): Promise<DeviceStart> {
-        throw new NotSupportedByService("authStartDeviceFlow");
+        return Promise.reject(new NotSupportedByService("authStartDeviceFlow"));
     }
     authPollDevice(): Promise<PollOutcome> {
-        throw new NotSupportedByService("authPollDevice");
+        return Promise.reject(new NotSupportedByService("authPollDevice"));
     }
     authLogout(): Promise<void> {
-        throw new NotSupportedByService("authLogout");
+        return Promise.reject(new NotSupportedByService("authLogout"));
     }
 
     // ── Hub packages / social ───────────────────────────────────────
@@ -494,10 +499,10 @@ export class HubStudioService implements StudioService {
         return window.confirm(message);
     }
     pickDirectory(): Promise<string | null> {
-        throw new NotSupportedByService("pickDirectory");
+        return Promise.reject(new NotSupportedByService("pickDirectory"));
     }
     revealInFileManager(): Promise<void> {
-        throw new NotSupportedByService("revealInFileManager");
+        return Promise.reject(new NotSupportedByService("revealInFileManager"));
     }
 
     // ── Internal ────────────────────────────────────────────────────

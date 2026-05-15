@@ -5,7 +5,7 @@
     "type": "module",
     "scripts": {
         "dev": "vitepress dev",
-        "build": "vitepress build",
+        "build": "vitepress build && npm --prefix ./ide run build && cp -r ide/dist .vitepress/dist/edit",
         "preview": "vitepress preview"
     },
     "devDependencies": {

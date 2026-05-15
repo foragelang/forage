@@ -1,0 +1,4 @@
+# Cloudflare Pages rewrites for the React-mounted hub IDE under /edit/.
+# Any sub-path resolves to the IDE's index.html so the in-bundle router
+# can pick it up.
+/edit/* /edit/index.html 200

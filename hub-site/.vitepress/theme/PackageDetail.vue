@@ -120,7 +120,7 @@ function formatTimestamp(ms) {
             <section class="pkg-detail-section">
                 <h2>Install</h2>
                 <pre class="pkg-detail-install"><code>forage sync {{ meta.author }}/{{ meta.slug }}</code></pre>
-                <p><a :href="`/edit/${meta.author}/${meta.slug}`">Open in hub IDE</a> · <a :href="`forage-studio://recipe/${meta.author}/${meta.slug}`">Open in Studio</a></p>
+                <p><a :href="`/edit/${meta.author}/${meta.slug}`">Open in hub IDE</a> · <a :href="`forage://clone/${meta.author}/${meta.slug}`">Open in Studio</a></p>
             </section>
         </template>
     </div>

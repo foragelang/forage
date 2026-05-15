@@ -5,6 +5,7 @@ export {
     NotSupportedByService,
     StaleBaseError,
     type DebugAction,
+    type DeeplinkClonePayload,
     type DeviceStart,
     type ForkedFrom,
     type ListVersionsItem,
@@ -16,9 +17,13 @@ export {
     type PackageSnapshot,
     type PackageVersion,
     type PollOutcome,
+    type PublishError,
+    type PublishOutcome,
     type PublishPayload,
+    type PublishPreview,
     type ServiceCapabilities,
     type StudioService,
+    type SyncOutcomeWire,
     type Unsubscribe,
 } from "./StudioService";
 export { TauriStudioService } from "./TauriStudioService";
