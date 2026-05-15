@@ -41,6 +41,10 @@ watch(() => [props.ontology, props.term], load)
                 Types aligned with
                 <span class="discover-aligned-term">{{ ontology }}/{{ term }}</span>
             </h1>
+            <p v-if="ontology === 'wikidata'" class="discover-aligned-reconcile">
+                These types align with wikidata —
+                <a href="/cookbook/wikidata-reconciliation">reconcile records with the wikidataEntity transform</a>.
+            </p>
         </header>
         <p v-if="loading" class="discover-aligned-loading">Loading…</p>
         <p v-else-if="error" class="discover-aligned-error">Could not load: {{ error }}</p>
@@ -81,6 +85,21 @@ watch(() => [props.ontology, props.term], load)
 .discover-aligned-term {
     color: var(--vp-c-brand-1);
     font-family: var(--vp-font-family-mono);
+}
+
+.discover-aligned-reconcile {
+    margin: 8px 0 16px;
+    font-size: 14px;
+    color: var(--vp-c-text-2);
+}
+
+.discover-aligned-reconcile a {
+    color: var(--vp-c-brand-1);
+    text-decoration: none;
+}
+
+.discover-aligned-reconcile a:hover {
+    text-decoration: underline;
 }
 
 .discover-aligned-grid {
