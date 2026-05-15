@@ -1,8 +1,8 @@
 //! Daemon lifecycle: open the daemon DB, deploy a recipe, configure a
-//! Run via slug, trigger it manually against a recorded transport,
-//! then verify the ScheduledRun was persisted and the Run's health is
-//! `Ok`. The daemon only executes deployed versions, so the deploy
-//! step is part of every meaningful integration test.
+//! Run by recipe name, trigger it manually against a recorded
+//! transport, then verify the ScheduledRun was persisted and the
+//! Run's health is `Ok`. The daemon only executes deployed versions,
+//! so the deploy step is part of every meaningful integration test.
 
 use std::path::Path;
 
@@ -15,14 +15,14 @@ use common::{deploy_disk_recipe, init_workspace};
 async fn open_configure_trigger_persist() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws_root = tmp.path().to_path_buf();
-    let slug = "fixture-ok";
+    let recipe_name = "fixture-ok";
 
     // Recipe + fixtures + workspace marker.
-    init_workspace(&ws_root, slug, RECIPE_OK);
-    write_inputs(&ws_root, slug, "{}");
+    init_workspace(&ws_root, recipe_name, RECIPE_OK);
+    write_inputs(&ws_root, recipe_name, "{}");
 
     let mock = common::http_mock::server_returning_items(&[("a", 1.5), ("b", 2.0)]).await;
-    let recipe_path = ws_root.join(slug).join("recipe.forage");
+    let recipe_path = ws_root.join(recipe_name).join("recipe.forage");
     rewrite_url(&recipe_path, &mock.url("/items"));
 
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
@@ -33,15 +33,17 @@ async fn open_configure_trigger_persist() {
         output: output.clone(),
         enabled: true,
     };
-    let run = daemon.configure_run(slug, cfg).expect("configure_run");
-    assert_eq!(run.recipe_slug, slug);
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
+    assert_eq!(run.recipe_name, recipe_name);
     assert_eq!(run.health, Health::Unknown);
     assert!(
         run.deployed_version.is_none(),
         "configure_run without a prior deploy should leave deployed_version unset"
     );
 
-    deploy_disk_recipe(&daemon, &ws_root, slug);
+    deploy_disk_recipe(&daemon, &ws_root, recipe_name);
 
     // Trigger; expect Ok outcome with two emitted records.
     let sr = daemon.trigger_run(&run.id).await.expect("trigger_run");
@@ -71,8 +73,8 @@ async fn open_configure_trigger_persist() {
     assert_eq!(records.len(), 2);
 }
 
-fn write_inputs(ws_root: &Path, slug: &str, body: &str) {
-    let dir = ws_root.join(slug).join("fixtures");
+fn write_inputs(ws_root: &Path, dir: &str, body: &str) {
+    let dir = ws_root.join(dir).join("fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("inputs.json"), body).unwrap();
 }

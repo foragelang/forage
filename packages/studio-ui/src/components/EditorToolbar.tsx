@@ -127,7 +127,7 @@ function ToolbarStatus() {
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
     });
-    const run = runs.data?.find((r) => r.recipe_slug === slug);
+    const run = runs.data?.find((r) => r.recipe_name === slug);
     const scheduledRuns = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 1 }),
         queryFn: () => service.listScheduledRuns(run!.id, { limit: 1 }),
@@ -211,7 +211,7 @@ function RunsChipOrConfigure({ slug }: { slug: string }) {
         queryKey: ["runs"],
         queryFn: () => service.listRuns(),
     });
-    const run = runs.data?.find((r) => r.recipe_slug === slug);
+    const run = runs.data?.find((r) => r.recipe_name === slug);
     if (!run) {
         return (
             <Tooltip>

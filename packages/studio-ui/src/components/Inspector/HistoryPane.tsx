@@ -36,7 +36,7 @@ export function HistoryPane() {
         queryFn: () => service.listRuns(),
         enabled: !!slug,
     });
-    const run = runs.data?.find((r) => r.recipe_slug === slug);
+    const run = runs.data?.find((r) => r.recipe_name === slug);
     const history = useQuery({
         queryKey: scheduledRunsKey(run?.id ?? "", { limit: 30 }),
         queryFn: () => service.listScheduledRuns(run!.id, { limit: 30 }),

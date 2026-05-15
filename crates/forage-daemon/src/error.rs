@@ -23,8 +23,8 @@ pub enum DaemonError {
     Serde(#[from] serde_json::Error),
     #[error("unknown run id: {id}")]
     UnknownRun { id: String },
-    #[error("unknown deployment: {slug} v{version}")]
-    UnknownDeployment { slug: String, version: u32 },
+    #[error("unknown deployment: {recipe_name} v{version}")]
+    UnknownDeployment { recipe_name: String, version: u32 },
     #[error("corrupt daemon state: {detail}")]
     Corrupt { detail: String },
     #[error("corrupt daemon DB: {detail}")]

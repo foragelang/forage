@@ -125,7 +125,7 @@ function DepHeader({
     });
     const togglePause = useMutation({
         mutationFn: () =>
-            service.configureRun(run.recipe_slug, {
+            service.configureRun(run.recipe_name, {
                 cadence: run.cadence,
                 output: run.output,
                 enabled: !run.enabled,
@@ -137,7 +137,7 @@ function DepHeader({
         <div className="border-b">
             <div className="px-4 py-3 flex items-center gap-3">
                 <Cloud className="size-5 text-info" />
-                <div className="font-mono text-base">{run.recipe_slug}</div>
+                <div className="font-mono text-base">{run.recipe_name}</div>
                 <StatusPill health={run.health} />
                 <div className="ml-auto flex items-center gap-1.5">
                     <Button

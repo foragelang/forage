@@ -1694,9 +1694,9 @@ pub fn list_recipe_statuses(
         );
     }
 
-    let deployments = daemon.deployed_slugs().map_err(|e| e.to_string())?;
+    let deployments = daemon.deployed_names().map_err(|e| e.to_string())?;
     for dv in deployments {
-        let entry = by_slug.entry(dv.slug.clone()).or_insert((
+        let entry = by_slug.entry(dv.recipe_name.clone()).or_insert((
             DraftState::Missing,
             DeployedState::None,
         ));
@@ -1988,7 +1988,7 @@ for $i in $list.items[*] {
         let listed = daemon.list_runs().expect("list_runs");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
-        assert_eq!(listed[0].recipe_slug, slug);
+        assert_eq!(listed[0].recipe_name, slug);
         assert!(listed[0].enabled);
         // Bare configure (no prior deploy) leaves the pointer
         // unset — pre-deploy scheduled fires record a clean

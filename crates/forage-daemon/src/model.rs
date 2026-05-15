@@ -24,7 +24,10 @@ use ts_rs::TS;
 pub struct Run {
     /// ULID — sortable, opaque, generated once at creation.
     pub id: String,
-    pub recipe_slug: String,
+    /// The recipe's header name (`recipe "<name>"`). The daemon's
+    /// canonical key for the recipe — output stores, deployment dirs,
+    /// and scheduled-run rows all anchor on it.
+    pub recipe_name: String,
     /// Workspace the recipe lives in. The daemon is per-workspace, so
     /// in practice this matches the daemon's `workspace_root`; carried
     /// on the row so consumers can render context without a back-ref.
@@ -32,7 +35,7 @@ pub struct Run {
     pub workspace_root: PathBuf,
     pub enabled: bool,
     pub cadence: Cadence,
-    /// Output store path — defaults to `<workspace_root>/.forage/data/<slug>.sqlite`.
+    /// Output store path — defaults to `<workspace_root>/.forage/data/<recipe_name>.sqlite`.
     #[ts(type = "string")]
     pub output: PathBuf,
     /// Derived from the latest `ScheduledRun` plus the prior 7 ok runs.
@@ -168,13 +171,13 @@ pub struct RunConfig {
 }
 
 /// Metadata for one frozen deployed version of a recipe. The source
-/// and catalog live on disk under `<daemon_dir>/deployments/<slug>/v<n>/`;
+/// and catalog live on disk under `<daemon_dir>/deployments/<recipe_name>/v<n>/`;
 /// this is the row recorded in the daemon DB and the wire shape Studio
 /// renders in its recipe-status surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DeployedVersion {
-    pub slug: String,
+    pub recipe_name: String,
     pub version: u32,
     #[ts(type = "number")]
     pub deployed_at: i64,

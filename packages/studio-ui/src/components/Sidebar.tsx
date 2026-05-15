@@ -361,7 +361,7 @@ function RunRow({ run }: { run: Run }) {
             >
                 <Cloud className="size-3.5 shrink-0 text-blue-400/70" />
                 <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                    {run.recipe_slug}
+                    {run.recipe_name}
                 </span>
                 <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
                     {cadenceLabel(run)}

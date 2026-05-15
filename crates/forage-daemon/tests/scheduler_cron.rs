@@ -20,7 +20,7 @@ fn cron_top_of_each_hour_parses_and_computes_next_fire() {
 
     let run = forage_daemon::Run {
         id: "1".into(),
-        recipe_slug: "x".into(),
+        recipe_name: "x".into(),
         workspace_root: std::path::PathBuf::from("/tmp"),
         enabled: true,
         cadence: Cadence::Cron {
@@ -57,8 +57,8 @@ fn bad_cron_expression_rejected() {
 async fn configure_run_rejects_bad_cron() {
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path().to_path_buf();
-    let slug = "hourly";
-    init_workspace(&ws_root, slug, RECIPE_STATIC);
+    let recipe_name = "hourly";
+    init_workspace(&ws_root, recipe_name, RECIPE_STATIC);
 
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
     let cfg = RunConfig {
@@ -68,11 +68,11 @@ async fn configure_run_rejects_bad_cron() {
         output: ws_root
             .join(".forage")
             .join("data")
-            .join(format!("{slug}.sqlite")),
+            .join(format!("{recipe_name}.sqlite")),
         enabled: true,
     };
     let err = daemon
-        .configure_run(slug, cfg)
+        .configure_run(recipe_name, cfg)
         .expect_err("expected bad-cron");
     assert!(matches!(err, forage_daemon::DaemonError::BadCron { .. }));
 }
@@ -85,8 +85,8 @@ async fn configure_run_rejects_bad_cron() {
 async fn corrupted_stored_cron_records_synthetic_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path().to_path_buf();
-    let slug = "hourly";
-    init_workspace(&ws_root, slug, RECIPE_STATIC);
+    let recipe_name = "hourly";
+    init_workspace(&ws_root, recipe_name, RECIPE_STATIC);
 
     let clock = StubClock::new(0);
     let daemon = Daemon::open_with_clock(ws_root.clone(), clock.clone()).expect("open daemon");
@@ -99,10 +99,10 @@ async fn corrupted_stored_cron_records_synthetic_failure() {
         output: ws_root
             .join(".forage")
             .join("data")
-            .join(format!("{slug}.sqlite")),
+            .join(format!("{recipe_name}.sqlite")),
         enabled: true,
     };
-    let run = daemon.configure_run(slug, cfg).expect("configure_run");
+    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
 
     // Tamper: replace the stored cron expression with garbage,
     // mimicking a corrupt DB. The daemon owns the connection, so we

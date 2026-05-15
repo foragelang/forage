@@ -137,7 +137,7 @@ pub(crate) fn insert_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             run.id,
-            run.recipe_slug,
+            run.recipe_name,
             run.workspace_root.to_string_lossy(),
             run.enabled as i64,
             cadence_json,
@@ -166,7 +166,7 @@ pub(crate) fn update_run(conn: &Connection, run: &Run) -> Result<(), DaemonError
          WHERE id = ?1",
         params![
             run.id,
-            run.recipe_slug,
+            run.recipe_name,
             run.workspace_root.to_string_lossy(),
             run.enabled as i64,
             cadence_json,
@@ -204,11 +204,11 @@ pub(crate) fn get_run_by_id(conn: &Connection, run_id: &str) -> Result<Option<Ru
     .transpose()
 }
 
-pub(crate) fn get_run_by_slug(conn: &Connection, slug: &str) -> Result<Option<Run>, DaemonError> {
+pub(crate) fn get_run_by_name(conn: &Connection, name: &str) -> Result<Option<Run>, DaemonError> {
     conn.query_row(
         "SELECT id, recipe_slug, workspace_root, enabled, cadence_json, output_path, health, next_run, deployed_version
          FROM runs WHERE recipe_slug = ?1",
-        params![slug],
+        params![name],
         row_to_run,
     )
     .optional()
@@ -231,7 +231,7 @@ pub(crate) fn list_runs(conn: &Connection) -> Result<Vec<Run>, DaemonError> {
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError>> {
     let id: String = r.get(0)?;
-    let recipe_slug: String = r.get(1)?;
+    let recipe_name: String = r.get(1)?;
     let workspace_root: String = r.get(2)?;
     let enabled: i64 = r.get(3)?;
     let cadence_json: String = r.get(4)?;
@@ -264,7 +264,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
 
     Ok(Ok(Run {
         id,
-        recipe_slug,
+        recipe_name,
         workspace_root: PathBuf::from(workspace_root),
         enabled: enabled != 0,
         cadence,
@@ -426,20 +426,20 @@ pub(crate) fn insert_deployed_version(
     conn.execute(
         "INSERT INTO deployed_versions(slug, version, deployed_at)
          VALUES (?1, ?2, ?3)",
-        params![dv.slug, dv.version, dv.deployed_at],
+        params![dv.recipe_name, dv.version, dv.deployed_at],
     )?;
     Ok(())
 }
 
 pub(crate) fn list_deployed_versions(
     conn: &Connection,
-    slug: &str,
+    name: &str,
 ) -> Result<Vec<DeployedVersion>, DaemonError> {
     let mut stmt = conn.prepare(
         "SELECT slug, version, deployed_at FROM deployed_versions
          WHERE slug = ?1 ORDER BY version DESC",
     )?;
-    let rows = stmt.query_map(params![slug], row_to_deployed_version)?;
+    let rows = stmt.query_map(params![name], row_to_deployed_version)?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row??);
@@ -449,12 +449,12 @@ pub(crate) fn list_deployed_versions(
 
 pub(crate) fn latest_deployed_version(
     conn: &Connection,
-    slug: &str,
+    name: &str,
 ) -> Result<Option<DeployedVersion>, DaemonError> {
     conn.query_row(
         "SELECT slug, version, deployed_at FROM deployed_versions
          WHERE slug = ?1 ORDER BY version DESC LIMIT 1",
-        params![slug],
+        params![name],
         row_to_deployed_version,
     )
     .optional()
@@ -462,9 +462,9 @@ pub(crate) fn latest_deployed_version(
     .transpose()
 }
 
-/// One row per slug: the latest deployed version. Used by Studio's
-/// recipe-status surface so it doesn't have to fan out per-slug.
-pub(crate) fn list_latest_per_slug(
+/// One row per recipe: the latest deployed version. Used by Studio's
+/// recipe-status surface so it doesn't have to fan out per-recipe.
+pub(crate) fn list_latest_per_recipe(
     conn: &Connection,
 ) -> Result<Vec<DeployedVersion>, DaemonError> {
     let mut stmt = conn.prepare(
@@ -488,18 +488,18 @@ pub(crate) fn list_latest_per_slug(
 fn row_to_deployed_version(
     r: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<Result<DeployedVersion, DaemonError>> {
-    let slug: String = r.get(0)?;
+    let recipe_name: String = r.get(0)?;
     let version_raw: i64 = r.get(1)?;
     let deployed_at: i64 = r.get(2)?;
     let version = if (0..=u32::MAX as i64).contains(&version_raw) {
         version_raw as u32
     } else {
         return Ok(Err(DaemonError::Corrupt {
-            detail: format!("version {version_raw} out of u32 range for slug {slug}"),
+            detail: format!("version {version_raw} out of u32 range for recipe {recipe_name}"),
         }));
     };
     Ok(Ok(DeployedVersion {
-        slug,
+        recipe_name,
         version,
         deployed_at,
     }))

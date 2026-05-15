@@ -1,10 +1,10 @@
 //! Forage scheduling + persistence runtime.
 //!
 //! The daemon is a fortress around deployed recipe versions:
-//! - Holds one `Run` per recipe slug in a per-installation
+//! - Holds one `Run` per recipe name in a per-installation
 //!   `<workspace_root>/.forage/daemon.sqlite` (the "daemon DB").
 //! - Stores frozen, validated deployed sources + catalogs under
-//!   `<workspace_root>/.forage/deployments/<slug>/v<n>/`.
+//!   `<workspace_root>/.forage/deployments/<recipe_name>/v<n>/`.
 //! - Runs an in-process scheduler over Runs (interval / cron / manual),
 //!   executing the deployed version pointed to by `Run.deployed_version`
 //!   and writing emitted records to `Run.output` (the "output store").
@@ -16,7 +16,7 @@
 //!
 //! Drafts on disk are the host's concern — the daemon never scans the
 //! user's edit folder. The host explicitly `deploy`s a source +
-//! catalog; the daemon validates, freezes, and assigns it a per-slug
+//! catalog; the daemon validates, freezes, and assigns it a per-recipe
 //! monotonic version. Scheduled fires execute frozen versions only.
 
 mod db;
@@ -74,7 +74,7 @@ pub use scheduler::{advance_next_run, interval_ms, next_fire_for, validate_cron}
 /// "what is currently deployed" in the editor.
 #[derive(Debug, Clone)]
 pub struct DeployedRecord {
-    pub slug: String,
+    pub recipe_name: String,
     pub version: u32,
     pub source: String,
     pub catalog: SerializableCatalog,
@@ -305,9 +305,9 @@ impl Daemon {
         db::get_run_by_id(&conn, run_id)
     }
 
-    pub fn get_run_by_slug(&self, slug: &str) -> Result<Option<Run>, DaemonError> {
+    pub fn get_run_by_name(&self, name: &str) -> Result<Option<Run>, DaemonError> {
         let conn = self.connection.lock().expect("daemon connection poisoned");
-        db::get_run_by_slug(&conn, slug)
+        db::get_run_by_name(&conn, name)
     }
 
     pub fn list_scheduled_runs(
@@ -351,10 +351,10 @@ impl Daemon {
         output::load_records(&output, scheduled_run_id, type_name, limit)
     }
 
-    /// Create-or-update a Run for the given slug. Matches the
+    /// Create-or-update a Run for the given recipe name. Matches the
     /// "auto-create on first Run live" pattern Studio adopted in
-    /// Phase 3 — `slug` is the canonical key here, not a generated id.
-    pub fn configure_run(&self, slug: &str, cfg: RunConfig) -> Result<Run, DaemonError> {
+    /// Phase 3 — `name` is the canonical key here, not a generated id.
+    pub fn configure_run(&self, name: &str, cfg: RunConfig) -> Result<Run, DaemonError> {
         // Reject bad cron expressions up front so we don't store
         // unparseable state. Interval / Manual don't need validation.
         if let Cadence::Cron { expr } = &cfg.cadence {
@@ -363,7 +363,7 @@ impl Daemon {
         let now_ms = self.now_ms();
         let result = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
-            let existing = db::get_run_by_slug(&conn, slug)?;
+            let existing = db::get_run_by_name(&conn, name)?;
             let is_update = existing.is_some();
             let run = match existing {
                 Some(prev) => Run {
@@ -384,15 +384,15 @@ impl Daemon {
                 },
                 None => {
                     // A fresh Run picks up whatever's already been
-                    // deployed for this slug. The common case is
+                    // deployed for this recipe. The common case is
                     // configure-before-deploy (cadence first), in
                     // which case the pointer stays None until a
                     // subsequent deploy advances it.
-                    let deployed_version = db::latest_deployed_version(&conn, slug)?
+                    let deployed_version = db::latest_deployed_version(&conn, name)?
                         .map(|dv| dv.version);
                     Run {
                         id: ulid::Ulid::new().to_string(),
-                        recipe_slug: slug.to_string(),
+                        recipe_name: name.to_string(),
                         workspace_root: self.workspace_root.clone(),
                         enabled: cfg.enabled,
                         cadence: cfg.cadence,
@@ -435,38 +435,38 @@ impl Daemon {
         self.run_once(run_id, Trigger::Manual).await
     }
 
-    /// Create a default Run for `slug` if none exists yet. Idempotent:
+    /// Create a default Run for `name` if none exists yet. Idempotent:
     /// returns the existing row when present. Used by Studio's "Run
     /// live" path on a recipe without a Run yet.
-    pub fn ensure_run(&self, slug: &str) -> Result<Run, DaemonError> {
-        if let Some(existing) = self.get_run_by_slug(slug)? {
+    pub fn ensure_run(&self, name: &str) -> Result<Run, DaemonError> {
+        if let Some(existing) = self.get_run_by_name(name)? {
             return Ok(existing);
         }
-        let default_output = self.default_output_path(slug);
+        let default_output = self.default_output_path(name);
         let cfg = RunConfig {
             cadence: Cadence::Manual,
             output: default_output,
             enabled: true,
         };
-        self.configure_run(slug, cfg)
+        self.configure_run(name, cfg)
     }
 
-    /// Where the output store sits for `slug` when the user hasn't
-    /// configured a custom path: `<workspace>/.forage/data/<slug>.sqlite`.
-    pub fn default_output_path(&self, slug: &str) -> PathBuf {
-        self.daemon_dir.join("data").join(format!("{slug}.sqlite"))
+    /// Where the output store sits for `name` when the user hasn't
+    /// configured a custom path: `<workspace>/.forage/data/<name>.sqlite`.
+    pub fn default_output_path(&self, name: &str) -> PathBuf {
+        self.daemon_dir.join("data").join(format!("{name}.sqlite"))
     }
 
     // --- deployments -------------------------------------------------
 
-    /// Persist `source` + `catalog` as the next version of `slug`.
+    /// Persist `source` + `catalog` as the next version of `name`.
     /// Parses + validates first; on failure no row is inserted and no
     /// files are written. The returned `DeployedVersion` is the row in
     /// the metadata table; the source lives at
-    /// `<daemon_dir>/deployments/<slug>/v<n>/`.
+    /// `<daemon_dir>/deployments/<recipe_name>/v<n>/`.
     pub fn deploy(
         &self,
-        slug: &str,
+        name: &str,
         source: String,
         catalog: SerializableCatalog,
     ) -> Result<DeployedVersion, DeployError> {
@@ -484,7 +484,7 @@ impl Daemon {
 
         let now_ms = self.now_ms();
         // Serialize the version-pick + FS write + DB insert. Without
-        // this lock two concurrent `deploy(slug, ...)` calls both read
+        // this lock two concurrent `deploy(name, ...)` calls both read
         // the same max version outside the txn and race on writing
         // `v<n+1>/` on disk; the second hits the PRIMARY KEY or an
         // `ENOTEMPTY` from `fs::rename`. The lock is process-local —
@@ -501,9 +501,9 @@ impl Daemon {
         // trips `ENOTEMPTY`.
         let db_max = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
-            db::latest_deployed_version(&conn, slug)?.map(|dv| dv.version)
+            db::latest_deployed_version(&conn, name)?.map(|dv| dv.version)
         };
-        let fs_max = deployments::max_version_on_disk(&self.deployments_dir, slug)?;
+        let fs_max = deployments::max_version_on_disk(&self.deployments_dir, name)?;
         let next_version = match (db_max, fs_max) {
             (Some(a), Some(b)) => a.max(b) + 1,
             (Some(a), None) => a + 1,
@@ -511,10 +511,10 @@ impl Daemon {
             (None, None) => 1,
         };
 
-        deployments::write_atomic(&self.deployments_dir, slug, next_version, &source, &catalog)?;
+        deployments::write_atomic(&self.deployments_dir, name, next_version, &source, &catalog)?;
 
         let dv = DeployedVersion {
-            slug: slug.to_string(),
+            recipe_name: name.to_string(),
             version: next_version,
             deployed_at: now_ms,
         };
@@ -526,7 +526,7 @@ impl Daemon {
             let mut conn = self.connection.lock().expect("daemon connection poisoned");
             let tx = conn.transaction().map_err(DaemonError::Sqlite)?;
             db::insert_deployed_version(&tx, &dv)?;
-            if let Some(existing) = db::get_run_by_slug(&tx, slug)? {
+            if let Some(existing) = db::get_run_by_name(&tx, name)? {
                 let updated = Run {
                     deployed_version: Some(next_version),
                     ..existing
@@ -540,24 +540,24 @@ impl Daemon {
         Ok(dv)
     }
 
-    /// All deployed versions for one slug, newest first.
-    pub fn deployed_versions(&self, slug: &str) -> Result<Vec<DeployedVersion>, DaemonError> {
+    /// All deployed versions for one recipe, newest first.
+    pub fn deployed_versions(&self, name: &str) -> Result<Vec<DeployedVersion>, DaemonError> {
         let conn = self.connection.lock().expect("daemon connection poisoned");
-        db::list_deployed_versions(&conn, slug)
+        db::list_deployed_versions(&conn, name)
     }
 
-    /// Highest-numbered deployed version for one slug, or `None`.
-    pub fn current_deployed(&self, slug: &str) -> Result<Option<DeployedVersion>, DaemonError> {
+    /// Highest-numbered deployed version for one recipe, or `None`.
+    pub fn current_deployed(&self, name: &str) -> Result<Option<DeployedVersion>, DaemonError> {
         let conn = self.connection.lock().expect("daemon connection poisoned");
-        db::latest_deployed_version(&conn, slug)
+        db::latest_deployed_version(&conn, name)
     }
 
-    /// Latest deployed version per slug, alphabetical by slug. Used by
+    /// Latest deployed version per recipe, alphabetical by name. Used by
     /// Studio's recipe-status surface to join the daemon's view with
     /// its on-disk drafts.
-    pub fn deployed_slugs(&self) -> Result<Vec<DeployedVersion>, DaemonError> {
+    pub fn deployed_names(&self) -> Result<Vec<DeployedVersion>, DaemonError> {
         let conn = self.connection.lock().expect("daemon connection poisoned");
-        db::list_latest_per_slug(&conn)
+        db::list_latest_per_recipe(&conn)
     }
 
     /// Read a specific version's source + catalog from the
@@ -565,7 +565,7 @@ impl Daemon {
     /// deployed" view.
     pub fn load_deployed(
         &self,
-        slug: &str,
+        name: &str,
         version: u32,
     ) -> Result<DeployedRecord, DaemonError> {
         // The metadata row carries `deployed_at`; the filesystem
@@ -573,17 +573,17 @@ impl Daemon {
         // see a complete picture without having to fan out.
         let dv = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
-            db::list_deployed_versions(&conn, slug)?
+            db::list_deployed_versions(&conn, name)?
                 .into_iter()
                 .find(|dv| dv.version == version)
                 .ok_or_else(|| DaemonError::UnknownDeployment {
-                    slug: slug.to_string(),
+                    recipe_name: name.to_string(),
                     version,
                 })?
         };
-        let (source, catalog) = deployments::read_deployed(&self.deployments_dir, slug, version)?;
+        let (source, catalog) = deployments::read_deployed(&self.deployments_dir, name, version)?;
         Ok(DeployedRecord {
-            slug: dv.slug,
+            recipe_name: dv.recipe_name,
             version: dv.version,
             source,
             catalog,

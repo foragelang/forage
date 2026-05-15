@@ -15,7 +15,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use forage_core::SerializableCatalog;
 use forage_daemon::{Clock, Daemon, DeployedVersion};
 
-pub fn init_workspace(ws_root: &Path, slug: &str, recipe_source: &str) {
+/// Plant a workspace marker plus a legacy-shape recipe folder at
+/// `<ws_root>/<dir>/recipe.forage`. `dir` is the on-disk folder name;
+/// the recipe's name is whatever the source declares in its header.
+pub fn init_workspace(ws_root: &Path, dir: &str, recipe_source: &str) {
     std::fs::create_dir_all(ws_root).unwrap();
     std::fs::write(
         ws_root.join("forage.toml"),
@@ -23,26 +26,29 @@ pub fn init_workspace(ws_root: &Path, slug: &str, recipe_source: &str) {
         "description = \"\"\ncategory = \"\"\ntags = []\n",
     )
     .unwrap();
-    let recipe_dir = ws_root.join(slug);
+    let recipe_dir = ws_root.join(dir);
     std::fs::create_dir_all(&recipe_dir).unwrap();
     std::fs::write(recipe_dir.join("recipe.forage"), recipe_source).unwrap();
 }
 
-/// Read the on-disk source under `ws_root/<slug>/recipe.forage`, build
+/// Read the on-disk source under `ws_root/<dir>/recipe.forage`, build
 /// a catalog the same way Studio does (the workspace's own
-/// declarations + recipe-local types), and deploy via the daemon.
-/// Returns the resulting `DeployedVersion` so tests can pin the
-/// expected version number.
-pub fn deploy_disk_recipe(daemon: &Daemon, ws_root: &Path, slug: &str) -> DeployedVersion {
-    let recipe_path = ws_root.join(slug).join("recipe.forage");
+/// declarations + recipe-local types), and deploy via the daemon using
+/// the recipe's header name as the daemon key. Returns the resulting
+/// `DeployedVersion` so tests can pin the expected version number.
+pub fn deploy_disk_recipe(daemon: &Daemon, ws_root: &Path, dir: &str) -> DeployedVersion {
+    let recipe_path = ws_root.join(dir).join("recipe.forage");
     let source = std::fs::read_to_string(&recipe_path).expect("read recipe source");
     let recipe = forage_core::parse(&source).expect("parse recipe");
+    let recipe_name = recipe
+        .recipe_name()
+        .expect("test recipe declares a header name");
     let workspace = forage_core::load(ws_root).expect("load workspace");
     let catalog = workspace
         .catalog(&recipe, |p| std::fs::read_to_string(p))
         .expect("build catalog");
     let wire = SerializableCatalog::from(catalog);
-    daemon.deploy(slug, source, wire).expect("deploy")
+    daemon.deploy(recipe_name, source, wire).expect("deploy")
 }
 
 pub fn set_secret(name: &str, value: &str) {

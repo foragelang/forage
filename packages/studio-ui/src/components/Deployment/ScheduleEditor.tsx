@@ -99,7 +99,7 @@ export function ScheduleEditor({
 
     const save = useMutation({
         mutationFn: async (cfg: RunConfig) =>
-            service.configureRun(run.recipe_slug, cfg),
+            service.configureRun(run.recipe_name, cfg),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ["runs"] });
             onClose();

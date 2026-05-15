@@ -81,18 +81,18 @@ fn next_fire_unit_h_and_d_match_seconds_math() {
 async fn interval_run_fires_when_clock_advances() {
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path().to_path_buf();
-    let slug = "tick";
-    init_workspace(&ws_root, slug, RECIPE_STATIC);
+    let recipe_name = "tick";
+    init_workspace(&ws_root, recipe_name, RECIPE_STATIC);
 
     let mock = common::http_mock::server_returning_items(&[("a", 1.0)]).await;
     rewrite_url(
-        &ws_root.join(slug).join("recipe.forage"),
+        &ws_root.join(recipe_name).join("recipe.forage"),
         &mock.url("/items"),
     );
 
     let clock = StubClock::new(0);
     let daemon = Daemon::open_with_clock(ws_root.clone(), clock.clone()).expect("open daemon");
-    deploy_disk_recipe(&daemon, &ws_root, slug);
+    deploy_disk_recipe(&daemon, &ws_root, recipe_name);
 
     let output = ws_root.join(".forage").join("data").join("tick.sqlite");
     let cfg = RunConfig {
@@ -103,7 +103,9 @@ async fn interval_run_fires_when_clock_advances() {
         output,
         enabled: true,
     };
-    let run = daemon.configure_run(slug, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
     assert_eq!(run.next_run, Some(60_000));
     assert_eq!(run.deployed_version, Some(1));
 
@@ -131,10 +133,10 @@ async fn interval_run_fires_when_clock_advances() {
     }
 }
 
-fn build_run(slug: &str, cadence: Cadence, next_run: Option<i64>) -> forage_daemon::Run {
+fn build_run(recipe_name: &str, cadence: Cadence, next_run: Option<i64>) -> forage_daemon::Run {
     forage_daemon::Run {
         id: ulid::Ulid::new().to_string(),
-        recipe_slug: slug.into(),
+        recipe_name: recipe_name.into(),
         workspace_root: std::path::PathBuf::from("/tmp"),
         enabled: true,
         cadence,

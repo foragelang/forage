@@ -1,7 +1,7 @@
 //! Filesystem layout for deployed recipe versions.
 //!
-//! Each deployed `(slug, version)` lives at
-//! `<daemon_dir>/deployments/<slug>/v<n>/` with two files:
+//! Each deployed `(recipe_name, version)` lives at
+//! `<daemon_dir>/deployments/<recipe_name>/v<n>/` with two files:
 //!
 //! - `recipe.forage`: the immutable source text the scheduler executes.
 //! - `catalog.json`: the `SerializableCatalog` resolved at deploy time.
@@ -23,20 +23,25 @@ const RECIPE_FILE: &str = "recipe.forage";
 const CATALOG_FILE: &str = "catalog.json";
 
 /// Final on-disk path for one deployed version.
-pub(crate) fn deployment_dir(deployments_root: &Path, slug: &str, version: u32) -> PathBuf {
-    deployments_root.join(slug).join(format!("v{version}"))
+pub(crate) fn deployment_dir(deployments_root: &Path, recipe_name: &str, version: u32) -> PathBuf {
+    deployments_root
+        .join(recipe_name)
+        .join(format!("v{version}"))
 }
 
-/// Highest `v<n>` directory present on disk for `slug`, regardless of
-/// whether a matching `deployed_versions` row exists. The deploy path
-/// uses this to pick a version that bumps past stray directories — a
-/// stray dir on disk with no DB row is the documented failure mode
-/// when an FS write succeeded but the SQLite txn rolled back. Without
-/// this scan the next deploy would pick the stray dir's number and
-/// `fs::rename` would fail with `ENOTEMPTY`.
-pub(crate) fn max_version_on_disk(deployments_root: &Path, slug: &str) -> io::Result<Option<u32>> {
-    let slug_dir = deployments_root.join(slug);
-    let read = match fs::read_dir(&slug_dir) {
+/// Highest `v<n>` directory present on disk for `recipe_name`,
+/// regardless of whether a matching `deployed_versions` row exists.
+/// The deploy path uses this to pick a version that bumps past stray
+/// directories — a stray dir on disk with no DB row is the documented
+/// failure mode when an FS write succeeded but the SQLite txn rolled
+/// back. Without this scan the next deploy would pick the stray dir's
+/// number and `fs::rename` would fail with `ENOTEMPTY`.
+pub(crate) fn max_version_on_disk(
+    deployments_root: &Path,
+    recipe_name: &str,
+) -> io::Result<Option<u32>> {
+    let recipe_dir = deployments_root.join(recipe_name);
+    let read = match fs::read_dir(&recipe_dir) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -64,22 +69,22 @@ pub(crate) fn max_version_on_disk(deployments_root: &Path, slug: &str) -> io::Re
 /// Materialize a version directory atomically. Writes the source +
 /// catalog to a temp dir, then renames into place. Caller is
 /// responsible for ensuring `version` hasn't been used yet (the DB
-/// gates this via `PRIMARY KEY (slug, version)`).
+/// gates this via `PRIMARY KEY (slug, version)` on `deployed_versions`).
 pub(crate) fn write_atomic(
     deployments_root: &Path,
-    slug: &str,
+    recipe_name: &str,
     version: u32,
     source: &str,
     catalog: &SerializableCatalog,
 ) -> io::Result<()> {
-    let slug_dir = deployments_root.join(slug);
-    fs::create_dir_all(&slug_dir)?;
+    let recipe_dir = deployments_root.join(recipe_name);
+    fs::create_dir_all(&recipe_dir)?;
 
     // Temp dir lives as a sibling of the final dir so the rename is
     // same-filesystem (and therefore atomic). The ULID tail prevents
     // collisions across racing deploys.
     let tmp_name = format!(".tmp-v{version}-{}", ulid::Ulid::new());
-    let tmp_dir = slug_dir.join(&tmp_name);
+    let tmp_dir = recipe_dir.join(&tmp_name);
     fs::create_dir_all(&tmp_dir)?;
 
     // Best-effort cleanup if anything below fails — leaving a stray
@@ -108,7 +113,7 @@ pub(crate) fn write_atomic(
         return Err(e);
     }
 
-    let final_dir = deployment_dir(deployments_root, slug, version);
+    let final_dir = deployment_dir(deployments_root, recipe_name, version);
     if let Err(e) = fs::rename(&tmp_dir, &final_dir) {
         cleanup(&tmp_dir);
         return Err(e);
@@ -121,13 +126,13 @@ pub(crate) fn write_atomic(
 /// pointer after a wipe).
 pub(crate) fn read_deployed(
     deployments_root: &Path,
-    slug: &str,
+    recipe_name: &str,
     version: u32,
 ) -> Result<(String, SerializableCatalog), DaemonError> {
-    let dir = deployment_dir(deployments_root, slug, version);
+    let dir = deployment_dir(deployments_root, recipe_name, version);
     if !dir.is_dir() {
         return Err(DaemonError::UnknownDeployment {
-            slug: slug.to_string(),
+            recipe_name: recipe_name.to_string(),
             version,
         });
     }

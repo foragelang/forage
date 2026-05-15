@@ -155,7 +155,7 @@ async fn execute(
             version: None,
         });
     };
-    let deployed = match daemon.load_deployed(&run.recipe_slug, version) {
+    let deployed = match daemon.load_deployed(&run.recipe_name, version) {
         Ok(d) => d,
         Err(e) => {
             return Err(RunFailure {
@@ -186,7 +186,7 @@ async fn execute(
     // each time.
     let recipe_path = run
         .workspace_root
-        .join(&run.recipe_slug)
+        .join(&run.recipe_name)
         .join("recipe.forage");
     let inputs = load_inputs(&recipe_path);
     let secrets = load_secrets(&recipe);
