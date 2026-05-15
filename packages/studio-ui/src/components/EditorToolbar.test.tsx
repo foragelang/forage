@@ -1,11 +1,11 @@
 /// Toolbar disable / enable tests. Save stays available on any open
-/// file (editing is path-shaped); Run, Replay, and Configure key on a
-/// recipe header name, so a header-less .forage file disables them
-/// with a "no recipe" tooltip.
+/// file (editing is path-shaped); Run and the run-flags popover key
+/// on a recipe header name, so a header-less .forage file disables
+/// them with a "no recipe" tooltip.
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 
 import { EditorToolbar } from "./EditorToolbar";
 import { SidebarProvider } from "./ui/sidebar";
@@ -71,24 +71,24 @@ describe("EditorToolbar enable / disable", () => {
         });
     });
 
-    test("Run live is disabled when the active path declares no recipe", async () => {
+    test("Run is disabled when the active path declares no recipe", async () => {
         // Header-less .forage file: workspace has the path open but
         // no recipe-statuses entry maps to it.
         seedRecipeStatuses(qc, []);
         useStudio.setState({ activeFilePath: "shared-types.forage" });
 
         wrap(service, qc);
-        const runButton = await screen.findByRole("button", { name: /run live/i });
+        const runButton = await screen.findByRole("button", { name: "Run" });
         expect(runButton).toBeDisabled();
-        const replayButton = await screen.findByRole("button", { name: /replay/i });
-        expect(replayButton).toBeDisabled();
+        const flagsButton = await screen.findByRole("button", { name: /run flags/i });
+        expect(flagsButton).toBeDisabled();
         // Save stays enabled even without a recipe — every .forage
         // file is editable.
-        const saveButton = await screen.findByRole("button", { name: /save/i });
+        const saveButton = await screen.findByRole("button", { name: "Save" });
         expect(saveButton).not.toBeDisabled();
     });
 
-    test("Run live is enabled when the active path hosts a parsed recipe", async () => {
+    test("Run is enabled when the active path hosts a parsed recipe", async () => {
         seedRecipeStatuses(qc, [
             {
                 name: "trilogy",
@@ -99,20 +99,48 @@ describe("EditorToolbar enable / disable", () => {
         useStudio.setState({ activeFilePath: "trilogy.forage" });
 
         wrap(service, qc);
-        const runButton = await screen.findByRole("button", { name: /run live/i });
+        const runButton = await screen.findByRole("button", { name: "Run" });
         expect(runButton).not.toBeDisabled();
-        const replayButton = await screen.findByRole("button", { name: /replay/i });
-        expect(replayButton).not.toBeDisabled();
+        const flagsButton = await screen.findByRole("button", { name: /run flags/i });
+        expect(flagsButton).not.toBeDisabled();
     });
 
-    test("Run live stays disabled when no file is open at all", async () => {
+    test("Run stays disabled when no file is open at all", async () => {
         seedRecipeStatuses(qc, []);
         wrap(service, qc);
-        const runButton = await screen.findByRole("button", { name: /run live/i });
+        const runButton = await screen.findByRole("button", { name: "Run" });
         expect(runButton).toBeDisabled();
         // With no file open, Save has nothing to write — it should
         // also be disabled.
-        const saveButton = await screen.findByRole("button", { name: /save/i });
+        const saveButton = await screen.findByRole("button", { name: "Save" });
         expect(saveButton).toBeDisabled();
+    });
+
+    test("The run-flags chip surfaces the active preset label", async () => {
+        seedRecipeStatuses(qc, [
+            {
+                name: "trilogy",
+                draft: { kind: "valid", path: "trilogy.forage" },
+                deployed: { kind: "none" },
+            },
+        ]);
+        useStudio.setState({ activeFilePath: "trilogy.forage" });
+
+        wrap(service, qc);
+        // Default state matches the dev preset, so the chip shows "dev".
+        const flagsButton = await screen.findByRole("button", { name: /run flags/i });
+        expect(flagsButton.textContent).toMatch(/dev/);
+
+        // Flipping the store's flags to the prod values reflects in
+        // the chip label without a separate UI gesture.
+        act(() => {
+            useStudio.getState().setRunFlags({
+                sample_limit: null,
+                replay: false,
+                ephemeral: false,
+            });
+        });
+        const refreshed = await screen.findByRole("button", { name: /run flags/i });
+        expect(refreshed.textContent).toMatch(/prod/);
     });
 });

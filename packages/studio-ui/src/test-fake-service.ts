@@ -66,8 +66,8 @@ export class FakeStudioService implements StudioService {
     listRecipeStatuses() { return this.call("listRecipeStatuses", []); }
 
     // Run
-    runRecipe(name: string, replay: boolean) {
-        return this.call("runRecipe", [name, replay]);
+    runRecipe(name: string, flags?: unknown) {
+        return this.call("runRecipe", [name, flags]);
     }
     cancelRun() { return this.call("cancelRun", []); }
     debugResume(action: string) { return this.call("debugResume", [action]); }

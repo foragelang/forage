@@ -8,18 +8,21 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+    ChevronDown,
     ChevronRight,
     Loader2,
     Pause,
     Play,
-    RefreshCw,
     Save,
     Settings,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -75,20 +78,12 @@ export function EditorToolbar() {
                             icon={<Save />}
                             variant="ghost"
                         />
+                        <RunFlagsPopover disabled={runDisabled} />
                         <ToolbarButton
-                            onClick={() => void runActive(true)}
+                            onClick={() => void runActive()}
                             disabled={runDisabled}
                             disabledReason={runDisabledReason}
-                            label="Replay"
-                            shortcut={["⇧", "⌘", "R"]}
-                            icon={<RefreshCw />}
-                            variant="ghost"
-                        />
-                        <ToolbarButton
-                            onClick={() => void runActive(false)}
-                            disabled={runDisabled}
-                            disabledReason={runDisabledReason}
-                            label="Run live"
+                            label="Run"
                             shortcut={["⌘", "R"]}
                             icon={<Play />}
                             variant="default"
@@ -229,7 +224,16 @@ function RunsChipOrConfigure({ name }: { name: string }) {
                     <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => void runActive(false)}
+                        // "Configure run" registers the recipe with
+                        // the daemon — a one-shot prod-shaped fire
+                        // that creates the Run row.
+                        onClick={() =>
+                            void runActive({
+                                sample_limit: null,
+                                replay: false,
+                                ephemeral: false,
+                            })
+                        }
                     >
                         <Settings />
                         Configure run
@@ -292,6 +296,173 @@ function describeCadence(r: Run): string {
         return `every ${r.cadence.every_n}${r.cadence.unit}`;
     }
     return r.cadence.expr;
+}
+
+/// Run-toolbar flag widget. Renders a small chip that summarizes the
+/// current preset (dev / prod / custom) and opens a popover with three
+/// toggles + a sample-size input. Picking a preset overwrites the
+/// three resolved values; flipping any single toggle puts the chip in
+/// "custom" mode.
+function RunFlagsPopover({ disabled }: { disabled: boolean }) {
+    const flags = useStudio((s) => s.runFlags);
+    const setRunFlags = useStudio((s) => s.setRunFlags);
+    const preset = describePreset(flags);
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={disabled}
+                    aria-label="Run flags"
+                    className="gap-1.5"
+                >
+                    <Settings className="size-3.5" />
+                    <span className="text-xs font-mono">{preset}</span>
+                    <ChevronDown className="size-3" />
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-72 space-y-3">
+                <div>
+                    <Label className="text-xs">Preset</Label>
+                    <div className="mt-1 flex gap-1">
+                        <Button
+                            size="sm"
+                            variant={preset === "dev" ? "default" : "outline"}
+                            onClick={() =>
+                                setRunFlags({
+                                    sample_limit: 10,
+                                    replay: true,
+                                    ephemeral: true,
+                                })
+                            }
+                            className="flex-1"
+                        >
+                            dev
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant={preset === "prod" ? "default" : "outline"}
+                            onClick={() =>
+                                setRunFlags({
+                                    sample_limit: null,
+                                    replay: false,
+                                    ephemeral: false,
+                                })
+                            }
+                            className="flex-1"
+                        >
+                            prod
+                        </Button>
+                    </div>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-col">
+                            <Label htmlFor="sample-limit" className="text-xs">
+                                Sample limit
+                            </Label>
+                            <span className="text-[10px] text-muted-foreground">
+                                Cap top-level for-loops; nested loops run fully.
+                            </span>
+                        </div>
+                        <Input
+                            id="sample-limit"
+                            type="number"
+                            min={1}
+                            value={flags.sample_limit ?? ""}
+                            placeholder="off"
+                            onChange={(e) => {
+                                const raw = e.target.value;
+                                if (raw === "") {
+                                    setRunFlags({ sample_limit: null });
+                                    return;
+                                }
+                                const n = Number.parseInt(raw, 10);
+                                if (Number.isNaN(n) || n < 1) return;
+                                setRunFlags({ sample_limit: n });
+                            }}
+                            className="w-20 h-7 text-xs"
+                        />
+                    </div>
+                    <FlagToggle
+                        id="replay"
+                        label="Replay"
+                        hint="Use _fixtures/<recipe>.jsonl instead of live HTTP."
+                        checked={flags.replay}
+                        onChange={(v) => setRunFlags({ replay: v })}
+                    />
+                    <FlagToggle
+                        id="ephemeral"
+                        label="Ephemeral"
+                        hint="Don't write to the daemon's persistent output store."
+                        checked={flags.ephemeral}
+                        onChange={(v) => setRunFlags({ ephemeral: v })}
+                    />
+                </div>
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+function FlagToggle(props: {
+    id: string;
+    label: string;
+    hint: string;
+    checked: boolean;
+    onChange: (v: boolean) => void;
+}) {
+    return (
+        <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+                <Label htmlFor={props.id} className="text-xs">
+                    {props.label}
+                </Label>
+                <span className="text-[10px] text-muted-foreground">
+                    {props.hint}
+                </span>
+            </div>
+            <button
+                id={props.id}
+                type="button"
+                role="switch"
+                aria-checked={props.checked}
+                onClick={() => props.onChange(!props.checked)}
+                className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center",
+                    "rounded-full transition-colors",
+                    props.checked ? "bg-primary" : "bg-muted",
+                )}
+            >
+                <span
+                    className={cn(
+                        "inline-block size-4 transform rounded-full bg-background",
+                        "transition-transform",
+                        props.checked ? "translate-x-4" : "translate-x-0.5",
+                    )}
+                />
+            </button>
+        </div>
+    );
+}
+
+/// Three flag values map to a preset label: dev (all-on at default
+/// values), prod (all-off), or custom (anything else). The label shows
+/// in the toolbar chip so a glance tells the user which mode their
+/// next run will fire in.
+function describePreset(flags: {
+    sample_limit: number | null;
+    replay: boolean;
+    ephemeral: boolean;
+}): "dev" | "prod" | "custom" {
+    if (flags.sample_limit === 10 && flags.replay && flags.ephemeral) {
+        return "dev";
+    }
+    if (flags.sample_limit === null && !flags.replay && !flags.ephemeral) {
+        return "prod";
+    }
+    return "custom";
 }
 
 function ToolbarButton(props: {

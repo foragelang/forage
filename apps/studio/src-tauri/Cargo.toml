@@ -52,6 +52,8 @@ indexmap     = { workspace = true }
 dirs         = { workspace = true }
 tempfile     = { workspace = true }
 regex        = { workspace = true }
+ulid         = { workspace = true }
+chrono       = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

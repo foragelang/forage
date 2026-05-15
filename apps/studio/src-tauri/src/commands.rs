@@ -373,14 +373,61 @@ impl StudioDebugger {
     }
 }
 
+/// Toolbar-level flag state. The frontend's run toolbar wires three
+/// independent toggles + a preset selector to this shape; the dev /
+/// prod presets are sugar at the React layer, so the backend only
+/// sees the resolved values. `None` for every field reverts to the
+/// dev defaults (sample 10, replay against fixtures, ephemeral).
+#[derive(Debug, Clone, serde::Deserialize, TS)]
+#[ts(export)]
+pub struct RunRecipeFlags {
+    /// Cap each top-level for-loop at this many items. Absent =
+    /// preset default.
+    pub sample_limit: Option<u32>,
+    /// Replay against the workspace's `_fixtures/<recipe>.jsonl`
+    /// instead of hitting the network. Absent = preset default.
+    pub replay: Option<bool>,
+    /// Skip the persistent output store. Absent = preset default.
+    pub ephemeral: Option<bool>,
+}
+
+impl RunRecipeFlags {
+    /// Fill in each `None` from the dev preset's defaults so the
+    /// engine sees a fully-resolved shape.
+    fn resolve(self) -> (Option<u32>, bool, bool) {
+        let defaults = forage_daemon::RunFlags::dev();
+        let sample = self.sample_limit.or(defaults.sample_limit);
+        let replay = self.replay.unwrap_or(defaults.replay.is_some());
+        let ephemeral = self.ephemeral.unwrap_or(defaults.ephemeral);
+        (sample, replay, ephemeral)
+    }
+}
+
 #[tauri::command]
 pub async fn run_recipe(
     app: AppHandle,
     state: State<'_, crate::state::StudioState>,
     name: String,
-    replay: bool,
+    flags: Option<RunRecipeFlags>,
 ) -> Result<RunOutcome, String> {
-    tracing::info!(name = %name, replay, "run_recipe");
+    // The editor's "Run" button defaults to the dev preset; the run
+    // toolbar exposes three toggles + a preset selector and the
+    // resolved values arrive here as `flags`. Missing fields fall
+    // back to the dev preset's defaults so the frontend can omit
+    // anything it isn't overriding.
+    let raw_flags = flags.unwrap_or(RunRecipeFlags {
+        sample_limit: None,
+        replay: None,
+        ephemeral: None,
+    });
+    let (sample_limit, replay, ephemeral) = raw_flags.resolve();
+    tracing::info!(
+        name = %name,
+        sample_limit = ?sample_limit,
+        replay,
+        ephemeral,
+        "run_recipe",
+    );
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
     let source = workspace::read_source(&ws, &name)?;
@@ -432,7 +479,7 @@ pub async fn run_recipe(
         inputs.insert(k, EvalValue::from(&v));
     }
     let secrets = workspace::read_secrets_from_env(&recipe);
-    // Replay reads the recipe-name-keyed JSONL stream Phase 5 introduced
+    // Replay reads the recipe-name-keyed JSONL stream
     // (`<root>/_fixtures/<recipe>.jsonl`). A live edit since workspace
     // load may have stripped the header — fall back to empty captures
     // in that case; the validator above will already have flagged the
@@ -474,7 +521,7 @@ pub async fn run_recipe(
         None
     };
 
-    let run_options = RunOptions::default();
+    let run_options = RunOptions { sample_limit };
     let snapshot: Result<Snapshot, String> = match (engine_kind, replay) {
         (EngineKind::Http, true) => {
             let transport = ReplayTransport::new(captures);
@@ -555,7 +602,29 @@ pub async fn run_recipe(
             // would see no Run row and have no idea why.
             let daemon_warning = match recipe.recipe_name() {
                 Some(header) => match daemon.ensure_run(header) {
-                    Ok(_) => None,
+                    Ok(run) => {
+                        // Non-ephemeral editor runs land the snapshot
+                        // in the same persistent `.forage/data/<recipe>.sqlite`
+                        // a scheduled fire would write to. Ephemeral
+                        // (the dev preset default) skips the write so
+                        // playground runs don't bleed into the prod
+                        // table. Either way, the in-memory snapshot
+                        // still rides back on the outcome.
+                        if !ephemeral {
+                            if let Err(e) = persist_snapshot(&recipe, &catalog, &run, &s) {
+                                tracing::warn!(
+                                    recipe_name = %header,
+                                    error = %e,
+                                    "persist after dev-run failed",
+                                );
+                                Some(format!("persist failed: {e}"))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
                     Err(e) => {
                         tracing::warn!(
                             recipe_name = %header,
@@ -590,6 +659,36 @@ pub async fn run_recipe(
             daemon_warning: None,
         }),
     }
+}
+
+/// Write the in-memory snapshot to the Run's configured output store.
+/// Used by `run_recipe` when the toolbar's "ephemeral" toggle is off
+/// so a Studio-driven run lands records in the same SQLite table the
+/// scheduler would have populated.
+fn persist_snapshot(
+    recipe: &forage_core::ForageFile,
+    catalog: &forage_core::TypeCatalog,
+    run: &forage_daemon::Run,
+    snapshot: &Snapshot,
+) -> Result<(), String> {
+    let tables = forage_daemon::derive_schema(recipe, catalog);
+    let mut store = forage_daemon::OutputStore::open(&run.output, tables)
+        .map_err(|e| format!("open output store: {e}"))?;
+    let scheduled_run_id = ulid::Ulid::new().to_string();
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    let mut tx = store.begin_tx().map_err(|e| format!("begin tx: {e}"))?;
+    for rec in &snapshot.records {
+        tx.write_record(
+            &scheduled_run_id,
+            at_ms,
+            &rec.id,
+            &rec.type_name,
+            &rec.fields,
+        )
+        .map_err(|e| format!("write record {}: {e}", rec.id))?;
+    }
+    tx.commit().map_err(|e| format!("commit: {e}"))?;
+    Ok(())
 }
 
 /// Resume a paused debug step. `action` is "continue", "step_over", or

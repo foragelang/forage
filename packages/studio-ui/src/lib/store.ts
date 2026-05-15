@@ -147,6 +147,17 @@ type StudioState = {
     /// First request `RequestSent` timestamps per step, in ms since
     /// epoch. Used to compute durations on `ResponseReceived`.
     stepStartMs: Record<string, number>;
+    /// Resolved toolbar run-flag state. The preset selector and the
+    /// per-flag toggles in the editor toolbar bind to this; the
+    /// editor "Run" button reads it at click time and ships the
+    /// resolved values to the backend. Defaults match the dev preset
+    /// (sample 10, replay, ephemeral) so a fresh Studio session
+    /// behaves like a playground.
+    runFlags: {
+        sample_limit: number | null;
+        replay: boolean;
+        ephemeral: boolean;
+    };
     // Breakpoints — step names with breakpoints set. Toggled by gutter
     // clicks in the editor pane; the backend reads the latest set on
     // every step pause to decide whether to actually wait.
@@ -186,6 +197,16 @@ type StudioState = {
     toggleBreakpoint: (step: string) => void;
     clearBreakpoints: () => void;
     setPauseIterations: (enabled: boolean) => void;
+    /// Update one or more run-flag fields. The toolbar's preset
+    /// selector calls this with the resolved values for the selected
+    /// preset; per-flag toggles call this with a single field.
+    setRunFlags: (
+        patch: Partial<{
+            sample_limit: number | null;
+            replay: boolean;
+            ephemeral: boolean;
+        }>,
+    ) => void;
 };
 
 /// Look up the recipe header name for a workspace-relative `path`
@@ -349,6 +370,11 @@ export const useStudio = create<StudioState>((set, get) => ({
     breakpoints: new Set<string>(),
     paused: null,
     pauseIterations: false,
+    runFlags: {
+        sample_limit: 10,
+        replay: true,
+        ephemeral: true,
+    },
 
     setView: (v) => set({ view: v }),
     setActiveRunId: (id) => set({ activeRunId: id }),
@@ -605,6 +631,10 @@ export const useStudio = create<StudioState>((set, get) => ({
             console.warn("set_pause_iterations failed", e),
         );
     },
+    setRunFlags: (patch) =>
+        set((state) => ({
+            runFlags: { ...state.runFlags, ...patch },
+        })),
 }));
 
 /// Install a concrete service + QueryClient into the global store.

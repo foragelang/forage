@@ -29,6 +29,7 @@ import type { Run } from "../../bindings/Run";
 import type { RunConfig } from "../../bindings/RunConfig";
 import type { RunEvent } from "../../bindings/RunEvent";
 import type { RunOutcome } from "../../bindings/RunOutcome";
+import type { RunRecipeFlags } from "../../bindings/RunRecipeFlags";
 import type { ScheduledRun } from "../../bindings/ScheduledRun";
 import type { SyncOutcomeWire } from "../../bindings/SyncOutcomeWire";
 import type { ValidationOutcome } from "../../bindings/ValidationOutcome";
@@ -242,6 +243,7 @@ export type {
     RunConfig,
     RunEvent,
     RunOutcome,
+    RunRecipeFlags,
     ScheduledRun,
     SyncOutcomeWire,
     ValidationOutcome,
@@ -292,7 +294,10 @@ export interface StudioService {
     listRecipeStatuses(): Promise<RecipeStatus[]>;
 
     // ── Run ─────────────────────────────────────────────────────────
-    runRecipe(name: string, replay: boolean): Promise<RunOutcome>;
+    /// Run a recipe directly through the engine (editor "Run" path).
+    /// Flags carry the toolbar's three toggles; an absent field falls
+    /// back to the dev preset's defaults at the backend.
+    runRecipe(name: string, flags?: RunRecipeFlags): Promise<RunOutcome>;
     cancelRun(): Promise<void>;
     debugResume(action: DebugAction): Promise<void>;
     setPauseIterations(enabled: boolean): Promise<void>;

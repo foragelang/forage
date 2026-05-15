@@ -560,7 +560,16 @@ function RecipeRow({
                         type="button"
                         onClick={(e) => {
                             e.stopPropagation();
-                            service.runRecipe(name, false).catch((err) =>
+                            // Sidebar-quick-run uses the prod preset:
+                            // live HTTP, full record set, persisted to
+                            // the daemon's data store. The full
+                            // dev/prod toggles live in the editor
+                            // toolbar.
+                            service.runRecipe(name, {
+                                sample_limit: null,
+                                replay: false,
+                                ephemeral: false,
+                            }).catch((err) =>
                                 console.warn("run_recipe failed", err),
                             );
                         }}

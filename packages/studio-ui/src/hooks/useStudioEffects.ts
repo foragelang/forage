@@ -74,8 +74,9 @@ export function useStudioEffects() {
         return off;
     }, [qc, service]);
 
-    // ⌘S → save, ⌘R → run live, ⇧⌘R → replay, ⌘N → new recipe (with a
-    // workspace open) or new workspace (on Welcome).
+    // ⌘S → save, ⌘R → run with current toolbar flags, ⇧⌘R → run with
+    // the prod preset (live, no sampling, persisted), ⌘N → new recipe
+    // (with a workspace open) or new workspace (on Welcome).
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
             if (!(e.metaKey || e.ctrlKey)) return;
@@ -84,10 +85,14 @@ export function useStudioEffects() {
                 void saveActive();
             } else if (e.key === "r" && !e.shiftKey) {
                 e.preventDefault();
-                void runActive(false);
+                void runActive();
             } else if (e.key === "r" && e.shiftKey) {
                 e.preventDefault();
-                void runActive(true);
+                void runActive({
+                    sample_limit: null,
+                    replay: false,
+                    ephemeral: false,
+                });
             } else if (e.key === "n") {
                 e.preventDefault();
                 if (readWorkspace(qc)) {
@@ -117,8 +122,20 @@ export function useStudioEffects() {
             }
         });
         register("menu:save", () => void saveActive());
-        register("menu:run_live", () => void runActive(false));
-        register("menu:run_replay", () => void runActive(true));
+        register("menu:run_live", () =>
+            void runActive({
+                sample_limit: null,
+                replay: false,
+                ephemeral: false,
+            }),
+        );
+        register("menu:run_replay", () =>
+            void runActive({
+                sample_limit: null,
+                replay: true,
+                ephemeral: true,
+            }),
+        );
         register("menu:validate", () => void saveActive());
         register("menu:open_workspace", () => void openWorkspaceAction(qc));
         register("menu:close_workspace", () => void closeWorkspaceAction(qc));

@@ -10,6 +10,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import type { RecipeStatus } from "../bindings/RecipeStatus";
+import type { RunRecipeFlags } from "../bindings/RunRecipeFlags";
 import { recipeNameOf } from "./path";
 import { currentWorkspaceKey, recentWorkspacesKey, recipeStatusesKey } from "./queryKeys";
 import { useStudio } from "./store";
@@ -35,7 +36,10 @@ export async function saveActive() {
     }
 }
 
-export async function runActive(replay: boolean) {
+/// Run the active recipe. With no argument, reads the resolved
+/// toolbar flag state from the store; pass explicit `flags` to
+/// override (the keyboard's ⇧⌘R prod-shortcut, for example).
+export async function runActive(flags?: RunRecipeFlags) {
     // Capture the path so the post-await writebacks below can detect
     // a file switch and skip the writes — running state for the
     // original file would otherwise corrupt the new file's view.
@@ -57,7 +61,16 @@ export async function runActive(replay: boolean) {
     if (useStudio.getState().activeFilePath !== path) return;
     useStudio.getState().runBegin();
     try {
-        const r = await service.runRecipe(name, replay);
+        const resolved = flags ?? {
+            // Read the toolbar's resolved values straight off the
+            // store. Sending the explicit shape (rather than null)
+            // keeps the backend log honest about what the user
+            // picked.
+            sample_limit: useStudio.getState().runFlags.sample_limit,
+            replay: useStudio.getState().runFlags.replay,
+            ephemeral: useStudio.getState().runFlags.ephemeral,
+        };
+        const r = await service.runRecipe(name, resolved);
         if (useStudio.getState().activeFilePath !== path) return;
         if (r.ok && r.snapshot) {
             useStudio.getState().setSnapshot(r.snapshot);

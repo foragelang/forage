@@ -48,6 +48,7 @@ import type { RecipeOutline } from "../../bindings/RecipeOutline";
 import type { Run } from "../../bindings/Run";
 import type { RunConfig } from "../../bindings/RunConfig";
 import type { RunOutcome } from "../../bindings/RunOutcome";
+import type { RunRecipeFlags } from "../../bindings/RunRecipeFlags";
 import type { ValidationOutcome } from "../../bindings/ValidationOutcome";
 import type { WorkspaceInfo } from "../../bindings/WorkspaceInfo";
 
@@ -160,8 +161,8 @@ export class TauriStudioService implements StudioService {
 
     // ── Run ─────────────────────────────────────────────────────────
 
-    runRecipe(name: string, replay: boolean): Promise<RunOutcome> {
-        return invoke<RunOutcome>("run_recipe", { name, replay });
+    runRecipe(name: string, flags?: RunRecipeFlags): Promise<RunOutcome> {
+        return invoke<RunOutcome>("run_recipe", { name, flags: flags ?? null });
     }
     cancelRun(): Promise<void> {
         return invoke<void>("cancel_run");
