@@ -12,6 +12,8 @@ import {
     indexAddPackage,
     indexAddUserPackage,
     indexAddCategory,
+    indexAddProducer,
+    indexAddConsumer,
 } from '../storage'
 import { identifyCaller } from '../auth'
 import { json, jsonError } from '../http'
@@ -156,6 +158,16 @@ export async function createFork(
     await indexAddPackage(env, caller.login, forkSlug)
     await indexAddUserPackage(env, caller.login, forkSlug)
     await indexAddCategory(env, meta.category, caller.login, forkSlug)
+    // The fork's v1 has the same input / output partitions as the
+    // upstream's latest. Wire the new recipe identity into each
+    // per-type index so the fork shows up in `producers_of(T)` /
+    // `consumers_of(T)` alongside the upstream.
+    for (const r of artifact.input_type_refs) {
+        await indexAddConsumer(env, r.author, r.name, caller.login, forkSlug)
+    }
+    for (const r of artifact.output_type_refs) {
+        await indexAddProducer(env, r.author, r.name, caller.login, forkSlug)
+    }
 
     // Bump upstream counters. Order doesn't matter; both are
     // non-transactional.

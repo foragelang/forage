@@ -19,6 +19,10 @@ import {
     indexAddUserPackage,
     indexAddCategory,
     indexRemoveCategory,
+    indexAddProducer,
+    indexRemoveProducer,
+    indexAddConsumer,
+    indexRemoveConsumer,
     listPackagesIndex,
     listCategoryIndex,
     ref,
@@ -310,6 +314,13 @@ export async function publishVersion(
     const now = Date.now()
     const nextVersion = existing === null ? 1 : existing.latest_version + 1
 
+    // Read the prior latest version's partitions before overwriting,
+    // so the producer / consumer indexes can be diffed below. `null`
+    // on first publish, when there's nothing to remove from.
+    const priorVersion = existing !== null
+        ? await getVersion(env, author, slug, existing.latest_version)
+        : null
+
     const artifact: PackageVersion = {
         author,
         slug,
@@ -361,6 +372,20 @@ export async function publishVersion(
         await indexRemoveCategory(env, oldCategory, author, slug)
     }
 
+    // Diff producer / consumer indexes against the prior latest. The
+    // indexes track the *current* canonical view: dropping a type
+    // from the output signature removes this recipe from
+    // `producers_of(T)`. Same for inputs / `consumers_of(T)`.
+    await diffProducerConsumerIndexes(
+        env,
+        author,
+        slug,
+        priorVersion?.input_type_refs ?? [],
+        priorVersion?.output_type_refs ?? [],
+        payload.input_type_refs,
+        payload.output_type_refs,
+    )
+
     return json(
         {
             author,
@@ -371,6 +396,48 @@ export async function publishVersion(
         201,
         request,
     )
+}
+
+/// Compare prior and new input / output type refs for a recipe and
+/// reflect the diff in the per-type producer / consumer indexes:
+/// every (author, name) added picks up the recipe; every one removed
+/// drops it. Producer / consumer are mutated independently — a type
+/// in both input and output participates in both indexes for the
+/// same recipe.
+async function diffProducerConsumerIndexes(
+    env: Env,
+    recipeAuthor: string,
+    recipeSlug: string,
+    priorInputs: TypeRef[],
+    priorOutputs: TypeRef[],
+    nextInputs: TypeRef[],
+    nextOutputs: TypeRef[],
+): Promise<void> {
+    const priorInputKeys = new Set(priorInputs.map((r) => ref(r.author, r.name)))
+    const nextInputKeys = new Set(nextInputs.map((r) => ref(r.author, r.name)))
+    const priorOutputKeys = new Set(priorOutputs.map((r) => ref(r.author, r.name)))
+    const nextOutputKeys = new Set(nextOutputs.map((r) => ref(r.author, r.name)))
+
+    for (const r of nextInputs) {
+        if (!priorInputKeys.has(ref(r.author, r.name))) {
+            await indexAddConsumer(env, r.author, r.name, recipeAuthor, recipeSlug)
+        }
+    }
+    for (const r of priorInputs) {
+        if (!nextInputKeys.has(ref(r.author, r.name))) {
+            await indexRemoveConsumer(env, r.author, r.name, recipeAuthor, recipeSlug)
+        }
+    }
+    for (const r of nextOutputs) {
+        if (!priorOutputKeys.has(ref(r.author, r.name))) {
+            await indexAddProducer(env, r.author, r.name, recipeAuthor, recipeSlug)
+        }
+    }
+    for (const r of priorOutputs) {
+        if (!nextOutputKeys.has(ref(r.author, r.name))) {
+            await indexRemoveProducer(env, r.author, r.name, recipeAuthor, recipeSlug)
+        }
+    }
 }
 
 // --- Validation ----------------------------------------------------------

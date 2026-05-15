@@ -17,6 +17,8 @@ import {
     putTypeHash,
     indexAddType,
     indexAddUserType,
+    indexAddAligned,
+    indexRemoveAligned,
     listTypesIndex,
     ref,
     sha256Hex,
@@ -313,6 +315,12 @@ export async function publishTypeVersion(
     const now = Date.now()
     const nextVersion = existing === null ? 1 : existing.latest_version + 1
 
+    // Read the prior latest's alignments before overwriting so the
+    // alignment index can be diffed below. `[]` on first publish.
+    const priorAlignments: AlignmentUri[] = existing !== null
+        ? (await getTypeVersion(env, author, name, existing.latest_version))?.alignments ?? []
+        : []
+
     const artifact: TypeVersion = {
         author,
         name,
@@ -345,6 +353,12 @@ export async function publishTypeVersion(
         await indexAddUserType(env, author, name)
     }
 
+    // Diff the alignment index against the prior latest. The index
+    // tracks the current canonical view: a re-publish that drops an
+    // `aligns` clause removes this type from
+    // `aligned_with(<ontology>/<term>)`. Adding new ontologies adds it.
+    await diffAlignmentIndex(env, author, name, priorAlignments, payload.alignments)
+
     return json(
         {
             author,
@@ -356,6 +370,32 @@ export async function publishTypeVersion(
         201,
         request,
     )
+}
+
+/// Add to / remove from the `idx:aligned:<ontology>/<term>` index for
+/// every alignment that's only on one side of the diff. Field-level
+/// alignments don't participate — the hub's `aligned_with` query is
+/// type-level by design (a field matching schema.org/name doesn't
+/// make the *type* a schema.org/Thing).
+async function diffAlignmentIndex(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+    prior: AlignmentUri[],
+    next: AlignmentUri[],
+): Promise<void> {
+    const priorKeys = new Set(prior.map((a) => `${a.ontology}/${a.term}`))
+    const nextKeys = new Set(next.map((a) => `${a.ontology}/${a.term}`))
+    for (const a of next) {
+        if (!priorKeys.has(`${a.ontology}/${a.term}`)) {
+            await indexAddAligned(env, a.ontology, a.term, typeAuthor, typeName)
+        }
+    }
+    for (const a of prior) {
+        if (!nextKeys.has(`${a.ontology}/${a.term}`)) {
+            await indexRemoveAligned(env, a.ontology, a.term, typeAuthor, typeName)
+        }
+    }
 }
 
 // --- Validation ----------------------------------------------------------

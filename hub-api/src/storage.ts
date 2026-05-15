@@ -32,6 +32,18 @@ import type {
 //   idx:categories                       → JSON array of category strings
 //   idx:types                            → JSON array of "<author>/<name>"
 //   idx:user_types:<author>              → JSON array of "<author>/<name>"
+//   idx:producers:<author>/<name>        → JSON array of "<author>/<slug>"
+//                                          (recipes whose latest version's
+//                                          `output_type_refs` includes this
+//                                          type)
+//   idx:consumers:<author>/<name>        → JSON array of "<author>/<slug>"
+//                                          (recipes whose latest version's
+//                                          `input_type_refs` includes this
+//                                          type)
+//   idx:aligned:<ontology>/<term>        → JSON array of "<author>/<name>"
+//                                          (types whose latest version
+//                                          declares this alignment URI at
+//                                          the type level)
 //
 // R2 (only when the version artifact is large):
 //   versions/<author>/<slug>/<n>.json    → PackageVersion JSON
@@ -86,6 +98,12 @@ const IDX_CATEGORY = (category: string) => `idx:cat:${category}`
 const IDX_USER_PACKAGES = (author: string) => `idx:user_packages:${author}`
 const IDX_TYPES = 'idx:types'
 const IDX_USER_TYPES = (author: string) => `idx:user_types:${author}`
+const IDX_PRODUCERS = (author: string, name: string) =>
+    `idx:producers:${author}/${name}`
+const IDX_CONSUMERS = (author: string, name: string) =>
+    `idx:consumers:${author}/${name}`
+const IDX_ALIGNED = (ontology: string, term: string) =>
+    `idx:aligned:${ontology}/${term}`
 
 const R2_VERSION_KEY = (author: string, slug: string, n: number) =>
     `versions/${author}/${slug}/${n}.json`
@@ -462,6 +480,129 @@ export async function indexAddType(
     name: string,
 ): Promise<void> {
     await appendToIndex(env, IDX_TYPES, ref(author, name))
+}
+
+// --- Producer / consumer / alignment indexes -----------------------------
+//
+// Idempotent add / remove on per-type-id ("producers"/"consumers") and
+// per-alignment-URI ("aligned") inverse lookups. The producer index
+// keys on the (author, name) of an output type and points at every
+// recipe whose latest version emits it; consumers mirror that for
+// inputs. The alignment index keys on the alignment URI's
+// ontology/term path and points at every type whose latest version
+// declares that alignment.
+//
+// The hub mutates these on every publish so the index reflects the
+// *current* canonical view: producers_of(T) returns recipes whose
+// latest version emits T, not historical versions. The discover
+// routes read the indexes directly; nothing scans the version corpus.
+
+export async function indexAddProducer(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+    recipeAuthor: string,
+    recipeSlug: string,
+): Promise<void> {
+    await appendToIndex(
+        env,
+        IDX_PRODUCERS(typeAuthor, typeName),
+        ref(recipeAuthor, recipeSlug),
+    )
+}
+
+export async function indexRemoveProducer(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+    recipeAuthor: string,
+    recipeSlug: string,
+): Promise<void> {
+    await removeFromIndex(
+        env,
+        IDX_PRODUCERS(typeAuthor, typeName),
+        ref(recipeAuthor, recipeSlug),
+    )
+}
+
+export async function indexAddConsumer(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+    recipeAuthor: string,
+    recipeSlug: string,
+): Promise<void> {
+    await appendToIndex(
+        env,
+        IDX_CONSUMERS(typeAuthor, typeName),
+        ref(recipeAuthor, recipeSlug),
+    )
+}
+
+export async function indexRemoveConsumer(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+    recipeAuthor: string,
+    recipeSlug: string,
+): Promise<void> {
+    await removeFromIndex(
+        env,
+        IDX_CONSUMERS(typeAuthor, typeName),
+        ref(recipeAuthor, recipeSlug),
+    )
+}
+
+export async function indexAddAligned(
+    env: Env,
+    ontology: string,
+    term: string,
+    typeAuthor: string,
+    typeName: string,
+): Promise<void> {
+    await appendToIndex(
+        env,
+        IDX_ALIGNED(ontology, term),
+        ref(typeAuthor, typeName),
+    )
+}
+
+export async function indexRemoveAligned(
+    env: Env,
+    ontology: string,
+    term: string,
+    typeAuthor: string,
+    typeName: string,
+): Promise<void> {
+    await removeFromIndex(
+        env,
+        IDX_ALIGNED(ontology, term),
+        ref(typeAuthor, typeName),
+    )
+}
+
+export async function listProducersIndex(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+): Promise<string[]> {
+    return listIndex(env, IDX_PRODUCERS(typeAuthor, typeName))
+}
+
+export async function listConsumersIndex(
+    env: Env,
+    typeAuthor: string,
+    typeName: string,
+): Promise<string[]> {
+    return listIndex(env, IDX_CONSUMERS(typeAuthor, typeName))
+}
+
+export async function listAlignedIndex(
+    env: Env,
+    ontology: string,
+    term: string,
+): Promise<string[]> {
+    return listIndex(env, IDX_ALIGNED(ontology, term))
 }
 
 export async function indexAddUserType(
