@@ -28,6 +28,7 @@ import {
     type PublishOutcome,
     type PublishPayload,
     type PublishPreview,
+    type RecipeStatus,
     type RunEvent,
     type ScheduledRun,
     type ServiceCapabilities,
@@ -139,8 +140,8 @@ export class TauriStudioService implements StudioService {
     recipeHover(source: string, line: number, col: number): Promise<HoverInfo | null> {
         return invoke<HoverInfo | null>("recipe_hover", { source, line, col });
     }
-    recipeProgressUnit(slug: string): Promise<ProgressUnit | null> {
-        return invoke<ProgressUnit | null>("recipe_progress_unit", { slug });
+    recipeProgressUnit(name: string): Promise<ProgressUnit | null> {
+        return invoke<ProgressUnit | null>("recipe_progress_unit", { name });
     }
     languageDictionary(): Promise<LanguageDictionary> {
         return invoke<LanguageDictionary>("language_dictionary");
@@ -148,14 +149,17 @@ export class TauriStudioService implements StudioService {
     createRecipe(): Promise<string> {
         return invoke<string>("create_recipe");
     }
-    deleteRecipe(slug: string): Promise<void> {
-        return invoke<void>("delete_recipe", { slug });
+    deleteRecipe(name: string): Promise<void> {
+        return invoke<void>("delete_recipe", { name });
+    }
+    listRecipeStatuses(): Promise<RecipeStatus[]> {
+        return invoke<RecipeStatus[]>("list_recipe_statuses");
     }
 
     // ── Run ─────────────────────────────────────────────────────────
 
-    runRecipe(slug: string, replay: boolean): Promise<RunOutcome> {
-        return invoke<RunOutcome>("run_recipe", { slug, replay });
+    runRecipe(name: string, replay: boolean): Promise<RunOutcome> {
+        return invoke<RunOutcome>("run_recipe", { name, replay });
     }
     cancelRun(): Promise<void> {
         return invoke<void>("cancel_run");
@@ -169,11 +173,11 @@ export class TauriStudioService implements StudioService {
     setBreakpoints(steps: string[]): Promise<void> {
         return invoke<void>("set_breakpoints", { steps });
     }
-    setRecipeBreakpoints(slug: string, steps: string[]): Promise<void> {
-        return invoke<void>("set_recipe_breakpoints", { slug, steps });
+    setRecipeBreakpoints(name: string, steps: string[]): Promise<void> {
+        return invoke<void>("set_recipe_breakpoints", { name, steps });
     }
-    loadRecipeBreakpoints(slug: string): Promise<string[]> {
-        return invoke<string[]>("load_recipe_breakpoints", { slug });
+    loadRecipeBreakpoints(name: string): Promise<string[]> {
+        return invoke<string[]>("load_recipe_breakpoints", { name });
     }
 
     // ── Daemon ──────────────────────────────────────────────────────
@@ -187,8 +191,8 @@ export class TauriStudioService implements StudioService {
     getRun(runId: string): Promise<Run | null> {
         return invoke<Run | null>("get_run", { runId });
     }
-    configureRun(slug: string, cfg: RunConfig): Promise<Run> {
-        return invoke<Run>("configure_run", { slug, cfg });
+    configureRun(name: string, cfg: RunConfig): Promise<Run> {
+        return invoke<Run>("configure_run", { name, cfg });
     }
     removeRun(runId: string): Promise<void> {
         return invoke<void>("remove_run", { runId });
@@ -225,7 +229,7 @@ export class TauriStudioService implements StudioService {
 
     publishRecipe(args: {
         author: string;
-        slug: string;
+        name: string;
         description: string;
         category: string;
         tags: string[];
@@ -233,7 +237,7 @@ export class TauriStudioService implements StudioService {
     }): Promise<PublishOutcome> {
         return invoke<PublishOutcome>("publish_recipe", {
             author: args.author,
-            slug: args.slug,
+            name: args.name,
             description: args.description,
             category: args.category,
             tags: args.tags,
@@ -241,13 +245,13 @@ export class TauriStudioService implements StudioService {
         });
     }
     previewPublish(args: {
-        slug: string;
+        name: string;
         description: string;
         category: string;
         tags: string[];
     }): Promise<PublishPreview> {
         return invoke<PublishPreview>("preview_publish", {
-            slug: args.slug,
+            name: args.name,
             description: args.description,
             category: args.category,
             tags: args.tags,
@@ -371,8 +375,8 @@ export class TauriStudioService implements StudioService {
     version(): Promise<string> {
         return invoke<string>("studio_version");
     }
-    showRecipeContextMenu(slug: string): Promise<void> {
-        return invoke<void>("show_recipe_context_menu", { slug });
+    showRecipeContextMenu(name: string): Promise<void> {
+        return invoke<void>("show_recipe_context_menu", { name });
     }
 
     // ── Event subscriptions ─────────────────────────────────────────

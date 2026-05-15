@@ -24,6 +24,7 @@ import type { PublishOutcome } from "../../bindings/PublishOutcome";
 import type { PublishPreview } from "../../bindings/PublishPreview";
 import type { RecentWorkspace } from "../../bindings/RecentWorkspace";
 import type { RecipeOutline } from "../../bindings/RecipeOutline";
+import type { RecipeStatus } from "../../bindings/RecipeStatus";
 import type { Run } from "../../bindings/Run";
 import type { RunConfig } from "../../bindings/RunConfig";
 import type { RunEvent } from "../../bindings/RunEvent";
@@ -188,6 +189,7 @@ export type {
     PublishPreview,
     RecentWorkspace,
     RecipeOutline,
+    RecipeStatus,
     Run,
     RunConfig,
     RunEvent,
@@ -226,25 +228,31 @@ export interface StudioService {
     validateRecipe(source: string): Promise<ValidationOutcome>;
     recipeOutline(source: string): Promise<RecipeOutline>;
     recipeHover(source: string, line: number, col: number): Promise<HoverInfo | null>;
-    recipeProgressUnit(slug: string): Promise<ProgressUnit | null>;
+    recipeProgressUnit(name: string): Promise<ProgressUnit | null>;
     languageDictionary(): Promise<LanguageDictionary>;
     createRecipe(): Promise<string>;
-    deleteRecipe(slug: string): Promise<void>;
+    deleteRecipe(name: string): Promise<void>;
+    /// Joined draft + deployed view across every recipe in the
+    /// workspace. The UI uses this both to surface "edited but not
+    /// deployed" / "deployed but draft missing" states and to map a
+    /// workspace-relative file path to the recipe header name when
+    /// firing recipe-scoped commands.
+    listRecipeStatuses(): Promise<RecipeStatus[]>;
 
     // ── Run ─────────────────────────────────────────────────────────
-    runRecipe(slug: string, replay: boolean): Promise<RunOutcome>;
+    runRecipe(name: string, replay: boolean): Promise<RunOutcome>;
     cancelRun(): Promise<void>;
     debugResume(action: DebugAction): Promise<void>;
     setPauseIterations(enabled: boolean): Promise<void>;
     setBreakpoints(steps: string[]): Promise<void>;
-    setRecipeBreakpoints(slug: string, steps: string[]): Promise<void>;
-    loadRecipeBreakpoints(slug: string): Promise<string[]>;
+    setRecipeBreakpoints(name: string, steps: string[]): Promise<void>;
+    loadRecipeBreakpoints(name: string): Promise<string[]>;
 
     // ── Daemon — Studio only ────────────────────────────────────────
     daemonStatus(): Promise<DaemonStatus>;
     listRuns(): Promise<Run[]>;
     getRun(runId: string): Promise<Run | null>;
-    configureRun(slug: string, cfg: RunConfig): Promise<Run>;
+    configureRun(name: string, cfg: RunConfig): Promise<Run>;
     removeRun(runId: string): Promise<void>;
     triggerRun(runId: string): Promise<ScheduledRun>;
     listScheduledRuns(
@@ -259,16 +267,17 @@ export interface StudioService {
     validateCron(expr: string): Promise<void>;
 
     // ── Hub publishing / auth (used by Studio's publish flow) ───────
-    // Publish the workspace recipe at `slug` to hub-api under
-    // `@author/slug`. The full atomic artifact (recipe + decls +
-    // fixtures + snapshot + base_version) is assembled by the Tauri
-    // side; the description / category / tags come from the publish
-    // dialog. Rejects with a `PublishError` discriminated union — the
+    // Publish the workspace recipe `name` to hub-api under
+    // `@author/<name>`. The hub publish slug is the recipe header
+    // name. The full atomic artifact (recipe + decls + fixtures +
+    // snapshot + base_version) is assembled by the Tauri side; the
+    // description / category / tags come from the publish dialog.
+    // Rejects with a `PublishError` discriminated union — the
     // `stale_base` variant carries the integer version pair that the
     // rebase prompt renders against.
     publishRecipe(args: {
         author: string;
-        slug: string;
+        name: string;
         description: string;
         category: string;
         tags: string[];
@@ -278,7 +287,7 @@ export interface StudioService {
     // reports its shape without POSTing. Used by the publish dialog's
     // preview pane.
     previewPublish(args: {
-        slug: string;
+        name: string;
         description: string;
         category: string;
         tags: string[];
@@ -342,7 +351,7 @@ export interface StudioService {
 
     // Show a recipe's context menu (right-click). Native menu in Studio;
     // hub IDE no-ops.
-    showRecipeContextMenu(slug: string): Promise<void>;
+    showRecipeContextMenu(name: string): Promise<void>;
 
     // ── Host dialogs ────────────────────────────────────────────────
     // Confirm dialog ("Save changes before switching?"). Resolves true

@@ -1632,6 +1632,15 @@ fn build_recipe_statuses(
 
     let mut by_name: BTreeMap<String, (DraftState, DeployedState)> = BTreeMap::new();
 
+    // `DraftState.path` is workspace-relative so the JS side can join
+    // it against `FileNode.path` (the file tree shape) without having
+    // to thread the workspace root through every callsite.
+    let rel = |p: &std::path::Path| -> PathBuf {
+        p.strip_prefix(&ws.root)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|_| p.to_path_buf())
+    };
+
     // Parsed recipes contribute their header name + a Valid draft
     // state. Broken files have no header name to key on (the parser
     // bailed), so they fall back to their file basename — the user
@@ -1643,7 +1652,7 @@ fn build_recipe_statuses(
             recipe.name().to_string(),
             (
                 DraftState::Valid {
-                    path: recipe.path.to_path_buf(),
+                    path: rel(recipe.path),
                 },
                 DeployedState::None,
             ),
@@ -1659,7 +1668,7 @@ fn build_recipe_statuses(
             key,
             (
                 DraftState::Broken {
-                    path: broken.path.to_path_buf(),
+                    path: rel(broken.path),
                     error: broken.error.to_string(),
                 },
                 DeployedState::None,
@@ -2078,9 +2087,13 @@ for $i in $list.items[*] {
         );
         let status = &statuses[0];
         assert_eq!(status.name, "bar", "status keys on the header name");
-        assert!(
-            matches!(status.draft, DraftState::Valid { .. }),
-            "draft side picked up the parsed recipe: {status:?}",
+        let DraftState::Valid { ref path } = status.draft else {
+            panic!("draft side picked up the parsed recipe: {status:?}");
+        };
+        assert_eq!(
+            path,
+            std::path::Path::new("foo.forage"),
+            "DraftState.path is workspace-relative so the UI can join it against FileNode.path",
         );
         assert!(
             matches!(status.deployed, DeployedState::Deployed { version: 1, .. }),
