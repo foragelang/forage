@@ -25,7 +25,10 @@ function pickOrigin(req: Request | null): string {
 function corsHeaders(req: Request | null): Record<string, string> {
     return {
         'Access-Control-Allow-Origin': pickOrigin(req),
-        'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+        // Wider than the current route table so future PATCH / PUT /
+        // HEAD endpoints don't silently CORS-fail on first deploy.
+        // Pre-1.0; not worth wiring a generator off the routing table.
+        'Access-Control-Allow-Methods': 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS',
         'Access-Control-Allow-Headers': 'Authorization,Content-Type',
         'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Max-Age': '86400',
