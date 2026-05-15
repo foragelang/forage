@@ -2,17 +2,40 @@
 
 Every construct in the `.forage` DSL. Read top-to-bottom for a tour; jump to a section if you know what you're looking for.
 
+## Workspace shape
+
+A workspace is a directory marked by `forage.toml`. Source files live as `.forage` files at any depth — typically flat at the workspace root. File position carries no semantics: every `.forage` file declares zero or one recipes and zero or more `type` / `enum` / `fn` declarations. Reserved data dirs sit alongside source:
+
+```
+~/Library/Forage/Recipes/
+├── forage.toml
+├── cannabis.forage            // share type / enum declarations
+├── remedy-baltimore.forage    // recipe "remedy-baltimore" engine http
+├── trilogy-med.forage         // recipe "trilogy-med" engine http
+├── _fixtures/
+│   ├── remedy-baltimore.jsonl
+│   └── trilogy-med.jsonl
+├── _snapshots/
+│   ├── remedy-baltimore.json
+│   └── trilogy-med.json
+└── .forage/                   // daemon runtime state
+```
+
+`_fixtures/<recipe>.jsonl` is the replay capture stream keyed by recipe header name. `_snapshots/<recipe>.json` is the golden snapshot. `.forage/` holds the daemon's SQLite databases. Source files cannot live inside any of these reserved directories.
+
 ## Recipe header
 
-A file declares one recipe. The header — `recipe "<name>"` followed by `engine <kind>` — sits flat at the top of the file; every subsequent declaration (types, inputs, steps, emits, for-loops, expectations) belongs to that recipe. There is no surrounding `{ }` block: the file IS the recipe.
+A `.forage` file declares at most one recipe. The header — `recipe "<name>"` followed by `engine <kind>` — sits at the top of the file alongside the other top-level forms. There is no surrounding `{ }` block.
 
 ```forage
-recipe "my-platform"
+recipe "remedy-baltimore"
 engine http   // or: browser
 // ... body ...
 ```
 
-The name is a string literal; it appears in error messages and snapshot metadata. Comments are `//` to end-of-line or `/* … */` block.
+The string in the header is the recipe's identity — the daemon, output stores, fixtures, snapshots, and hub publishes all key on it. File basenames are organizational and incidental; a file named `foo.forage` can declare a recipe named `bar`. Comments are `//` to end-of-line or `/* … */` block.
+
+A file without a `recipe "..."` header is a pure declarations file. It contributes `share`d types / enums / fns to the workspace catalog and can't carry recipe-only forms (`auth`, `browser`, `step`, `for`, `emit`, `expect`).
 
 ## Types
 
@@ -30,13 +53,24 @@ type Product {
 
 Built-in scalars: `String`, `Int`, `Double`, `Bool`.
 
+By default a `type` is **file-scoped** — visible only to the recipe (or other declarations) in the same file. Prefix with `share` to publish it to the workspace catalog:
+
+```forage
+share type Product { … }   // visible to every recipe in the workspace
+type LocalPanel  { … }     // file-scoped helper
+```
+
+Workspace-wide name collisions among `share`d types are a validator error. A file-scoped type in one file overrides a same-named `share`d type when both reach the same recipe's catalog — useful for recipe-specific overrides of a shared shape.
+
 ## Enums
 
 A closed set of named variants. Used as field types and in iteration.
 
 ```forage
-enum MenuType { RECREATIONAL, MEDICAL }
+share enum MenuType { RECREATIONAL, MEDICAL }
 ```
+
+Like `type`, `enum` is file-scoped by default and `share`-able to the workspace.
 
 ## Inputs
 
@@ -48,7 +82,7 @@ input menuTypes: [MenuType]
 input categoryIds: [Int]
 ```
 
-Reference an input anywhere a value is expected as `$input.fieldName`.
+Reference an input anywhere a value is expected as `$input.fieldName`. `input` declarations are recipe-local — they don't take `share`.
 
 ## Auth
 
@@ -176,7 +210,7 @@ Transforms inside template interpolations are checked by the validator at load t
 
 ## Transforms
 
-Transforms are named, engine-implemented functions chained with `|`. The vocabulary is fixed — new transforms are added in Swift as real platforms surface them, not invented per-recipe.
+Transforms are named, engine-implemented functions chained with `|`. The vocabulary is fixed — new transforms are added in Rust as real platforms surface them, not invented per-recipe.
 
 | Transform                                           | Effect                                                                |
 | --------------------------------------------------- | --------------------------------------------------------------------- |
@@ -189,7 +223,24 @@ Transforms are named, engine-implemented functions chained with `|`. The vocabul
 | `dedup`                                             | Remove duplicates from a list, preserving order.                      |
 | `getField(name)`                                    | Look up a field on an object whose name is computed at runtime.       |
 
-Domain-specific transforms (cannabis weight/prevalence parsers, etc.) live as user-defined functions inside the recipe that needs them — see the `leafbridge`, `jane`, and `sweed` recipes on [hub.foragelang.com](https://hub.foragelang.com) for end-to-end examples. The engine registry stays generic.
+Domain-specific transforms (cannabis weight/prevalence parsers, etc.) live as user-defined functions inside the recipe that needs them, or as `share fn` declarations elsewhere in the workspace. See the `leafbridge`, `jane`, and `sweed` recipes on [hub.foragelang.com](https://hub.foragelang.com) for end-to-end examples. The engine registry stays generic.
+
+## User functions
+
+A `fn` declaration introduces a named transform — pipe-callable as `$x | myFn` or directly as `myFn($x, $y)`. Like `type` and `enum`, `fn` is file-scoped by default and workspace-visible with `share`.
+
+```forage
+share fn shouty($x) { $x | upper | trim }
+
+fn variantKey($name) {
+    case $name of {
+        "Half Ounce" → "half_ounce"
+        "Ounce"      → "ounce"
+    }
+}
+```
+
+See [User-defined functions](/docs/syntax#user-functions) for full semantics — let-bindings, scope rules, namespace resolution.
 
 ## case expressions
 
