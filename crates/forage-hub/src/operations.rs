@@ -122,11 +122,14 @@ pub async fn sync_from_hub(
     };
     write_meta(&recipe_dir, &meta)?;
 
-    // The counter is informational; if it fails we still consider the
-    // sync successful. Log the bail-out so we notice systematic
-    // failures (e.g. a worker outage that leaves counts behind).
+    // The counter is informational; if it fails we still consider
+    // the sync successful. Log the bail-out at debug — a worker
+    // outage would spam warn on every sync, and the user has nothing
+    // to act on for an informational counter. The signal is still
+    // captured in the structured log for anyone investigating
+    // counter drift.
     if let Err(e) = client.record_download(&artifact.author, &artifact.slug).await {
-        tracing::warn!(
+        tracing::debug!(
             error = %e,
             author = %artifact.author,
             slug = %artifact.slug,
@@ -193,6 +196,14 @@ fn sha256_hex(s: &str) -> String {
 /// from `(upstream_author, upstream_slug)`, then sync the new fork
 /// into `workspace_root`. Returns the same shape as
 /// [`sync_from_hub`].
+///
+/// The hub's fork endpoint bumps the upstream's download counter
+/// server-side; the inner `sync_from_hub` then runs against the new
+/// fork (not the upstream), so a successful fork records exactly one
+/// "download" against the *fork itself* on its first sync. Intentional
+/// — the user did pull the artifact into their workspace — but worth
+/// naming because it looks like two downloads got counted at first
+/// glance.
 pub async fn fork_from_hub(
     client: &HubClient,
     workspace_root: &Path,
