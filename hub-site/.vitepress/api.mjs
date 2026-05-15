@@ -2,18 +2,13 @@
 // against the hub-api. Tiny and parameterless; same module works in
 // Node (build) and browser (runtime).
 //
-// Errors propagate; the swallow-on-error policy lives in the
-// individual callers. The dynamic-route loaders use the strict
-// `requirePackages` / `requireCategories` wrappers which fail the
-// build by default; the home-page snapshot loader uses the raw
-// helpers and tolerates empty/failing results.
-//
-// To run a permissive build locally (e.g. when the API is unreachable
-// from your machine), set `FORAGE_HUB_PERMISSIVE_BUILD=1`. The
-// production deploy pipeline leaves it unset so an outage at deploy
-// time fails loud rather than shipping a hub with zero dynamic
-// routes (and therefore 404s on every direct package / profile /
-// category URL).
+// Build-time policy: the default is lenient. A cold build on a dev
+// machine, fresh clone, or contributor CI without `api.foragelang.com`
+// reachable should succeed with an empty discovery path set and log a
+// warning, not fail. Production deploy CI sets
+// `FORAGE_HUB_REQUIRE_API=1` to demand a populated route list and
+// fail loud on API outage — otherwise the deployed hub would 404 on
+// every direct package / profile / category URL.
 
 export const HUB_API = process.env.FORAGE_HUB_API || 'https://api.foragelang.com'
 
@@ -47,34 +42,36 @@ export async function fetchCategories(base = HUB_API) {
     return Array.isArray(data.items) ? data.items : []
 }
 
-// True iff the operator has explicitly opted into permissive builds
-// (e.g. local dev with the API offline). The deploy pipeline leaves
-// this unset so transport errors and empty results fail the build.
-function permissive() {
-    const v = process.env.FORAGE_HUB_PERMISSIVE_BUILD
+// True iff the operator has explicitly opted into strict builds (the
+// production deploy pipeline). Default is lenient because the
+// majority of cold builds — dev machines, fresh clones, contributor
+// CI — don't have the hub-api reachable and shouldn't be forced to
+// set an env var to compile a static site.
+function requireApi() {
+    const v = process.env.FORAGE_HUB_REQUIRE_API
     return v === '1' || v === 'true'
 }
 
-// Fail-loud wrapper for `fetchPackages`. Used by the dynamic
-// `r/[author]/[slug]` + `u/[author]` route loaders where an empty
-// result in a real deploy would 404 every direct URL.
+// Fail-loud-on-strict wrapper for `fetchPackages`. Used by the
+// dynamic `r/[author]/[slug]` + `u/[author]` route loaders where an
+// empty result in a real deploy would 404 every direct URL.
 export async function requirePackages(opts) {
     let list
     try {
         list = await fetchPackages(opts)
     } catch (err) {
-        if (permissive()) {
-            console.warn(`[hub-site] fetchPackages failed (permissive build, continuing):`, err.message ?? err)
-            return []
+        if (requireApi()) {
+            throw new Error(`[hub-site] fetchPackages failed during build: ${err.message ?? err}. Unset FORAGE_HUB_REQUIRE_API to continue with no routes.`)
         }
-        throw new Error(`[hub-site] fetchPackages failed during build: ${err.message ?? err}. Set FORAGE_HUB_PERMISSIVE_BUILD=1 to continue with no routes.`)
+        console.warn(`[hub-site] fetchPackages failed (continuing with no routes):`, err.message ?? err)
+        return []
     }
     if (list.length === 0) {
-        if (permissive()) {
-            console.warn('[hub-site] fetchPackages returned no items (permissive build, continuing)')
-            return []
+        if (requireApi()) {
+            throw new Error('[hub-site] fetchPackages returned no items during build; refusing to ship a hub with no dynamic routes. Unset FORAGE_HUB_REQUIRE_API to continue.')
         }
-        throw new Error('[hub-site] fetchPackages returned no items during build; refusing to ship a hub with no dynamic routes. Set FORAGE_HUB_PERMISSIVE_BUILD=1 to continue.')
+        console.warn('[hub-site] fetchPackages returned no items (continuing with no routes)')
+        return []
     }
     return list
 }
@@ -85,18 +82,18 @@ export async function requireCategories() {
     try {
         cats = await fetchCategories()
     } catch (err) {
-        if (permissive()) {
-            console.warn(`[hub-site] fetchCategories failed (permissive build, continuing):`, err.message ?? err)
-            return []
+        if (requireApi()) {
+            throw new Error(`[hub-site] fetchCategories failed during build: ${err.message ?? err}. Unset FORAGE_HUB_REQUIRE_API to continue with no routes.`)
         }
-        throw new Error(`[hub-site] fetchCategories failed during build: ${err.message ?? err}. Set FORAGE_HUB_PERMISSIVE_BUILD=1 to continue with no routes.`)
+        console.warn(`[hub-site] fetchCategories failed (continuing with no routes):`, err.message ?? err)
+        return []
     }
     if (cats.length === 0) {
-        if (permissive()) {
-            console.warn('[hub-site] fetchCategories returned no items (permissive build, continuing)')
-            return []
+        if (requireApi()) {
+            throw new Error('[hub-site] fetchCategories returned no items during build; refusing to ship a hub with no category routes. Unset FORAGE_HUB_REQUIRE_API to continue.')
         }
-        throw new Error('[hub-site] fetchCategories returned no items during build; refusing to ship a hub with no category routes. Set FORAGE_HUB_PERMISSIVE_BUILD=1 to continue.')
+        console.warn('[hub-site] fetchCategories returned no items (continuing with no routes)')
+        return []
     }
     return cats
 }

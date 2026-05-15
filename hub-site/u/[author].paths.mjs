@@ -1,8 +1,9 @@
 // One dynamic route per author who has published. Profiles for users
 // who have only starred but not published aren't enumerated here.
 //
-// `requirePackages` fails the build loudly in production if the API
-// is unreachable or returns no packages.
+// Default builds warn and continue with no routes when the API is
+// offline; `FORAGE_HUB_REQUIRE_API=1` in the production deploy
+// pipeline fails the build loudly.
 import { requirePackages } from '../.vitepress/api.mjs'
 
 export default {
