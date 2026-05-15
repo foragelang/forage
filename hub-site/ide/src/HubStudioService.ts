@@ -372,11 +372,20 @@ export class HubStudioService implements StudioService {
         // hub-api directly and returns the new package metadata.
         return Promise.reject(new NotSupportedByService("forkFromHub"));
     }
-    authWhoami(): Promise<string | null> {
-        // Hub IDE session lives in cookies — read it through the API
-        // when implementing the auth banner; for now return null so
-        // the UI doesn't claim a signed-in user.
-        return Promise.resolve(null);
+    async authWhoami(): Promise<string | null> {
+        // Hub IDE sessions live in cookies — `GET /v1/oauth/whoami` is
+        // the documented probe (`hub-api/src/oauth.ts:oauthWhoami`).
+        // Returns `{ authenticated: true, user: { login, ... } }` when
+        // signed in, `{ authenticated: false }` otherwise. Auth-keyed
+        // affordances (Star, Fork, Publish) gate on the returned login.
+        const resp = await fetch(`${this.hubUrl}/v1/oauth/whoami`, {
+            credentials: "include",
+        });
+        if (!resp.ok) return null;
+        const body = (await resp.json()) as
+            | { authenticated: true; user: { login: string; name?: string; avatarUrl?: string } }
+            | { authenticated: false };
+        return body.authenticated ? body.user.login : null;
     }
     authStartDeviceFlow(): Promise<DeviceStart> {
         return Promise.reject(new NotSupportedByService("authStartDeviceFlow"));

@@ -161,4 +161,31 @@ describe("HubStudioService", () => {
             NotSupportedByService,
         );
     });
+
+    test("authWhoami returns the login when signed in", async () => {
+        fetchMock.mockResolvedValueOnce(
+            jsonResponse({
+                authenticated: true,
+                user: { login: "alice", name: "Alice", avatarUrl: "https://x/y" },
+            }),
+        );
+        const svc = new HubStudioService(HUB);
+        const login = await svc.authWhoami();
+        expect(login).toBe("alice");
+        const [url, init] = fetchMock.mock.calls[0]!;
+        expect(url).toBe(`${HUB}/v1/oauth/whoami`);
+        expect((init as RequestInit).credentials).toBe("include");
+    });
+
+    test("authWhoami returns null when not signed in", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse({ authenticated: false }));
+        const svc = new HubStudioService(HUB);
+        expect(await svc.authWhoami()).toBeNull();
+    });
+
+    test("authWhoami returns null on non-2xx responses", async () => {
+        fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+        const svc = new HubStudioService(HUB);
+        expect(await svc.authWhoami()).toBeNull();
+    });
 });
