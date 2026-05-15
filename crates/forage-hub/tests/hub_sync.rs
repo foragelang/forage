@@ -1,20 +1,25 @@
 //! End-to-end roundtrips against a wiremock-faked hub-api:
 //!
-//! - `sync_from_hub` materializes a `PackageVersion` into the flat
-//!   workspace, writing the recipe to `<workspace>/<slug>.forage`,
-//!   decls at the workspace root, fixtures + snapshot under the data
-//!   dirs, and the per-recipe sidecar under `.forage/sync/`.
-//! - `assemble_publish_request` walks the on-disk workspace back into
-//!   the wire artifact, picking up `base_version` from the sidecar.
+//! - `sync_from_hub` materializes a `PackageVersion` plus every type
+//!   it references into the flat workspace, writing the recipe to
+//!   `<workspace>/<slug>.forage`, each type to `<workspace>/<Name>.forage`,
+//!   mirroring them into the hub type cache, laying fixtures + snapshot
+//!   under the data dirs, and stamping the per-recipe sidecar under
+//!   `.forage/sync/`.
+//! - `assemble_publish_plan` walks the on-disk workspace into a
+//!   publish plan (types first, then recipe pinning them).
+//! - `publish_from_workspace` publishes the plan's types in sequence,
+//!   collects resolved versions, then posts the recipe with the
+//!   resolved `type_refs`.
 //! - 409 stale-base from the publish endpoint surfaces as
 //!   `HubError::StaleBase` with the version numbers preserved.
 //! - `fork_from_hub` POSTs the fork endpoint and then syncs the new
 //!   fork's v1 artifact into the destination workspace.
 
 use forage_hub::{
-    ForageMeta, HubClient, HubError, PackageFile, PackageFixture, PackageMetadata, PackageVersion,
-    assemble_publish_request, fork_from_hub, publish_from_workspace, read_meta, sync_from_hub,
-    write_meta,
+    ForageMeta, HubClient, HubError, PackageFixture, PackageMetadata, PackageVersion,
+    TypeFieldAlignment, TypeRef, TypeVersion, assemble_publish_plan, fork_from_hub,
+    publish_from_workspace, read_meta, sync_from_hub, write_meta,
 };
 use indexmap::IndexMap;
 use serde_json::json;
@@ -29,15 +34,33 @@ fn artifact_v1(author: &str, slug: &str) -> PackageVersion {
         recipe: format!(
             "recipe \"{slug}\"\nengine http\n\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
         ),
-        decls: vec![PackageFile {
-            name: "shared.forage".into(),
-            source: "share type Shared { id: String }\n".into(),
+        type_refs: vec![TypeRef {
+            author: author.into(),
+            name: "Shared".into(),
+            version: 1,
         }],
         fixtures: vec![PackageFixture {
             name: "captures.jsonl".into(),
             content: "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n".into(),
         }],
         snapshot: None,
+        base_version: None,
+        published_at: 1_700_000_000_000,
+        published_by: author.into(),
+    }
+}
+
+fn shared_type(author: &str) -> TypeVersion {
+    TypeVersion {
+        author: author.into(),
+        name: "Shared".into(),
+        version: 1,
+        source: "share type Shared {\n    id: String\n}\n".into(),
+        alignments: Vec::new(),
+        field_alignments: vec![TypeFieldAlignment {
+            field: "id".into(),
+            alignment: None,
+        }],
         base_version: None,
         published_at: 1_700_000_000_000,
         published_by: author.into(),
@@ -81,7 +104,9 @@ fn stage_workspace(ws_root: &std::path::Path, author: &str, slug: &str) {
     .unwrap();
 }
 
-/// Mount the GET endpoints `sync_from_hub` calls on the fake hub.
+/// Mount the GET endpoints `sync_from_hub` calls on the fake hub:
+/// the recipe metadata, its latest version, the downloads bump, and
+/// every type it references.
 async fn mount_read_package(server: &MockServer, art: &PackageVersion) {
     let author = art.author.clone();
     let slug = art.slug.clone();
@@ -100,10 +125,34 @@ async fn mount_read_package(server: &MockServer, art: &PackageVersion) {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
         .mount(server)
         .await;
+    for r in &art.type_refs {
+        let tv = TypeVersion {
+            author: r.author.clone(),
+            name: r.name.clone(),
+            version: r.version,
+            source: format!("share type {} {{\n    id: String\n}}\n", r.name),
+            alignments: Vec::new(),
+            field_alignments: vec![TypeFieldAlignment {
+                field: "id".into(),
+                alignment: None,
+            }],
+            base_version: None,
+            published_at: 1_700_000_000_000,
+            published_by: r.author.clone(),
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/types/{}/{}/versions/{}",
+                r.author, r.name, r.version
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&tv))
+            .mount(server)
+            .await;
+    }
 }
 
 #[tokio::test]
-async fn sync_materializes_flat_workspace_with_sidecar() {
+async fn sync_materializes_flat_workspace_with_sidecar_and_types() {
     let server = MockServer::start().await;
     let art = artifact_v1("alice", "zen-leaf");
     mount_read_package(&server, &art).await;
@@ -118,14 +167,15 @@ async fn sync_materializes_flat_workspace_with_sidecar() {
     assert_eq!(outcome.meta.author, "alice");
     assert_eq!(outcome.meta.slug, "zen-leaf");
     assert_eq!(outcome.meta.base_version, 1);
+    assert_eq!(outcome.type_pins.len(), 1);
+    assert_eq!(outcome.type_pins[0].name, "Shared");
+    assert_eq!(outcome.type_pins[0].version, 1);
 
-    // Recipe lands at `<workspace>/<slug>.forage` (flat). Decls at
-    // the workspace root, captures and snapshot in the data dirs
-    // keyed by recipe name.
+    // Recipe + types land at workspace root as flat siblings. Captures
+    // and snapshot live in the data dirs keyed by recipe name.
     assert!(ws.join("zen-leaf.forage").is_file());
-    assert!(ws.join("shared.forage").is_file());
+    assert!(ws.join("Shared.forage").is_file());
     assert!(ws.join("_fixtures").join("zen-leaf.jsonl").is_file());
-    // No legacy nested folder layout.
     assert!(!ws.join("zen-leaf").exists());
 
     // The sidecar carries the publish-back base_version and lives
@@ -141,6 +191,10 @@ async fn publish_succeeds_when_base_matches() {
     let server = MockServer::start().await;
     let author = "alice";
     let slug = "zen-leaf";
+
+    // The workspace has no `share` types in this test — the recipe
+    // publishes directly with an empty `type_refs`. Other tests cover
+    // the type-publish-first path.
     Mock::given(method("POST"))
         .and(path(format!("/v1/packages/{author}/{slug}/versions")))
         .and(header("authorization", "Bearer test-token"))
@@ -149,7 +203,7 @@ async fn publish_succeeds_when_base_matches() {
             "category": "scrape",
             "tags": ["test"],
             "recipe": "recipe \"zen-leaf\"\nengine http\nstep s { method \"GET\" url \"x\" }\n",
-            "decls": [],
+            "type_refs": [],
             "fixtures": [],
             "snapshot": null,
             "base_version": 1,
@@ -201,6 +255,90 @@ async fn publish_succeeds_when_base_matches() {
     let meta = read_meta(ws_root, slug).unwrap().unwrap();
     assert_eq!(meta.base_version, 2);
     assert_eq!(meta.origin, "@alice/zen-leaf@v2");
+}
+
+#[tokio::test]
+async fn publish_with_shared_types_posts_types_first_then_recipe() {
+    // A workspace with two `share` types in a sibling file. The
+    // publish flow posts each type first (server allocates v1 for each
+    // new type), then posts the recipe with the resolved type_refs.
+    let server = MockServer::start().await;
+    let author = "alice";
+    let slug = "zen-leaf";
+
+    // Type `Shared` doesn't exist yet: the publish lookup returns 404.
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{author}/Shared")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "error": { "code": "not_found", "message": "unknown type" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/types/{author}/Shared/versions")))
+        .and(header("authorization", "Bearer test-token"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "author": author,
+            "name": "Shared",
+            "version": 1,
+            "latest_version": 1,
+            "deduped": false,
+        })))
+        .mount(&server)
+        .await;
+
+    // The recipe POST receives the resolved type_refs (version=1).
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/packages/{author}/{slug}/versions")))
+        .and(header("authorization", "Bearer test-token"))
+        .and(body_json(json!({
+            "description": "with shared",
+            "category": "scrape",
+            "tags": [],
+            "recipe": format!(
+                "recipe \"{slug}\"\nengine http\nstep s {{ method \"GET\" url \"x\" }}\n"
+            ),
+            "type_refs": [{
+                "author": author,
+                "name": "Shared",
+                "version": 1,
+            }],
+            "fixtures": [],
+            "snapshot": null,
+            "base_version": null,
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "author": author,
+            "slug": slug,
+            "version": 1,
+            "latest_version": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ws_root = tmp.path();
+    stage_workspace(ws_root, author, slug);
+    std::fs::write(
+        ws_root.join("shared.forage"),
+        "share type Shared { id: String }\n",
+    )
+    .unwrap();
+
+    let ws = forage_core::workspace::load(ws_root).unwrap();
+    let client = HubClient::new(server.uri()).with_token("test-token");
+    let resp = publish_from_workspace(
+        &client,
+        &ws,
+        slug,
+        author,
+        "with shared".into(),
+        "scrape".into(),
+        vec![],
+    )
+    .await
+    .expect("publish should succeed");
+    assert_eq!(resp.version, 1);
 }
 
 #[tokio::test]
@@ -294,12 +432,17 @@ async fn fork_then_sync_round_trip() {
     art.recipe = format!(
         "recipe \"{upstream_slug}\"\nengine http\nstep s {{ method \"GET\" url \"x\" }}\n"
     );
-    // The fork creates a v1 under @bob/zen-leaf — the sync path uses
-    // the versioned endpoint (not /latest) because sync_from_hub is
-    // called with Some(1) when fork_from_hub dispatches.
+    // Fork's v1 references @bob/Shared@1 — mirror what the upstream
+    // recipe pinned. The fork inherits the upstream's pins per the
+    // hub-side forks route.
     Mock::given(method("GET"))
         .and(path(format!("/v1/packages/{fork_author}/{upstream_slug}/versions/1")))
         .respond_with(ResponseTemplate::new(200).set_body_json(&art))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{fork_author}/Shared/versions/1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(shared_type(fork_author)))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -342,10 +485,10 @@ async fn fork_then_sync_round_trip() {
 }
 
 #[tokio::test]
-async fn assemble_request_matches_disk_state() {
+async fn assemble_plan_matches_disk_state() {
     // Walks the assembly path directly: stage a flat workspace with
-    // recipe + shared decl + fixtures + snapshot + sidecar, then
-    // assert the wire shape.
+    // recipe + shared type + fixtures + snapshot + sidecar, then
+    // assert the plan shape.
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path();
     let slug = "zen-leaf";
@@ -361,8 +504,6 @@ async fn assemble_request_matches_disk_state() {
         "{\"line\":1}\n",
     )
     .unwrap();
-    // Drop a forage_core::Snapshot on disk so the assembly converts
-    // it to the wire shape.
     let core_snapshot = forage_core::Snapshot {
         records: vec![forage_core::Record {
             id: "rec-0".into(),
@@ -393,28 +534,32 @@ async fn assemble_request_matches_disk_state() {
     .unwrap();
 
     let ws = forage_core::workspace::load(ws_root).unwrap();
-    let req = assemble_publish_request(
+    let plan = assemble_publish_plan(
         &ws,
         slug,
+        "alice",
         "test pkg".into(),
         "scrape".into(),
         vec!["test".into()],
     )
     .unwrap();
-    assert!(req.recipe.contains("zen-leaf"));
-    assert_eq!(req.base_version, Some(2));
-    assert!(req.decls.iter().any(|d| d.name == "shared.forage"));
-    assert!(req.fixtures.iter().any(|f| f.name == "captures.jsonl"));
-    let snap = req.snapshot.expect("snapshot should round-trip");
+    assert!(plan.recipe_payload.recipe.contains("zen-leaf"));
+    assert_eq!(plan.recipe_payload.base_version, Some(2));
+    assert_eq!(plan.types.len(), 1);
+    assert_eq!(plan.types[0].name, "Shared");
+    assert!(plan.recipe_payload.fixtures.iter().any(|f| f.name == "captures.jsonl"));
+    let snap = plan.recipe_payload.snapshot.expect("snapshot should round-trip");
     assert_eq!(snap.counts.get("Item").copied(), Some(1));
     assert_eq!(snap.records.get("Item").map(|v| v.len()), Some(1));
+    // Recipe-side type_refs are placeholders (version: 0); the publish
+    // driver overwrites them with the resolved version after each
+    // type publish lands.
+    assert_eq!(plan.recipe_payload.type_refs.len(), 1);
+    assert_eq!(plan.recipe_payload.type_refs[0].version, 0);
 }
 
 #[tokio::test]
 async fn sync_refuses_to_clobber_local_recipe() {
-    // A workspace that already has `<slug>.forage` but no sidecar
-    // means local edits exist that the sync would overwrite.
-    // sync_from_hub returns an error instead of clobbering.
     let server = MockServer::start().await;
     let art = artifact_v1("alice", "zen-leaf");
     mount_read_package(&server, &art).await;
@@ -438,11 +583,6 @@ async fn sync_refuses_to_clobber_local_recipe() {
 
 #[tokio::test]
 async fn sync_into_same_workspace_at_higher_version_succeeds() {
-    // Drop a sidecar pinning base_version=1, then sync a version-3
-    // artifact. The sidecar's base_version is older than the
-    // incoming artifact's version, so the sync succeeds and
-    // overwrites — the guard only fires when the existing sidecar
-    // already covers the version being pulled.
     let server = MockServer::start().await;
     let mut v3 = artifact_v1("alice", "zen-leaf");
     v3.version = 3;
@@ -457,6 +597,11 @@ async fn sync_into_same_workspace_at_higher_version_succeeds() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&v3))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Shared/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(shared_type("alice")))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v1/packages/alice/zen-leaf/downloads"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 2 })))
@@ -465,10 +610,16 @@ async fn sync_into_same_workspace_at_higher_version_succeeds() {
 
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
-    // Stage a prior sidecar at v1 to mimic a previous sync.
     std::fs::write(
         ws.join("zen-leaf.forage"),
         "recipe \"zen-leaf\"\nengine http\nstep s_old { method \"GET\" url \"x\" }\n",
+    )
+    .unwrap();
+    // Sidecar for an older sync — must allow re-sync to a higher
+    // version without clobbering.
+    std::fs::write(
+        ws.join("Shared.forage"),
+        "share type Shared {\n    id: String\n}\n",
     )
     .unwrap();
     write_meta(
@@ -504,8 +655,6 @@ async fn sync_edit_publish_does_not_send_forked_from() {
     let author = "bob";
     let slug = "zen-leaf";
 
-    // Step 1: hub-side metadata claims this fork descends from
-    // @alice/zen-leaf v3. sync_from_hub copies that into the sidecar.
     let mut meta = package_meta(author, slug);
     meta.forked_from = Some(forage_hub::ForkedFrom {
         author: "alice".into(),
@@ -522,18 +671,49 @@ async fn sync_edit_publish_does_not_send_forked_from() {
         .respond_with(ResponseTemplate::new(200).set_body_json(artifact_v1(author, slug)))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{author}/Shared/versions/1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(shared_type(author)))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path(format!("/v1/packages/{author}/{slug}/downloads")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
         .mount(&server)
         .await;
 
-    // Step 2: the publish endpoint accepts a body whose top-level keys
-    // are exactly the documented PublishRequest fields — and crucially
-    // NOT `forked_from`. wiremock's `body_json` matcher does an exact
-    // shape comparison: if the assembler ever started smuggling
-    // `forked_from` onto the wire, the body wouldn't match this mock
-    // and the publish would 404, failing the test.
+    // Publish flow: type GET (existing), type POST (returns latest), recipe POST.
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{author}/Shared")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "author": author,
+            "name": "Shared",
+            "description": "",
+            "category": "scrape",
+            "tags": [],
+            "created_at": 0,
+            "latest_version": 1,
+            "owner_login": author,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/types/{author}/Shared/versions")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "author": author,
+            "name": "Shared",
+            "version": 1,
+            "latest_version": 1,
+            "deduped": true,
+        })))
+        .mount(&server)
+        .await;
+
+    // The recipe POST receives the resolved type_refs (version=1) and
+    // — crucially — no `forked_from` field. wiremock's `body_json`
+    // matcher does exact shape comparison, so a regressed assembler
+    // that smuggled `forked_from` onto the wire would mismatch and
+    // fail the test.
     Mock::given(method("POST"))
         .and(path(format!("/v1/packages/{author}/{slug}/versions")))
         .and(body_json(json!({
@@ -543,7 +723,11 @@ async fn sync_edit_publish_does_not_send_forked_from() {
             "recipe": format!(
                 "recipe \"{slug}\"\nengine http\n\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
             ),
-            "decls": [{"name": "shared.forage", "source": "share type Shared { id: String }\n"}],
+            "type_refs": [{
+                "author": author,
+                "name": "Shared",
+                "version": 1,
+            }],
             "fixtures": [{"name": "captures.jsonl", "content": "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n"}],
             "snapshot": null,
             "base_version": 1,
@@ -561,7 +745,6 @@ async fn sync_edit_publish_does_not_send_forked_from() {
     let ws_root = tmp.path();
     let client = HubClient::new(server.uri()).with_token("test-token");
 
-    // Sync — the sidecar should carry forked_from for local display.
     let outcome = sync_from_hub(&client, ws_root, author, slug, None).await.unwrap();
     assert!(
         outcome.meta.forked_from.is_some(),
@@ -578,11 +761,16 @@ async fn sync_edit_publish_does_not_send_forked_from() {
         format!("name = \"{author}/{slug}\"\ndescription = \"\"\ncategory = \"scrape\"\ntags = []\n"),
     )
     .unwrap();
+    // Add a fixture file for the publish path to round-trip into the
+    // wire body matcher above.
+    std::fs::create_dir_all(ws_root.join("_fixtures")).unwrap();
+    std::fs::write(
+        ws_root.join("_fixtures").join(format!("{slug}.jsonl")),
+        "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n",
+    )
+    .unwrap();
     let ws = forage_core::workspace::load(ws_root).unwrap();
 
-    // Publish — body_json matcher fails if the body carries any
-    // additional fields (e.g. forked_from). A second publish on the
-    // same fork would re-trigger the regression if it ever returned.
     let resp = publish_from_workspace(
         &client,
         &ws,
@@ -596,8 +784,6 @@ async fn sync_edit_publish_does_not_send_forked_from() {
     .expect("publish should succeed without forked_from on the wire");
     assert_eq!(resp.version, 2);
 
-    // After publish, the sidecar still tracks lineage — `forked_from`
-    // is local-only state, untouched by the publish round-trip.
     let after = read_meta(ws_root, slug).unwrap().unwrap();
     assert!(
         after.forked_from.is_some(),
@@ -605,18 +791,22 @@ async fn sync_edit_publish_does_not_send_forked_from() {
     );
 }
 
-/// `fetch_to_cache` writes the version artifact into the layout that
-/// the dep-cache reader (`scan_package_declarations`) walks. The
-/// reader recurses inside `<cache>/<author>/<slug>/<version>/`, so the
-/// writer must place decls there — not in the slug directory one
-/// level up, where the reader would never see them.
+/// `fetch_to_cache` writes a recipe version into the recipe cache and
+/// pulls every referenced type into the parallel type cache. The
+/// workspace loader reads the type cache when resolving lockfile
+/// `[types]` pins; the recipe cache stays for cross-recipe deps.
 #[tokio::test]
-async fn fetch_to_cache_writes_decls_inside_version_subtree() {
+async fn fetch_to_cache_writes_recipe_and_types() {
     let server = MockServer::start().await;
     let art = artifact_v1("alice", "zen-leaf");
     Mock::given(method("GET"))
         .and(path("/v1/packages/alice/zen-leaf/versions/1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&art))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/types/alice/Shared/versions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(shared_type("alice")))
         .mount(&server)
         .await;
 
@@ -628,86 +818,11 @@ async fn fetch_to_cache_writes_decls_inside_version_subtree() {
         .unwrap();
     assert_eq!(fetched.dir, cache.join("alice").join("zen-leaf").join("1"));
     assert!(fetched.dir.join("zen-leaf.forage").is_file());
-    // Decls land INSIDE the version subtree so the dep-cache reader
-    // finds them (the reader walks the version dir recursively; it
-    // never looks at the slug directory above it).
-    assert!(fetched.dir.join("shared.forage").is_file());
+    // Types land in the parallel type-cache subtree.
     assert!(
-        !cache
-            .join("alice")
-            .join("zen-leaf")
-            .join("shared.forage")
-            .exists(),
-        "decls must not leak into the slug-level directory",
+        cache.join("types").join("alice").join("Shared").join("1.forage").is_file(),
     );
     assert!(!fetched.sha256.is_empty(), "sha256 must be populated");
-}
-
-/// Round-trip: `fetch_to_cache` writes a version into the cache, then
-/// `Workspace::catalog` loads a recipe whose manifest depends on that
-/// version. The catalog must pick up the cached decls. Serialised
-/// because `FORAGE_HUB_CACHE` is process-global.
-#[tokio::test]
-#[serial_test::serial]
-async fn fetch_to_cache_roundtrips_through_workspace_catalog() {
-    let server = MockServer::start().await;
-    let art = artifact_v1("alice", "zen-leaf");
-    Mock::given(method("GET"))
-        .and(path("/v1/packages/alice/zen-leaf/versions/1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&art))
-        .mount(&server)
-        .await;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let cache = tmp.path().join("hub-cache");
-    let ws_root = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws_root).unwrap();
-
-    // Point the workspace loader at our temp cache. `FORAGE_HUB_CACHE`
-    // is process-global; `#[serial_test::serial]` serialises this test
-    // against any other test that touches the same var.
-    let prev = std::env::var("FORAGE_HUB_CACHE").ok();
-    // SAFETY: env mutation is unsafe in Rust 2024; the serial attribute
-    // serialises against other env-var-touching tests in the harness.
-    unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
-
-    let client = HubClient::new(server.uri());
-    forage_hub::fetch_to_cache(&client, &cache, "alice", "zen-leaf", 1)
-        .await
-        .unwrap();
-
-    // Build a workspace that declares the dep at v1, then load the
-    // catalog. The cached decls must show up.
-    std::fs::write(
-        ws_root.join("forage.toml"),
-        "name = \"bob/uses-zen\"\n\
-         description = \"deps zen-leaf shared types\"\n\
-         category = \"scrape\"\n\
-         tags = [\"test\"]\n\
-         [deps]\n\
-         \"alice/zen-leaf\" = 1\n",
-    )
-    .unwrap();
-    std::fs::write(
-        ws_root.join("uses-zen.forage"),
-        "recipe \"uses-zen\"\nengine http\nstep s { method \"GET\" url \"https://example.test\" }\n",
-    )
-    .unwrap();
-
-    let ws = forage_core::workspace::load(&ws_root).unwrap();
-    let recipe_path = ws_root.join("uses-zen.forage");
-    let catalog = ws.catalog_from_disk(&recipe_path).unwrap();
-
-    // SAFETY: see safety comment above.
-    match prev {
-        Some(v) => unsafe { std::env::set_var("FORAGE_HUB_CACHE", v) },
-        None => unsafe { std::env::remove_var("FORAGE_HUB_CACHE") },
-    }
-
-    assert!(
-        catalog.types.contains_key("Shared"),
-        "dep cache decls must be visible in the workspace catalog",
-    );
 }
 
 /// Sync an artifact whose internal recipe header name disagrees with
@@ -730,21 +845,17 @@ async fn sync_rejects_mismatched_recipe_header() {
     assert!(format!("{err}").contains("different"), "unexpected: {err}");
 }
 
-/// Round-trip: assemble a flat-workspace publish artifact, simulate
-/// the hub accepting it, then sync the same artifact back into a
-/// fresh workspace. The recipe + decls + fixtures + snapshot land
-/// in the canonical flat shape, and the sidecar carries the freshly
-/// stamped version.
+/// Round-trip: publish a recipe + its shared types, then sync the
+/// same artifact back into a fresh workspace. The recipe + each type
+/// land in the canonical flat shape, and the sidecar carries the
+/// freshly stamped version.
 #[tokio::test]
 async fn flat_workspace_publish_round_trips_through_sync() {
     let server = MockServer::start().await;
     let author = "alice";
     let slug = "bar";
 
-    // Stage a workspace with a recipe whose file basename
-    // (`foo.forage`) differs from the recipe header name (`bar`) —
-    // the publish path is keyed on the header name, not the file
-    // basename, and the round-trip must preserve that.
+    // Stage a workspace with a recipe + one shared type in a sibling file.
     let tmp = tempfile::tempdir().unwrap();
     let pub_root = tmp.path().join("pub");
     std::fs::create_dir_all(&pub_root).unwrap();
@@ -776,24 +887,42 @@ async fn flat_workspace_publish_round_trips_through_sync() {
 
     let ws = forage_core::workspace::load(&pub_root).unwrap();
 
-    // The hub accepts the publish and stamps v1, then turns around
-    // and serves the same artifact on the GET endpoints. The shared
-    // mock state captures the body so the GET returns the same bytes
-    // the publisher sent.
+    // The hub accepts the type publish first, then the recipe publish,
+    // then serves the same artifact pair on the GET endpoints.
     let recipe_src = std::fs::read_to_string(pub_root.join("foo.forage")).unwrap();
-    let shared_src = std::fs::read_to_string(pub_root.join("shared.forage")).unwrap();
     let fixture_body = std::fs::read_to_string(
         pub_root.join("_fixtures").join(format!("{slug}.jsonl")),
     )
     .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{author}/Shared")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "error": { "code": "not_found", "message": "unknown type" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/types/{author}/Shared/versions")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "author": author,
+            "name": "Shared",
+            "version": 1,
+            "latest_version": 1,
+            "deduped": false,
+        })))
+        .mount(&server)
+        .await;
+
     let served_artifact = PackageVersion {
         author: author.into(),
         slug: slug.into(),
         version: 1,
         recipe: recipe_src.clone(),
-        decls: vec![PackageFile {
-            name: "shared.forage".into(),
-            source: shared_src.clone(),
+        type_refs: vec![TypeRef {
+            author: author.into(),
+            name: "Shared".into(),
+            version: 1,
         }],
         fixtures: vec![PackageFixture {
             name: "captures.jsonl".into(),
@@ -826,6 +955,11 @@ async fn flat_workspace_publish_round_trips_through_sync() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&served_artifact))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/types/{author}/Shared/versions/1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(shared_type(author)))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path(format!("/v1/packages/{author}/{slug}/downloads")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "downloads": 1 })))
@@ -847,11 +981,12 @@ async fn flat_workspace_publish_round_trips_through_sync() {
     assert_eq!(publish_resp.version, 1);
     assert_eq!(publish_resp.slug, slug);
 
-    // Sidecar stamped post-publish.
     let pub_meta = read_meta(&pub_root, slug).unwrap().unwrap();
     assert_eq!(pub_meta.base_version, 1);
 
-    // Now sync into a fresh workspace and verify the on-disk shape.
+    // Now sync into a fresh workspace and verify the on-disk shape:
+    // the recipe + the referenced type both land at the workspace
+    // root.
     let sync_root = tmp.path().join("sync");
     std::fs::create_dir_all(&sync_root).unwrap();
     let sync_outcome = sync_from_hub(&client, &sync_root, author, slug, None)
@@ -860,10 +995,12 @@ async fn flat_workspace_publish_round_trips_through_sync() {
     assert_eq!(sync_outcome.version, 1);
     assert_eq!(sync_outcome.recipe_path, sync_root.join(format!("{slug}.forage")));
     assert!(sync_root.join(format!("{slug}.forage")).is_file());
-    assert!(sync_root.join("shared.forage").is_file());
+    assert!(sync_root.join("Shared.forage").is_file());
     assert!(sync_root.join("_fixtures").join(format!("{slug}.jsonl")).is_file());
     let sync_meta = read_meta(&sync_root, slug).unwrap().unwrap();
     assert_eq!(sync_meta.author, author);
     assert_eq!(sync_meta.slug, slug);
     assert_eq!(sync_meta.base_version, 1);
+    assert_eq!(sync_outcome.type_pins.len(), 1);
+    assert_eq!(sync_outcome.type_pins[0].name, "Shared");
 }

@@ -11,7 +11,8 @@ use reqwest::{Client, Method};
 
 use crate::error::{HubError, HubResult};
 use crate::types::{
-    ForkRequest, PackageMetadata, PackageVersion, PublishRequest, PublishResponse, VersionSpec,
+    ForkRequest, PackageMetadata, PackageVersion, PublishRequest, PublishResponse,
+    PublishTypeRequest, PublishTypeResponse, TypeMetadata, TypeVersion, VersionSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,57 @@ impl HubClient {
         payload: &PublishRequest,
     ) -> HubResult<PublishResponse> {
         let url = format!("{}/v1/packages/{author}/{slug}/versions", self.base_url);
+        let body = serde_json::to_string(payload)?;
+        let resp = self.send(Method::POST, &url, Some(body)).await?;
+        Ok(serde_json::from_str(&resp)?)
+    }
+
+    /// `GET /v1/types/:author/:name` — type metadata (no version
+    /// artifact). Returns `None` on 404 so callers can branch on
+    /// "type doesn't exist yet" without parsing the error.
+    pub async fn get_type(
+        &self,
+        author: &str,
+        name: &str,
+    ) -> HubResult<Option<TypeMetadata>> {
+        let url = format!("{}/v1/types/{author}/{name}", self.base_url);
+        match self.send(Method::GET, &url, None).await {
+            Ok(body) => Ok(Some(serde_json::from_str(&body)?)),
+            Err(HubError::Api { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `GET /v1/types/:author/:name/versions/:n` — full type-version
+    /// artifact (source + alignments).
+    pub async fn get_type_version(
+        &self,
+        author: &str,
+        name: &str,
+        version: VersionSpec,
+    ) -> HubResult<TypeVersion> {
+        let url = format!(
+            "{}/v1/types/{author}/{name}/versions/{}",
+            self.base_url,
+            version.as_path_segment()
+        );
+        let body = self.send(Method::GET, &url, None).await?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// `POST /v1/types/:author/:name/versions` — publish a type. The
+    /// server short-circuits on content-hash match against the current
+    /// latest version (status 200 with `deduped: true`); fresh content
+    /// allocates v(N+1) (status 201, `deduped: false`). Either way the
+    /// recipe's pin against `(author, name, response.version)` is the
+    /// authoritative reference.
+    pub async fn publish_type_version(
+        &self,
+        author: &str,
+        name: &str,
+        payload: &PublishTypeRequest,
+    ) -> HubResult<PublishTypeResponse> {
+        let url = format!("{}/v1/types/{author}/{name}/versions", self.base_url);
         let body = serde_json::to_string(payload)?;
         let resp = self.send(Method::POST, &url, Some(body)).await?;
         Ok(serde_json::from_str(&resp)?)
@@ -295,7 +347,7 @@ mod tests {
             category: "c".into(),
             tags: vec![],
             recipe: "r".into(),
-            decls: vec![],
+            type_refs: vec![],
             fixtures: vec![],
             snapshot: None,
             base_version: Some(1),
@@ -336,7 +388,7 @@ mod tests {
             category: "c".into(),
             tags: vec![],
             recipe: "r".into(),
-            decls: vec![],
+            type_refs: vec![],
             fixtures: vec![],
             snapshot: None,
             base_version: Some(3),

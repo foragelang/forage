@@ -2,9 +2,10 @@
 //!
 //! These functions own the on-disk shape of a synced recipe. The wire
 //! layer ([`crate::client`]) just speaks the REST API; everything that
-//! materializes a `PackageVersion` into a workspace, walks an on-disk
-//! recipe back into a `PublishRequest`, and tracks the source version
-//! in a sidecar lives here so Studio's Tauri commands and the CLI
+//! materializes a `PackageVersion` (and the types it references) into
+//! a workspace, walks an on-disk recipe back into a sequence of type
+//! publishes plus a recipe publish, and tracks the source version in a
+//! sidecar lives here so Studio's Tauri commands and the CLI
 //! subcommands share one implementation.
 //!
 //! The hub-side "slug" is the recipe's header name; locally each
@@ -12,20 +13,31 @@
 //! data (`_fixtures/<recipe>.jsonl`, `_snapshots/<recipe>.json`) and
 //! the hub-sync sidecar (`.forage/sync/<recipe>.json`) hang off the
 //! workspace root keyed on the same recipe-name string.
+//!
+//! Hub types are first-class citizens: the publish flow extracts each
+//! `share`d type in the workspace, publishes it as its own
+//! `TypeVersion`, and pins the recipe to the resolved versions via
+//! `type_refs`. The sync flow materializes types into the workspace
+//! alongside the recipe (one `<workspace>/<Name>.forage` per type) and
+//! mirrors them into the hub type cache so the workspace loader can
+//! resolve them.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use forage_core::ast::{AlignmentUri as CoreAlignmentUri, RecipeType};
 use forage_core::workspace::{Workspace, fixtures_path, snapshot_path};
 
 use crate::client::HubClient;
 use crate::error::{HubError, HubResult};
 use crate::types::{
-    ForkedFrom, PackageFile, PackageFixture, PackageMetadata, PackageSnapshot, PackageVersion,
-    PublishRequest, PublishResponse, VersionSpec,
+    AlignmentUri, ForkedFrom, PackageFixture, PackageMetadata, PackageSnapshot, PackageVersion,
+    PublishRequest, PublishResponse, PublishTypeRequest, TypeFieldAlignment, TypeRef, TypeVersion,
+    VersionSpec,
 };
 
 /// Per-workspace directory holding `forage publish` sidecars. Sits
@@ -58,33 +70,48 @@ impl ForageMeta {
 }
 
 /// Result of [`sync_from_hub`]: the file the recipe was written to
-/// (always `<workspace>/<slug>.forage`), the version that landed, and
-/// the sidecar shape so callers can echo "synced @author/slug@v4"
-/// back to the user.
+/// (always `<workspace>/<slug>.forage`), the version that landed, the
+/// sidecar shape, and the type pins synced alongside it. Callers echo
+/// "synced @author/slug@v4" and may surface the type pins.
 #[derive(Debug, Clone)]
 pub struct SyncOutcome {
     pub recipe_path: PathBuf,
     pub version: u32,
     pub meta: ForageMeta,
+    /// Types synced into the workspace as part of this sync. One entry
+    /// per `TypeRef` on the recipe; in `(author, name, version)` order
+    /// from the recipe's pin list.
+    pub type_pins: Vec<TypePin>,
 }
 
-/// Pull `(author, slug, version)` from the hub, materialize it under
-/// `workspace_root`, write the sidecar, and bump the download counter.
-/// The version defaults to `latest` when `version` is `None`.
+/// One synced type pin. The same shape the lockfile writes under
+/// `[types]`; surfaced from `sync_from_hub` so the caller can persist
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypePin {
+    pub author: String,
+    pub name: String,
+    pub version: u32,
+}
+
+/// Pull `(author, slug, version)` from the hub, materialize the recipe
+/// plus every type it pins, write the sidecar, and bump the download
+/// counter. The version defaults to `latest` when `version` is `None`.
 ///
 /// The on-disk layout matches the flat workspace shape:
 ///
 /// - `<workspace_root>/<slug>.forage` — the recipe source.
-/// - `<workspace_root>/<decl-name>` — every decl at the relative path
-///   the publisher used.
+/// - `<workspace_root>/<Name>.forage` — each referenced type, one file
+///   per type, named after the bare type name.
 /// - `<workspace_root>/_fixtures/<slug>.jsonl` — captured replay data.
 /// - `<workspace_root>/_snapshots/<slug>.json` — captured snapshot.
 /// - `<workspace_root>/.forage/sync/<slug>.json` — hub-sync sidecar.
 ///
-/// The destination file must be empty (or already a hub-synced copy
-/// at an older version). Refusing to overwrite avoids clobbering an
-/// in-progress edit when the user `forage sync`'s a recipe whose
-/// header name collides with a local file.
+/// The recipe destination file must be empty (or already a hub-synced
+/// copy at an older version). Refusing to overwrite avoids clobbering
+/// an in-progress edit when the user `forage sync`'s a recipe whose
+/// header name collides with a local file. Type files follow the same
+/// rule per type-name.
 ///
 /// Counter semantics: every successful sync bumps the upstream
 /// package's `downloads` counter, including re-syncs that pull a
@@ -136,7 +163,26 @@ pub async fn sync_from_hub(
         )));
     }
 
-    write_recipe_and_decls(workspace_root, &recipe_path, &artifact)?;
+    // Pull each referenced type into the workspace + the hub-type
+    // cache. The cache copy is what the workspace loader resolves
+    // against at validation time via the lockfile's `[types]` pins;
+    // the workspace copy is what the user reads/edits.
+    let mut type_pins = Vec::with_capacity(artifact.type_refs.len());
+    let cache_root = forage_core::workspace::hub_cache_root();
+    for r in &artifact.type_refs {
+        let tv = client
+            .get_type_version(&r.author, &r.name, VersionSpec::Numbered(r.version))
+            .await?;
+        write_type_to_workspace(workspace_root, &tv)?;
+        write_type_to_cache(&cache_root, &tv)?;
+        type_pins.push(TypePin {
+            author: r.author.clone(),
+            name: r.name.clone(),
+            version: r.version,
+        });
+    }
+
+    write_recipe(&recipe_path, &artifact)?;
     write_fixtures_and_snapshot(workspace_root, &artifact.slug, &artifact)?;
 
     let forked_from = client
@@ -174,14 +220,16 @@ pub async fn sync_from_hub(
         recipe_path,
         version: artifact.version,
         meta,
+        type_pins,
     })
 }
 
-/// Fetch a version artifact into the hub cache directory
+/// Fetch a recipe version into the hub recipe cache directory
 /// (`<cache>/<author>/<slug>/<version>/`) so the workspace loader can
-/// fold its decls into the type catalog. Returns the cache directory
-/// and the SHA-256 of the raw JSON artifact (used to populate
-/// `forage.lock`).
+/// resolve cross-recipe references. Types referenced by the recipe are
+/// resolved into the parallel type cache via [`fetch_type_to_cache`].
+/// Returns the cache directory and the SHA-256 of the raw JSON
+/// artifact (used to populate `forage.lock`).
 pub async fn fetch_to_cache(
     client: &HubClient,
     cache_root: &Path,
@@ -193,22 +241,54 @@ pub async fn fetch_to_cache(
         .get_version(author, slug, VersionSpec::Numbered(version))
         .await?;
     let dir = cache_root.join(author).join(slug).join(version.to_string());
-    // Dep cache: decls live inside the version-pinned subtree so
-    // `scan_package_declarations` (which walks `cache/<author>/<slug>/
-    // <version>/` recursively) finds them. Fixtures and snapshots are
-    // run-time concerns the dep-cache reader never touches, so skip
-    // them here — the cache stays a pure source-files-only mirror.
+    fs::create_dir_all(&dir)?;
     let recipe_path = dir.join(format!("{slug}.forage"));
-    write_recipe_and_decls(&dir, &recipe_path, &artifact)?;
+    write_recipe(&recipe_path, &artifact)?;
+    // Pull every referenced type into the parallel type cache so the
+    // workspace loader can fold them into the catalog when this recipe
+    // is depended on.
+    for r in &artifact.type_refs {
+        let tv = client
+            .get_type_version(&r.author, &r.name, VersionSpec::Numbered(r.version))
+            .await?;
+        write_type_to_cache(cache_root, &tv)?;
+    }
     let sha = sha256_hex(&serde_json::to_string(&artifact)?);
     Ok(FetchedPackage { dir, sha256: sha })
 }
 
+/// Fetch a single type version into the hub type cache. Used both by
+/// the recipe sync path (every referenced type is mirrored into the
+/// cache) and directly by `forage update` when resolving lockfile pins.
+pub async fn fetch_type_to_cache(
+    client: &HubClient,
+    cache_root: &Path,
+    author: &str,
+    name: &str,
+    version: u32,
+) -> HubResult<FetchedType> {
+    let tv = client
+        .get_type_version(author, name, VersionSpec::Numbered(version))
+        .await?;
+    let path = write_type_to_cache(cache_root, &tv)?;
+    let sha = sha256_hex(&serde_json::to_string(&tv)?);
+    Ok(FetchedType { path, sha256: sha })
+}
+
 /// Result of [`fetch_to_cache`]: on-disk path of the materialized
-/// version plus the SHA-256 of its serialized wire artifact.
+/// recipe version plus the SHA-256 of its serialized wire artifact.
 #[derive(Debug, Clone)]
 pub struct FetchedPackage {
     pub dir: PathBuf,
+    pub sha256: String,
+}
+
+/// Result of [`fetch_type_to_cache`]: on-disk path of the cached
+/// `.forage` source for the type plus the SHA-256 of its serialized
+/// wire artifact.
+#[derive(Debug, Clone)]
+pub struct FetchedType {
+    pub path: PathBuf,
     pub sha256: String,
 }
 
@@ -252,21 +332,64 @@ pub async fn fork_from_hub(
     sync_from_hub(client, workspace_root, &fork.author, &fork.slug, Some(1)).await
 }
 
-/// Assemble a publish artifact keyed on the recipe's header name. The
-/// recipe file is the one `Workspace::recipe_by_name(recipe_name)`
-/// returns; the `decls` bundle every other workspace `.forage` file
-/// that contains at least one `share`d declaration (so file-scoped
-/// helpers stay file-scoped and aren't shipped to the hub); fixtures
-/// and snapshot come off the workspace's `_fixtures/<recipe>.jsonl` /
-/// `_snapshots/<recipe>.json`; `base_version` comes from the per-recipe
-/// sidecar in `.forage/sync/`.
-pub fn assemble_publish_request(
+/// One publishable type extracted from a workspace. Carries the
+/// type's bare name, the standalone `share type Name { … }` source
+/// fragment, and the alignments parsed off the AST.
+#[derive(Debug, Clone)]
+pub struct SharedTypeSource {
+    pub name: String,
+    pub source: String,
+    pub alignments: Vec<AlignmentUri>,
+    pub field_alignments: Vec<TypeFieldAlignment>,
+}
+
+/// Plan for a single recipe publish: the types to push first (each
+/// resolves to a `TypeRef` on the recipe payload), followed by the
+/// recipe payload itself.
+///
+/// Construction is offline — `assemble_publish_plan` doesn't talk to
+/// the hub. The caller (the publish driver) walks `types` posting each
+/// one in turn, collecting the resolved versions, then fills
+/// `recipe_payload.type_refs` and posts the recipe.
+#[derive(Debug, Clone)]
+pub struct PublishPlan {
+    pub types: Vec<SharedTypeSource>,
+    /// The recipe `PublishRequest` minus the `type_refs` field. The
+    /// driver fills `type_refs` in declaration-name-sorted order
+    /// matching `types[..]` after each type publish resolves to a
+    /// concrete `(author, name, version)`.
+    pub recipe_payload: PublishRequest,
+}
+
+/// Build a publish plan for the workspace recipe `recipe_name`. The
+/// plan lists every `share`d type the workspace contributes (one
+/// publishable unit per declared type, regardless of which file
+/// declares it) and the recipe payload that pins them. The caller
+/// drives the actual publishes — see [`publish_from_workspace`] for
+/// the canonical sequence.
+///
+/// Types are pulled from:
+/// - Every workspace `.forage` file that's not the focal recipe and
+///   declares at least one `share` type.
+/// - The focal recipe's own `share` types (yes — a recipe file may
+///   carry shareable types; they get hoisted to the hub like any other
+///   shared declaration).
+///
+/// File-local types (`type Foo { ... }` without `share`) stay inlined
+/// in the recipe source and are not publishable. Same for `share fn`
+/// and `share enum` — they're carried in the recipe `decls` field in
+/// the old shape, but the type-only resource on the hub doesn't model
+/// them yet; they remain inlined in the recipe source for sub-plan 3.
+/// Sub-plans 9 / future passes can introduce fn/enum resources if the
+/// need surfaces.
+pub fn assemble_publish_plan(
     workspace: &Workspace,
     recipe_name: &str,
+    author: &str,
     description: String,
     category: String,
     tags: Vec<String>,
-) -> HubResult<PublishRequest> {
+) -> HubResult<PublishPlan> {
     let recipe_ref = workspace.recipe_by_name(recipe_name).ok_or_else(|| {
         HubError::Generic(format!(
             "no recipe named {recipe_name:?} in workspace {}",
@@ -280,26 +403,51 @@ pub fn assemble_publish_request(
         ))
     })?;
 
-    let decls = collect_shared_decls(workspace, recipe_ref.path)?;
+    let types = collect_shared_types(workspace, &recipe)?;
     let fixtures = read_fixtures(&workspace.root, recipe_name)?;
     let snapshot = read_snapshot(&workspace.root, recipe_name)?;
     let meta = read_meta(&workspace.root, recipe_name)?;
     let base_version = meta.map(|m| m.base_version);
 
-    Ok(PublishRequest {
-        description,
-        category,
-        tags,
-        recipe,
-        decls,
-        fixtures,
-        snapshot,
-        base_version,
+    // Plan recipe-side TypeRefs in the same order `types` lists them.
+    // The driver overwrites this list after publishing each type with
+    // the server-resolved version. We pre-populate `version: 0` so the
+    // shape is right; passing a 0 to the hub would fail validation, so
+    // the driver MUST overwrite before posting.
+    let type_refs = types
+        .iter()
+        .map(|t| TypeRef {
+            author: author.to_string(),
+            name: t.name.clone(),
+            version: 0,
+        })
+        .collect();
+
+    Ok(PublishPlan {
+        types,
+        recipe_payload: PublishRequest {
+            description,
+            category,
+            tags,
+            recipe,
+            type_refs,
+            fixtures,
+            snapshot,
+            base_version,
+        },
     })
 }
 
-/// Assemble the publish artifact, POST it, and on success update the
-/// sidecar so subsequent publishes carry the new `base_version`.
+/// Execute a publish plan against the hub. Publishes each type first
+/// (with server-side content-hash dedup making this idempotent across
+/// republishes of unchanged types), then posts the recipe with the
+/// resolved type pins, then updates the per-recipe sidecar.
+///
+/// The type publishes inherit the recipe's `description` / `category`
+/// / `tags` so a workspace that doesn't carry per-type metadata still
+/// publishes something coherent. A future iteration may let the user
+/// override per-type metadata; for sub-plan 3 we keep one metadata
+/// triple per publish.
 pub async fn publish_from_workspace(
     client: &HubClient,
     workspace: &Workspace,
@@ -309,10 +457,35 @@ pub async fn publish_from_workspace(
     category: String,
     tags: Vec<String>,
 ) -> HubResult<PublishResponse> {
-    let payload = assemble_publish_request(workspace, recipe_name, description, category, tags)?;
+    let mut plan = assemble_publish_plan(
+        workspace,
+        recipe_name,
+        author,
+        description.clone(),
+        category.clone(),
+        tags.clone(),
+    )?;
+
+    for (i, ty) in plan.types.iter().enumerate() {
+        let prior = client.get_type(author, &ty.name).await?;
+        let base_version = prior.as_ref().map(|m| m.latest_version);
+        let req = PublishTypeRequest {
+            description: description.clone(),
+            category: category.clone(),
+            tags: tags.clone(),
+            source: ty.source.clone(),
+            alignments: ty.alignments.clone(),
+            field_alignments: ty.field_alignments.clone(),
+            base_version,
+        };
+        let resp = client.publish_type_version(author, &ty.name, &req).await?;
+        plan.recipe_payload.type_refs[i].version = resp.version;
+    }
+
     let resp = client
-        .publish_version(author, recipe_name, &payload)
+        .publish_version(author, recipe_name, &plan.recipe_payload)
         .await?;
+
     let existing = read_meta(&workspace.root, recipe_name)?;
     let meta = ForageMeta {
         origin: ForageMeta::pretty_origin(author, recipe_name, resp.version),
@@ -325,42 +498,153 @@ pub async fn publish_from_workspace(
     Ok(resp)
 }
 
-/// Walk the workspace and bundle every `.forage` file other than the
-/// focal recipe that contains at least one `share`d type/enum/fn.
-/// Files with only file-local declarations stay home — they're invisible
-/// to the catalog anyway and have no business in the publish artifact.
-fn collect_shared_decls(workspace: &Workspace, focal_path: &Path) -> HubResult<Vec<PackageFile>> {
-    let mut out = Vec::new();
+/// Walk the workspace and extract every `share` type as a publishable
+/// unit. One entry per `share type Name { ... }` declaration anywhere
+/// in the workspace (including the focal recipe).
+///
+/// The returned source for each type is a standalone fragment beginning
+/// with `share type Name` — the hub-side regex demands that header. We
+/// recompose the fragment from the AST + source bytes so a type buried
+/// in a file alongside other declarations still ships as a clean unit.
+fn collect_shared_types(
+    workspace: &Workspace,
+    focal_source: &str,
+) -> HubResult<Vec<SharedTypeSource>> {
+    let mut by_name: BTreeMap<String, SharedTypeSource> = BTreeMap::new();
+
+    // Sibling workspace files.
     for entry in &workspace.files {
-        if entry.path == focal_path {
-            continue;
-        }
         let Ok(parsed) = entry.parsed.as_ref() else {
-            // A broken sibling file is surfaced via `Workspace::broken()`;
-            // skipping it here lets the publish proceed against the
-            // healthy files of the workspace.
             continue;
         };
-        let any_shared = parsed.types.iter().any(|t| t.shared)
-            || parsed.enums.iter().any(|e| e.shared)
-            || parsed.functions.iter().any(|f| f.shared);
-        if !any_shared {
+        let src = match fs::read_to_string(&entry.path) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(HubError::Io(io::Error::new(
+                    e.kind(),
+                    format!("read {}: {e}", entry.path.display()),
+                )));
+            }
+        };
+        for ty in &parsed.types {
+            if !ty.shared {
+                continue;
+            }
+            let fragment = extract_type_fragment(&src, ty)?;
+            let publishable = build_publishable_type(ty, fragment);
+            // Two files declaring `share type Foo` is a workspace-level
+            // collision the validator surfaces. Here, last-writer-wins
+            // by sibling iteration order — the publish flow doesn't try
+            // to repair a duplicate, just picks one and lets the
+            // validator do the diagnostic work upstream.
+            by_name.insert(publishable.name.clone(), publishable);
+        }
+    }
+
+    // Focal recipe's own share types — already covered by the sibling
+    // loop above when the recipe is in `workspace.files`, but we double
+    // back over `focal_source` defensively so a lonely-mode call (where
+    // the workspace doesn't index the recipe path) still publishes the
+    // recipe's shared types. In the workspace case the AST in
+    // `workspace.files` is authoritative, so the loop above already
+    // populated the map; this is a safety net for non-workspace publish
+    // flows.
+    let parsed = forage_core::parse(focal_source).map_err(|e| {
+        HubError::Generic(format!("re-parse focal recipe: {e}"))
+    })?;
+    for ty in &parsed.types {
+        if !ty.shared {
             continue;
         }
-        let rel = entry
-            .path
-            .strip_prefix(&workspace.root)
-            .unwrap_or(&entry.path);
-        let name = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-        let source = fs::read_to_string(&entry.path).map_err(|e| {
-            HubError::Io(io::Error::new(
-                e.kind(),
-                format!("read {}: {e}", entry.path.display()),
-            ))
-        })?;
-        out.push(PackageFile { name, source });
+        if by_name.contains_key(&ty.name) {
+            continue;
+        }
+        let fragment = extract_type_fragment(focal_source, ty)?;
+        let publishable = build_publishable_type(ty, fragment);
+        by_name.insert(publishable.name.clone(), publishable);
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(by_name.into_values().collect())
+}
+
+fn build_publishable_type(ty: &RecipeType, source: String) -> SharedTypeSource {
+    let alignments = ty
+        .alignments
+        .iter()
+        .map(core_alignment_to_wire)
+        .collect();
+    let field_alignments = ty
+        .fields
+        .iter()
+        .map(|f| TypeFieldAlignment {
+            field: f.name.clone(),
+            alignment: f.alignment.as_ref().map(core_alignment_to_wire),
+        })
+        .collect();
+    SharedTypeSource {
+        name: ty.name.clone(),
+        source,
+        alignments,
+        field_alignments,
+    }
+}
+
+fn core_alignment_to_wire(a: &CoreAlignmentUri) -> AlignmentUri {
+    AlignmentUri {
+        ontology: a.ontology.clone(),
+        term: a.term.clone(),
+    }
+}
+
+/// Cut a single `share type Name { … }` block out of a source file by
+/// span. The AST carries a byte-range span for the whole declaration;
+/// we expand backwards over any leading `share` keyword to ensure the
+/// fragment publishes-and-round-trips as a publishable header.
+///
+/// The hub's TYPE_HEAD_NAME_RE expects the fragment to begin with
+/// `share type Name` after comments / whitespace, so the cut must
+/// preserve the `share` token.
+fn extract_type_fragment(src: &str, ty: &RecipeType) -> HubResult<String> {
+    let start = ty.span.start;
+    let end = ty.span.end;
+    if start > end || end > src.len() {
+        return Err(HubError::Generic(format!(
+            "type {:?} has span [{start}..{end}] but source is {} bytes",
+            ty.name,
+            src.len()
+        )));
+    }
+    let bytes = src.as_bytes();
+
+    // The span starts at the `type` keyword; back up over whitespace
+    // to include the `share` modifier. The parser stamps the span on
+    // the `type` token, so the `share` (if any) sits to its left
+    // separated only by whitespace.
+    let mut cursor = start;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    let share_start = cursor.saturating_sub(5);
+    if cursor >= 5 && &src[share_start..cursor] == "share" {
+        cursor = share_start;
+    } else {
+        // Caller wouldn't ship a non-`share` type as a publishable
+        // unit; the loop above only inserts `share`d types into the
+        // map, so this branch is structurally unreachable from
+        // `collect_shared_types`. Surface it as an error rather than
+        // synthesizing a `share` prefix in case the caller wires this
+        // helper into a path where the invariant doesn't hold.
+        return Err(HubError::Generic(format!(
+            "type {:?} is not preceded by `share`; only `share` types are publishable",
+            ty.name
+        )));
+    }
+
+    let fragment = src[cursor..end].to_string();
+    let trimmed = fragment.trim_end();
+    let mut out = String::with_capacity(trimmed.len() + 1);
+    out.push_str(trimmed);
+    out.push('\n');
     Ok(out)
 }
 
@@ -406,48 +690,68 @@ pub fn write_meta(
 
 // --- Materialization -----------------------------------------------
 
-/// Lay the source half of an atomic `PackageVersion` artifact on disk:
-/// the recipe file at `recipe_path` plus every decl rooted at
-/// `decls_root`. Used by both `sync_from_hub` (workspace destination)
-/// and `fetch_to_cache` (hub cache subtree); only the former goes on
-/// to write data-dir files via [`write_fixtures_and_snapshot`].
-///
-/// `decls_root` differs by caller because the two consumers walk decls
-/// from different roots:
-///
-/// - The workspace loader (`Workspace::catalog`) scans the workspace
-///   root recursively, so `sync_from_hub` passes the workspace root.
-/// - The dep-cache loader (`scan_package_declarations`) walks the
-///   version-pinned subtree `<cache>/<author>/<slug>/<version>/`
-///   recursively, so `fetch_to_cache` passes the version directory.
-///
-/// Decls keep their authored relative paths (so a publish that
-/// declared `nested/shared.forage` lands at `<decls_root>/nested/...`).
-/// `sanitize_member` rejects absolute names and `..` segments so a
-/// hostile artifact can't escape the root.
-fn write_recipe_and_decls(
-    decls_root: &Path,
-    recipe_path: &Path,
-    artifact: &PackageVersion,
-) -> HubResult<()> {
-    fs::create_dir_all(decls_root)?;
+/// Write the recipe source to `recipe_path`. Pure I/O; type
+/// materialization is its own step via [`write_type_to_workspace`].
+fn write_recipe(recipe_path: &Path, artifact: &PackageVersion) -> HubResult<()> {
     if let Some(parent) = recipe_path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(recipe_path, &artifact.recipe)?;
-
-    for f in &artifact.decls {
-        let target = if f.name.contains('/') {
-            sanitize_member(decls_root, &f.name)?
-        } else {
-            decls_root.join(&f.name)
-        };
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&target, &f.source)?;
-    }
     Ok(())
+}
+
+/// Lay one type artifact into the workspace as `<workspace>/<Name>.forage`.
+/// Refuses to overwrite a file that's not a hub-synced copy at an
+/// older version — same rule as the recipe path.
+fn write_type_to_workspace(workspace_root: &Path, tv: &TypeVersion) -> HubResult<()> {
+    let path = workspace_root.join(format!("{}.forage", tv.name));
+    if path.exists() {
+        // For a freshly-published or freshly-downloaded type the file
+        // either doesn't exist (first sync) or already holds a
+        // hub-synced copy of the same type. We don't track per-type
+        // sidecars yet; refuse to clobber a file that's locally owned
+        // (different first line / no marker) so the user sees a clear
+        // error instead of a silent overwrite.
+        let current = fs::read_to_string(&path).map_err(|e| {
+            HubError::Io(io::Error::new(
+                e.kind(),
+                format!("read existing {}: {e}", path.display()),
+            ))
+        })?;
+        if !current.trim_start().starts_with("share type") {
+            return Err(HubError::Generic(format!(
+                "{} already exists locally and is not a `share type` file; \
+                 remove it before syncing",
+                path.display()
+            )));
+        }
+    }
+    fs::write(&path, &tv.source)?;
+    Ok(())
+}
+
+/// Cache root holding hub-fetched types. One file per
+/// `(author, name, version)`: `<cache>/types/<author>/<Name>/<v>.forage`.
+/// The workspace loader reads this subtree when resolving lockfile
+/// `[types]` pins.
+pub fn type_cache_path(cache_root: &Path, author: &str, name: &str, version: u32) -> PathBuf {
+    cache_root
+        .join("types")
+        .join(author)
+        .join(name)
+        .join(format!("{version}.forage"))
+}
+
+/// Mirror a `TypeVersion` into the type cache. Returns the on-disk
+/// path of the cached source so callers can record it in the lockfile
+/// digest if desired.
+fn write_type_to_cache(cache_root: &Path, tv: &TypeVersion) -> HubResult<PathBuf> {
+    let path = type_cache_path(cache_root, &tv.author, &tv.name, tv.version);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, &tv.source)?;
+    Ok(path)
 }
 
 /// Lay the data half of the artifact under the workspace's recipe-name-
@@ -508,49 +812,6 @@ fn recipe_name_from_source(source: &str, slug: &str) -> HubResult<String> {
             "synced recipe @{slug} has no `recipe \"<name>\"` header",
         ))
     })
-}
-
-/// Validate a decl `name` and join it onto `root`. Rejects absolute
-/// paths, traversal segments, and any post-resolve location that
-/// escapes the root. The decl file does not exist yet, so we
-/// canonicalize the parent and re-attach the leaf.
-fn sanitize_member(root: &Path, name: &str) -> HubResult<PathBuf> {
-    if name.is_empty()
-        || name.starts_with('/')
-        || name.starts_with('\\')
-        || name.contains('\\')
-        || name.contains("..")
-        || name.contains("//")
-        || name.contains("/./")
-        || name.starts_with("./")
-    {
-        return Err(HubError::Generic(format!(
-            "invalid decl file name: {name}"
-        )));
-    }
-    for segment in name.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            return Err(HubError::Generic(format!(
-                "invalid decl file name: {name}"
-            )));
-        }
-    }
-    let target = root.join(name);
-    let parent = target.parent().ok_or_else(|| {
-        HubError::Generic(format!("decl file name has no parent: {name}"))
-    })?;
-    fs::create_dir_all(parent)?;
-    let canonical_parent = parent.canonicalize()?;
-    let canonical_root = root.canonicalize()?;
-    if !canonical_parent.starts_with(&canonical_root) {
-        return Err(HubError::Generic(format!(
-            "decl file {name} escapes the workspace root",
-        )));
-    }
-    let leaf = target.file_name().ok_or_else(|| {
-        HubError::Generic(format!("decl file name has no leaf: {name}"))
-    })?;
-    Ok(canonical_parent.join(leaf))
 }
 
 // --- Publish-side I/O ------------------------------------------------
@@ -624,7 +885,21 @@ mod tests {
     use super::*;
     use crate::types::PackageSnapshot;
 
-    fn artifact(author: &str, slug: &str, v: u32) -> PackageVersion {
+    fn type_version(author: &str, name: &str, version: u32, source: &str) -> TypeVersion {
+        TypeVersion {
+            author: author.into(),
+            name: name.into(),
+            version,
+            source: source.into(),
+            alignments: Vec::new(),
+            field_alignments: Vec::new(),
+            base_version: None,
+            published_at: 0,
+            published_by: author.into(),
+        }
+    }
+
+    fn artifact(author: &str, slug: &str, v: u32, type_refs: Vec<TypeRef>) -> PackageVersion {
         PackageVersion {
             author: author.into(),
             slug: slug.into(),
@@ -632,10 +907,7 @@ mod tests {
             recipe: format!(
                 "recipe \"{slug}\"\nengine http\n\nstep s {{ method \"GET\" url \"https://example.test\" }}\n"
             ),
-            decls: vec![PackageFile {
-                name: "shared.forage".into(),
-                source: "share type Shared { id: String }\n".into(),
-            }],
+            type_refs,
             fixtures: vec![PackageFixture {
                 name: "captures.jsonl".into(),
                 content: "{\"kind\":\"http\",\"url\":\"https://example.test\",\"method\":\"GET\",\"status\":200,\"body\":\"{}\"}\n".into(),
@@ -650,53 +922,73 @@ mod tests {
         }
     }
 
-    /// `write_recipe_and_decls` lays the recipe file at the
-    /// caller-supplied path and every decl alongside the decls root.
+    /// `write_recipe` lays the recipe file at the supplied path;
     /// `write_fixtures_and_snapshot` lays workspace data keyed on the
-    /// recipe-name.
+    /// recipe-name. Types ride through their own cache + workspace
+    /// writes.
     #[test]
     fn writers_lay_flat_workspace_shape() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
-        let art = artifact("alice", "zen-leaf", 4);
+        let art = artifact("alice", "zen-leaf", 4, Vec::new());
         let recipe_path = ws.join("zen-leaf.forage");
-        write_recipe_and_decls(ws, &recipe_path, &art).unwrap();
+        write_recipe(&recipe_path, &art).unwrap();
         write_fixtures_and_snapshot(ws, &art.slug, &art).unwrap();
 
         assert!(recipe_path.is_file());
-        assert!(ws.join("shared.forage").is_file());
         assert!(ws.join("_fixtures").join("zen-leaf.jsonl").is_file());
         assert!(ws.join("_snapshots").join("zen-leaf.json").is_file());
-        // No legacy nested layout.
         assert!(!ws.join("zen-leaf").join("recipe.forage").exists());
-        assert!(!ws.join("zen-leaf").join("fixtures").exists());
     }
 
-    /// A dep-cache fetch writes the source half only — fixtures and
-    /// snapshots are run-time concerns the cache never reads.
     #[test]
-    fn fetch_to_cache_writes_source_only() {
+    fn write_type_to_workspace_lands_as_named_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let version_dir = tmp.path().join("alice").join("zen-leaf").join("4");
-        let art = artifact("alice", "zen-leaf", 4);
-        let recipe_path = version_dir.join("zen-leaf.forage");
-        write_recipe_and_decls(&version_dir, &recipe_path, &art).unwrap();
-
-        assert!(recipe_path.is_file());
-        // shared.forage lands INSIDE the version dir, not in the
-        // parent slug dir.
-        assert!(version_dir.join("shared.forage").is_file());
-        assert!(
-            !version_dir
-                .parent()
-                .unwrap()
-                .join("shared.forage")
-                .exists(),
-            "decls must not leak into the slug-level directory",
+        let ws = tmp.path();
+        let tv = type_version(
+            "alice",
+            "Product",
+            1,
+            "share type Product {\n    id: String\n}\n",
         );
-        // Cache never holds data dirs.
-        assert!(!version_dir.join("_fixtures").exists());
-        assert!(!version_dir.join("_snapshots").exists());
+        write_type_to_workspace(ws, &tv).unwrap();
+        assert!(ws.join("Product.forage").is_file());
+        let back = fs::read_to_string(ws.join("Product.forage")).unwrap();
+        assert!(back.starts_with("share type Product"));
+    }
+
+    #[test]
+    fn write_type_to_workspace_refuses_non_share_clobber() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        // A locally-authored file that doesn't start with `share type`
+        // — typically the user's own recipe or scratch.
+        fs::write(
+            ws.join("Product.forage"),
+            "recipe \"local\"\nengine http\n",
+        )
+        .unwrap();
+        let tv = type_version(
+            "alice",
+            "Product",
+            1,
+            "share type Product {\n    id: String\n}\n",
+        );
+        let err = write_type_to_workspace(ws, &tv).unwrap_err();
+        assert!(format!("{err}").contains("already exists"));
+    }
+
+    #[test]
+    fn write_type_to_cache_lays_versioned_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path();
+        let tv = type_version("alice", "Product", 4, "share type Product {}\n");
+        let path = write_type_to_cache(cache, &tv).unwrap();
+        assert_eq!(
+            path,
+            cache.join("types").join("alice").join("Product").join("4.forage"),
+        );
+        assert!(path.is_file());
     }
 
     #[test]
@@ -715,12 +1007,14 @@ mod tests {
         assert_eq!(back, meta);
     }
 
-    /// `assemble_publish_request` resolves the recipe via
-    /// `Workspace::recipe_by_name`, bundles every sibling file that
-    /// declares at least one `share`d type, and folds in the workspace
-    /// data dirs.
+    /// `assemble_publish_plan` resolves the recipe via
+    /// `Workspace::recipe_by_name`, extracts every `share` type as its
+    /// own publishable unit, and threads the workspace's fixtures /
+    /// snapshot / sidecar through to the recipe payload. The
+    /// recipe-side `type_refs` are placeholders (version: 0) until the
+    /// driver overwrites them with server-resolved values.
     #[test]
-    fn assemble_request_walks_flat_workspace() {
+    fn assemble_plan_extracts_share_types_individually() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_root = tmp.path();
         fs::write(
@@ -729,13 +1023,15 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            ws_root.join("foo.forage"),
-            "recipe \"bar\"\nengine http\nstep s { method \"GET\" url \"https://example.test\" }\n",
+            ws_root.join("bar.forage"),
+            "recipe \"bar\"\nengine http\noutput Product\n\
+             step s { method \"GET\" url \"https://example.test\" }\n",
         )
         .unwrap();
         fs::write(
             ws_root.join("shared.forage"),
-            "share type Shared { id: String }\n",
+            "share type Product { id: String }\n\
+             share type Variant { id: String }\n",
         )
         .unwrap();
         // A sibling with only file-local decls must stay home.
@@ -744,39 +1040,36 @@ mod tests {
             "type LocalOnly { id: String }\n",
         )
         .unwrap();
-        fs::create_dir_all(ws_root.join("_fixtures")).unwrap();
-        fs::write(ws_root.join("_fixtures").join("bar.jsonl"), "{\"k\":1}\n").unwrap();
-
-        let meta = ForageMeta {
-            origin: ForageMeta::pretty_origin("alice", "bar", 3),
-            author: "alice".into(),
-            slug: "bar".into(),
-            base_version: 3,
-            forked_from: None,
-        };
-        write_meta(ws_root, "bar", &meta).unwrap();
 
         let ws = forage_core::workspace::load(ws_root).unwrap();
-        let req = assemble_publish_request(
+        let plan = assemble_publish_plan(
             &ws,
             "bar",
+            "alice",
             "desc".into(),
             "scrape".into(),
             vec!["t".into()],
         )
         .unwrap();
-        assert!(req.recipe.contains("recipe \"bar\""));
-        assert_eq!(req.base_version, Some(3));
-        assert!(req.decls.iter().any(|d| d.name == "shared.forage"));
-        assert!(
-            req.decls.iter().all(|d| d.name != "local-only.forage"),
-            "file-local-only siblings must not appear on the wire",
-        );
-        assert!(req.fixtures.iter().any(|f| f.name == "captures.jsonl"));
+        assert_eq!(plan.types.len(), 2, "Product + Variant, not LocalOnly");
+        let names: Vec<&str> = plan.types.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Product", "Variant"]);
+        for ty in &plan.types {
+            assert!(
+                ty.source.trim_start().starts_with("share type"),
+                "fragment must start with `share type`: {:?}",
+                ty.source,
+            );
+        }
+        assert_eq!(plan.recipe_payload.type_refs.len(), 2);
+        for r in &plan.recipe_payload.type_refs {
+            assert_eq!(r.author, "alice");
+            assert_eq!(r.version, 0, "driver overwrites this with the server-resolved version");
+        }
     }
 
     #[test]
-    fn assemble_without_sidecar_means_first_publish() {
+    fn assemble_plan_without_sidecar_means_first_publish() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_root = tmp.path();
         fs::write(
@@ -790,19 +1083,21 @@ mod tests {
         )
         .unwrap();
         let ws = forage_core::workspace::load(ws_root).unwrap();
-        let req = assemble_publish_request(
+        let plan = assemble_publish_plan(
             &ws,
             "fresh",
+            "alice",
             "desc".into(),
             "scrape".into(),
             vec![],
         )
         .unwrap();
-        assert_eq!(req.base_version, None);
+        assert_eq!(plan.recipe_payload.base_version, None);
+        assert!(plan.types.is_empty());
     }
 
     #[test]
-    fn assemble_errors_on_unknown_recipe_name() {
+    fn assemble_plan_errors_on_unknown_recipe_name() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_root = tmp.path();
         fs::write(
@@ -816,9 +1111,10 @@ mod tests {
         )
         .unwrap();
         let ws = forage_core::workspace::load(ws_root).unwrap();
-        let err = assemble_publish_request(
+        let err = assemble_publish_plan(
             &ws,
             "missing",
+            "alice",
             "".into(),
             "x".into(),
             vec![],

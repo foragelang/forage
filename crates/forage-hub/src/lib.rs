@@ -30,11 +30,13 @@ pub use forage_core::workspace::{hub_cache_root, resolve_dep};
 pub use device::{DevicePollResponse, DeviceStartResponse, poll_device, start_device};
 pub use error::{HubError, HubResult};
 pub use operations::{
-    FetchedPackage, ForageMeta, SyncOutcome, assemble_publish_request, core_snapshot_to_wire,
-    fetch_to_cache, fork_from_hub, meta_path, publish_from_workspace, read_meta, sync_from_hub,
-    write_meta,
+    FetchedPackage, FetchedType, ForageMeta, PublishPlan, SharedTypeSource, SyncOutcome, TypePin,
+    assemble_publish_plan, core_snapshot_to_wire, fetch_to_cache, fetch_type_to_cache,
+    fork_from_hub, meta_path, publish_from_workspace, read_meta, sync_from_hub,
+    type_cache_path, write_meta,
 };
 pub use types::{
-    ForkRequest, ForkedFrom, PackageFile, PackageFixture, PackageMetadata, PackageSnapshot,
-    PackageVersion, PublishRequest, PublishResponse, VersionSpec,
+    AlignmentUri, ForkRequest, ForkedFrom, PackageFixture, PackageMetadata, PackageSnapshot,
+    PackageVersion, PublishRequest, PublishResponse, PublishTypeRequest, PublishTypeResponse,
+    TypeFieldAlignment, TypeMetadata, TypeRef, TypeVersion, VersionSpec,
 };
