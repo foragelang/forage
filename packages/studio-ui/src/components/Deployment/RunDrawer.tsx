@@ -4,7 +4,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { Diff, Folder } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +78,7 @@ function DrawerBody({
     scheduled: ScheduledRun;
     history: ScheduledRun[];
 }) {
+    const service = useStudioService();
     const idx = history.findIndex((r) => r.id === scheduled.id);
     const prev = history[idx + 1] ?? null;
     const health = scheduled.outcome === "ok" ? "ok" : "fail";
@@ -117,7 +117,7 @@ function DrawerBody({
                     size="sm"
                     onClick={() => {
                         const parent = parentFolder(run.output);
-                        shellOpen(parent).catch((e) =>
+                        service.revealInFileManager(parent).catch((e) =>
                             console.warn("open in store failed", e),
                         );
                     }}

@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 
 import {
     NotSupportedByService,
@@ -366,6 +367,9 @@ export class TauriStudioService implements StudioService {
             title,
         });
         return typeof picked === "string" ? picked : null;
+    }
+    async revealInFileManager(path: string): Promise<void> {
+        await shellOpen(path);
     }
 
     // ── Internal: hub-api fetch wrapper ─────────────────────────────

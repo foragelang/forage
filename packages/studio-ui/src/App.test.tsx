@@ -163,6 +163,7 @@ class FakeStudioService implements StudioService {
     // Host dialogs
     async confirm(): Promise<boolean> { return false; }
     async pickDirectory(): Promise<string | null> { return null; }
+    async revealInFileManager(): Promise<void> { return undefined; }
 }
 
 function wrap(service: StudioService, children: React.ReactNode) {

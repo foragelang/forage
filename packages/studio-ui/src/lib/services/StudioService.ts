@@ -286,6 +286,9 @@ export interface StudioService {
     // Open a directory picker, returning the chosen absolute path or
     // null if the user cancelled. Tauri only; hub throws.
     pickDirectory(title: string): Promise<string | null>;
+    // Reveal a folder in the system file manager (Finder/Explorer).
+    // Tauri only; hub throws.
+    revealInFileManager(path: string): Promise<void>;
 }
 
 /// Method-not-implemented error that hub-side throws when the UI calls
