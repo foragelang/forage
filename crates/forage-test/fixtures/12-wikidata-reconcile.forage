@@ -1,0 +1,49 @@
+// Wikidata reconciliation: take a list of Company records each
+// carrying a `wikidataId` Q-ID, fetch the entity, and merge selected
+// claims into an EnrichedCompany. The canonical adapter shape for
+// enrichment recipes — `input Company -> output EnrichedCompany`
+// where the child type extends the parent and adds the fields that
+// reconciliation can populate.
+//
+// The transform itself (`wikidataEntity(qid)`) issues a GET against
+// `Special:EntityData/<qid>.json` through the engine's transport, so
+// `--replay <fixtures>` captures the wikidata traffic alongside any
+// other HTTP step the upstream recipe issued. Field extraction goes
+// through `getField` because the post-fix `.field` form on a call
+// result is reserved for postfix indexing in the grammar — the pipe
+// keeps the syntactic shape uniform.
+
+recipe "wikidata-reconcile"
+engine http
+output EnrichedCompany
+
+share type Company
+    aligns wikidata/Q4830453
+{
+    id:         String
+    name:       String aligns schema.org/name
+    wikidataId: String aligns wikidata/identifier
+}
+
+share type EnrichedCompany extends Company@v1
+    aligns wikidata/Q4830453
+{
+    founder:               String? aligns wikidata/P112
+    headquartersLocation:  String? aligns wikidata/P159
+    inception:             String? aligns wikidata/P571
+    employees:             String? aligns wikidata/P1128
+}
+
+input companies: [Company]
+
+for $c in $input.companies[*] {
+    emit EnrichedCompany {
+        id                    ← $c.id
+        name                  ← $c.name
+        wikidataId            ← $c.wikidataId
+        founder               ← wikidataEntity($c.wikidataId) | getField("P112")
+        headquartersLocation  ← wikidataEntity($c.wikidataId) | getField("P159")
+        inception             ← wikidataEntity($c.wikidataId) | getField("P571")
+        employees             ← wikidataEntity($c.wikidataId) | getField("P1128")
+    }
+}

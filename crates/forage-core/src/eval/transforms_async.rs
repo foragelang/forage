@@ -8,7 +8,6 @@
 //! async eval path.
 
 use indexmap::IndexMap;
-use serde_json::Value as JsonValue;
 
 use crate::eval::error::EvalError;
 use crate::eval::transforms::{AsyncTransformFn, TransformRegistry};
@@ -271,6 +270,7 @@ mod tests {
     use super::*;
     use crate::eval::{Evaluator, NoTransport, Scope, TransportContext, default_registry};
     use crate::ast::{ExtractionExpr, JSONValue};
+    use serde_json::Value as JsonValue;
 
     fn entity_payload() -> JsonValue {
         serde_json::json!({

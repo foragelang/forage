@@ -247,6 +247,75 @@
                 { "name": "EnhancedJobPosting", "fieldNames": ["salaryMin", "salaryMax", "remoteOk"], "requiredFieldCount": 1 }
             ],
             "validation": { "errorCount": 0, "warningCount": 0 }
+        },
+        {
+            "file": "12-wikidata-reconcile.forage",
+            "parses": true,
+            "summary": {
+                "name": "wikidata-reconcile",
+                "engineKind": "http",
+                "typeCount": 2,
+                "enumCount": 0,
+                "inputCount": 1,
+                "bodyStatementCount": 1,
+                "stepNames": [],
+                "topLevelEmits": 0,
+                "forLoopCount": 1,
+                "expectationCount": 0
+            },
+            "types": [
+                { "name": "Company", "fieldNames": ["id", "name", "wikidataId"], "requiredFieldCount": 3 },
+                { "name": "EnrichedCompany", "fieldNames": ["founder", "headquartersLocation", "inception", "employees"], "requiredFieldCount": 0 }
+            ],
+            "validation": { "errorCount": 0, "warningCount": 0 },
+            "runSnapshot": {
+                "inputs": {
+                    "companies": [
+                        { "id": "c1", "name": "Stripe", "wikidataId": "Q24851740" },
+                        { "id": "c2", "name": "GitHub", "wikidataId": "Q364" }
+                    ]
+                },
+                "httpFixtures": [
+                    {
+                        "url": "https://www.wikidata.org/wiki/Special:EntityData/Q24851740.json",
+                        "method": "GET",
+                        "status": 200,
+                        "body": "{\"entities\":{\"Q24851740\":{\"id\":\"Q24851740\",\"type\":\"item\",\"labels\":{\"en\":{\"language\":\"en\",\"value\":\"Stripe\"}},\"claims\":{\"P112\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P112\",\"datatype\":\"wikibase-item\",\"datavalue\":{\"value\":{\"id\":\"Q5111731\"},\"type\":\"wikibase-entityid\"}}}],\"P159\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P159\",\"datatype\":\"wikibase-item\",\"datavalue\":{\"value\":{\"id\":\"Q62\"},\"type\":\"wikibase-entityid\"}}}],\"P571\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P571\",\"datatype\":\"time\",\"datavalue\":{\"value\":{\"time\":\"+2010-01-01T00:00:00Z\"},\"type\":\"time\"}}}],\"P1128\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P1128\",\"datatype\":\"quantity\",\"datavalue\":{\"value\":{\"amount\":\"+8100\"},\"type\":\"quantity\"}}}]}}}}"
+                    },
+                    {
+                        "url": "https://www.wikidata.org/wiki/Special:EntityData/Q364.json",
+                        "method": "GET",
+                        "status": 200,
+                        "body": "{\"entities\":{\"Q364\":{\"id\":\"Q364\",\"type\":\"item\",\"labels\":{\"en\":{\"language\":\"en\",\"value\":\"GitHub\"}},\"claims\":{\"P112\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P112\",\"datatype\":\"wikibase-item\",\"datavalue\":{\"value\":{\"id\":\"Q1207697\"},\"type\":\"wikibase-entityid\"}}}],\"P159\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P159\",\"datatype\":\"wikibase-item\",\"datavalue\":{\"value\":{\"id\":\"Q62\"},\"type\":\"wikibase-entityid\"}}}],\"P571\":[{\"mainsnak\":{\"snaktype\":\"value\",\"property\":\"P571\",\"datatype\":\"time\",\"datavalue\":{\"value\":{\"time\":\"+2008-02-08T00:00:00Z\"},\"type\":\"time\"}}}]}}}}"
+                    }
+                ],
+                "records": [
+                    {
+                        "typeName": "EnrichedCompany",
+                        "fields": {
+                            "id": "c1",
+                            "name": "Stripe",
+                            "wikidataId": "Q24851740",
+                            "founder": "Q5111731",
+                            "headquartersLocation": "Q62",
+                            "inception": "+2010-01-01T00:00:00Z",
+                            "employees": "+8100"
+                        }
+                    },
+                    {
+                        "typeName": "EnrichedCompany",
+                        "fields": {
+                            "id": "c2",
+                            "name": "GitHub",
+                            "wikidataId": "Q364",
+                            "founder": "Q1207697",
+                            "headquartersLocation": "Q62",
+                            "inception": "+2008-02-08T00:00:00Z",
+                            "employees": null
+                        }
+                    }
+                ]
+            }
         }
     ]
 }
