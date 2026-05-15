@@ -76,6 +76,35 @@ function formatTimestamp(ms) {
                 </ul>
             </header>
 
+            <section
+                v-if="artifact && (artifact.input_type_refs?.length || artifact.output_type_refs?.length)"
+                class="pkg-detail-section pkg-detail-signature"
+            >
+                <h2>Signature</h2>
+                <div v-if="artifact.input_type_refs?.length" class="pkg-detail-sigrow">
+                    <span class="pkg-detail-sigrow-label">input</span>
+                    <ul class="pkg-detail-typechips">
+                        <li v-for="ref in artifact.input_type_refs" :key="`in-${ref.author}-${ref.name}-${ref.version}`">
+                            <span class="pkg-detail-typechip">
+                                <span class="pkg-detail-typechip-id">@{{ ref.author }}/{{ ref.name }}@v{{ ref.version }}</span>
+                                <a :href="`/discover/producers/${ref.author}/${ref.name}`" title="Other recipes that produce this type">producers</a>
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+                <div v-if="artifact.output_type_refs?.length" class="pkg-detail-sigrow">
+                    <span class="pkg-detail-sigrow-label">output</span>
+                    <ul class="pkg-detail-typechips">
+                        <li v-for="ref in artifact.output_type_refs" :key="`out-${ref.author}-${ref.name}-${ref.version}`">
+                            <span class="pkg-detail-typechip">
+                                <span class="pkg-detail-typechip-id">@{{ ref.author }}/{{ ref.name }}@v{{ ref.version }}</span>
+                                <a :href="`/discover/consumers/${ref.author}/${ref.name}`" title="Other recipes that consume this type">consumers</a>
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
             <section v-if="artifact" class="pkg-detail-section">
                 <h2>Recipe</h2>
                 <pre class="pkg-detail-source"><code>{{ artifact.recipe }}</code></pre>
@@ -255,5 +284,55 @@ function formatTimestamp(ms) {
     color: var(--vp-c-text-3);
     font-size: 12px;
     margin-left: 8px;
+}
+
+.pkg-detail-signature .pkg-detail-sigrow {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.pkg-detail-sigrow-label {
+    flex: 0 0 auto;
+    color: var(--vp-c-text-3);
+    font-family: var(--vp-font-family-mono);
+    line-height: 24px;
+    width: 56px;
+}
+
+.pkg-detail-typechips {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.pkg-detail-typechip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--vp-c-bg-soft);
+    border: 1px solid var(--vp-c-divider);
+    border-radius: 999px;
+    padding: 2px 12px;
+    font-family: var(--vp-font-family-mono);
+    font-size: 12px;
+}
+
+.pkg-detail-typechip-id {
+    color: var(--vp-c-text-1);
+}
+
+.pkg-detail-typechip a {
+    color: var(--vp-c-brand-1);
+    text-decoration: none;
+}
+
+.pkg-detail-typechip a:hover {
+    text-decoration: underline;
 }
 </style>
