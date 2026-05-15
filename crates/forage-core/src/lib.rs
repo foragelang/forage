@@ -22,4 +22,7 @@ pub use progress::{ProgressUnit, infer_progress_unit};
 pub use snapshot::{DiagnosticReport, Record, RuntimeDiagnostic, Snapshot};
 pub use source::{LineMap, Position, Range};
 pub use validate::{Severity, ValidationCode, ValidationIssue, ValidationReport, validate};
-pub use workspace::{SerializableCatalog, TypeCatalog, Workspace, WorkspaceError, discover, load};
+pub use workspace::{
+    SerializableCatalog, TypeCatalog, Workspace, WorkspaceError, discover, fixtures_path, load,
+    snapshot_path,
+};

@@ -25,6 +25,7 @@
 //! location — `Workspace::recipes()` returns the recipe-bearing files;
 //! everything else is a declarations-only contributor.
 
+pub mod fixtures;
 pub mod manifest;
 
 use std::collections::HashMap;
@@ -38,6 +39,7 @@ use thiserror::Error;
 use crate::ast::{ForageFile, RecipeEnum, RecipeType};
 use crate::parse::{ParseError, parse};
 
+pub use fixtures::{FIXTURES_DIR, SNAPSHOTS_DIR, fixtures_path, snapshot_path};
 pub use manifest::{
     LockedDep, Lockfile, Manifest, ManifestError, parse_lockfile, parse_manifest,
     serialize_lockfile, serialize_manifest,
@@ -55,7 +57,7 @@ pub const LOCKFILE_NAME: &str = "forage.lock";
 /// they may contain `.forage` text accidentally (a runtime dump, a
 /// scenario YAML named with the wrong extension) and must not feed the
 /// source catalog. `.forage/` is hidden anyway via the dotfile filter.
-const DATA_DIRS: &[&str] = &["_fixtures", "_snapshots"];
+const DATA_DIRS: &[&str] = &[FIXTURES_DIR, SNAPSHOTS_DIR];
 
 /// A discovered workspace: root path, parsed manifest, and the list of
 /// `.forage` files inside the tree.

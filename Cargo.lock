@@ -1524,6 +1524,7 @@ dependencies = [
  "indexmap 2.14.0",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "url",
 ]
