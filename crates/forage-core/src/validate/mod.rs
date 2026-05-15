@@ -1091,7 +1091,12 @@ impl<'a> Validator<'a> {
 
     fn check_emit(&mut self, em: &Emission) {
         self.with_span(em.span.clone(), |v| {
-            let Some(ty) = v.catalog.ty(&em.type_name).cloned() else {
+            // `lookup` returns the post-extension effective type, so
+            // an `emit Child {…}` against a child that extends a parent
+            // sees the parent's fields too — without it the emit
+            // walker would report the parent's required fields as
+            // "unknown" on the child.
+            let Some(ty) = v.catalog.lookup(&em.type_name) else {
                 v.err_here(
                     ValidationCode::UnknownType,
                     format!("emit Type '{}' is not declared", em.type_name),

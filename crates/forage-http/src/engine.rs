@@ -192,7 +192,7 @@ impl<'t> Engine<'t> {
         // run boundary so JSON-LD serialization and hub indexing read
         // alignment metadata for workspace-shared and hub-dep types
         // too — not just the ones declared in the recipe file itself.
-        snapshot.set_record_types(catalog.types_sorted());
+        snapshot.set_record_types(catalog.types_sorted_effective().iter());
         // Default `$page` so recipes that use `{$page}` outside a paginated
         // step (or before the first request) still have it bound. The
         // engine overwrites this inside each `run_step` iteration.

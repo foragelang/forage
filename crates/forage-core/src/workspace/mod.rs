@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ast::{ForageFile, InputDecl, OutputDecl, RecipeEnum, RecipeType};
+use crate::ast::{AlignmentUri, ForageFile, InputDecl, OutputDecl, RecipeEnum, RecipeField, RecipeType};
 use crate::parse::{ParseError, parse};
 
 pub use fixtures::{FIXTURES_DIR, SNAPSHOTS_DIR, fixtures_path, snapshot_path};
@@ -230,6 +230,13 @@ impl RecipeSignature {
 }
 
 impl TypeCatalog {
+    /// Raw declaration as it was written. Use this when you need the
+    /// surface shape — the validator's extension-chain walker reads
+    /// `extends` off the raw declaration; the LSP rename-symbol pass
+    /// keys on the raw field list. For "what does this type look like
+    /// to an `emit` site / a snapshot consumer / a JSON-LD writer," use
+    /// `lookup` instead — that walks the extension chain and folds in
+    /// parent fields + alignments per the propagation policy.
     pub fn ty(&self, name: &str) -> Option<&RecipeType> {
         self.types.get(name)
     }
@@ -237,13 +244,132 @@ impl TypeCatalog {
         self.enums.get(name)
     }
 
-    /// Catalog types in name-sorted order. Engines stamp the snapshot's
-    /// `record_types` from this so the wire output stays stable
-    /// regardless of which file declared a given type or in what order.
+    /// Effective type after the `extends` chain is resolved. Returns
+    /// the child's own fields and type-level alignments fused with
+    /// every ancestor's:
+    ///
+    /// - **Fields:** parent's fields prepended (in parent's declaration
+    ///   order), then any child fields the parent didn't already
+    ///   declare. A field redeclared by the child overrides the
+    ///   parent's entry (the child's per-field alignment wins; a child
+    ///   that redeclares without an `aligns` clause drops the
+    ///   parent's, per the propagation policy).
+    /// - **Type-level alignments:** parent's first, then child's
+    ///   added ones. Duplicates (same ontology+term across the chain)
+    ///   collapse to one entry so JSON-LD output and discover-by-
+    ///   alignment indexing don't double-count.
+    /// - **`extends`:** stripped on the returned type — the chain is
+    ///   already flattened.
+    /// - **`shared`, `name`, `span`:** taken from the child.
+    ///
+    /// Cycles are short-circuited: if the chain revisits a name
+    /// already in the path, the walk stops and the partial fold is
+    /// returned. Validator's `CircularExtension` rule surfaces the
+    /// cycle through the diagnostic channel; the lookup itself
+    /// degrades gracefully so downstream consumers don't panic.
+    ///
+    /// Returns `None` only when `name` is not in the catalog at all.
+    /// A reachable parent with a missing further-up parent yields the
+    /// fold up to where the chain breaks — the validator's
+    /// `UnknownExtendedType` rule names the missing link.
+    pub fn lookup(&self, name: &str) -> Option<RecipeType> {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.resolve(name, &mut visited)
+    }
+
+    fn resolve(
+        &self,
+        name: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Option<RecipeType> {
+        let raw = self.types.get(name)?;
+        if !visited.insert(name.to_string()) {
+            // Cycle — return the raw shape so downstream code can
+            // operate on something concrete. The validator already
+            // owns the diagnostic.
+            let mut concrete = raw.clone();
+            concrete.extends = None;
+            return Some(concrete);
+        }
+        let Some(ext) = &raw.extends else {
+            let mut out = raw.clone();
+            out.extends = None;
+            return Some(out);
+        };
+        let Some(parent) = self.resolve(&ext.name, visited) else {
+            // Parent missing from catalog — surface the child as-is
+            // (with `extends` stripped) so emit / field checks against
+            // it operate on something concrete. The validator's
+            // `UnknownExtendedType` rule names the missing link
+            // separately so the author lands on it.
+            let mut concrete = raw.clone();
+            concrete.extends = None;
+            return Some(concrete);
+        };
+
+        // Fields: parent's first (in parent's order), then child's own
+        // entries. A child redeclaration replaces the parent's slot in
+        // place so the parent's field-order intuition for adapter
+        // recipes carries over.
+        let mut fields: Vec<RecipeField> = parent.fields.clone();
+        for child_field in &raw.fields {
+            if let Some(slot) = fields.iter_mut().find(|f| f.name == child_field.name) {
+                *slot = child_field.clone();
+            } else {
+                fields.push(child_field.clone());
+            }
+        }
+
+        // Alignments: parent's first, child's added ones afterwards.
+        // Duplicates are squashed on the (ontology, term) key so a
+        // child that redeclares the parent's `aligns
+        // schema.org/Product` doesn't double-up in JSON-LD output.
+        let mut alignments: Vec<AlignmentUri> = parent.alignments.clone();
+        for a in &raw.alignments {
+            if !alignments
+                .iter()
+                .any(|existing| existing.ontology == a.ontology && existing.term == a.term)
+            {
+                alignments.push(a.clone());
+            }
+        }
+
+        Some(RecipeType {
+            name: raw.name.clone(),
+            fields,
+            shared: raw.shared,
+            alignments,
+            extends: None,
+            span: raw.span.clone(),
+        })
+    }
+
+    /// Raw (un-extended) types in name-sorted order. Use this when the
+    /// declaration shape matters — workspace tools that compare
+    /// `share`d sources, the LSP's symbol pass — not for runtime
+    /// consumers that need the effective shape after extension. For
+    /// the snapshot's `record_types`, use `types_sorted_effective`.
     pub fn types_sorted(&self) -> Vec<&RecipeType> {
         let mut out: Vec<&RecipeType> = self.types.values().collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
+    }
+
+    /// Effective types in name-sorted order, each with its `extends`
+    /// chain flattened. Engines stamp `record_types` from this so a
+    /// child type's snapshot entry carries every inherited field +
+    /// alignment from its parent — JSON-LD output and snapshot
+    /// consumers see the resolved shape, not the raw declaration.
+    pub fn types_sorted_effective(&self) -> Vec<RecipeType> {
+        let mut names: Vec<&String> = self.types.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .map(|n| {
+                self.lookup(n)
+                    .expect("name comes from the catalog's own keys")
+            })
+            .collect()
     }
 
     /// Build a catalog from one file's local types — what lonely-file
@@ -1055,6 +1181,173 @@ mod tests {
         }
 
         assert!(cat.ty("Missing").is_none());
+    }
+
+    #[test]
+    fn lookup_returns_raw_type_when_no_extends_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type Plain { id: String, name: String }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        let plain = cat.lookup("Plain").expect("Plain in catalog");
+        assert_eq!(plain.fields.len(), 2);
+        assert!(plain.extends.is_none(), "lookup strips extends");
+    }
+
+    #[test]
+    fn lookup_folds_parent_fields_and_alignments_into_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type Parent\n\
+                 aligns schema.org/Product\n\
+             {\n\
+                 id:   String aligns schema.org/identifier\n\
+                 name: String aligns schema.org/name\n\
+             }\n\
+             share type Child extends Parent@v1\n\
+                 aligns wikidata/Q2424752\n\
+             {\n\
+                 extra: String aligns schema.org/sku\n\
+             }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+
+        let child = cat.lookup("Child").expect("Child in catalog");
+        let names: Vec<&str> = child.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "name", "extra"], "parent fields first, child appended");
+        // Parent alignment carried.
+        assert!(child
+            .alignments
+            .iter()
+            .any(|a| a.ontology == "schema.org" && a.term == "Product"));
+        // Child alignment added.
+        assert!(child
+            .alignments
+            .iter()
+            .any(|a| a.ontology == "wikidata" && a.term == "Q2424752"));
+        // Inherited per-field alignment carried through unchanged.
+        let id = child.fields.iter().find(|f| f.name == "id").unwrap();
+        assert_eq!(id.alignment.as_ref().unwrap().term, "identifier");
+    }
+
+    #[test]
+    fn lookup_field_override_drops_parent_alignment_when_child_omits() {
+        // Parent declares `name: String aligns schema.org/name`. Child
+        // redeclares `name: String` with no alignment. Per the
+        // propagation policy the child's redeclaration wins — the
+        // parent's field-level alignment is dropped on the child's
+        // effective shape.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type Parent {\n\
+                 id:   String\n\
+                 name: String aligns schema.org/name\n\
+             }\n\
+             share type Child extends Parent@v1 {\n\
+                 name: String\n\
+                 extra: String\n\
+             }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        let child = cat.lookup("Child").expect("Child in catalog");
+        let name = child.fields.iter().find(|f| f.name == "name").unwrap();
+        assert!(
+            name.alignment.is_none(),
+            "child override without alignment drops the parent's"
+        );
+    }
+
+    #[test]
+    fn lookup_field_override_substitutes_alignment_when_child_provides_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type Parent {\n\
+                 id:   String\n\
+                 name: String aligns schema.org/name\n\
+             }\n\
+             share type Child extends Parent@v1 {\n\
+                 name: String aligns wikidata/P2561\n\
+                 extra: String\n\
+             }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        let child = cat.lookup("Child").expect("Child in catalog");
+        let name = child.fields.iter().find(|f| f.name == "name").unwrap();
+        let align = name.alignment.as_ref().expect("child's alignment kept");
+        assert_eq!(align.ontology, "wikidata");
+        assert_eq!(align.term, "P2561");
+    }
+
+    #[test]
+    fn lookup_three_step_chain_folds_all_ancestors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type A { id: String }\n\
+             share type B extends A@v1 { b: String }\n\
+             share type C extends B@v1 { c: String }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        let c = cat.lookup("C").expect("C in catalog");
+        let names: Vec<&str> = c.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "b", "c"]);
+    }
+
+    #[test]
+    fn lookup_cycle_degrades_gracefully() {
+        // Cycle in `extends`. The validator surfaces it; the catalog
+        // doesn't loop forever — it returns the partial fold so
+        // downstream code that calls `lookup` against either node
+        // gets something concrete to work with.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
+        write(
+            &root.join("decls.forage"),
+            "share type A extends B@v1 { a: String }\n\
+             share type B extends A@v1 { b: String }\n",
+        );
+        let recipe_path = root.join("r.forage");
+        write(&recipe_path, "recipe \"r\"\nengine http\n");
+        let ws = load(root).unwrap();
+        let cat = ws.catalog_from_disk(&recipe_path).unwrap();
+        // `lookup` must complete without panic / infinite loop. The
+        // exact field set on either node is undefined under a cycle
+        // — we only assert termination + a non-empty result.
+        let a = cat.lookup("A").expect("A in catalog");
+        assert!(a.extends.is_none(), "lookup strips extends on cycle");
+        let b = cat.lookup("B").expect("B in catalog");
+        assert!(b.extends.is_none());
     }
 
     /// Round-trip a non-trivial catalog through `SerializableCatalog`

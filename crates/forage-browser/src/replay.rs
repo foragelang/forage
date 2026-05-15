@@ -54,7 +54,7 @@ impl<'r> ReplayEngine<'r> {
         // JSON-LD output and hub indexers can read alignment metadata
         // for workspace-shared and hub-dep types too — not just the
         // ones declared in the recipe file itself.
-        snapshot.set_record_types(self.catalog.types_sorted());
+        snapshot.set_record_types(self.catalog.types_sorted_effective().iter());
 
         // Top-level body (e.g. Jane's `emit Dispensary` before captures).
         for s in self.recipe.body.statements() {
