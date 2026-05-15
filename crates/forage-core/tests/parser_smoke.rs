@@ -32,8 +32,8 @@ expect { records.where(typeName == "Item").count >= 1 }
 #[test]
 fn parses_tiny_http_recipe() {
     let r = parse(TINY_HTTP).expect("parse");
-    assert_eq!(r.name, "tiny");
-    assert_eq!(r.engine_kind, EngineKind::Http);
+    assert_eq!(r.recipe_name(), Some("tiny"));
+    assert_eq!(r.engine_kind(), Some(EngineKind::Http));
     assert_eq!(r.types.len(), 1);
     assert_eq!(r.types[0].name, "Item");
     assert_eq!(r.types[0].fields.len(), 2);
@@ -77,7 +77,7 @@ expect { records.where(typeName == "Film").count > 0 }
 #[test]
 fn parses_tiny_browser_recipe() {
     let r = parse(TINY_BROWSER).expect("parse");
-    assert_eq!(r.engine_kind, EngineKind::Browser);
+    assert_eq!(r.engine_kind(), Some(EngineKind::Browser));
     let b = r.browser.expect("browser block");
     assert_eq!(b.observe, "example.com");
     assert_eq!(b.pagination.mode, BrowserPaginationMode::Scroll);
@@ -187,11 +187,10 @@ fn legacy_block_syntax_is_rejected() {
     );
 }
 
-/// Regression: two `recipe` headers in one file is a hard error — the file
-/// IS the recipe, so a second header is meaningless and almost certainly
-/// indicates copy-paste rot.
+/// The parser accepts any number of recipe headers; the validator
+/// emits `DuplicateRecipeHeader` for everything past the first.
 #[test]
-fn second_recipe_header_is_rejected() {
+fn second_recipe_header_is_kept_by_parser() {
     let src = r#"
         recipe "first"
         engine http
@@ -199,12 +198,8 @@ fn second_recipe_header_is_rejected() {
         recipe "second"
         engine http
     "#;
-    let err = parse(src).expect_err("second recipe header must not parse");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("only declare one recipe") || msg.contains("recipe"),
-        "unexpected error: {msg}"
-    );
+    let f = parse(src).expect("parser tolerates duplicate header");
+    assert_eq!(f.recipe_headers.len(), 2);
 }
 
 #[test]

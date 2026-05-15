@@ -43,32 +43,19 @@ pub enum ParseError {
     },
 }
 
-/// Top-level entry: lex + parse a `.forage` file. The shape depends on
-/// the first significant token:
+/// Top-level entry: lex + parse a `.forage` file. The grammar is flat —
+/// a file is a sequence of top-level forms (`recipe` header, `type`,
+/// `enum`, `input`, `secret`, `fn`, `auth`, `browser`, `expect`,
+/// statements). The parser collects each form into the matching slot on
+/// `ForageFile` regardless of source order.
 ///
-/// - `recipe` → returns `WorkspaceFile::Recipe(Recipe)`.
-/// - `type` / `enum` (or empty file) → returns
-///   `WorkspaceFile::Declarations(DeclarationsFile)`. Any other top-level
-///   construct in a header-less file is a parse error.
-pub fn parse_workspace_file(source: &str) -> Result<WorkspaceFile, ParseError> {
+/// Semantic constraints — "at most one recipe header", "recipe-context
+/// forms require a header", "no duplicate workspace-shared
+/// declarations" — live in the validator, not the parser.
+pub fn parse(source: &str) -> Result<ForageFile, ParseError> {
     let toks = lex(source)?;
     let mut p = Parser::new(toks, source.len());
-    p.parse_workspace_file()
-}
-
-/// Lex + parse a recipe. Convenience for the many callers that operate
-/// only on recipe files (engines, CLI run, validator tests). Header-less
-/// declarations files are rejected with a parse error so the mismatch
-/// surfaces at the source instead of corrupting downstream state.
-pub fn parse(source: &str) -> Result<Recipe, ParseError> {
-    match parse_workspace_file(source)? {
-        WorkspaceFile::Recipe(r) => Ok(*r),
-        WorkspaceFile::Declarations(_) => Err(ParseError::Generic {
-            span: 0..source.len(),
-            message: "expected a recipe header ('recipe \"<name>\"') but found a header-less declarations file"
-                .into(),
-        }),
-    }
+    p.parse_forage_file()
 }
 
 struct Parser {
@@ -227,108 +214,60 @@ impl Parser {
 
     // --- grammar -----------------------------------------------------------
 
-    /// workspace_file := recipe | declarations_file
+    /// forage_file := top_level_form*
+    /// top_level_form := recipe_header | type_decl | enum_decl | input_decl
+    ///                 | secret_decl | fn_decl | auth_block | browser_block
+    ///                 | expect_block | statement
     ///
-    /// If the first significant token is `recipe`, parse a full Recipe.
-    /// Otherwise parse a header-less DeclarationsFile (only `type` and
-    /// `enum` declarations).
-    fn parse_workspace_file(&mut self) -> Result<WorkspaceFile, ParseError> {
-        match self.peek() {
-            Some(Token::Keyword(k)) if k == "recipe" => {
-                Ok(WorkspaceFile::Recipe(Box::new(self.parse_recipe()?)))
-            }
-            _ => Ok(WorkspaceFile::Declarations(self.parse_declarations_file()?)),
-        }
-    }
-
-    /// declarations_file := (type_decl | enum_decl)*
-    ///
-    /// Anything else at top level is a parse error — the file's purpose
-    /// is to share type names with sibling recipes in a workspace.
-    /// Names must be unique across both `type` and `enum` decls in the
-    /// same file; the recipe validator doesn't run on declarations
-    /// files, so the duplicate has to surface here or it never will.
-    fn parse_declarations_file(&mut self) -> Result<DeclarationsFile, ParseError> {
-        let mut types = Vec::new();
-        let mut enums = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        while self.peek().is_some() {
-            match self.peek().cloned() {
-                Some(Token::Keyword(k)) => match k.as_str() {
-                    "type" => {
-                        let t = self.parse_type_decl()?;
-                        if !seen.insert(t.name.clone()) {
-                            return Err(ParseError::Generic {
-                                span: t.span,
-                                message: format!(
-                                    "duplicate declaration '{}' in declarations file",
-                                    t.name
-                                ),
-                            });
-                        }
-                        types.push(t);
-                    }
-                    "enum" => {
-                        let e = self.parse_enum_decl()?;
-                        if !seen.insert(e.name.clone()) {
-                            return Err(ParseError::Generic {
-                                span: e.span,
-                                message: format!(
-                                    "duplicate declaration '{}' in declarations file",
-                                    e.name
-                                ),
-                            });
-                        }
-                        enums.push(e);
-                    }
-                    other => {
-                        return Err(self.generic(&format!(
-                            "declarations file may only contain `type` and `enum` declarations; found '{other}'"
-                        )));
-                    }
-                },
-                Some(other) => {
-                    return Err(self.generic(&format!(
-                        "declarations file may only contain `type` and `enum` declarations; found {}",
-                        other.describe()
-                    )));
-                }
-                None => break,
-            }
-        }
-        Ok(DeclarationsFile { types, enums })
-    }
-
-    /// recipe := 'recipe' STRING 'engine' kind decl*
-    ///
-    /// The recipe header and body live flat at the top level — the file IS
-    /// the recipe, so there is no surrounding `{ }` block. The first two
-    /// declarations must be `recipe "<name>"` and `engine <kind>`; every
-    /// subsequent top-level form (type / enum / input / secret / auth /
-    /// browser / step / for / emit / expect) belongs to this recipe.
-    fn parse_recipe(&mut self) -> Result<Recipe, ParseError> {
-        self.expect_keyword("recipe")?;
-        let name = self.expect_string()?;
-
-        // engine <kind>
-        self.expect_keyword("engine")?;
-        let engine_kind = self.parse_engine_kind()?;
-
-        let mut types = Vec::new();
-        let mut enums = Vec::new();
-        let mut inputs = Vec::new();
-        let mut secrets = Vec::new();
-        let mut auth: Option<AuthStrategy> = None;
-        let mut body: Vec<Statement> = Vec::new();
-        let mut browser: Option<BrowserConfig> = None;
-        let mut expectations: Vec<Expectation> = Vec::new();
+    /// One file format. Every form lands in its slot on `ForageFile`
+    /// regardless of source order. Semantic rules — at most one recipe
+    /// header, recipe-context forms require a header, no duplicate
+    /// shared decls across the workspace — are the validator's job.
+    fn parse_forage_file(&mut self) -> Result<ForageFile, ParseError> {
+        let mut recipe_headers: Vec<RecipeHeader> = Vec::new();
+        let mut types: Vec<RecipeType> = Vec::new();
+        let mut enums: Vec<RecipeEnum> = Vec::new();
+        let mut inputs: Vec<InputDecl> = Vec::new();
+        let mut secrets: Vec<String> = Vec::new();
         let mut functions: Vec<FnDecl> = Vec::new();
+        let mut auth: Option<AuthStrategy> = None;
+        let mut browser: Option<BrowserConfig> = None;
+        let mut body: Vec<Statement> = Vec::new();
+        let mut expectations: Vec<Expectation> = Vec::new();
 
         while self.peek().is_some() {
             match self.peek().cloned() {
                 Some(Token::Keyword(k)) => match k.as_str() {
-                    "type" => types.push(self.parse_type_decl()?),
-                    "enum" => enums.push(self.parse_enum_decl()?),
+                    "recipe" => {
+                        // Every header is kept; the validator's
+                        // `DuplicateRecipeHeader` rule fires on the
+                        // second one and onwards.
+                        recipe_headers.push(self.parse_recipe_header()?);
+                    }
+                    "share" => {
+                        // `share` is an optional visibility prefix on
+                        // type / enum / fn. Anything else after it is a
+                        // parse error.
+                        self.bump();
+                        match self.peek().cloned() {
+                            Some(Token::Keyword(k2)) if k2 == "type" => {
+                                types.push(self.parse_type_decl_shared(true)?);
+                            }
+                            Some(Token::Keyword(k2)) if k2 == "enum" => {
+                                enums.push(self.parse_enum_decl_shared(true)?);
+                            }
+                            Some(Token::Keyword(k2)) if k2 == "fn" => {
+                                functions.push(self.parse_fn_decl_shared(true)?);
+                            }
+                            _ => {
+                                return Err(self.unexpected(
+                                    "'type', 'enum', or 'fn' after 'share'",
+                                ));
+                            }
+                        }
+                    }
+                    "type" => types.push(self.parse_type_decl_shared(false)?),
+                    "enum" => enums.push(self.parse_enum_decl_shared(false)?),
                     "input" => inputs.push(self.parse_input_decl()?),
                     "secret" => {
                         self.bump();
@@ -348,14 +287,9 @@ impl Parser {
                         browser = Some(self.parse_browser_block()?);
                     }
                     "expect" => expectations.push(self.parse_expect_block()?),
-                    "fn" => functions.push(self.parse_fn_decl()?),
+                    "fn" => functions.push(self.parse_fn_decl_shared(false)?),
                     "step" | "for" | "emit" => {
                         body.push(self.parse_statement()?);
-                    }
-                    "recipe" => {
-                        return Err(self.generic(
-                            "a file may only declare one recipe (and the header must come first)",
-                        ));
                     }
                     other => return Err(self.generic(&format!("unexpected keyword '{other}'"))),
                 },
@@ -369,18 +303,31 @@ impl Parser {
             }
         }
 
-        Ok(Recipe {
-            name,
-            engine_kind,
+        Ok(ForageFile {
+            recipe_headers,
             types,
             enums,
             inputs,
-            auth,
-            body,
-            browser,
-            expectations,
             secrets,
             functions,
+            auth,
+            browser,
+            body,
+            expectations,
+        })
+    }
+
+    /// recipe_header := 'recipe' STRING 'engine' engine_kind
+    fn parse_recipe_header(&mut self) -> Result<RecipeHeader, ParseError> {
+        let start = self.current_span().start;
+        self.expect_keyword("recipe")?;
+        let name = self.expect_string()?;
+        self.expect_keyword("engine")?;
+        let engine_kind = self.parse_engine_kind()?;
+        Ok(RecipeHeader {
+            name,
+            engine_kind,
+            span: self.span_to_here(start),
         })
     }
 
@@ -399,7 +346,8 @@ impl Parser {
     /// a recipe-author message instead of the generic
     /// `expected parameter ($name)` fallback. `$page` is engine-injected
     /// and is rejected later by the validator (`ReservedParam`).
-    fn parse_fn_decl(&mut self) -> Result<FnDecl, ParseError> {
+    /// fn_decl := 'share'? 'fn' Ident '(' param_list? ')' '{' fn_body '}'
+    fn parse_fn_decl_shared(&mut self, shared: bool) -> Result<FnDecl, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("fn")?;
         let name = self.expect_ident()?;
@@ -437,6 +385,7 @@ impl Parser {
             name,
             params,
             body,
+            shared,
             span: self.span_to_here(start),
         })
     }
@@ -498,8 +447,13 @@ impl Parser {
 
     // --- type / enum / input ----------------------------------------------
 
-    /// type_decl := 'type' TypeName '{' field (';'|',')? ... '}'
-    fn parse_type_decl(&mut self) -> Result<RecipeType, ParseError> {
+    /// type_decl := 'share'? 'type' TypeName '{' field (';'|',')? ... '}'
+    ///
+    /// `share` consumption happens in `parse_forage_file`; this helper
+    /// just receives the flag and the head `type` keyword still in the
+    /// stream. The span covers the `type` keyword through the closing
+    /// brace (the `share` prefix sits outside the recorded span).
+    fn parse_type_decl_shared(&mut self, shared: bool) -> Result<RecipeType, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("type")?;
         let name = self.expect_typename()?;
@@ -514,6 +468,7 @@ impl Parser {
         Ok(RecipeType {
             name,
             fields,
+            shared,
             span: self.span_to_here(start),
         })
     }
@@ -606,7 +561,8 @@ impl Parser {
         }
     }
 
-    fn parse_enum_decl(&mut self) -> Result<RecipeEnum, ParseError> {
+    /// enum_decl := 'share'? 'enum' TypeName '{' variant ... '}'
+    fn parse_enum_decl_shared(&mut self, shared: bool) -> Result<RecipeEnum, ParseError> {
         let start = self.current_span().start;
         self.expect_keyword("enum")?;
         let name = self.expect_typename()?;
@@ -626,6 +582,7 @@ impl Parser {
         Ok(RecipeEnum {
             name,
             variants,
+            shared,
             span: self.span_to_here(start),
         })
     }

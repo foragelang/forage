@@ -2,10 +2,10 @@
 //! severities. Validation is best-effort — even if some checks fail,
 //! others still run, so the user sees the full picture.
 //!
-//! Public entry: `validate(recipe, catalog) -> ValidationReport`. The
-//! catalog folds in workspace-shared declarations files plus the
-//! recipe's local types; recipes outside a workspace pass
-//! `TypeCatalog::from_recipe(&recipe)` for lonely-recipe mode.
+//! Public entry: `validate(file, catalog) -> ValidationReport`. The
+//! catalog folds in workspace-shared declarations plus the file's local
+//! declarations; files outside a workspace pass
+//! `TypeCatalog::from_file(&file)` for lonely-file mode.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,12 +13,100 @@ use crate::ast::*;
 use crate::workspace::TypeCatalog;
 
 /// Top-level entry point. `catalog` is the merged type namespace for
-/// this recipe — see `Workspace::catalog`. Lonely-recipe mode (no
-/// surrounding `forage.toml`) passes `TypeCatalog::from_recipe(recipe)`.
-pub fn validate(recipe: &Recipe, catalog: &TypeCatalog) -> ValidationReport {
-    let mut v = Validator::new(recipe, catalog);
+/// this file — see `Workspace::catalog`. Lonely-file mode (no surrounding
+/// `forage.toml`) passes `TypeCatalog::from_file(file)`.
+pub fn validate(file: &ForageFile, catalog: &TypeCatalog) -> ValidationReport {
+    let mut v = Validator::new(file, catalog);
     v.run();
     ValidationReport { issues: v.issues }
+}
+
+/// One file's contribution to a workspace cross-file validation pass.
+/// `path` is the file's filesystem location (used in the diagnostic
+/// message of any other file that collides on the same `share`d name);
+/// `file` is the parsed AST.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceFileRef<'a> {
+    pub path: &'a std::path::Path,
+    pub file: &'a ForageFile,
+}
+
+/// Walk every file in the workspace and emit `DuplicateSharedDeclaration`
+/// whenever two files declare a `share`d type/enum/fn with the same
+/// name. The check is symmetric — both colliding files surface the
+/// diagnostic. File-local (non-`share`d) declarations never participate.
+pub fn validate_workspace_shared(files: &[WorkspaceFileRef<'_>]) -> ValidationReport {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let mut issues: Vec<ValidationIssue> = Vec::new();
+
+    // Kind discriminator: types, enums, and fns live in separate
+    // namespaces — a `share type Foo` and a `share enum Foo` don't
+    // collide.
+    let mut types: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
+    let mut enums: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
+    let mut fns: HashMap<&str, Vec<(PathBuf, Span)>> = HashMap::new();
+
+    for entry in files {
+        for t in &entry.file.types {
+            if t.shared {
+                types
+                    .entry(t.name.as_str())
+                    .or_default()
+                    .push((entry.path.to_path_buf(), t.span.clone()));
+            }
+        }
+        for e in &entry.file.enums {
+            if e.shared {
+                enums
+                    .entry(e.name.as_str())
+                    .or_default()
+                    .push((entry.path.to_path_buf(), e.span.clone()));
+            }
+        }
+        for f in &entry.file.functions {
+            if f.shared {
+                fns.entry(f.name.as_str())
+                    .or_default()
+                    .push((entry.path.to_path_buf(), f.span.clone()));
+            }
+        }
+    }
+
+    emit_share_collisions("type", types, &mut issues);
+    emit_share_collisions("enum", enums, &mut issues);
+    emit_share_collisions("fn", fns, &mut issues);
+
+    ValidationReport { issues }
+}
+
+fn emit_share_collisions(
+    kind_word: &str,
+    sites_by_name: std::collections::HashMap<&str, Vec<(std::path::PathBuf, Span)>>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (name, sites) in sites_by_name {
+        if sites.len() <= 1 {
+            continue;
+        }
+        for (path, span) in &sites {
+            let others: Vec<String> = sites
+                .iter()
+                .filter(|(p, _)| p != path)
+                .map(|(p, _)| p.display().to_string())
+                .collect();
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                code: ValidationCode::DuplicateSharedDeclaration,
+                message: format!(
+                    "share {kind_word} '{name}' is also declared in: {}",
+                    others.join(", "),
+                ),
+                span: span.clone(),
+            });
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,6 +198,18 @@ pub enum ValidationCode {
     /// language is single-assignment; rebinding is a recipe-author
     /// error, not a feature.
     DuplicateLetBinding,
+    /// A file declares two or more `recipe "<name>"` headers. The
+    /// grammar accepts a flat sequence of top-level forms; the
+    /// semantic constraint "at most one header per file" lives here.
+    DuplicateRecipeHeader,
+    /// A header-less file declares recipe-context forms (auth /
+    /// browser / expect / statements) — these only make sense
+    /// alongside a `recipe` header.
+    RecipeContextWithoutHeader,
+    /// Two `share`d declarations across the workspace share a name.
+    /// Anchored on the file being validated; the cross-file pass that
+    /// detected the conflict is the one that emits this issue.
+    DuplicateSharedDeclaration,
 }
 
 /// Static list of built-in transforms — mirrors `eval::transforms::build_default`.
@@ -155,7 +255,7 @@ pub const BUILTIN_TRANSFORMS: &[&str] = &[
 ];
 
 struct Validator<'a> {
-    recipe: &'a Recipe,
+    file: &'a ForageFile,
     catalog: &'a TypeCatalog,
     issues: Vec<ValidationIssue>,
     /// Variable bindings in scope at the current walking position. Includes
@@ -183,10 +283,10 @@ struct Validator<'a> {
 }
 
 impl<'a> Validator<'a> {
-    fn new(recipe: &'a Recipe, catalog: &'a TypeCatalog) -> Self {
+    fn new(file: &'a ForageFile, catalog: &'a TypeCatalog) -> Self {
         let mut known_vars = std::collections::HashSet::new();
-        collect_bindings(&recipe.body, &mut known_vars);
-        if let Some(b) = &recipe.browser {
+        collect_bindings(&file.body, &mut known_vars);
+        if let Some(b) = &file.browser {
             for cap in &b.captures {
                 known_vars.insert(cap.iter_var.clone());
                 collect_bindings(&cap.body, &mut known_vars);
@@ -197,7 +297,7 @@ impl<'a> Validator<'a> {
             }
         }
         // Auth.htmlPrime captured vars.
-        if let Some(AuthStrategy::HtmlPrime { captured_vars, .. }) = &recipe.auth {
+        if let Some(AuthStrategy::HtmlPrime { captured_vars, .. }) = &file.auth {
             for v in captured_vars {
                 known_vars.insert(v.var_name.clone());
             }
@@ -211,13 +311,13 @@ impl<'a> Validator<'a> {
         // `check_user_fns` — the map only keeps the first arity since
         // a duplicate emits an error anyway.
         let mut user_fn_arity = std::collections::HashMap::new();
-        for f in &recipe.functions {
+        for f in &file.functions {
             user_fn_arity
                 .entry(f.name.clone())
                 .or_insert(f.params.len());
         }
         Self {
-            recipe,
+            file,
             catalog,
             issues: Vec::new(),
             known_vars,
@@ -275,6 +375,8 @@ impl<'a> Validator<'a> {
     }
 
     fn run(&mut self) {
+        self.check_recipe_headers();
+        self.check_recipe_context();
         self.check_duplicates();
         self.check_engine_consistency();
         self.check_user_fns();
@@ -287,7 +389,7 @@ impl<'a> Validator<'a> {
     /// direct-recursion warning.
     fn check_user_fns(&mut self) {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for f in &self.recipe.functions.clone() {
+        for f in &self.file.functions.clone() {
             self.with_span(f.span.clone(), |v| {
                 if !seen.insert(f.name.as_str()) {
                     v.err_here(
@@ -384,7 +486,7 @@ impl<'a> Validator<'a> {
 
     fn check_duplicates(&mut self) {
         let mut seen_types = std::collections::HashSet::new();
-        for t in &self.recipe.types {
+        for t in &self.file.types {
             if !seen_types.insert(&t.name) {
                 self.err(
                     t.span.clone(),
@@ -394,7 +496,7 @@ impl<'a> Validator<'a> {
             }
         }
         let mut seen_enums = std::collections::HashSet::new();
-        for e in &self.recipe.enums {
+        for e in &self.file.enums {
             if !seen_enums.insert(&e.name) {
                 self.err(
                     e.span.clone(),
@@ -404,7 +506,7 @@ impl<'a> Validator<'a> {
             }
         }
         let mut seen_inputs = std::collections::HashSet::new();
-        for i in &self.recipe.inputs {
+        for i in &self.file.inputs {
             if !seen_inputs.insert(&i.name) {
                 self.err(
                     i.span.clone(),
@@ -414,7 +516,7 @@ impl<'a> Validator<'a> {
             }
         }
         let mut seen_secrets = std::collections::HashSet::new();
-        for s in &self.recipe.secrets {
+        for s in &self.file.secrets {
             if !seen_secrets.insert(s) {
                 self.err_recipe(
                     ValidationCode::DuplicateSecret,
@@ -427,9 +529,16 @@ impl<'a> Validator<'a> {
     // --- engine consistency ------------------------------------------------
 
     fn check_engine_consistency(&mut self) {
-        match self.recipe.engine_kind {
+        // Engine consistency only applies to recipe-bearing files. The
+        // `RecipeContextWithoutHeader` rule has already flagged any
+        // recipe-context forms in a header-less file; nothing else to
+        // check here.
+        let Some(engine_kind) = self.file.engine_kind() else {
+            return;
+        };
+        match engine_kind {
             EngineKind::Http => {
-                if self.recipe.browser.is_some() {
+                if self.file.browser.is_some() {
                     self.err_recipe(
                         ValidationCode::UnexpectedBrowserConfig,
                         "HTTP-engine recipe must not declare a `browser { … }` block",
@@ -437,13 +546,13 @@ impl<'a> Validator<'a> {
                 }
             }
             EngineKind::Browser => {
-                if self.recipe.browser.is_none() {
+                if self.file.browser.is_none() {
                     self.err_recipe(
                         ValidationCode::MissingBrowserConfig,
                         "browser-engine recipe must declare a `browser { … }` block",
                     );
                 }
-                if matches!(self.recipe.auth, Some(AuthStrategy::Session(_))) {
+                if matches!(self.file.auth, Some(AuthStrategy::Session(_))) {
                     self.warn_recipe(
                         ValidationCode::AuthOnBrowserEngine,
                         "auth.session.* on a browser-engine recipe — credentials are best handled inside the browser flow",
@@ -451,9 +560,9 @@ impl<'a> Validator<'a> {
                 }
             }
         }
-        if let Some(AuthStrategy::HtmlPrime { step_name, .. }) = &self.recipe.auth {
+        if let Some(AuthStrategy::HtmlPrime { step_name, .. }) = &self.file.auth {
             let referenced = self
-                .recipe
+                .file
                 .body
                 .iter()
                 .any(|s| matches!(s, Statement::Step(st) if &st.name == step_name));
@@ -466,13 +575,82 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// `DuplicateRecipeHeader` — a file with two or more `recipe "<name>"`
+    /// openers. The parser is permissive; the constraint lives here.
+    /// Anchors each duplicate diagnostic at its own span so editors can
+    /// jump to the right line.
+    fn check_recipe_headers(&mut self) {
+        // The first header is canonical; every additional one is a
+        // duplicate. Iterate by index so we anchor the diagnostic on the
+        // duplicate's own span, not the canonical one.
+        for header in self.file.recipe_headers.iter().skip(1) {
+            self.err(
+                header.span.clone(),
+                ValidationCode::DuplicateRecipeHeader,
+                format!(
+                    "file declares more than one recipe header; the second '{}' is a duplicate",
+                    header.name,
+                ),
+            );
+        }
+    }
+
+    /// `RecipeContextWithoutHeader` — recipe-context forms (auth /
+    /// browser / expect / statements) only make sense alongside a
+    /// `recipe` header. Anchors at the first offending form so the
+    /// user lands on something they can act on.
+    fn check_recipe_context(&mut self) {
+        if self.file.recipe_header().is_some() {
+            return;
+        }
+        if let Some(auth) = self.file.auth.as_ref() {
+            let _ = auth;
+            self.err_recipe(
+                ValidationCode::RecipeContextWithoutHeader,
+                "auth block requires a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        if self.file.browser.is_some() {
+            self.err_recipe(
+                ValidationCode::RecipeContextWithoutHeader,
+                "browser block requires a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        for e in &self.file.expectations.clone() {
+            self.err(
+                e.span.clone(),
+                ValidationCode::RecipeContextWithoutHeader,
+                "expect block requires a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        for s in &self.file.body.clone() {
+            self.err(
+                s.span().clone(),
+                ValidationCode::RecipeContextWithoutHeader,
+                "statements (step / for / emit) require a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        if !self.file.secrets.is_empty() {
+            self.err_recipe(
+                ValidationCode::RecipeContextWithoutHeader,
+                "`secret` declarations require a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+        if !self.file.inputs.is_empty() {
+            self.err_recipe(
+                ValidationCode::RecipeContextWithoutHeader,
+                "`input` declarations require a `recipe \"<name>\" engine <kind>` header",
+            );
+        }
+    }
+
     // --- name resolution ---------------------------------------------------
 
     fn check_references(&mut self) {
-        for s in self.recipe.body.clone() {
+        for s in self.file.body.clone() {
             self.check_statement(&s);
         }
-        if let Some(b) = &self.recipe.browser {
+        if let Some(b) = &self.file.browser {
             self.check_template(&b.initial_url);
             if let Some(i) = &b.interactive {
                 if let Some(u) = &i.bootstrap_url {
@@ -838,7 +1016,7 @@ impl<'a> Validator<'a> {
             PathExpr::Field(base, field) | PathExpr::OptField(base, field) => {
                 // `$input.<name>` of an EnumRef type.
                 if let PathExpr::Input = base.as_ref() {
-                    if let Some(inp) = self.recipe.input(field) {
+                    if let Some(inp) = self.file.input(field) {
                         if let FieldType::EnumRef(name) = &inp.ty {
                             return Some(name.clone());
                         }
@@ -853,7 +1031,7 @@ impl<'a> Validator<'a> {
     fn check_path(&mut self, p: &PathExpr) {
         match p {
             PathExpr::Secret(name) => {
-                if !self.recipe.secrets.iter().any(|s| s == name) {
+                if !self.file.secrets.iter().any(|s| s == name) {
                     self.err_here(
                         ValidationCode::UnknownSecret,
                         format!("$secret.{name} references an undeclared secret"),
@@ -878,7 +1056,7 @@ impl<'a> Validator<'a> {
             PathExpr::Field(base, field) | PathExpr::OptField(base, field) => {
                 // `$input.X` — check X is declared.
                 if let PathExpr::Input = base.as_ref() {
-                    if self.recipe.input(field).is_none() {
+                    if self.file.input(field).is_none() {
                         self.err_here(
                             ValidationCode::UnknownInput,
                             format!("$input.{field} references an undeclared input"),
@@ -947,14 +1125,14 @@ impl<'a> Validator<'a> {
         // Verify each declared type's field types either resolve to a
         // primitive, an Array of one, an EnumRef to a declared enum, or a
         // Record reference to a declared type.
-        for ty in &self.recipe.types.clone() {
+        for ty in &self.file.types.clone() {
             self.with_span(ty.span.clone(), |v| {
                 for f in &ty.fields {
                     v.check_field_type(&f.ty, &format!("type {}.{}", ty.name, f.name));
                 }
             });
         }
-        for inp in &self.recipe.inputs.clone() {
+        for inp in &self.file.inputs.clone() {
             self.with_span(inp.span.clone(), |v| {
                 v.check_field_type(&inp.ty, &format!("input {}", inp.name));
             });
@@ -1046,7 +1224,7 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
@@ -1066,7 +1244,7 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(rep.has_errors());
         assert!(
@@ -1090,7 +1268,7 @@ mod tests {
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1122,7 +1300,7 @@ for $x in $list.items[*] {
 emit Item { }
 "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
 
         let dup = rep
@@ -1180,7 +1358,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1203,7 +1381,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1223,7 +1401,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::UnknownType
@@ -1254,7 +1432,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1282,7 +1460,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1308,7 +1486,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1331,7 +1509,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1372,7 +1550,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
@@ -1397,7 +1575,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1426,7 +1604,7 @@ emit Item { }
             emit Wrap { product ← $prod, id ← "x" }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1438,7 +1616,7 @@ emit Item { }
 
     // ---- user-defined functions --------------------------------------
 
-    fn fn_recipe(extra: &str) -> Recipe {
+    fn fn_recipe(extra: &str) -> ForageFile {
         let src = format!(
             r#"
                 recipe "ok"
@@ -1457,7 +1635,7 @@ emit Item { }
     #[test]
     fn valid_user_fn_validates() {
         let r = fn_recipe("fn shout($x) { $x | upper }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
@@ -1474,7 +1652,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1487,7 +1665,7 @@ emit Item { }
     #[test]
     fn duplicate_fn_name_flagged() {
         let r = fn_recipe("fn dup($x) { $x }\nfn dup($x) { $x }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::DuplicateFn),
@@ -1499,7 +1677,7 @@ emit Item { }
     #[test]
     fn duplicate_param_name_flagged() {
         let r = fn_recipe("fn dupParams($x, $x) { $x }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1515,7 +1693,7 @@ emit Item { }
         // not be reusable as a fn parameter. `$input` / `$secret` are
         // already excluded at the lexer level (distinct token kinds).
         let r = fn_recipe("fn nope($page) { $page }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1540,7 +1718,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1566,7 +1744,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1588,7 +1766,7 @@ emit Item { }
             emit T { id ← answer() }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
@@ -1606,7 +1784,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors().any(|i| i.code == ValidationCode::WrongArity),
@@ -1618,7 +1796,7 @@ emit Item { }
     #[test]
     fn user_fn_can_call_built_in_transform() {
         let r = fn_recipe("fn shouty($x) { $x | upper }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
@@ -1627,7 +1805,7 @@ emit Item { }
     fn user_fn_can_call_other_user_fn_declared_later() {
         // Forward reference: `a` calls `b` declared below it.
         let r = fn_recipe("fn a($x) { $x | b }\nfn b($y) { $y | upper }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "unexpected errors: {:?}", rep.issues);
     }
@@ -1635,7 +1813,7 @@ emit Item { }
     #[test]
     fn direct_recursion_emits_warning() {
         let r = fn_recipe("fn loopy($x) { $x | loopy }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             !rep.has_errors(),
@@ -1656,7 +1834,7 @@ emit Item { }
     fn user_fn_shadowing_built_in_emits_warning() {
         // `lower` exists as a built-in; redefining it warns but doesn't error.
         let r = fn_recipe("fn lower($x) { $x }");
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             !rep.has_errors(),
@@ -1687,7 +1865,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1714,7 +1892,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
     }
@@ -1735,7 +1913,7 @@ emit Item { }
             }
         "#;
         let r = parse(src).unwrap();
-        let cat = TypeCatalog::from_recipe(&r);
+        let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat);
         assert!(
             rep.errors()
@@ -1743,5 +1921,234 @@ emit Item { }
             "expected UnknownVariable for $prod inside fn body; got {:?}",
             rep.issues,
         );
+    }
+
+    // ---- file-grammar rules: header / context / shared decls ---------
+
+    #[test]
+    fn duplicate_recipe_header_flagged() {
+        let src = r#"
+            recipe "first"
+            engine http
+
+            recipe "second"
+            engine http
+
+            type Item { id: String }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::DuplicateRecipeHeader),
+            "expected DuplicateRecipeHeader; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn statement_without_header_flagged() {
+        let src = r#"
+            step orphan {
+                method "GET"
+                url "https://example.com"
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader),
+            "expected RecipeContextWithoutHeader for a stray step; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn auth_without_header_flagged() {
+        let src = r#"
+            auth.staticHeader { name: "X-Api-Key", value: "abc" }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
+                    && i.message.contains("auth")),
+            "expected RecipeContextWithoutHeader for an auth block; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn browser_without_header_flagged() {
+        let src = r#"
+            browser {
+                initialURL: "https://example.com"
+                observe: "example.com"
+                paginate browserPaginate.scroll { until: noProgressFor(1) }
+            }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
+                    && i.message.contains("browser")),
+            "expected RecipeContextWithoutHeader for a browser block; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn expect_without_header_flagged() {
+        let src = r#"
+            expect { records.where(typeName == "X").count > 0 }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(
+            rep.errors()
+                .any(|i| i.code == ValidationCode::RecipeContextWithoutHeader
+                    && i.message.contains("expect")),
+            "expected RecipeContextWithoutHeader for an expect block; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn header_less_declarations_file_validates_clean() {
+        // A pure declarations file with only `share`d types/enums/fns
+        // must pass the validator. No recipe header means none of the
+        // recipe-context rules fire.
+        let src = r#"
+            share type Foo { id: String }
+            share enum Mode { A, B }
+            share fn double($x) { $x }
+        "#;
+        let r = parse(src).unwrap();
+        let cat = TypeCatalog::from_file(&r);
+        let rep = validate(&r, &cat);
+        assert!(!rep.has_errors(), "got errors: {:?}", rep.issues);
+    }
+
+    #[test]
+    fn duplicate_shared_declarations_across_files_flagged() {
+        // Two files in a workspace both declare `share type Foo { … }`.
+        // The cross-file validator emits `DuplicateSharedDeclaration` on
+        // *both* sites so the editor can squiggle both.
+        let src_a = r#"
+            share type Foo { id: String }
+        "#;
+        let src_b = r#"
+            share type Foo { name: String }
+        "#;
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let rep = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+        ]);
+        let dup_errors: Vec<_> = rep
+            .errors()
+            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
+            .collect();
+        assert_eq!(
+            dup_errors.len(),
+            2,
+            "expected a DuplicateSharedDeclaration on both files; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn file_local_decl_does_not_collide_with_shared_decl_elsewhere() {
+        // `Foo` is `share`d in file A and file-local in file B. The
+        // cross-file pass must not fire `DuplicateSharedDeclaration`
+        // because only one is `share`d.
+        let src_a = "share type Foo { id: String }\n";
+        let src_b = "type Foo { id: String }\n";
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let rep = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+        ]);
+        assert!(
+            !rep.has_errors(),
+            "single share + file-local must not collide; got {:?}",
+            rep.issues,
+        );
+    }
+
+    #[test]
+    fn duplicate_shared_enum_across_files_flagged() {
+        let src_a = "share enum Mode { A, B }\n";
+        let src_b = "share enum Mode { X, Y }\n";
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let rep = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+        ]);
+        let dup_errors: Vec<_> = rep
+            .errors()
+            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
+            .collect();
+        assert_eq!(dup_errors.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_shared_fn_across_files_flagged() {
+        let src_a = "share fn upper($x) { $x }\n";
+        let src_b = "share fn upper($x) { $x }\n";
+        let file_a = parse(src_a).unwrap();
+        let file_b = parse(src_b).unwrap();
+        let path_a = std::path::PathBuf::from("/ws/a.forage");
+        let path_b = std::path::PathBuf::from("/ws/b.forage");
+        let rep = validate_workspace_shared(&[
+            WorkspaceFileRef {
+                path: &path_a,
+                file: &file_a,
+            },
+            WorkspaceFileRef {
+                path: &path_b,
+                file: &file_b,
+            },
+        ]);
+        let dup_errors: Vec<_> = rep
+            .errors()
+            .filter(|i| i.code == ValidationCode::DuplicateSharedDeclaration)
+            .collect();
+        assert_eq!(dup_errors.len(), 2);
     }
 }

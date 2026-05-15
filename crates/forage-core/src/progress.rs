@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::ast::{Recipe, Statement};
+use crate::ast::{ForageFile, Statement};
 
 /// The unit of work for one iteration of a recipe.
 ///
@@ -55,7 +55,7 @@ pub struct ProgressUnit {
 /// Ties at the same depth go to the last-in-source-order (sequential
 /// loops execute one after another; the final one is the bottleneck
 /// for completion).
-pub fn infer_progress_unit(recipe: &Recipe) -> Option<ProgressUnit> {
+pub fn infer_progress_unit(recipe: &ForageFile) -> Option<ProgressUnit> {
     let mut compounds: Vec<(usize, ProgressUnit)> = Vec::new();
     let mut emit_bearings: Vec<(usize, ProgressUnit)> = Vec::new();
     collect_candidates(&recipe.body, 0, &mut compounds, &mut emit_bearings);

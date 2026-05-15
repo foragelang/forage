@@ -41,7 +41,7 @@ fn fixtures_match_expected() {
         // Production goes through `TypeCatalog`, not direct lookup on
         // the recipe. Mirror that here so the test exercises the same
         // path as the runtime.
-        let catalog = TypeCatalog::from_recipe(&recipe);
+        let catalog = TypeCatalog::from_file(&recipe);
         if let Some(types) = &r.types {
             for te in types {
                 let Some(ty) = catalog.ty(&te.name) else {
@@ -129,16 +129,18 @@ fn fixtures_match_expected() {
     }
 }
 
-fn check_summary(file: &str, recipe: &Recipe, expected: &Summary, failures: &mut Vec<String>) {
-    if recipe.name != expected.name {
+fn check_summary(file: &str, recipe: &ForageFile, expected: &Summary, failures: &mut Vec<String>) {
+    let recipe_name = recipe.recipe_name().unwrap_or("");
+    if recipe_name != expected.name {
         failures.push(format!(
             "{}: name {:?} != expected {:?}",
-            file, recipe.name, expected.name
+            file, recipe_name, expected.name
         ));
     }
-    let ek = match recipe.engine_kind {
-        EngineKind::Http => "http",
-        EngineKind::Browser => "browser",
+    let ek = match recipe.engine_kind() {
+        Some(EngineKind::Http) => "http",
+        Some(EngineKind::Browser) => "browser",
+        None => "<none>",
     };
     if ek != expected.engine_kind {
         failures.push(format!(

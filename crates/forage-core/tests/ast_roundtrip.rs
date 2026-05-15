@@ -2,50 +2,37 @@
 
 use forage_core::ast::*;
 
-#[test]
-fn empty_recipe_serializes() {
-    let r = Recipe {
-        name: "hello".into(),
-        engine_kind: EngineKind::Http,
+fn empty_file() -> ForageFile {
+    ForageFile {
+        recipe_headers: vec![RecipeHeader {
+            name: "hello".into(),
+            engine_kind: EngineKind::Http,
+            span: 0..0,
+        }],
         types: vec![],
         enums: vec![],
         inputs: vec![],
-        auth: None,
-        body: vec![],
-        browser: None,
-        expectations: vec![],
         secrets: vec![],
         functions: vec![],
-    };
+        auth: None,
+        browser: None,
+        body: vec![],
+        expectations: vec![],
+    }
+}
+
+#[test]
+fn forage_file_with_recipe_header_serializes() {
+    let r = empty_file();
     let json = serde_json::to_string(&r).unwrap();
-    let back: Recipe = serde_json::from_str(&json).unwrap();
+    let back: ForageFile = serde_json::from_str(&json).unwrap();
     assert_eq!(r, back);
 }
 
 #[test]
-fn workspace_file_recipe_variant_serializes() {
-    let r = Recipe {
-        name: "hello".into(),
-        engine_kind: EngineKind::Http,
-        types: vec![],
-        enums: vec![],
-        inputs: vec![],
-        auth: None,
-        body: vec![],
-        browser: None,
-        expectations: vec![],
-        secrets: vec![],
-        functions: vec![],
-    };
-    let wf = WorkspaceFile::Recipe(Box::new(r));
-    let json = serde_json::to_string(&wf).unwrap();
-    let back: WorkspaceFile = serde_json::from_str(&json).unwrap();
-    assert_eq!(wf, back);
-}
-
-#[test]
-fn workspace_file_declarations_variant_serializes() {
-    let d = DeclarationsFile {
+fn header_less_forage_file_serializes() {
+    let f = ForageFile {
+        recipe_headers: Vec::new(),
         types: vec![RecipeType {
             name: "Dispensary".into(),
             fields: vec![RecipeField {
@@ -53,14 +40,21 @@ fn workspace_file_declarations_variant_serializes() {
                 ty: FieldType::String,
                 optional: false,
             }],
+            shared: true,
             span: 0..0,
         }],
         enums: vec![],
+        inputs: vec![],
+        secrets: vec![],
+        functions: vec![],
+        auth: None,
+        browser: None,
+        body: vec![],
+        expectations: vec![],
     };
-    let wf = WorkspaceFile::Declarations(d);
-    let json = serde_json::to_string(&wf).unwrap();
-    let back: WorkspaceFile = serde_json::from_str(&json).unwrap();
-    assert_eq!(wf, back);
+    let json = serde_json::to_string(&f).unwrap();
+    let back: ForageFile = serde_json::from_str(&json).unwrap();
+    assert_eq!(f, back);
 }
 
 #[test]
@@ -79,6 +73,7 @@ fn typed_record_with_optional_field() {
                 optional: true,
             },
         ],
+        shared: false,
         span: 0..0,
     };
     assert!(ty.field("id").is_some());

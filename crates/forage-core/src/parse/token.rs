@@ -124,6 +124,7 @@ pub const KEYWORDS: &[&str] = &[
     "engine",
     "http",
     "browser",
+    "share",
     "type",
     "enum",
     "fn",

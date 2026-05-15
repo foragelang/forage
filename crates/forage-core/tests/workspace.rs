@@ -125,7 +125,7 @@ fn lonely_recipe_mode_uses_recipe_local_catalog() {
         }
     "#;
     let r = parse(src).unwrap();
-    let catalog = TypeCatalog::from_recipe(&r);
+    let catalog = TypeCatalog::from_file(&r);
     let rep = validate(&r, &catalog);
     assert!(!rep.has_errors(), "lonely recipe errored: {:?}", rep.issues);
 }

@@ -134,6 +134,7 @@ fn zero_param_fn_called_via_pipe_is_arity_mismatch() {
             bindings: vec![],
             result: ExtractionExpr::Literal(JSONValue::Int(42)),
         },
+        shared: false,
         span: 0..0,
     };
     let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
@@ -171,6 +172,7 @@ fn wrong_arity_direct_call_reports_typed_error() {
             bindings: vec![],
             result: ExtractionExpr::Path(PathExpr::Variable("x".into())),
         },
+        shared: false,
         span: 0..0,
     };
     let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);
@@ -206,6 +208,7 @@ fn for_loop_var_is_not_visible_in_fn_body_at_runtime() {
         name: "leaky".into(),
         params: vec!["x".into()],
         body,
+        shared: false,
         span: 0..0,
     };
     let registry = TransformRegistry::with_user_fns(default_registry(), vec![decl]);

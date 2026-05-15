@@ -1,14 +1,14 @@
-//! Forage parser: tokenize then assemble a `Recipe` (chumsky-based).
+//! Forage parser: tokenize then assemble a `ForageFile`.
 //!
-//! Top-level entry point: `parse(source: &str) -> (Option<Recipe>, Vec<ParseError>)`.
-//! On clean parse, returns `(Some(recipe), vec![])`. On partial parse, returns
-//! `(Some(partial), errors)` — chumsky's recovery means we get the best
-//! AST we can plus a list of errors with spans for the LSP / CLI diagnostics.
+//! Top-level entry point: `parse(source: &str) -> Result<ForageFile, ParseError>`.
+//! The parser accepts any well-formed sequence of top-level forms;
+//! semantic constraints (recipe header uniqueness, recipe-context forms
+//! requiring a header) live in the validator.
 
 pub mod lexer;
 pub mod parser;
 pub mod token;
 
 pub use lexer::{LexError, lex};
-pub use parser::{ParseError, parse, parse_workspace_file};
+pub use parser::{ParseError, parse};
 pub use token::{KEYWORDS, TYPE_KEYWORDS, Token, is_keyword};

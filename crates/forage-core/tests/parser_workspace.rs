@@ -1,171 +1,100 @@
-//! Parser tests covering the workspace-file dispatch:
+//! Parser tests covering the flat `forage_file := top_level_form*` grammar.
 //!
-//! - Header-less files parse as `DeclarationsFile`.
-//! - Top-level non-decl forms in a declarations file are parse errors.
-//! - The dropped `import` keyword is now an identifier and falls
-//!   through to a top-level error.
+//! - Header-less files parse cleanly; the AST `recipe_headers` slot is empty.
+//! - The recipe header is just another top-level form; the parser doesn't
+//!   reject second headers, duplicate types, or recipe-context forms in a
+//!   header-less file — those are validator concerns now.
 
-use forage_core::ast::WorkspaceFile;
-use forage_core::parse::{parse, parse_workspace_file};
+use forage_core::parse::parse;
 
 #[test]
-fn header_less_file_parses_as_declarations() {
+fn header_less_file_parses_as_forage_file() {
     let src = r#"
         type Dispensary { id: String, name: String }
         enum MenuType { Recreational, Medical }
     "#;
-    match parse_workspace_file(src).expect("parse") {
-        WorkspaceFile::Declarations(d) => {
-            assert_eq!(d.types.len(), 1);
-            assert_eq!(d.types[0].name, "Dispensary");
-            assert_eq!(d.enums.len(), 1);
-            assert_eq!(d.enums[0].name, "MenuType");
-        }
-        WorkspaceFile::Recipe(_) => panic!("expected declarations file"),
-    }
+    let f = parse(src).expect("parse");
+    assert!(f.recipe_headers.is_empty());
+    assert_eq!(f.types.len(), 1);
+    assert_eq!(f.types[0].name, "Dispensary");
+    assert_eq!(f.enums.len(), 1);
+    assert_eq!(f.enums[0].name, "MenuType");
 }
 
 #[test]
-fn empty_file_parses_as_empty_declarations() {
-    match parse_workspace_file("").expect("parse") {
-        WorkspaceFile::Declarations(d) => {
-            assert!(d.types.is_empty());
-            assert!(d.enums.is_empty());
-        }
-        WorkspaceFile::Recipe(_) => panic!("empty file should yield declarations"),
-    }
+fn empty_file_parses() {
+    let f = parse("").expect("parse");
+    assert!(f.recipe_headers.is_empty());
+    assert!(f.types.is_empty());
+    assert!(f.enums.is_empty());
 }
 
 #[test]
-fn step_at_top_level_of_declarations_file_is_error() {
+fn share_prefix_marks_types_enums_and_fns() {
     let src = r#"
-        type Item { id: String }
-        step orphan {
-            method "GET"
-            url "https://example.com"
-        }
+        share type Dispensary { id: String }
+        share enum MenuType { Rec, Med }
+        share fn upperId($x) { $x | upper }
+
+        type LocalThing { id: String }
+        enum LocalEnum { A, B }
+        fn local_fn($x) { $x }
     "#;
-    let err = parse_workspace_file(src).expect_err("step is illegal here");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("declarations file"),
-        "expected declarations-file diagnostic, got: {msg}"
-    );
-}
+    let f = parse(src).expect("parse");
+    assert_eq!(f.types.len(), 2);
+    let dispensary = f.types.iter().find(|t| t.name == "Dispensary").unwrap();
+    let local_thing = f.types.iter().find(|t| t.name == "LocalThing").unwrap();
+    assert!(dispensary.shared);
+    assert!(!local_thing.shared);
 
-#[test]
-fn emit_at_top_level_of_declarations_file_is_error() {
-    let src = "emit Item { id ← $x.id }\n";
-    let err = parse_workspace_file(src).expect_err("emit is illegal here");
-    let msg = format!("{err}");
-    assert!(msg.contains("declarations"));
-}
+    assert_eq!(f.enums.len(), 2);
+    let menu = f.enums.iter().find(|e| e.name == "MenuType").unwrap();
+    let local_enum = f.enums.iter().find(|e| e.name == "LocalEnum").unwrap();
+    assert!(menu.shared);
+    assert!(!local_enum.shared);
 
-#[test]
-fn for_loop_at_top_level_of_declarations_file_is_error() {
-    let src = "for $x in $y { }\n";
-    let err = parse_workspace_file(src).expect_err("for-loop is illegal here");
-    let msg = format!("{err}");
-    assert!(msg.contains("declarations"));
-}
-
-#[test]
-fn non_decl_constructs_rejected_in_declarations_file() {
-    for snippet in [
-        "auth { }",
-        "browser { }",
-        "secret token",
-        "engine http",
-        "expect { records.where(typeName == \"X\").count > 0 }",
-    ] {
-        let err = parse_workspace_file(snippet)
-            .unwrap_err_or_else_describe(format!("top-level {snippet}"));
-        let msg = format!("{err}");
-        assert!(msg.contains("declarations"), "{snippet}: {msg}");
-    }
+    assert_eq!(f.functions.len(), 2);
+    let shared_fn = f.functions.iter().find(|fn_| fn_.name == "upperId").unwrap();
+    let local_fn = f.functions.iter().find(|fn_| fn_.name == "local_fn").unwrap();
+    assert!(shared_fn.shared);
+    assert!(!local_fn.shared);
 }
 
 #[test]
 fn import_keyword_is_no_longer_recognized() {
-    // `import` is now an ordinary identifier. At the top level of a
-    // declarations file, identifiers are illegal — and the rest of the
-    // old `import` syntax (`author/slug`) wasn't lexable either since
-    // the dedicated ref-scan path is gone. Either way, the parser
-    // rejects the input.
+    // `import` is now an ordinary identifier. The parser refuses
+    // identifiers at the top level since they're not a top-level form.
     let src = "import xyz\n";
-    let err = parse_workspace_file(src).expect_err("must not parse");
+    let err = parse(src).expect_err("must not parse");
     let msg = format!("{err}");
-    assert!(
-        msg.contains("declarations") || msg.contains("unexpected"),
-        "unexpected error: {msg}"
-    );
+    assert!(msg.contains("unexpected"), "unexpected error: {msg}");
 }
 
 #[test]
-fn duplicate_type_in_declarations_file_is_parse_error() {
+fn duplicate_recipe_header_parses_and_keeps_both() {
+    // The parser is permissive — a second header is a validator
+    // concern. Both headers land in the AST so the validator can anchor
+    // a `DuplicateRecipeHeader` issue on the duplicate.
     let src = r#"
-        type Foo { id: String }
-        type Foo { name: String }
+        recipe "first"
+        engine http
+
+        recipe "second"
+        engine http
     "#;
-    let err = parse_workspace_file(src).expect_err("duplicate type must fail");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("duplicate declaration") && msg.contains("Foo"),
-        "unexpected error: {msg}"
-    );
+    let f = parse(src).expect("parser accepts duplicate header");
+    assert_eq!(f.recipe_headers.len(), 2);
+    assert_eq!(f.recipe_headers[0].name, "first");
+    assert_eq!(f.recipe_headers[1].name, "second");
 }
 
 #[test]
-fn duplicate_enum_in_declarations_file_is_parse_error() {
-    let src = r#"
-        enum Mode { A, B }
-        enum Mode { X, Y }
-    "#;
-    let err = parse_workspace_file(src).expect_err("duplicate enum must fail");
+fn share_followed_by_non_decl_is_rejected() {
+    let src = "share input limit: Int\n";
+    let err = parse(src).expect_err("share applies only to type/enum/fn");
     let msg = format!("{err}");
     assert!(
-        msg.contains("duplicate declaration") && msg.contains("Mode"),
-        "unexpected error: {msg}"
+        msg.contains("type") && msg.contains("enum") && msg.contains("fn"),
+        "expected diagnostic mentioning the valid heads after share; got: {msg}",
     );
-}
-
-#[test]
-fn type_and_enum_share_name_in_declarations_file_is_parse_error() {
-    let src = r#"
-        type Foo { id: String }
-        enum Foo { A, B }
-    "#;
-    let err = parse_workspace_file(src).expect_err("type/enum name collision must fail");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("duplicate declaration"),
-        "unexpected error: {msg}"
-    );
-}
-
-#[test]
-fn convenience_parse_rejects_declarations_file() {
-    // The `parse` convenience demands a full recipe; a declarations
-    // file passed to it surfaces a clear parse error rather than
-    // returning a half-empty recipe.
-    let src = "type Dispensary { id: String }\n";
-    let err = parse(src).expect_err("parse must reject declarations file");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("recipe header") || msg.contains("declarations"),
-        "unexpected error: {msg}"
-    );
-}
-
-trait UnwrapErrExt<E> {
-    fn unwrap_err_or_else_describe(self, ctx: impl Into<String>) -> E;
-}
-
-impl<T, E> UnwrapErrExt<E> for Result<T, E> {
-    fn unwrap_err_or_else_describe(self, ctx: impl Into<String>) -> E {
-        match self {
-            Ok(_) => panic!("expected error in {}", ctx.into()),
-            Err(e) => e,
-        }
-    }
 }

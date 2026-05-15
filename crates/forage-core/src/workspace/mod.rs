@@ -1,10 +1,10 @@
 //! Workspace loader: discovers a `forage.toml`, scans the directory tree
-//! for `.forage` files, classifies each as a recipe or a declarations
-//! file, and merges shared `type`/`enum` declarations (workspace-local
-//! plus cached hub deps) into a single `TypeCatalog`.
+//! for `.forage` files, parses each, and merges shared `type`/`enum`
+//! declarations (workspace-local plus cached hub deps) into a single
+//! `TypeCatalog`.
 //!
 //! Discovery is an ancestor walk from a starting path. If no marker is
-//! found, callers fall back to lonely-recipe mode — the recipe sees no
+//! found, callers fall back to lonely-file mode — the file sees no
 //! shared declarations.
 
 pub mod manifest;
@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ast::{DeclarationsFile, Recipe, RecipeEnum, RecipeType, WorkspaceFile};
-use crate::parse::{ParseError, parse_workspace_file};
+use crate::ast::{ForageFile, RecipeEnum, RecipeType};
+use crate::parse::{ParseError, parse};
 
 pub use manifest::{
     LockedDep, Lockfile, Manifest, ManifestError, parse_lockfile, parse_manifest,
@@ -48,23 +48,26 @@ pub struct WorkspaceFileEntry {
     pub kind: WorkspaceFileKind,
 }
 
+/// Whether a `.forage` file inside the workspace declares a recipe.
+/// File location carries no semantics; this purely reflects the file's
+/// content — does it have a `recipe "<name>" engine <kind>` header.
+///
+/// `slug` is the historical run / hub key. During this transition it is
+/// derived from path layout (`<slug>/recipe.forage` → `slug`, otherwise
+/// the file stem); Phase 3 of the simplification swaps this for the
+/// recipe header name across the daemon, CLI, and Studio.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceFileKind {
-    /// A full recipe file. `slug` is the slug used for runs / hub
-    /// publishing — derived from the parent directory name when the
-    /// recipe sits at `<slug>/recipe.forage`, or the filename stem
-    /// when it lives at workspace root.
+    /// A file that declares a recipe header. Runnable.
     Recipe { slug: String },
-    /// A header-less declarations file. Contributes to the catalog but
-    /// is never run on its own.
+    /// A header-less file. Contributes shared declarations to the
+    /// workspace catalog but is never run on its own.
     Declarations,
     /// A `.forage` file that exists on disk but failed to parse. The
     /// entry is retained (rather than silently dropped) so the daemon
-    /// can surface a broken-recipe status — a single bad file shouldn't
-    /// take down the whole workspace, but it also shouldn't disappear
-    /// from the user's view. `slug` is best-effort from path layout;
-    /// the parser couldn't tell us whether the file was *meant* to be
-    /// a recipe or a declarations file.
+    /// can surface a broken status — a single bad file shouldn't take
+    /// down the whole workspace, but it also shouldn't disappear from
+    /// the user's view.
     Broken { slug: Option<String>, error: String },
 }
 
@@ -115,31 +118,31 @@ impl TypeCatalog {
         self.enums.get(name)
     }
 
-    /// Build a catalog from a single recipe's local types — what
-    /// lonely-recipe mode uses when no workspace surrounds the file.
-    pub fn from_recipe(recipe: &Recipe) -> Self {
+    /// Build a catalog from one file's local types — what lonely-file
+    /// mode uses when no workspace surrounds the file.
+    pub fn from_file(file: &ForageFile) -> Self {
         let mut cat = Self::default();
-        cat.merge_recipe_local(recipe);
+        cat.merge_file_local(file);
         cat
     }
 
-    /// Merge a parsed declarations file into the catalog. Last writer
-    /// wins per name; callers that need conflict detection should
-    /// route through `Workspace::catalog`, which tracks origins.
-    pub fn merge_decls(&mut self, decls: &DeclarationsFile) {
-        for t in &decls.types {
+    /// Merge a parsed file's types and enums into the catalog. Last
+    /// writer wins per name; callers that need conflict detection
+    /// should route through `Workspace::catalog`, which tracks origins.
+    pub fn merge_file(&mut self, file: &ForageFile) {
+        for t in &file.types {
             self.types.insert(t.name.clone(), t.clone());
         }
-        for e in &decls.enums {
+        for e in &file.enums {
             self.enums.insert(e.name.clone(), e.clone());
         }
     }
 
-    fn merge_recipe_local(&mut self, recipe: &Recipe) {
-        for t in &recipe.types {
+    fn merge_file_local(&mut self, file: &ForageFile) {
+        for t in &file.types {
             self.types.insert(t.name.clone(), t.clone());
         }
-        for e in &recipe.enums {
+        for e in &file.enums {
             self.enums.insert(e.name.clone(), e.clone());
         }
     }
@@ -254,16 +257,14 @@ fn scan_dir(
         }
         if ft.is_file() && path.extension().is_some_and(|e| e == "forage") {
             let source = fs::read_to_string(&path)?;
-            // A single broken recipe used to abort the entire workspace
+            // A single broken file used to abort the entire workspace
             // load, which cascaded into "Studio won't even start" when
             // the daemon library held an unparseable file. Capture the
             // failure as a `Broken` entry instead — the engine won't
             // try to run it, but the daemon surfaces it through the
             // recipe-status API so the user can find and fix it. Slug
-            // is derived from path layout where possible since the
-            // parser can't tell us whether the file was *meant* to be
-            // a recipe or a declarations file.
-            let parsed = match parse_workspace_file(&source) {
+            // is derived from path layout where possible.
+            let parsed = match parse(&source) {
                 Ok(p) => p,
                 Err(err) => {
                     let slug = derive_slug(root, &path);
@@ -277,15 +278,19 @@ fn scan_dir(
                     continue;
                 }
             };
-            let kind = match parsed {
-                WorkspaceFile::Recipe(_) => match derive_slug(root, &path) {
+            // A file with a `recipe "<name>" engine <kind>` header is
+            // runnable. Header-less files contribute declarations to
+            // the workspace catalog but aren't run on their own.
+            let kind = if parsed.recipe_header().is_some() {
+                match derive_slug(root, &path) {
                     Some(slug) => WorkspaceFileKind::Recipe { slug },
                     None => WorkspaceFileKind::Broken {
                         slug: None,
                         error: "recipe path has no recoverable file stem".into(),
                     },
-                },
-                WorkspaceFile::Declarations(_) => WorkspaceFileKind::Declarations,
+                }
+            } else {
+                WorkspaceFileKind::Declarations
             };
             out.push(WorkspaceFileEntry { path, kind });
         }
@@ -340,12 +345,12 @@ impl Workspace {
             .filter(|f| matches!(f.kind, WorkspaceFileKind::Broken { .. }))
     }
 
-    /// Build a merged `TypeCatalog` for validating one recipe in this
+    /// Build a merged `TypeCatalog` for validating one file in this
     /// workspace.
     ///
     /// Merge order: workspace declarations files → cached hub-dep
-    /// declarations files → recipe-local declarations (last writer wins
-    /// in the final pass, so a recipe can shadow a shared type by
+    /// declarations files → file-local declarations (last writer wins
+    /// in the final pass, so a file can shadow a shared type by
     /// redeclaring it).
     ///
     /// Two workspace-level declarations files declaring the same name
@@ -356,7 +361,7 @@ impl Workspace {
     /// `read_to_string`-backed [`Workspace::catalog_from_disk`] to read
     /// straight off disk; pass a closure that prefers live buffer
     /// contents (LSP, Studio) when an editor has unsaved edits.
-    pub fn catalog<R>(&self, recipe: &Recipe, read: R) -> Result<TypeCatalog, WorkspaceError>
+    pub fn catalog<R>(&self, file: &ForageFile, read: R) -> Result<TypeCatalog, WorkspaceError>
     where
         R: Fn(&Path) -> io::Result<String>,
     {
@@ -364,10 +369,21 @@ impl Workspace {
         let mut type_origins: HashMap<String, PathBuf> = HashMap::new();
         let mut enum_origins: HashMap<String, PathBuf> = HashMap::new();
 
-        // 1. Workspace declarations files.
+        // 1. Workspace declarations files. Intra-file duplicates are
+        //    the per-file validator's concern (`DuplicateType` /
+        //    `DuplicateEnum`); the workspace catalog only flags
+        //    *cross-file* collisions so the LSP gets one diagnostic per
+        //    issue instead of doubling up.
         for entry in self.declarations() {
             let decls = read_declarations(&entry.path, &read)?;
+            let mut local_type_names: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            let mut local_enum_names: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
             for t in &decls.types {
+                if !local_type_names.insert(t.name.as_str()) {
+                    continue;
+                }
                 if let Some(prev) = type_origins.get(&t.name) {
                     return Err(WorkspaceError::DuplicateType {
                         name: t.name.clone(),
@@ -378,6 +394,9 @@ impl Workspace {
                 cat.types.insert(t.name.clone(), t.clone());
             }
             for e in &decls.enums {
+                if !local_enum_names.insert(e.name.as_str()) {
+                    continue;
+                }
                 if let Some(prev) = enum_origins.get(&e.name) {
                     return Err(WorkspaceError::DuplicateEnum {
                         name: e.name.clone(),
@@ -403,8 +422,8 @@ impl Workspace {
             scan_package_declarations(&pkg, &mut cat)?;
         }
 
-        // 3. Recipe-local declarations.
-        cat.merge_recipe_local(recipe);
+        // 3. File-local declarations.
+        cat.merge_file_local(file);
         Ok(cat)
     }
 
@@ -415,39 +434,47 @@ impl Workspace {
     /// recipe in memory.
     pub fn catalog_from_disk(&self, recipe_path: &Path) -> Result<TypeCatalog, WorkspaceError> {
         let recipe_src = fs::read_to_string(recipe_path).map_err(WorkspaceError::Io)?;
-        let recipe = match parse_workspace_file(&recipe_src) {
-            Ok(WorkspaceFile::Recipe(r)) => r,
-            Ok(WorkspaceFile::Declarations(_)) => {
-                return Err(WorkspaceError::ExpectedRecipe {
-                    path: recipe_path.to_path_buf(),
-                });
-            }
-            Err(source) => {
-                return Err(WorkspaceError::RecipePathInvalid {
-                    path: recipe_path.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        self.catalog(&recipe, |p| fs::read_to_string(p))
+        let file = parse(&recipe_src).map_err(|source| WorkspaceError::RecipePathInvalid {
+            path: recipe_path.to_path_buf(),
+            source,
+        })?;
+        if file.recipe_header().is_none() {
+            return Err(WorkspaceError::ExpectedRecipe {
+                path: recipe_path.to_path_buf(),
+            });
+        }
+        self.catalog(&file, |p| fs::read_to_string(p))
     }
 }
 
-fn read_declarations<R>(path: &Path, read: &R) -> Result<DeclarationsFile, WorkspaceError>
+/// Read and parse a header-less declarations file, returning its
+/// `ForageFile`. Files with a recipe header are treated as empty for
+/// catalog-merge purposes — `scan_dir` already classified them, so this
+/// path only sees declarations files in well-formed workspaces.
+fn read_declarations<R>(path: &Path, read: &R) -> Result<ForageFile, WorkspaceError>
 where
     R: Fn(&Path) -> io::Result<String>,
 {
     let src = read(path)?;
-    match parse_workspace_file(&src).map_err(|source| WorkspaceError::Parse {
+    let file = parse(&src).map_err(|source| WorkspaceError::Parse {
         path: path.to_path_buf(),
         source,
-    })? {
-        WorkspaceFile::Declarations(d) => Ok(d),
-        // Should never happen — `scan_dir` already classified this as
-        // a declarations file. Re-read defensively, treating mis-tagged
-        // recipes as empty.
-        WorkspaceFile::Recipe(_) => Ok(DeclarationsFile::default()),
+    })?;
+    if file.recipe_header().is_some() {
+        return Ok(ForageFile {
+            recipe_headers: Vec::new(),
+            types: Vec::new(),
+            enums: Vec::new(),
+            inputs: Vec::new(),
+            secrets: Vec::new(),
+            functions: Vec::new(),
+            auth: None,
+            browser: None,
+            body: Vec::new(),
+            expectations: Vec::new(),
+        });
     }
+    Ok(file)
 }
 
 fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), WorkspaceError> {
@@ -466,8 +493,13 @@ fn scan_package_declarations(pkg: &Path, cat: &mut TypeCatalog) -> Result<(), Wo
         let Ok(src) = fs::read_to_string(path) else {
             continue;
         };
-        if let Ok(WorkspaceFile::Declarations(d)) = parse_workspace_file(&src) {
-            cat.merge_decls(&d);
+        // Only header-less files contribute shared declarations from a
+        // hub package. Recipe-bearing files inside a published package
+        // are runnable inheritances; their types are file-local.
+        if let Ok(file) = parse(&src) {
+            if file.recipe_header().is_none() {
+                cat.merge_file(&file);
+            }
         }
     }
     Ok(())

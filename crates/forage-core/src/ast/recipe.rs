@@ -1,4 +1,4 @@
-//! Top-level recipe shape.
+//! Top-level file shape: `ForageFile`, `RecipeHeader`, statements, expectations.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,61 +9,36 @@ use crate::ast::http::HTTPStep;
 use crate::ast::span::Span;
 use crate::ast::types::{InputDecl, RecipeEnum, RecipeType};
 
-/// One parsed `.forage` file. Either a full `Recipe` (file begins with
-/// `recipe "<name>"`) or a header-less `DeclarationsFile` (a sharable
-/// type/enum bundle that workspaces fold into the catalog). These two
-/// shapes are structurally disjoint: a `Recipe` carries the entire
-/// body (steps, for-loops, emits, auth/browser config, expectations),
-/// while `DeclarationsFile` carries only types and enums. Boxing the
-/// heavyweight variant keeps the discriminator compact without
-/// obscuring that asymmetry.
+/// One parsed `.forage` file. The grammar is flat — a file is a sequence
+/// of top-level forms (`recipe`, `type`, `enum`, `input`, `secret`, `fn`,
+/// `auth`, `browser`, `expect`, statements). The parser groups them into
+/// the slots below regardless of source order.
+///
+/// `recipe_headers` collects every `recipe "<name>" engine <kind>` opener
+/// the parser sees. A well-formed file has exactly one (declaring a
+/// recipe) or zero (a pure declarations file). The validator emits
+/// `DuplicateRecipeHeader` when there are two or more, and
+/// `RecipeContextWithoutHeader` when recipe-context forms (auth,
+/// browser, expect, statements) appear in a header-less file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkspaceFile {
-    Recipe(Box<Recipe>),
-    Declarations(DeclarationsFile),
-}
-
-/// A header-less `.forage` file: only `type` and `enum` declarations.
-/// Inside a workspace these contribute names to the shared
-/// `TypeCatalog`; outside one they're meaningless and the loader will
-/// reject the workspace if it discovers them in lonely-recipe mode.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct DeclarationsFile {
-    #[serde(default)]
+pub struct ForageFile {
+    pub recipe_headers: Vec<RecipeHeader>,
     pub types: Vec<RecipeType>,
-    #[serde(default)]
     pub enums: Vec<RecipeEnum>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Recipe {
-    pub name: String,
-    pub engine_kind: EngineKind,
-    #[serde(default)]
-    pub types: Vec<RecipeType>,
-    #[serde(default)]
-    pub enums: Vec<RecipeEnum>,
-    #[serde(default)]
     pub inputs: Vec<InputDecl>,
-    #[serde(default)]
-    pub auth: Option<AuthStrategy>,
-    #[serde(default)]
-    pub body: Vec<Statement>,
-    #[serde(default)]
-    pub browser: Option<BrowserConfig>,
-    #[serde(default)]
-    pub expectations: Vec<Expectation>,
     /// Top-level `secret <name>` declarations, in source order.
-    #[serde(default)]
     pub secrets: Vec<String>,
-    /// Top-level `fn <name>(...)` declarations, in source order. These
-    /// are user-defined transforms; the validator and evaluator look
-    /// them up before falling back to the built-in registry.
+    /// Top-level `fn <name>(...)` declarations, in source order. These are
+    /// user-defined transforms; the validator and evaluator look them up
+    /// before falling back to the built-in registry.
     pub functions: Vec<FnDecl>,
+    pub auth: Option<AuthStrategy>,
+    pub browser: Option<BrowserConfig>,
+    pub body: Vec<Statement>,
+    pub expectations: Vec<Expectation>,
 }
 
-impl Recipe {
+impl ForageFile {
     pub fn input(&self, name: &str) -> Option<&InputDecl> {
         self.inputs.iter().find(|i| i.name == name)
     }
@@ -71,12 +46,46 @@ impl Recipe {
     pub fn function(&self, name: &str) -> Option<&FnDecl> {
         self.functions.iter().find(|f| f.name == name)
     }
+
+    /// The recipe header, when the file has one. Validator-clean files
+    /// have at most one header; callers that ran the validator first can
+    /// rely on that. Returns the first header when several are present
+    /// (the validator's `DuplicateRecipeHeader` rule will have surfaced
+    /// the duplicates).
+    pub fn recipe_header(&self) -> Option<&RecipeHeader> {
+        self.recipe_headers.first()
+    }
+
+    /// Convenience: the recipe name from the header. `None` for
+    /// header-less files.
+    pub fn recipe_name(&self) -> Option<&str> {
+        self.recipe_header().map(|h| h.name.as_str())
+    }
+
+    /// Convenience: the engine kind from the header. `None` for
+    /// header-less files.
+    pub fn engine_kind(&self) -> Option<EngineKind> {
+        self.recipe_header().map(|h| h.engine_kind)
+    }
+}
+
+/// The `recipe "<name>" engine <kind>` opener. A file has at most one;
+/// without it, the file is a pure declarations file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeHeader {
+    pub name: String,
+    pub engine_kind: EngineKind,
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// A user-defined transform — `fn <name>(<$p1>, <$p2>) { <body> }`.
-/// The body is a sequence of `let $name = expr` bindings followed by
-/// exactly one trailing expression that is the function's return
-/// value. Call sites look identical to built-in transforms.
+/// The body is a sequence of `let` bindings followed by exactly one
+/// trailing expression that is the function's return value. Call sites
+/// look identical to built-in transforms.
+///
+/// `shared = true` (the `share fn …` prefix) makes the fn visible to
+/// every other file in the workspace. Without it, the fn is file-scoped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
     pub name: String,
@@ -85,16 +94,14 @@ pub struct FnDecl {
     /// (`x |> myFn(a)` binds `$p1 = x`, `$p2 = a`).
     pub params: Vec<String>,
     pub body: FnBody,
+    pub shared: bool,
     #[serde(default)]
     pub span: crate::ast::span::Span,
 }
 
-/// A `fn` body: zero or more `let` bindings followed by a single
-/// trailing expression. Each binding adds to the function-local scope;
-/// later bindings see earlier ones; the trailing expression sees them
-/// all. The shape is greenfield — no `#[serde(default)]` softener —
-/// because the structural break catches recipes that ride a stale AST
-/// rather than silently re-interpreting an old single-expression body.
+/// A `fn` body: zero or more `let` bindings followed by a single trailing
+/// expression. Each binding adds to the function-local scope; later
+/// bindings see earlier ones; the trailing expression sees them all.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnBody {
     pub bindings: Vec<LetBinding>,

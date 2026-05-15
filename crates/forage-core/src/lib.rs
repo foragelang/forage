@@ -14,10 +14,10 @@ pub mod source;
 pub mod validate;
 pub mod workspace;
 
-pub use ast::{DeclarationsFile, Recipe, WorkspaceFile};
+pub use ast::{ForageFile, RecipeHeader};
 pub use error::{ForageError, ForageResult};
 pub use eval::{EvalError, EvalValue, Evaluator, Scope, TransformRegistry, default_registry};
-pub use parse::{parse, parse_workspace_file};
+pub use parse::parse;
 pub use progress::{ProgressUnit, infer_progress_unit};
 pub use snapshot::{DiagnosticReport, Record, RuntimeDiagnostic, Snapshot};
 pub use source::{LineMap, Position, Range};
