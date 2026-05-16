@@ -442,12 +442,13 @@ pub async fn run_replay(
             .map_err(|e| JsValue::from_str(&format!("decls: {e}")))?
     };
 
-    let input_map: IndexMap<String, serde_json::Value> = if inputs.is_undefined() || inputs.is_null() {
-        IndexMap::new()
-    } else {
-        serde_wasm_bindgen::from_value(inputs)
-            .map_err(|e| JsValue::from_str(&format!("inputs: {e}")))?
-    };
+    let input_map: IndexMap<String, serde_json::Value> =
+        if inputs.is_undefined() || inputs.is_null() {
+            IndexMap::new()
+        } else {
+            serde_wasm_bindgen::from_value(inputs)
+                .map_err(|e| JsValue::from_str(&format!("inputs: {e}")))?
+        };
     let input_eval: IndexMap<String, EvalValue> = input_map
         .into_iter()
         .map(|(k, v)| (k, EvalValue::from(&v)))
@@ -460,10 +461,15 @@ pub async fn run_replay(
             .map_err(|e| JsValue::from_str(&format!("secrets: {e}")))?
     };
 
-    let snapshot =
-        run_replay_inner(recipe_source, &decl_files, captures_jsonl, input_eval, secret_map)
-            .await
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let snapshot = run_replay_inner(
+        recipe_source,
+        &decl_files,
+        captures_jsonl,
+        input_eval,
+        secret_map,
+    )
+    .await
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
     serde_wasm_bindgen::to_value(&snapshot)
         .map_err(|e| JsValue::from_str(&format!("snapshot encode: {e}")))
 }

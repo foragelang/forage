@@ -138,9 +138,7 @@ fn contains_emit(body: &[Statement]) -> bool {
 
 /// Pick the candidate at the smallest depth; tie-break by
 /// last-in-source-order.
-fn pick_outermost_last_wins(
-    candidates: Vec<(usize, ProgressUnit)>,
-) -> Option<ProgressUnit> {
+fn pick_outermost_last_wins(candidates: Vec<(usize, ProgressUnit)>) -> Option<ProgressUnit> {
     let min_depth = candidates.iter().map(|(d, _)| *d).min()?;
     candidates
         .into_iter()

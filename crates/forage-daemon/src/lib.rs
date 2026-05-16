@@ -36,7 +36,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use forage_core::ast::JSONValue;
 use forage_core::{
-    EvalValue, ForageFile, Record, RecipeSignatures, RunOptions, SerializableCatalog, Snapshot,
+    EvalValue, ForageFile, RecipeSignatures, Record, RunOptions, SerializableCatalog, Snapshot,
     TypeCatalog,
 };
 use forage_http::{ProgressSink, RunEvent};
@@ -364,10 +364,7 @@ impl Daemon {
     /// empty snapshot — their records never reached SQLite. Consumers
     /// that need to render a run's output as JSON-LD call this and
     /// pass the result through `Snapshot::to_jsonld()`.
-    pub fn load_run_snapshot(
-        &self,
-        scheduled_run_id: &str,
-    ) -> Result<Snapshot, RunError> {
+    pub fn load_run_snapshot(&self, scheduled_run_id: &str) -> Result<Snapshot, RunError> {
         let sr = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
             db::get_scheduled_run(&conn, scheduled_run_id).map_err(RunError::Daemon)?
@@ -410,12 +407,7 @@ impl Daemon {
             // forever-onwards by upping the limit beyond the counted
             // total. The counts row tells us how many to expect.
             let limit = sr.counts.get(type_name).copied().unwrap_or(0);
-            let records = output::load_records(
-                &run.output,
-                scheduled_run_id,
-                type_name,
-                limit,
-            )?;
+            let records = output::load_records(&run.output, scheduled_run_id, type_name, limit)?;
             for row in records {
                 let serde_json::Value::Object(mut obj) = row else {
                     continue;
@@ -485,8 +477,8 @@ impl Daemon {
                     // configure-before-deploy (cadence first), in
                     // which case the pointer stays None until a
                     // subsequent deploy advances it.
-                    let deployed_version = db::latest_deployed_version(&conn, name)?
-                        .map(|dv| dv.version);
+                    let deployed_version =
+                        db::latest_deployed_version(&conn, name)?.map(|dv| dv.version);
                     Run {
                         id: ulid::Ulid::new().to_string(),
                         recipe_name: name.to_string(),
@@ -677,11 +669,7 @@ impl Daemon {
     /// Read a specific version's source + catalog from the
     /// filesystem. Used by `run.rs` and by Studio's "show me what's
     /// deployed" view.
-    pub fn load_deployed(
-        &self,
-        name: &str,
-        version: u32,
-    ) -> Result<DeployedRecord, DaemonError> {
+    pub fn load_deployed(&self, name: &str, version: u32) -> Result<DeployedRecord, DaemonError> {
         // The metadata row carries `deployed_at`; the filesystem
         // payload carries source + catalog. We read both so callers
         // see a complete picture without having to fan out.

@@ -58,7 +58,13 @@ async fn fixtures_match_run_snapshots() {
         let transport = ReplayTransport::new(captures);
         let engine = Engine::new(&transport);
         let snap = match engine
-            .run(&recipe, &catalog, inputs, IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                inputs,
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
         {
             Ok(s) => s,

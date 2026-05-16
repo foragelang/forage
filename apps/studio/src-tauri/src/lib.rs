@@ -98,9 +98,7 @@ pub fn run() {
                                 "slug": slug,
                                 "version": version,
                             });
-                            if let Err(e) =
-                                app_handle.emit("forage:deeplink-clone", payload)
-                            {
+                            if let Err(e) = app_handle.emit("forage:deeplink-clone", payload) {
                                 tracing::warn!(error = %e, "emit deeplink-clone failed");
                             }
                         }

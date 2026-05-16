@@ -33,7 +33,10 @@ pub fn write_empty_manifest(root: &Path) -> io::Result<()> {
     if path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("{} already has a forage.toml — use Open instead", root.display()),
+            format!(
+                "{} already has a forage.toml — use Open instead",
+                root.display()
+            ),
         ));
     }
     let body = serialize_manifest(&Manifest::default())
@@ -46,7 +49,12 @@ pub fn write_empty_manifest(root: &Path) -> io::Result<()> {
 pub fn resolve_recipe_path(ws: &Workspace, name: &str) -> Result<PathBuf, String> {
     ws.recipe_by_name(name)
         .map(|r| r.path.to_path_buf())
-        .ok_or_else(|| format!("no recipe named {name:?} in workspace at {}", ws.root.display()))
+        .ok_or_else(|| {
+            format!(
+                "no recipe named {name:?} in workspace at {}",
+                ws.root.display()
+            )
+        })
 }
 
 /// Scaffold a new recipe at `<root>/<name>.forage` with a `recipe
@@ -109,7 +117,10 @@ pub fn delete_recipe(ws: &Workspace, name: &str) -> io::Result<()> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("no recipe named {name:?} in workspace at {}", ws.root.display()),
+                format!(
+                    "no recipe named {name:?} in workspace at {}",
+                    ws.root.display()
+                ),
             )
         })?;
 
@@ -184,7 +195,9 @@ pub fn write_breakpoints(
 }
 
 /// Convenience for `forage_keychain` env-style secret resolution.
-pub fn read_secrets_from_env(recipe: &forage_core::ForageFile) -> indexmap::IndexMap<String, String> {
+pub fn read_secrets_from_env(
+    recipe: &forage_core::ForageFile,
+) -> indexmap::IndexMap<String, String> {
     let mut out = indexmap::IndexMap::new();
     for s in &recipe.secrets {
         let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
@@ -552,8 +565,7 @@ pub fn prune_recents() {
     if raw.is_empty() {
         return;
     }
-    let kept: Vec<RecentWorkspace> =
-        raw.iter().filter(|w| w.path.exists()).cloned().collect();
+    let kept: Vec<RecentWorkspace> = raw.iter().filter(|w| w.path.exists()).cloned().collect();
     let dropped = raw.len() - kept.len();
     if dropped == 0 {
         return;
@@ -566,7 +578,11 @@ pub fn prune_recents() {
     if let Err(e) = write_recents(&kept) {
         tracing::warn!(error = %e, "recents: prune failed to write back; will retry on next mutation");
     } else {
-        tracing::info!(dropped, kept = kept.len(), "recents: pruned stale entries at startup");
+        tracing::info!(
+            dropped,
+            kept = kept.len(),
+            "recents: pruned stale entries at startup"
+        );
     }
 }
 
@@ -677,7 +693,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_manifest(tmp.path());
         make_flat_recipe(tmp.path(), "remedy", "remedy");
-        fs::write(tmp.path().join("cannabis.forage"), "share type X { id: String }\n").unwrap();
+        fs::write(
+            tmp.path().join("cannabis.forage"),
+            "share type X { id: String }\n",
+        )
+        .unwrap();
 
         let ws = forage_core::workspace::load(tmp.path()).unwrap();
         delete_recipe(&ws, "remedy").unwrap();
@@ -1192,5 +1212,4 @@ mod tests {
         let ws = forage_core::workspace::load(&inner).unwrap();
         assert_eq!(derive_workspace_name(&ws), "my-recipes");
     }
-
 }

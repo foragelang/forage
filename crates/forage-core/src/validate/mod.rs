@@ -532,10 +532,7 @@ impl<'a> Validator<'a> {
             self.check_alignment_list(&ty.alignments, &format!("type '{}'", ty.name));
             for field in &ty.fields {
                 if let Some(uri) = &field.alignment {
-                    self.check_one_alignment(
-                        uri,
-                        &format!("field '{}.{}'", ty.name, field.name),
-                    );
+                    self.check_one_alignment(uri, &format!("field '{}.{}'", ty.name, field.name));
                 }
             }
         }
@@ -1262,8 +1259,7 @@ impl<'a> Validator<'a> {
                 self.check_extraction(operand);
             }
             ExtractionExpr::StructLiteral { fields } => {
-                let mut seen: std::collections::HashSet<&str> =
-                    std::collections::HashSet::new();
+                let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for f in fields {
                     if !seen.insert(f.field_name.as_str()) {
                         self.err_here(
@@ -1357,9 +1353,7 @@ impl<'a> Validator<'a> {
                         if !used_set.contains(v.as_str()) {
                             self.warn_here(
                                 ValidationCode::UnknownEnumVariant,
-                                format!(
-                                    "case-of over {enum_name} doesn't cover variant '{v}'",
-                                ),
+                                format!("case-of over {enum_name} doesn't cover variant '{v}'",),
                             );
                         }
                     }
@@ -1585,7 +1579,10 @@ impl<'a> Validator<'a> {
             self.err(
                 stage.span.clone(),
                 ValidationCode::UnknownComposeStage,
-                format!("compose stage '{}' is not a recipe in this workspace", stage.name),
+                format!(
+                    "compose stage '{}' is not a recipe in this workspace",
+                    stage.name
+                ),
             );
             return None;
         };
@@ -1641,7 +1638,10 @@ impl<'a> Validator<'a> {
                 .signatures
                 .get(&downstream.name)
                 .expect("downstream signature exists — checked above");
-            let has_slot = sig.inputs.iter().any(|inp| input_accepts(&inp.ty, upstream_ty));
+            let has_slot = sig
+                .inputs
+                .iter()
+                .any(|inp| input_accepts(&inp.ty, upstream_ty));
             if !has_slot {
                 self.err(
                     downstream.span.clone(),
@@ -1663,8 +1663,7 @@ impl<'a> Validator<'a> {
     /// recipe surfaces the cycle anchored at the offending stage so
     /// authors land on the loop edge.
     fn check_compose_cycle(&mut self, focal: &str, comp: &Composition) {
-        let mut in_progress: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut in_progress: std::collections::HashSet<String> = std::collections::HashSet::new();
         in_progress.insert(focal.to_string());
         for stage in &comp.stages {
             if stage.author.is_some() {
@@ -2897,8 +2896,9 @@ emit Item { }
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
-            rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
-                && i.message.contains("empty ontology")),
+            rep.errors()
+                .any(|i| i.code == ValidationCode::MalformedAlignment
+                    && i.message.contains("empty ontology")),
             "expected MalformedAlignment for empty ontology; got {:?}",
             rep.issues,
         );
@@ -2915,8 +2915,9 @@ emit Item { }
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
-            rep.errors().any(|i| i.code == ValidationCode::MalformedAlignment
-                && i.message.contains("empty term")),
+            rep.errors()
+                .any(|i| i.code == ValidationCode::MalformedAlignment
+                    && i.message.contains("empty term")),
             "expected MalformedAlignment for empty term; got {:?}",
             rep.issues,
         );
@@ -2960,7 +2961,8 @@ emit Item { }
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
-            !rep.errors().any(|i| i.code == ValidationCode::DuplicateAlignment),
+            !rep.errors()
+                .any(|i| i.code == ValidationCode::DuplicateAlignment),
             "distinct ontologies must not collide; got {:?}",
             rep.issues,
         );
@@ -3085,7 +3087,8 @@ emit Item { }
         let cat = TypeCatalog::from_file(&r);
         let rep = validate(&r, &cat, &RecipeSignatures::default());
         assert!(
-            !rep.errors().any(|i| i.code == ValidationCode::IncompatibleExtension),
+            !rep.errors()
+                .any(|i| i.code == ValidationCode::IncompatibleExtension),
             "same-type redeclaration is an override, not a violation: {:?}",
             rep.issues,
         );
@@ -3123,7 +3126,11 @@ emit Item { }
             .errors()
             .filter(|i| i.code == ValidationCode::CircularExtension)
             .count();
-        assert!(cycle_count >= 1, "expected at least one CircularExtension; got {:?}", rep.issues);
+        assert!(
+            cycle_count >= 1,
+            "expected at least one CircularExtension; got {:?}",
+            rep.issues
+        );
     }
 
     #[test]
@@ -3348,10 +3355,11 @@ emit Item { }
             rep.issues,
         );
         assert!(
-            rep.issues.iter().any(|i| i.code
-                == ValidationCode::UnusedInEmits
-                && i.severity == Severity::Warning
-                && i.message.contains("Stale")),
+            rep.issues
+                .iter()
+                .any(|i| i.code == ValidationCode::UnusedInEmits
+                    && i.severity == Severity::Warning
+                    && i.message.contains("Stale")),
             "expected UnusedInEmits warning naming 'Stale'; got {:?}",
             rep.issues,
         );
@@ -3446,7 +3454,10 @@ emit Item { }
         let mut out = RecipeSignatures::default();
         for (name, src) in entries {
             let file = parse(src).expect("peer recipe parses");
-            out.insert(name.to_string(), crate::workspace::RecipeSignature::from_file(&file));
+            out.insert(
+                name.to_string(),
+                crate::workspace::RecipeSignature::from_file(&file),
+            );
         }
         out
     }
@@ -3468,7 +3479,11 @@ emit Item { }
             .iter()
             .filter(|i| i.code == ValidationCode::UnknownComposeStage)
             .count();
-        assert_eq!(count, 2, "both unknown stages must surface: {:?}", rep.issues);
+        assert_eq!(
+            count, 2,
+            "both unknown stages must surface: {:?}",
+            rep.issues
+        );
     }
 
     #[test]

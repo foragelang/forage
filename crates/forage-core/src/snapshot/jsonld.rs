@@ -321,10 +321,7 @@ mod tests {
         snap.set_record_types(std::iter::once(&ty));
 
         let doc = snap.to_jsonld();
-        let entry = doc
-            .context
-            .get("Product")
-            .expect("Product context entry");
+        let entry = doc.context.get("Product").expect("Product context entry");
         assert_eq!(entry.id, "https://schema.org/Product");
         assert!(entry.fields.is_empty());
     }
@@ -352,10 +349,7 @@ mod tests {
         snap.set_record_types(std::iter::once(&ty));
 
         let doc = snap.to_jsonld();
-        let entry = doc
-            .context
-            .get("Article")
-            .expect("Article context entry");
+        let entry = doc.context.get("Article").expect("Article context entry");
         // No type-level alignment — the type identifier rides through
         // bare so the field map still has somewhere to hang off.
         assert_eq!(entry.id, "Article");
@@ -397,11 +391,15 @@ mod tests {
 
         let doc = snap.to_jsonld();
         assert_eq!(
-            doc.context.get("Product").map(|c| c.fields.get("name").map(String::as_str)),
+            doc.context
+                .get("Product")
+                .map(|c| c.fields.get("name").map(String::as_str)),
             Some(Some("https://schema.org/name")),
         );
         assert_eq!(
-            doc.context.get("Person").map(|c| c.fields.get("name").map(String::as_str)),
+            doc.context
+                .get("Person")
+                .map(|c| c.fields.get("name").map(String::as_str)),
             Some(Some("http://xmlns.com/foaf/0.1/name")),
         );
     }
@@ -440,10 +438,7 @@ mod tests {
             term: "P112".into(),
             span: 0..0,
         };
-        assert_eq!(
-            alignment_iri(&pid),
-            "http://www.wikidata.org/entity/P112",
-        );
+        assert_eq!(alignment_iri(&pid), "http://www.wikidata.org/entity/P112",);
     }
 
     #[test]
@@ -511,6 +506,9 @@ mod tests {
         assert!(j.contains("\"@context\""), "got {j}");
         assert!(j.contains("\"@graph\""), "got {j}");
         assert!(j.contains("\"@type\":\"Product\""), "got {j}");
-        assert!(j.contains("\"@id\":\"https://schema.org/Product\""), "got {j}");
+        assert!(
+            j.contains("\"@id\":\"https://schema.org/Product\""),
+            "got {j}"
+        );
     }
 }

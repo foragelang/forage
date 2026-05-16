@@ -114,7 +114,12 @@ async fn forage_sync_materializes_recipe_and_types_in_cwd() {
         .stdout(predicates::str::contains("@alice/zen-leaf@v1"));
 
     assert!(ws.join("zen-leaf.forage").is_file());
-    assert!(ws.join(".forage").join("sync").join("zen-leaf.json").is_file());
+    assert!(
+        ws.join(".forage")
+            .join("sync")
+            .join("zen-leaf.json")
+            .is_file()
+    );
     assert!(ws.join("Shared.forage").is_file());
     // Type also lands in the hub-type cache so the workspace loader's
     // lockfile resolution can pick it up.

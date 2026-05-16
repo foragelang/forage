@@ -133,10 +133,7 @@ impl From<&crate::snapshot::Record> for EvalValue {
     /// path).
     fn from(rec: &crate::snapshot::Record) -> Self {
         let mut out: IndexMap<String, EvalValue> = IndexMap::new();
-        out.insert(
-            "_id".into(),
-            EvalValue::String(rec.id.clone()),
-        );
+        out.insert("_id".into(), EvalValue::String(rec.id.clone()));
         for (k, v) in &rec.fields {
             out.insert(k.clone(), EvalValue::from(v.clone()));
         }

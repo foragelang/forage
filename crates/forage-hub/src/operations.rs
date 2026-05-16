@@ -207,7 +207,10 @@ pub async fn sync_from_hub(
     // to act on for an informational counter. The signal is still
     // captured in the structured log for anyone investigating
     // counter drift.
-    if let Err(e) = client.record_download(&artifact.author, &artifact.slug).await {
+    if let Err(e) = client
+        .record_download(&artifact.author, &artifact.slug)
+        .await
+    {
         tracing::debug!(
             error = %e,
             author = %artifact.author,
@@ -401,9 +404,8 @@ pub fn assemble_publish_plan(
         ))
     })?;
 
-    let parsed_recipe = forage_core::parse(&recipe).map_err(|e| {
-        HubError::Generic(format!("parse recipe {recipe_name:?} for publish: {e}"))
-    })?;
+    let parsed_recipe = forage_core::parse(&recipe)
+        .map_err(|e| HubError::Generic(format!("parse recipe {recipe_name:?} for publish: {e}")))?;
     let types = collect_shared_types(workspace, &recipe)?;
     let fixtures = read_fixtures(&workspace.root, recipe_name)?;
     let snapshot = read_snapshot(&workspace.root, recipe_name)?;
@@ -470,10 +472,7 @@ pub fn assemble_publish_plan(
 /// (`String`, `Int`, etc.) contribute nothing. Used by the publish
 /// flow to surface the named types an `input <name>: T` declaration
 /// pulls in.
-fn collect_referenced_type_names(
-    ty: &FieldType,
-    out: &mut std::collections::BTreeSet<String>,
-) {
+fn collect_referenced_type_names(ty: &FieldType, out: &mut std::collections::BTreeSet<String>) {
     match ty {
         FieldType::String | FieldType::Int | FieldType::Double | FieldType::Bool => {}
         FieldType::Array(inner) => collect_referenced_type_names(inner, out),
@@ -612,9 +611,8 @@ fn collect_shared_types(
     // `workspace.files` is authoritative, so the loop above already
     // populated the map; this is a safety net for non-workspace publish
     // flows.
-    let parsed = forage_core::parse(focal_source).map_err(|e| {
-        HubError::Generic(format!("re-parse focal recipe: {e}"))
-    })?;
+    let parsed = forage_core::parse(focal_source)
+        .map_err(|e| HubError::Generic(format!("re-parse focal recipe: {e}")))?;
     for ty in &parsed.types {
         if !ty.shared {
             continue;
@@ -631,11 +629,7 @@ fn collect_shared_types(
 }
 
 fn build_publishable_type(ty: &RecipeType, source: String) -> SharedTypeSource {
-    let alignments = ty
-        .alignments
-        .iter()
-        .map(core_alignment_to_wire)
-        .collect();
+    let alignments = ty.alignments.iter().map(core_alignment_to_wire).collect();
     let field_alignments = ty
         .fields
         .iter()
@@ -737,11 +731,7 @@ pub fn read_meta(workspace_root: &Path, recipe_name: &str) -> HubResult<Option<F
     Ok(Some(meta))
 }
 
-pub fn write_meta(
-    workspace_root: &Path,
-    recipe_name: &str,
-    meta: &ForageMeta,
-) -> HubResult<()> {
+pub fn write_meta(workspace_root: &Path, recipe_name: &str, meta: &ForageMeta) -> HubResult<()> {
     let path = meta_path(workspace_root, recipe_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -867,9 +857,8 @@ fn write_fixtures_and_snapshot(
 /// name, so a header-less artifact is a structured error — silently
 /// landing captures in `_fixtures/.jsonl` would be a real bug.
 fn recipe_name_from_source(source: &str, slug: &str) -> HubResult<String> {
-    let parsed = forage_core::parse(source).map_err(|e| {
-        HubError::Generic(format!("parse synced recipe @{slug}: {e}"))
-    })?;
+    let parsed = forage_core::parse(source)
+        .map_err(|e| HubError::Generic(format!("parse synced recipe @{slug}: {e}")))?;
     parsed.recipe_name().map(str::to_string).ok_or_else(|| {
         HubError::Generic(format!(
             "synced recipe @{slug} has no `recipe \"<name>\"` header",
@@ -1028,11 +1017,7 @@ mod tests {
         let ws = tmp.path();
         // A locally-authored file that doesn't start with `share type`
         // — typically the user's own recipe or scratch.
-        fs::write(
-            ws.join("Product.forage"),
-            "recipe \"local\"\nengine http\n",
-        )
-        .unwrap();
+        fs::write(ws.join("Product.forage"), "recipe \"local\"\nengine http\n").unwrap();
         let tv = type_version(
             "alice",
             "Product",
@@ -1051,7 +1036,11 @@ mod tests {
         let path = write_type_to_cache(cache, &tv).unwrap();
         assert_eq!(
             path,
-            cache.join("types").join("alice").join("Product").join("4.forage"),
+            cache
+                .join("types")
+                .join("alice")
+                .join("Product")
+                .join("4.forage"),
         );
         assert!(path.is_file());
     }
@@ -1129,7 +1118,10 @@ mod tests {
         assert_eq!(plan.recipe_payload.type_refs.len(), 2);
         for r in &plan.recipe_payload.type_refs {
             assert_eq!(r.author, "alice");
-            assert_eq!(r.version, 0, "driver overwrites this with the server-resolved version");
+            assert_eq!(
+                r.version, 0,
+                "driver overwrites this with the server-resolved version"
+            );
         }
         // `emits Product` in the recipe header surfaces in
         // `output_type_refs`; the unread `Variant` doesn't. Both are
@@ -1191,15 +1183,8 @@ mod tests {
         )
         .unwrap();
         let ws = forage_core::workspace::load(ws_root).unwrap();
-        let err = assemble_publish_plan(
-            &ws,
-            "missing",
-            "alice",
-            "".into(),
-            "x".into(),
-            vec![],
-        )
-        .unwrap_err();
+        let err = assemble_publish_plan(&ws, "missing", "alice", "".into(), "x".into(), vec![])
+            .unwrap_err();
         assert!(format!("{err}").contains("missing"), "unexpected: {err}");
     }
 }

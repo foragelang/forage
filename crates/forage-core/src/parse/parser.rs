@@ -283,9 +283,9 @@ impl Parser {
                                 functions.push(self.parse_fn_decl_shared(true)?);
                             }
                             _ => {
-                                return Err(self.unexpected(
-                                    "'type', 'enum', or 'fn' after 'share'",
-                                ));
+                                return Err(
+                                    self.unexpected("'type', 'enum', or 'fn' after 'share'")
+                                );
                             }
                         }
                     }
@@ -667,17 +667,16 @@ impl Parser {
         let Some(rest) = ident.strip_prefix('v') else {
             return Err(ParseError::Generic {
                 span,
-                message: format!(
-                    "version marker '{ident}' must start with 'v' (e.g. 'v1')",
-                ),
+                message: format!("version marker '{ident}' must start with 'v' (e.g. 'v1')",),
             });
         };
-        let n: u32 = rest.parse().map_err(|_| ParseError::Generic {
-            span: span.clone(),
-            message: format!(
-                "version marker '{ident}' must be 'v' followed by a positive integer",
-            ),
-        })?;
+        let n: u32 =
+            rest.parse().map_err(|_| ParseError::Generic {
+                span: span.clone(),
+                message: format!(
+                    "version marker '{ident}' must be 'v' followed by a positive integer",
+                ),
+            })?;
         if n == 0 {
             return Err(ParseError::Generic {
                 span,
@@ -1026,8 +1025,10 @@ impl Parser {
         // literal index baked in — handled inside `parse_path`. Once we
         // leave path territory (e.g. a `Call` or `StructLiteral` result),
         // `[expr]` is the only way to index into the value at runtime.
-        while matches!(base, ExtractionExpr::Call { .. } | ExtractionExpr::StructLiteral { .. })
-            && self.peek() == Some(&Token::LBracket)
+        while matches!(
+            base,
+            ExtractionExpr::Call { .. } | ExtractionExpr::StructLiteral { .. }
+        ) && self.peek() == Some(&Token::LBracket)
         {
             self.bump();
             let index = self.parse_extraction()?;

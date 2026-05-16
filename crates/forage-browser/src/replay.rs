@@ -22,11 +22,7 @@ pub struct ReplayEngine<'r> {
 }
 
 impl<'r> ReplayEngine<'r> {
-    pub fn new(
-        recipe: &'r ForageFile,
-        catalog: &'r TypeCatalog,
-        captures: &'r [Capture],
-    ) -> Self {
+    pub fn new(recipe: &'r ForageFile, catalog: &'r TypeCatalog, captures: &'r [Capture]) -> Self {
         Self {
             recipe,
             catalog,

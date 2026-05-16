@@ -414,10 +414,7 @@ mod tests {
         assert_eq!(product.alignments[1].term, "Q2424752");
         assert_eq!(product.fields.len(), 2);
         assert_eq!(product.fields[0].name, "name");
-        assert_eq!(
-            product.fields[0].alignment.as_ref().unwrap().term,
-            "name"
-        );
+        assert_eq!(product.fields[0].alignment.as_ref().unwrap().term, "name");
         assert_eq!(product.fields[1].name, "price");
         assert_eq!(
             product.fields[1].alignment.as_ref().unwrap().term,

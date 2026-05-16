@@ -802,7 +802,11 @@ pub fn hub_cache_root() -> PathBuf {
     if cfg!(target_os = "macos")
         && let Some(home) = dirs::home_dir()
     {
-        return home.join("Library").join("Forage").join("Cache").join("hub");
+        return home
+            .join("Library")
+            .join("Forage")
+            .join("Cache")
+            .join("hub");
     }
     if let Some(data) = dirs::data_dir() {
         return data.join("Forage").join("Cache").join("hub");
@@ -847,7 +851,10 @@ mod tests {
         let nested = root.join("a").join("b");
         fs::create_dir_all(&nested).unwrap();
         let ws = discover(&nested).expect("should find workspace");
-        assert_eq!(ws.root.canonicalize().unwrap(), root.canonicalize().unwrap());
+        assert_eq!(
+            ws.root.canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -901,10 +908,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
-        write(
-            &root.join("real.forage"),
-            "recipe \"real\"\nengine http\n",
-        );
+        write(&root.join("real.forage"), "recipe \"real\"\nengine http\n");
         // Files inside data dirs at the root: must be skipped.
         write(
             &root.join("_fixtures").join("real.forage"),
@@ -973,14 +977,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
-        write(
-            &root.join("a.forage"),
-            "recipe \"dup\"\nengine http\n",
-        );
-        write(
-            &root.join("z.forage"),
-            "recipe \"dup\"\nengine http\n",
-        );
+        write(&root.join("a.forage"), "recipe \"dup\"\nengine http\n");
+        write(&root.join("z.forage"), "recipe \"dup\"\nengine http\n");
         let ws = load(root).unwrap();
         let dup_count = ws.recipes().filter(|r| r.name() == "dup").count();
         assert_eq!(dup_count, 2, "both duplicates surface in recipes()");
@@ -1055,7 +1053,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(&root.join(MANIFEST_NAME), STARTER_MANIFEST);
-        write(&root.join("a.forage"), "share type Product { id: String }\n");
+        write(
+            &root.join("a.forage"),
+            "share type Product { id: String }\n",
+        );
         write(
             &root.join("b.forage"),
             "share type Product { id: String, name: String }\n",
@@ -1078,10 +1079,7 @@ mod tests {
         // One good recipe plus one syntactically-broken one. The
         // workspace must still load — the broken one becomes a
         // parse-error entry so the daemon can surface it.
-        write(
-            &root.join("good.forage"),
-            "recipe \"good\"\nengine http\n",
-        );
+        write(&root.join("good.forage"), "recipe \"good\"\nengine http\n");
         write(
             &root.join("bad.forage"),
             // Missing `engine` line + dangling `for` makes the parser
@@ -1182,7 +1180,9 @@ mod tests {
         // SAFETY: env mutation is unsafe in Rust 2024; the test runs
         // serially against the global env. The test restores the prior
         // value before returning.
-        unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
+        unsafe {
+            std::env::set_var("FORAGE_HUB_CACHE", &cache);
+        }
 
         let ws = load(&ws_root).unwrap();
         let cat = ws.catalog_from_disk(&recipe_path).unwrap();
@@ -1193,7 +1193,9 @@ mod tests {
             None => unsafe { std::env::remove_var("FORAGE_HUB_CACHE") },
         }
 
-        let product = cat.ty("Product").expect("hub-cached Product should be in catalog");
+        let product = cat
+            .ty("Product")
+            .expect("hub-cached Product should be in catalog");
         assert_eq!(product.fields.len(), 2);
         assert!(product.fields.iter().any(|f| f.name == "name"));
     }
@@ -1230,7 +1232,9 @@ mod tests {
 
         let prev = std::env::var("FORAGE_HUB_CACHE").ok();
         // SAFETY: env mutation is unsafe in Rust 2024.
-        unsafe { std::env::set_var("FORAGE_HUB_CACHE", &cache); }
+        unsafe {
+            std::env::set_var("FORAGE_HUB_CACHE", &cache);
+        }
 
         let ws = load(&ws_root).unwrap();
         let cat = ws.catalog_from_disk(&recipe_path).unwrap();
@@ -1288,17 +1292,25 @@ mod tests {
 
         let child = cat.lookup("Child").expect("Child in catalog");
         let names: Vec<&str> = child.fields.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, vec!["id", "name", "extra"], "parent fields first, child appended");
+        assert_eq!(
+            names,
+            vec!["id", "name", "extra"],
+            "parent fields first, child appended"
+        );
         // Parent alignment carried.
-        assert!(child
-            .alignments
-            .iter()
-            .any(|a| a.ontology == "schema.org" && a.term == "Product"));
+        assert!(
+            child
+                .alignments
+                .iter()
+                .any(|a| a.ontology == "schema.org" && a.term == "Product")
+        );
         // Child alignment added.
-        assert!(child
-            .alignments
-            .iter()
-            .any(|a| a.ontology == "wikidata" && a.term == "Q2424752"));
+        assert!(
+            child
+                .alignments
+                .iter()
+                .any(|a| a.ontology == "wikidata" && a.term == "Q2424752")
+        );
         // Inherited per-field alignment carried through unchanged.
         let id = child.fields.iter().find(|f| f.name == "id").unwrap();
         assert_eq!(id.alignment.as_ref().unwrap().term, "identifier");

@@ -305,9 +305,7 @@ fn main() -> Result<()> {
             engine,
             workspace,
         } => do_new(&name, engine, workspace.as_deref()),
-        Command::Record { recipe, inputs } => {
-            rt.block_on(record(&recipe, inputs.as_deref()))
-        }
+        Command::Record { recipe, inputs } => rt.block_on(record(&recipe, inputs.as_deref())),
         Command::Capture => {
             println!(
                 "{} `forage capture` opens a real webview and ships with Forage Studio (R9). Use Studio for now.",
@@ -422,7 +420,8 @@ fn resolve_recipe(arg: &str) -> Result<ResolvedRecipe> {
     if candidate.is_file() {
         let source = std::fs::read_to_string(candidate)
             .with_context(|| format!("reading {}", candidate.display()))?;
-        let file = parse(&source).map_err(|e| anyhow::anyhow!("parse {}: {e}", candidate.display()))?;
+        let file =
+            parse(&source).map_err(|e| anyhow::anyhow!("parse {}: {e}", candidate.display()))?;
         let Some(name) = file.recipe_name().map(str::to_string) else {
             bail!(
                 "{} is a `.forage` file but declares no `recipe \"<name>\"` header",
@@ -588,15 +587,21 @@ async fn test(
     let transport = ReplayTransport::new(captures);
     let engine = Engine::new(&transport);
     let produced = engine
-        .run(&resolved.file, &catalog, inputs, secrets, &RunOptions::default())
+        .run(
+            &resolved.file,
+            &catalog,
+            inputs,
+            secrets,
+            &RunOptions::default(),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // The snapshot path's extension agrees with the chosen wire shape so
     // a recipe with both fixtures (`<recipe>.json` and `<recipe>.jsonld`)
     // diffs against the right golden.
-    let snap_path = snapshot_path(&resolved.data_root(), &resolved.name)
-        .with_extension(format.extension());
+    let snap_path =
+        snapshot_path(&resolved.data_root(), &resolved.name).with_extension(format.extension());
     let produced_text = match format {
         TestFormat::Json => serde_json::to_string_pretty(&produced)?,
         TestFormat::Jsonld => serde_json::to_string_pretty(&produced.to_jsonld())?,
@@ -664,7 +669,13 @@ async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
     let transport = RecordingTransport::new(live);
     let engine = Engine::new(&transport);
     let snapshot = engine
-        .run(&resolved.file, &catalog, inputs, secrets, &RunOptions::default())
+        .run(
+            &resolved.file,
+            &catalog,
+            inputs,
+            secrets,
+            &RunOptions::default(),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -925,14 +936,12 @@ fn do_new(name: &str, engine: NewEngine, workspace_override: Option<&Path>) -> R
         Some(p) => p.to_path_buf(),
         None => {
             let cwd = std::env::current_dir().context("resolving current directory")?;
-            workspace::discover(&cwd)
-                .map(|ws| ws.root)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no workspace in scope (no ancestor `forage.toml` from {})",
-                        cwd.display()
-                    )
-                })?
+            workspace::discover(&cwd).map(|ws| ws.root).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no workspace in scope (no ancestor `forage.toml` from {})",
+                    cwd.display()
+                )
+            })?
         }
     };
     let target = root.join(format!("{name}.forage"));
@@ -941,7 +950,10 @@ fn do_new(name: &str, engine: NewEngine, workspace_override: Option<&Path>) -> R
     }
     std::fs::create_dir_all(&root)
         .with_context(|| format!("creating workspace dir {}", root.display()))?;
-    let body = format!("recipe \"{name}\" engine {engine}\n\n", engine = engine.token());
+    let body = format!(
+        "recipe \"{name}\" engine {engine}\n\n",
+        engine = engine.token()
+    );
     std::fs::write(&target, body).with_context(|| format!("writing {}", target.display()))?;
     println!("{} {}", "wrote".green(), target.display());
     Ok(())

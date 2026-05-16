@@ -68,7 +68,9 @@ async fn sample_limit_caps_recorded_emit_counts() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     let flags = RunFlags {
         sample_limit: Some(5),
@@ -127,7 +129,9 @@ async fn replay_flag_plays_recipe_against_fixtures() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     let flags = RunFlags {
         sample_limit: None,
@@ -163,7 +167,10 @@ async fn ephemeral_flag_skips_persistent_output_store() {
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
     deploy_disk_recipe(&daemon, &ws_root, recipe_name);
 
-    let persistent = ws_root.join(".forage").join("data").join("ephemeral.sqlite");
+    let persistent = ws_root
+        .join(".forage")
+        .join("data")
+        .join("ephemeral.sqlite");
     let cfg = RunConfig {
         cadence: Cadence::Manual,
         output: persistent.clone(),
@@ -171,7 +178,9 @@ async fn ephemeral_flag_skips_persistent_output_store() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     let flags = RunFlags {
         sample_limit: None,
@@ -231,7 +240,9 @@ async fn dev_preset_applies_sample_and_ephemeral_together() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     // The dev preset's `replay` field is left at None: the caller
     // (Studio / CLI) fills it in if a fixture exists at
@@ -243,7 +254,10 @@ async fn dev_preset_applies_sample_and_ephemeral_together() {
         .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Item").copied(), Some(10));
-    assert!(!persistent.exists(), "dev preset must not write persistent store");
+    assert!(
+        !persistent.exists(),
+        "dev preset must not write persistent store"
+    );
 }
 
 /// All three flags on at once: sampled, replayed, ephemeral. The
@@ -302,7 +316,9 @@ async fn all_three_flags_compose() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     let flags = RunFlags {
         sample_limit: Some(5),

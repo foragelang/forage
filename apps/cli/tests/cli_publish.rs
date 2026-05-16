@@ -155,8 +155,7 @@ async fn publish_keys_artifact_on_recipe_header_name() {
         .await
         .clone()
         .expect("recipe publish must have POSTed");
-    let req: PublishRequest =
-        serde_json::from_slice(&recipe_body).expect("publish body is JSON");
+    let req: PublishRequest = serde_json::from_slice(&recipe_body).expect("publish body is JSON");
     assert!(
         req.recipe.contains("recipe \"amazon-products\""),
         "POSTed recipe body must be the resolved file's content",

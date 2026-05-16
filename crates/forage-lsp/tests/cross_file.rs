@@ -159,8 +159,7 @@ fn duplicate_share_type_across_files_surfaces_through_lsp() {
     let a_dup: Vec<_> = a_diags
         .iter()
         .filter(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("share type 'Item'")
+            d.severity == Some(DiagnosticSeverity::ERROR) && d.message.contains("share type 'Item'")
         })
         .collect();
     assert_eq!(
@@ -174,8 +173,7 @@ fn duplicate_share_type_across_files_surfaces_through_lsp() {
     let b_dup: Vec<_> = b_diags
         .iter()
         .filter(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("share type 'Item'")
+            d.severity == Some(DiagnosticSeverity::ERROR) && d.message.contains("share type 'Item'")
         })
         .collect();
     assert_eq!(
@@ -316,8 +314,7 @@ fn duplicate_share_fn_across_files_surfaces_through_lsp() {
     let a_dup: Vec<_> = a_diags
         .iter()
         .filter(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("share fn 'upper'")
+            d.severity == Some(DiagnosticSeverity::ERROR) && d.message.contains("share fn 'upper'")
         })
         .collect();
     assert_eq!(
@@ -331,8 +328,7 @@ fn duplicate_share_fn_across_files_surfaces_through_lsp() {
     let b_dup: Vec<_> = b_diags
         .iter()
         .filter(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("share fn 'upper'")
+            d.severity == Some(DiagnosticSeverity::ERROR) && d.message.contains("share fn 'upper'")
         })
         .collect();
     assert_eq!(

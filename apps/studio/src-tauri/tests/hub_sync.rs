@@ -29,7 +29,7 @@ fn deeplink_clone_rejects_hostile_segments() {
         "forage://clone/../zen-leaf",
         "forage://clone/alice/zen leaf",
         "forage://clone/alice/.hidden",
-        "forage://clone/alice/zen-leaf/extra",  // too many segments
+        "forage://clone/alice/zen-leaf/extra", // too many segments
         "forage://other-verb/alice/zen-leaf",
         "https://example.com/clone/alice/zen-leaf",
     ] {

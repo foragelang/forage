@@ -12,10 +12,10 @@ use std::path::Path;
 
 use forage_core::ast::{FieldType, ForageFile};
 use forage_core::parse::parse;
-use forage_core::validate::{validate, ValidationCode};
+use forage_core::validate::{ValidationCode, validate};
 use forage_core::workspace::{
-    load, type_cache_file, RecipeSignature, RecipeSignatures, TypeCatalog, LOCKFILE_NAME,
-    MANIFEST_NAME,
+    LOCKFILE_NAME, MANIFEST_NAME, RecipeSignature, RecipeSignatures, TypeCatalog, load,
+    type_cache_file,
 };
 
 const STARTER_MANIFEST: &str = "description = \"\"\ncategory = \"\"\ntags = []\n";
@@ -384,7 +384,11 @@ fn child_can_redeclare_parent_field_without_alignment_to_drop_inheritance() {
     let r = parse(src).unwrap();
     let cat = TypeCatalog::from_file(&r);
     let rep = validate(&r, &cat, &RecipeSignatures::default());
-    assert!(!rep.has_errors(), "override drop is permitted: {:?}", rep.issues);
+    assert!(
+        !rep.has_errors(),
+        "override drop is permitted: {:?}",
+        rep.issues
+    );
 
     let child = cat.lookup("Child").unwrap();
     let name = child.fields.iter().find(|f| f.name == "name").unwrap();

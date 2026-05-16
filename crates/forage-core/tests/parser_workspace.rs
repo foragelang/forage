@@ -54,8 +54,16 @@ fn share_prefix_marks_types_enums_and_fns() {
     assert!(!local_enum.shared);
 
     assert_eq!(f.functions.len(), 2);
-    let shared_fn = f.functions.iter().find(|fn_| fn_.name == "upperId").unwrap();
-    let local_fn = f.functions.iter().find(|fn_| fn_.name == "local_fn").unwrap();
+    let shared_fn = f
+        .functions
+        .iter()
+        .find(|fn_| fn_.name == "upperId")
+        .unwrap();
+    let local_fn = f
+        .functions
+        .iter()
+        .find(|fn_| fn_.name == "local_fn")
+        .unwrap();
     assert!(shared_fn.shared);
     assert!(!local_fn.shared);
 }

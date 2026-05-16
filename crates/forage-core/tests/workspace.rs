@@ -184,10 +184,7 @@ fn recipes_iterator_filters_by_header_presence() {
     let tmp = tempfile::tempdir().unwrap();
     let root = workspace_in(&tmp);
     write(&root.join("shared.forage"), "type T { id: String }\n");
-    write(
-        &root.join("rec.forage"),
-        "recipe \"rec\"\nengine http\n",
-    );
+    write(&root.join("rec.forage"), "recipe \"rec\"\nengine http\n");
     let ws: Workspace = workspace::load(root).unwrap();
     let mut recipes: Vec<&Path> = ws.recipes().map(|r| r.path).collect();
     recipes.sort();

@@ -241,16 +241,13 @@ impl LanguageServer for ForageLsp {
             // Container label: the recipe header name when the file has
             // one, the file path otherwise so the editor still groups
             // declarations under something meaningful.
-            let container = r
-                .recipe_name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    doc.path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                });
+            let container = r.recipe_name().map(|s| s.to_string()).unwrap_or_else(|| {
+                doc.path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
             #[allow(deprecated)]
             for ty in &r.types {
                 out.push(SymbolInformation {

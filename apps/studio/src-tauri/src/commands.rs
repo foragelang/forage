@@ -12,9 +12,7 @@ use forage_browser::run_browser_replay;
 use forage_core::ast::EngineKind;
 use forage_core::eval::default_registry;
 use forage_core::parse::parse_extraction;
-use forage_core::{
-    EvalValue, Evaluator, LineMap, RunOptions, Scope, Snapshot, parse, validate,
-};
+use forage_core::{EvalValue, Evaluator, LineMap, RunOptions, Scope, Snapshot, parse, validate};
 use forage_http::{
     Debugger, EmitPause, Engine, ForLoopPause, LiveTransport, ProgressSink, ReplayTransport,
     ResumeAction, RunEvent, StepPause, StepResponse,
@@ -348,22 +346,19 @@ impl ProgressSink for EmitterSink {
         // the identifier grammar. Both are validated at the path-build
         // site so a malformed run_id or step name can't escape the
         // workspace via path traversal.
-        let path = match crate::run_artifacts::full_body_path(
-            &self.workspace_root,
-            &self.run_id,
-            step,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(
-                    run_id = %self.run_id,
-                    step = %step,
-                    error = %e,
-                    "step_response_full_body: rejected path"
-                );
-                return;
-            }
-        };
+        let path =
+            match crate::run_artifacts::full_body_path(&self.workspace_root, &self.run_id, step) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        run_id = %self.run_id,
+                        step = %step,
+                        error = %e,
+                        "step_response_full_body: rejected path"
+                    );
+                    return;
+                }
+            };
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 tracing::warn!(
@@ -389,12 +384,7 @@ impl ProgressSink for EmitterSink {
 /// `run_recipe` after polling `step_responses` for new entries during
 /// the run; surfaces 4xx/5xx captures + every healthy response with
 /// the same payload shape.
-fn emit_step_response(
-    app: &AppHandle,
-    run_id: &str,
-    step: &str,
-    response: &StepResponse,
-) {
+fn emit_step_response(app: &AppHandle, run_id: &str, step: &str, response: &StepResponse) {
     let _ = app.emit(
         RUN_STEP_RESPONSE_EVENT,
         &StepResponseEvent {
@@ -856,10 +846,7 @@ pub async fn run_recipe(
                         name = %name,
                         "ensure_run skipped: dev-run target has no recipe header",
                     );
-                    Some(
-                        "daemon bookkeeping skipped: file has no recipe header"
-                            .to_string(),
-                    )
+                    Some("daemon bookkeeping skipped: file has no recipe header".to_string())
                 }
             };
             Ok(RunOutcome {
@@ -1145,41 +1132,28 @@ pub async fn publish_recipe(
     category: String,
     tags: Vec<String>,
 ) -> Result<crate::hub_sync::PublishOutcome, crate::hub_sync::PublishError> {
-    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
-        message: e,
-    })?;
+    let ws = require_workspace(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
     // Pre-publish validation: parse + validate the recipe locally so
     // the server doesn't receive a malformed recipe. A broken recipe
     // surfaces as `Other` here, not `StaleBase` — the user fixes the
     // recipe before retrying.
-    let source = workspace::read_source(&ws, &name).map_err(|e| {
-        crate::hub_sync::PublishError::Other { message: e }
+    let source = workspace::read_source(&ws, &name)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
+    let recipe = parse(&source).map_err(|e| crate::hub_sync::PublishError::Other {
+        message: format!("parse: {e}"),
     })?;
-    let recipe =
-        parse(&source).map_err(|e| crate::hub_sync::PublishError::Other {
-            message: format!("parse: {e}"),
-        })?;
-    let catalog = build_catalog(&ws.root, &recipe).map_err(|e| {
-        crate::hub_sync::PublishError::Other {
+    let catalog =
+        build_catalog(&ws.root, &recipe).map_err(|e| crate::hub_sync::PublishError::Other {
             message: format!("catalog: {e}"),
-        }
-    })?;
+        })?;
     let signatures = build_signatures(&ws.root);
     if validate(&recipe, &catalog, &signatures).has_errors() {
         return Err(crate::hub_sync::PublishError::Other {
             message: "recipe failed validation; fix errors before publishing".into(),
         });
     }
-    crate::hub_sync::run_publish(
-        &ws,
-        &hub_url,
-        &author,
-        &name,
-        description,
-        category,
-        tags,
-    )
-    .await
+    crate::hub_sync::run_publish(&ws, &hub_url, &author, &name, description, category, tags).await
 }
 
 /// Pull `(author, slug, version?)` from the hub and materialize the
@@ -1193,9 +1167,8 @@ pub async fn sync_from_hub(
     version: Option<u32>,
     hub_url: String,
 ) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
-    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
-        message: e,
-    })?;
+    let ws = require_workspace(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
     crate::hub_sync::run_sync(&ws.root, &hub_url, &author, &slug, version).await
 }
 
@@ -1210,9 +1183,8 @@ pub async fn fork_from_hub(
     r#as: Option<String>,
     hub_url: String,
 ) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
-    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
-        message: e,
-    })?;
+    let ws = require_workspace(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
     crate::hub_sync::run_fork(&ws.root, &hub_url, &upstream_author, &upstream_slug, r#as).await
 }
 
@@ -1230,9 +1202,8 @@ pub fn preview_publish(
     category: String,
     tags: Vec<String>,
 ) -> Result<crate::hub_sync::PublishPreview, crate::hub_sync::PublishError> {
-    let ws = require_workspace(&state).map_err(|e| crate::hub_sync::PublishError::Other {
-        message: e,
-    })?;
+    let ws = require_workspace(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
     crate::hub_sync::preview_publish(&ws, &author, &name, description, category, tags)
 }
 
@@ -1542,9 +1513,7 @@ fn parse_error_span(e: &forage_core::parse::ParseError) -> (std::ops::Range<usiz
             format!("unexpected end of input, expected {expected}"),
         ),
         PE::Generic { span, message } => (span.clone(), message.clone()),
-        PE::InvalidRegex { span, message } => {
-            (span.clone(), format!("invalid regex: {message}"))
-        }
+        PE::InvalidRegex { span, message } => (span.clone(), format!("invalid regex: {message}")),
         PE::InvalidRegexFlag { span, flag } => {
             (span.clone(), format!("unknown regex flag '{flag}'"))
         }
@@ -1606,9 +1575,7 @@ fn host_of(url: &str) -> String {
 
 use std::path::{Path, PathBuf};
 
-use forage_daemon::{
-    DaemonStatus, DeployedVersion, Run, RunConfig, ScheduledRun, validate_cron,
-};
+use forage_daemon::{DaemonStatus, DeployedVersion, Run, RunConfig, ScheduledRun, validate_cron};
 
 use crate::workspace::{
     DeployedState, DraftState, FileNode, RecentWorkspace, RecipeStatus, WorkspaceInfo,
@@ -1783,7 +1750,9 @@ fn append_workspace_shared_diagnostics(
             end_col: r.end.character,
         });
     }
-    outcome.diagnostics.sort_by_key(|d| (d.start_line, d.start_col));
+    outcome
+        .diagnostics
+        .sort_by_key(|d| (d.start_line, d.start_col));
     outcome.ok = !outcome.diagnostics.iter().any(|d| d.severity == "error");
 }
 
@@ -1949,7 +1918,9 @@ pub fn daemon_status(state: State<'_, StudioState>) -> Result<DaemonStatus, Stri
 
 #[tauri::command]
 pub fn list_runs(state: State<'_, StudioState>) -> Result<Vec<Run>, String> {
-    require_daemon(&state)?.list_runs().map_err(|e| e.to_string())
+    require_daemon(&state)?
+        .list_runs()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2097,9 +2068,7 @@ pub fn list_deployed_versions(
 /// versions. Returns one entry per recipe known to either side,
 /// keyed on the recipe's header name and ordered alphabetically.
 #[tauri::command]
-pub fn list_recipe_statuses(
-    state: State<'_, StudioState>,
-) -> Result<Vec<RecipeStatus>, String> {
+pub fn list_recipe_statuses(state: State<'_, StudioState>) -> Result<Vec<RecipeStatus>, String> {
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
     build_recipe_statuses(&ws, &daemon)
@@ -2162,10 +2131,9 @@ fn build_recipe_statuses(
 
     let deployments = daemon.deployed_names().map_err(|e| e.to_string())?;
     for dv in deployments {
-        let entry = by_name.entry(dv.recipe_name.clone()).or_insert((
-            DraftState::Missing,
-            DeployedState::None,
-        ));
+        let entry = by_name
+            .entry(dv.recipe_name.clone())
+            .or_insert((DraftState::Missing, DeployedState::None));
         entry.1 = DeployedState::Deployed {
             version: dv.version,
             deployed_at: dv.deployed_at,
@@ -2244,10 +2212,7 @@ fn scaffold_new_workspace(path: &Path) -> Result<(), String> {
 /// Close the active workspace. Idempotent: a second close on an
 /// already-empty state returns `Ok(())` without panicking.
 #[tauri::command]
-pub async fn close_workspace(
-    state: State<'_, StudioState>,
-    app: AppHandle,
-) -> Result<(), String> {
+pub async fn close_workspace(state: State<'_, StudioState>, app: AppHandle) -> Result<(), String> {
     let _guard = state.workspace_switch.lock().await;
     close_workspace_inner(&state, Some(&app));
     Ok(())
@@ -2535,10 +2500,7 @@ pub fn list_workspace_recipe_signatures(
             // Chain-resolved: a composition recipe without a declared
             // `emits` clause reports its terminal stage's output here
             // so the notebook picker's "produces T" filter finds it.
-            outputs: signatures
-                .resolve_output_types(name)
-                .into_iter()
-                .collect(),
+            outputs: signatures.resolve_output_types(name).into_iter().collect(),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2624,11 +2586,7 @@ pub struct NotebookSaveOutcome {
     pub source: String,
 }
 
-fn render_composition_source(
-    name: &str,
-    stages: &[String],
-    output_type: Option<&str>,
-) -> String {
+fn render_composition_source(name: &str, stages: &[String], output_type: Option<&str>) -> String {
     let mut body = String::new();
     body.push_str("recipe \"");
     body.push_str(name);
@@ -2892,16 +2850,13 @@ for $i in $list.items[*] {
         )
         .unwrap();
         // File basename `foo`; recipe header `bar`.
-        std::fs::write(
-            ws_root.join("foo.forage"),
-            "recipe \"bar\"\nengine http\n",
-        )
-        .unwrap();
+        std::fs::write(ws_root.join("foo.forage"), "recipe \"bar\"\nengine http\n").unwrap();
 
         let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
         let workspace = forage_core::workspace::load(&ws_root).expect("load workspace");
-        let recipe = forage_core::parse(&std::fs::read_to_string(ws_root.join("foo.forage")).unwrap())
-            .expect("parse");
+        let recipe =
+            forage_core::parse(&std::fs::read_to_string(ws_root.join("foo.forage")).unwrap())
+                .expect("parse");
         let catalog = workspace
             .catalog(&recipe, |p| std::fs::read_to_string(p))
             .expect("catalog");
@@ -2995,7 +2950,10 @@ for $i in $list.items[*] {
         // canonicalizes, so compare canonical paths — the test
         // fixture's path may carry a `/private` prefix on macOS.
         let resolved = workspace::resolve_recipe_path(&ws, "bar").expect("resolve by name");
-        assert_eq!(resolved.canonicalize().unwrap(), foo_path.canonicalize().unwrap());
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            foo_path.canonicalize().unwrap()
+        );
         let source = workspace::read_source(&ws, "bar").expect("read source by name");
         assert!(source.contains("recipe \"bar\""));
 
@@ -3105,7 +3063,6 @@ for $i in $list.items[*] {
         assert_eq!(outcome.diagnostics[0].code, "UnrecognizedForageFile");
     }
 
-
     /// Root-level `.forage` files run through workspace-aware
     /// validation. A header-less file with only a clean type
     /// declaration produces no diagnostics.
@@ -3132,7 +3089,11 @@ for $i in $list.items[*] {
     fn validate_path_flags_recipe_context_in_header_less_file() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        std::fs::write(root.join("forage.toml"), "description = \"\"\ncategory = \"\"\ntags = []\n").unwrap();
+        std::fs::write(
+            root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
         let decl = root.join("stray.forage");
         let src = "auth.staticHeader { name: \"X-API-Key\", value: \"abc\" }\n";
         std::fs::write(&decl, src).unwrap();
@@ -3348,8 +3309,7 @@ for $p in $input.prior {
         // Publish: render the same chain, write it as a recipe,
         // deploy through the normal flow, trigger it. The published
         // run's snapshot must match the preview's record set.
-        let published_src =
-            super::render_composition_source("notebook", &stages, Some("Item"));
+        let published_src = super::render_composition_source("notebook", &stages, Some("Item"));
         std::fs::write(ws_root.join("notebook.forage"), &published_src).unwrap();
         deploy_from_disk(&daemon, &ws_root, "notebook");
         let cfg = RunConfig {
@@ -3359,7 +3319,9 @@ for $p in $input.prior {
             inputs: indexmap::IndexMap::new(),
             output_format: forage_daemon::OutputFormat::default(),
         };
-        let run = daemon.configure_run("notebook", cfg).expect("configure_run");
+        let run = daemon
+            .configure_run("notebook", cfg)
+            .expect("configure_run");
         let sr = daemon
             .trigger_run(&run.id, RunFlags::prod())
             .await

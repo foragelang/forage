@@ -93,11 +93,7 @@ impl HubClient {
     /// `GET /v1/types/:author/:name` — type metadata (no version
     /// artifact). Returns `None` on 404 so callers can branch on
     /// "type doesn't exist yet" without parsing the error.
-    pub async fn get_type(
-        &self,
-        author: &str,
-        name: &str,
-    ) -> HubResult<Option<TypeMetadata>> {
+    pub async fn get_type(&self, author: &str, name: &str) -> HubResult<Option<TypeMetadata>> {
         let url = format!("{}/v1/types/{author}/{name}", self.base_url);
         match self.send(Method::GET, &url, None).await {
             Ok(body) => Ok(Some(serde_json::from_str(&body)?)),
@@ -164,10 +160,7 @@ impl HubClient {
     /// informational download counter. Best-effort; failures don't
     /// abort the sync.
     pub async fn record_download(&self, author: &str, slug: &str) -> HubResult<()> {
-        let url = format!(
-            "{}/v1/packages/{author}/{slug}/downloads",
-            self.base_url
-        );
+        let url = format!("{}/v1/packages/{author}/{slug}/downloads", self.base_url);
         self.send(Method::POST, &url, Some(String::new())).await?;
         Ok(())
     }
@@ -185,12 +178,7 @@ impl HubClient {
         Ok(v.get("login").and_then(|x| x.as_str()).map(String::from))
     }
 
-    async fn send(
-        &self,
-        method: Method,
-        url: &str,
-        body: Option<String>,
-    ) -> HubResult<String> {
+    async fn send(&self, method: Method, url: &str, body: Option<String>) -> HubResult<String> {
         let mut req = self.client.request(method, url);
         if let Some(token) = &self.bearer_token {
             req = req.bearer_auth(token);
@@ -316,7 +304,10 @@ mod tests {
         let err = client.get_package("x", "y").await.unwrap_err();
         match err {
             HubError::ServerMalformed { detail } => {
-                assert!(detail.contains("error"), "detail must name the missing field: {detail}");
+                assert!(
+                    detail.contains("error"),
+                    "detail must name the missing field: {detail}"
+                );
             }
             other => panic!("expected ServerMalformed, got {other:?}"),
         }
@@ -354,7 +345,10 @@ mod tests {
             snapshot: None,
             base_version: Some(1),
         };
-        let err = client.publish_version("x", "y", &payload).await.unwrap_err();
+        let err = client
+            .publish_version("x", "y", &payload)
+            .await
+            .unwrap_err();
         match err {
             HubError::ServerMalformed { detail } => {
                 assert!(
@@ -397,7 +391,10 @@ mod tests {
             snapshot: None,
             base_version: Some(3),
         };
-        let err = client.publish_version("x", "y", &payload).await.unwrap_err();
+        let err = client
+            .publish_version("x", "y", &payload)
+            .await
+            .unwrap_err();
         match err {
             HubError::StaleBase {
                 latest_version,

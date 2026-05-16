@@ -37,10 +37,8 @@ pub fn fixtures_dir() -> PathBuf {
 /// library; a missing or malformed manifest is a build-tree bug.
 pub fn load_expected() -> ExpectedFile {
     let path = fixtures_dir().join("expected.json");
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 /// Read a fixture `.forage` source by filename (e.g. `"01-minimal.forage"`).

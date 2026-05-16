@@ -1,6 +1,8 @@
 //! Native menus. Tauri 2's menu builder API.
 
-use tauri::menu::{Menu, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    Menu, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::{AppHandle, Emitter, Wry};
 
 /// Build the application menu. Returns both the menu (for installation
@@ -8,10 +10,9 @@ use tauri::{AppHandle, Emitter, Wry};
 /// handle and toggle its enabled state as the user opens/closes
 /// workspaces — disabled while no workspace is open.
 pub fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
-    let open_workspace =
-        MenuItemBuilder::with_id("open_workspace", "Open Workspace\u{2026}")
-            .accelerator("CmdOrCtrl+O")
-            .build(app)?;
+    let open_workspace = MenuItemBuilder::with_id("open_workspace", "Open Workspace\u{2026}")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
     let close_workspace = MenuItemBuilder::with_id("close_workspace", "Close Workspace")
         .accelerator("CmdOrCtrl+W")
         .enabled(false)

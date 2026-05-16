@@ -22,7 +22,9 @@ use crate::transport::{EngineTransportContext, HttpRequest, HttpResponse, Transp
 
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
-use forage_core::{EvalValue, Evaluator, LineMap, Record, RunOptions, Scope, Snapshot, TypeCatalog};
+use forage_core::{
+    EvalValue, Evaluator, LineMap, Record, RunOptions, Scope, Snapshot, TypeCatalog,
+};
 
 /// Records to seed a downstream recipe with — the upstream stage's
 /// emissions, threaded into the next stage's input slot at run
@@ -105,8 +107,15 @@ impl<'t> Engine<'t> {
         secrets: IndexMap<String, String>,
         options: &RunOptions,
     ) -> HttpResult<Snapshot> {
-        self.run_with_prior(recipe, catalog, inputs, secrets, options, PriorRecords::default())
-            .await
+        self.run_with_prior(
+            recipe,
+            catalog,
+            inputs,
+            secrets,
+            options,
+            PriorRecords::default(),
+        )
+        .await
     }
 
     /// Same as `run`, but seeded with a stream of upstream records.
@@ -565,8 +574,7 @@ impl<'t> Engine<'t> {
                 format: resolved_format,
                 content_type_header,
             };
-            self.progress
-                .step_response_captured(&step.name, &captured);
+            self.progress.step_response_captured(&step.name, &captured);
             step_responses.insert(step.name.clone(), captured);
             if !(200..400).contains(&resp.status) {
                 return Err(HttpError::Status {
@@ -904,9 +912,7 @@ fn resolve_parse_format(step: &HTTPStep, resp: &HttpResponse) -> ParseFormat {
             // recipes that don't declare `parse :` keep working
             // against pre-parse-format fixtures.
             let body = resp.body_str();
-            if !body.is_empty()
-                && serde_json::from_str::<serde_json::Value>(body).is_ok()
-            {
+            if !body.is_empty() && serde_json::from_str::<serde_json::Value>(body).is_ok() {
                 ParseFormat::Json
             } else {
                 ParseFormat::Text
@@ -990,7 +996,13 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -1045,7 +1057,13 @@ mod tests {
         let transport = ReplayTransport::new(vec![page1, page2]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 4);
@@ -1125,7 +1143,13 @@ mod tests {
         };
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -1176,7 +1200,13 @@ mod tests {
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -1241,7 +1271,13 @@ mod tests {
         let sink = Arc::new(CaptureSink::default());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1371,11 +1407,8 @@ mod tests {
         "#;
         let recipe = parse(src).expect("recipe parses");
         let catalog = forage_core::TypeCatalog::from_file(&recipe);
-        let validation = forage_core::validate(
-            &recipe,
-            &catalog,
-            &forage_core::RecipeSignatures::default(),
-        );
+        let validation =
+            forage_core::validate(&recipe, &catalog, &forage_core::RecipeSignatures::default());
         assert!(
             !validation.has_errors(),
             "validation errors: {validation:?}"
@@ -1402,7 +1435,13 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         };
         let snap = Engine::new(&transport)
-            .run(&recipe, &catalog, inputs, IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                inputs,
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .expect("run ok");
 
@@ -1477,7 +1516,13 @@ mod tests {
         let transport = ReplayTransport::new(vec![]);
         let engine = Engine::new(&transport);
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::NoFixture { .. }));
@@ -1538,7 +1583,13 @@ mod tests {
         let mut secrets = IndexMap::new();
         secrets.insert("token".to_string(), "shhh".to_string());
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), secrets, &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                secrets,
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 1);
@@ -1602,7 +1653,13 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -1649,7 +1706,13 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 3);
@@ -1715,7 +1778,13 @@ mod tests {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -1760,7 +1829,13 @@ mod tests {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -1847,9 +1922,7 @@ for $i in $list.items[*] {
         .unwrap();
         let ws = forage_core::workspace::load(root).unwrap();
         let recipe = forage_core::parse(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
-        let catalog = ws
-            .catalog(&recipe, |p| std::fs::read_to_string(p))
-            .unwrap();
+        let catalog = ws.catalog(&recipe, |p| std::fs::read_to_string(p)).unwrap();
 
         let exchange = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
@@ -1863,7 +1936,13 @@ for $i in $list.items[*] {
         let transport = ReplayTransport::new(vec![exchange]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -1916,22 +1995,16 @@ for $i in $list.items[*] {
                 Record {
                     id: "rec-0".into(),
                     type_name: "Product".into(),
-                    fields: [(
-                        "id".to_string(),
-                        JSONValue::String("upstream-a".into()),
-                    )]
-                    .into_iter()
-                    .collect(),
+                    fields: [("id".to_string(), JSONValue::String("upstream-a".into()))]
+                        .into_iter()
+                        .collect(),
                 },
                 Record {
                     id: "rec-1".into(),
                     type_name: "Product".into(),
-                    fields: [(
-                        "id".to_string(),
-                        JSONValue::String("upstream-b".into()),
-                    )]
-                    .into_iter()
-                    .collect(),
+                    fields: [("id".to_string(), JSONValue::String("upstream-b".into()))]
+                        .into_iter()
+                        .collect(),
                 },
             ],
             type_name: "Product".into(),
@@ -2043,7 +2116,13 @@ for $i in $list.items[*] {
             sample_limit: Some(5),
         };
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &options)
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &options,
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 5);
@@ -2103,7 +2182,13 @@ for $i in $list.items[*] {
             sample_limit: Some(2),
         };
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &options)
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &options,
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 8);
@@ -2153,11 +2238,21 @@ for $i in $list.items[*] {
         let dbg = Arc::new(RecordingDebugger::new(Vec::new()));
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
         engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         let for_loops = dbg.seen_for_loops.lock().unwrap();
-        assert_eq!(for_loops.len(), 1, "before_for_loop fires once per for-loop");
+        assert_eq!(
+            for_loops.len(),
+            1,
+            "before_for_loop fires once per for-loop"
+        );
         assert_eq!(for_loops[0].variable, "i");
         assert_eq!(for_loops[0].total, 2);
         // `start_line` is 0-based; the `for` keyword sits on the 10th
@@ -2202,7 +2297,13 @@ for $i in $list.items[*] {
         let dbg = Arc::new(RecordingDebugger::new(Vec::new()));
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
         engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         let for_loops = dbg.seen_for_loops.lock().unwrap();
@@ -2242,7 +2343,13 @@ for $i in $list.items[*] {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);
@@ -2285,13 +2392,18 @@ for $i in $list.items[*] {
         // short-circuit without consuming because we don't opt into
         // `with_iterations()`.
         let dbg = Arc::new(
-            RecordingDebugger::new(vec![ResumeAction::Continue, ResumeAction::Stop])
-                .with_emits(),
+            RecordingDebugger::new(vec![ResumeAction::Continue, ResumeAction::Stop]).with_emits(),
         );
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -2341,7 +2453,13 @@ for $i in $list.items[*] {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -2396,7 +2514,13 @@ for $i in $list.items[*] {
             );
             let engine = Engine::new(&transport).with_debugger(dbg.clone());
             let _ = engine
-                .run(recipe, catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+                .run(
+                    recipe,
+                    catalog,
+                    IndexMap::new(),
+                    IndexMap::new(),
+                    &RunOptions::default(),
+                )
                 .await;
             dbg.seen_emits.lock().unwrap().len()
         }
@@ -2461,7 +2585,13 @@ for $i in $list.items[*] {
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
 
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stopped by debugger"));
@@ -2495,7 +2625,10 @@ for $i in $list.items[*] {
         let recipe = parse(src).unwrap();
         let catalog = lonely_catalog(&recipe);
         let mut hdrs = IndexMap::new();
-        hdrs.insert("Content-Type".into(), "application/json; charset=utf-8".into());
+        hdrs.insert(
+            "Content-Type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         hdrs.insert("X-Trace-Id".into(), "abc-123".into());
         let cap = Capture::Http(HttpExchange {
             url: "https://api.example.com/items".into(),
@@ -2513,7 +2646,13 @@ for $i in $list.items[*] {
         let dbg = Arc::new(RecordingDebugger::new(vec![]).with_for_loops());
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
         let _ = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -2531,10 +2670,7 @@ for $i in $list.items[*] {
         );
         assert_eq!(resp.body_raw, r#"{"items":[{"id":"a"}]}"#);
         assert!(!resp.body_truncated);
-        assert_eq!(
-            resp.headers.get("X-Trace-Id"),
-            Some(&"abc-123".to_string()),
-        );
+        assert_eq!(resp.headers.get("X-Trace-Id"), Some(&"abc-123".to_string()),);
     }
 
     #[tokio::test]
@@ -2588,7 +2724,13 @@ for $i in $list.items[*] {
         let dbg = Arc::new(RecordingDebugger::new(vec![]));
         let engine = Engine::new(&transport).with_debugger(dbg.clone());
         let _ = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -2601,7 +2743,10 @@ for $i in $list.items[*] {
             .step_responses
             .get("big")
             .expect("captured response for step `big`");
-        assert!(resp.body_truncated, "oversized body should set body_truncated");
+        assert!(
+            resp.body_truncated,
+            "oversized body should set body_truncated"
+        );
         assert_eq!(
             resp.body_raw.len(),
             BODY_CAPTURE_MAX,
@@ -2678,7 +2823,13 @@ for $i in $list.items[*] {
         let sink = Arc::new(RecordingSink::new());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let _ = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -2725,7 +2876,13 @@ for $i in $list.items[*] {
         let sink = Arc::new(RecordingSink::new());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let err = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .expect_err("5xx should abort the run");
         assert!(matches!(err, HttpError::Status { status: 500, .. }));
@@ -2776,7 +2933,13 @@ for $i in $list.items[*] {
         let sink = Arc::new(RecordingSink::new());
         let engine = Engine::new(&transport).with_progress(sink.clone());
         let _ = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -2833,7 +2996,13 @@ for $i in $list.items[*] {
         let transport = ReplayTransport::new(vec![cap]);
         let engine = Engine::new(&transport);
         let snap = engine
-            .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+            .run(
+                &recipe,
+                &catalog,
+                IndexMap::new(),
+                IndexMap::new(),
+                &RunOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(snap.records.len(), 2);

@@ -133,7 +133,10 @@ pub struct EngineTransportContext<'t> {
 
 impl<'t> EngineTransportContext<'t> {
     pub fn new(transport: &'t dyn Transport, user_agent: String) -> Self {
-        Self { transport, user_agent }
+        Self {
+            transport,
+            user_agent,
+        }
     }
 }
 

@@ -229,19 +229,18 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Run, DaemonError
         }
         None => None,
     };
-    let inputs: indexmap::IndexMap<String, serde_json::Value> = match serde_json::from_str(
-        &inputs_json,
-    ) {
-        Ok(serde_json::Value::Object(obj)) => obj.into_iter().collect(),
-        Ok(other) => {
-            return Ok(Err(DaemonError::Corrupt {
-                detail: format!(
-                    "inputs_json must be a JSON object for run {id}, got {other:?}"
-                ),
-            }));
-        }
-        Err(e) => return Ok(Err(DaemonError::Serde(e))),
-    };
+    let inputs: indexmap::IndexMap<String, serde_json::Value> =
+        match serde_json::from_str(&inputs_json) {
+            Ok(serde_json::Value::Object(obj)) => obj.into_iter().collect(),
+            Ok(other) => {
+                return Ok(Err(DaemonError::Corrupt {
+                    detail: format!(
+                        "inputs_json must be a JSON object for run {id}, got {other:?}"
+                    ),
+                }));
+            }
+            Err(e) => return Ok(Err(DaemonError::Serde(e))),
+        };
     let output_format = match output_format_from_str(&output_format) {
         Some(f) => f,
         None => {

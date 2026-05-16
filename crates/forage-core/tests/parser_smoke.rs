@@ -336,7 +336,10 @@ fn fn_decl_parses_with_one_param() {
     assert_eq!(r.functions[0].name, "double");
     assert_eq!(r.functions[0].params, vec!["x".to_string()]);
     assert!(r.functions[0].body.bindings.is_empty());
-    assert!(matches!(r.functions[0].body.result, ExtractionExpr::Path(_)));
+    assert!(matches!(
+        r.functions[0].body.result,
+        ExtractionExpr::Path(_)
+    ));
 }
 
 #[test]
@@ -501,10 +504,7 @@ fn field_level_alignment_parses_after_optional_marker() {
     assert_eq!(name.alignment.as_ref().unwrap().ontology, "schema.org");
     assert_eq!(name.alignment.as_ref().unwrap().term, "name");
     assert!(description.optional);
-    assert_eq!(
-        description.alignment.as_ref().unwrap().term,
-        "description"
-    );
+    assert_eq!(description.alignment.as_ref().unwrap().term, "description");
     assert_eq!(price.alignment.as_ref().unwrap().term, "offers.price");
 }
 
@@ -734,10 +734,7 @@ fn legacy_output_keyword_is_rejected() {
         step list { method "GET" url "https://x.test" }
         emit Item { id ← "a" }
     "#;
-    assert!(
-        parse(src).is_err(),
-        "legacy `output` clause must not parse"
-    );
+    assert!(parse(src).is_err(), "legacy `output` clause must not parse");
 }
 
 #[test]

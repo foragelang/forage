@@ -118,7 +118,6 @@ fn fixtures_match_expected() {
                 }
             }
         }
-
     }
 
     if !failures.is_empty() {

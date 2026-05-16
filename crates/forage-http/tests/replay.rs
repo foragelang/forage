@@ -75,7 +75,13 @@ async fn replay_reads_underscore_fixtures_layout() {
     let transport = ReplayTransport::new(loaded);
     let engine = Engine::new(&transport);
     let snapshot = engine
-        .run(&recipe, &catalog, IndexMap::new(), IndexMap::new(), &RunOptions::default())
+        .run(
+            &recipe,
+            &catalog,
+            IndexMap::new(),
+            IndexMap::new(),
+            &RunOptions::default(),
+        )
         .await
         .expect("engine run");
 

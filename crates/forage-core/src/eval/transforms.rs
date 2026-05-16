@@ -420,7 +420,9 @@ fn regex_replace_all(v: EvalValue, args: &[EvalValue]) -> Result<EvalValue, Eval
         .get(1)
         .ok_or_else(|| err("replaceAll", "missing replacement string"))?;
     let rep = require_string("replaceAll", replacement)?;
-    Ok(EvalValue::String(re.replace_all(&s, rep.as_str()).into_owned()))
+    Ok(EvalValue::String(
+        re.replace_all(&s, rep.as_str()).into_owned(),
+    ))
 }
 
 // --- string built-ins ------------------------------------------------------
@@ -630,10 +632,7 @@ mod tests {
         assert_eq!(
             rp(
                 EvalValue::String("a-b-c".into()),
-                &[
-                    EvalValue::String("-".into()),
-                    EvalValue::String(":".into()),
-                ],
+                &[EvalValue::String("-".into()), EvalValue::String(":".into()),],
             )
             .unwrap(),
             EvalValue::String("a:b:c".into()),
@@ -661,11 +660,7 @@ mod tests {
             flags: String::new(),
             re: regex::Regex::new(r"(\d+)\s*(oz|g)").unwrap(),
         };
-        let res = m(
-            EvalValue::String("1 oz".into()),
-            &[EvalValue::Regex(pat)],
-        )
-        .unwrap();
+        let res = m(EvalValue::String("1 oz".into()), &[EvalValue::Regex(pat)]).unwrap();
         let EvalValue::Object(o) = res else {
             panic!("expected object");
         };

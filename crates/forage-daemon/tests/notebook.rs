@@ -49,11 +49,9 @@ async fn notebook_runs_two_stage_chain_without_persisting_a_run() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/items"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        })))
         .mount(&mock)
         .await;
 
@@ -111,14 +109,12 @@ async fn notebook_run_threads_sample_limit_through_to_engine() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/items"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [
-                    {"id": "a"}, {"id": "b"}, {"id": "c"},
-                    {"id": "d"}, {"id": "e"}, {"id": "f"},
-                ],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [
+                {"id": "a"}, {"id": "b"}, {"id": "c"},
+                {"id": "d"}, {"id": "e"}, {"id": "f"},
+            ],
+        })))
         .mount(&mock)
         .await;
 

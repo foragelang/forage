@@ -5,9 +5,7 @@
 //! `[types]` table.
 
 use assert_cmd::Command;
-use forage_hub::{
-    PackageFixture, PackageVersion, TypeFieldAlignment, TypeRef, TypeVersion,
-};
+use forage_hub::{PackageFixture, PackageVersion, TypeFieldAlignment, TypeRef, TypeVersion};
 use std::fs;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -17,9 +15,7 @@ fn artifact(author: &str, slug: &str) -> PackageVersion {
         author: author.into(),
         slug: slug.into(),
         version: 1,
-        recipe: format!(
-            "recipe \"{slug}\"\nengine http\nstep s {{ method \"GET\" url \"x\" }}\n"
-        ),
+        recipe: format!("recipe \"{slug}\"\nengine http\nstep s {{ method \"GET\" url \"x\" }}\n"),
         type_refs: vec![TypeRef {
             author: author.into(),
             name: "Product".into(),

@@ -26,14 +26,14 @@ pub mod types;
 
 pub use auth_store::{AuthStore, AuthTokens};
 pub use client::HubClient;
-pub use forage_core::workspace::{hub_cache_root, type_cache_file};
 pub use device::{DevicePollResponse, DeviceStartResponse, poll_device, start_device};
 pub use error::{HubError, HubResult};
+pub use forage_core::workspace::{hub_cache_root, type_cache_file};
 pub use operations::{
     FetchedPackage, FetchedType, ForageMeta, PublishPlan, SharedTypeSource, SyncOutcome, TypePin,
     assemble_publish_plan, core_snapshot_to_wire, fetch_to_cache, fetch_type_to_cache,
-    fork_from_hub, meta_path, publish_from_workspace, read_meta, sync_from_hub,
-    type_cache_path, write_meta,
+    fork_from_hub, meta_path, publish_from_workspace, read_meta, sync_from_hub, type_cache_path,
+    write_meta,
 };
 pub use types::{
     AlignmentUri, ForkRequest, ForkedFrom, PackageFixture, PackageMetadata, PackageSnapshot,

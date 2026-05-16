@@ -17,9 +17,7 @@
 
 use std::sync::Arc;
 
-use forage_core::ast::{
-    Composition, EngineKind, RecipeBody, RecipeHeader, RecipeRef, Span,
-};
+use forage_core::ast::{Composition, EngineKind, RecipeBody, RecipeHeader, RecipeRef, Span};
 use forage_core::{EvalValue, ForageFile, Record, RunOptions, Snapshot, TypeCatalog};
 use forage_http::{Engine, LiveTransport, PriorRecords, ReplayTransport};
 use indexmap::IndexMap;
@@ -599,10 +597,7 @@ async fn run_composition(
             Ok(Some(dv)) => dv,
             Ok(None) => {
                 return Err(RunFailure {
-                    message: format!(
-                        "compose stage '{}' has no deployed version",
-                        stage_ref.name,
-                    ),
+                    message: format!("compose stage '{}' has no deployed version", stage_ref.name,),
                     diagnostics: 0,
                     version: Some(version),
                 });
@@ -618,16 +613,16 @@ async fn run_composition(
                 });
             }
         };
-        let deployed = daemon.load_deployed(&stage_ref.name, dv.version).map_err(|e| {
-            RunFailure {
+        let deployed = daemon
+            .load_deployed(&stage_ref.name, dv.version)
+            .map_err(|e| RunFailure {
                 message: format!(
                     "compose stage '{}' load v{}: {e}",
                     stage_ref.name, dv.version,
                 ),
                 diagnostics: 0,
                 version: Some(version),
-            }
-        })?;
+            })?;
         let inner_recipe = forage_core::parse(&deployed.source).map_err(|e| RunFailure {
             message: format!(
                 "compose stage '{}' parse deployed source: {e}",
@@ -690,10 +685,7 @@ fn derive_prior(snap: &forage_core::Snapshot) -> PriorRecords {
         }
         records.push(rec.clone());
     }
-    PriorRecords {
-        records,
-        type_name,
-    }
+    PriorRecords { records, type_name }
 }
 
 fn write_records(

@@ -110,7 +110,9 @@ async fn corrupted_stored_cron_records_synthetic_failure() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     // Tamper: replace the stored cron expression with garbage,
     // mimicking a corrupt DB. The daemon owns the connection, so we

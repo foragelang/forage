@@ -57,7 +57,11 @@ fn plant_fixtures(workspace: &std::path::Path) {
     });
     let path = workspace.join("_fixtures").join("items.jsonl");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, format!("{}\n", serde_json::to_string(&exchange).unwrap())).unwrap();
+    fs::write(
+        path,
+        format!("{}\n", serde_json::to_string(&exchange).unwrap()),
+    )
+    .unwrap();
 }
 
 fn workspace() -> tempfile::TempDir {

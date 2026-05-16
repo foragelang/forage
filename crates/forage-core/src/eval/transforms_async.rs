@@ -268,8 +268,8 @@ fn json_num(v: &EvalValue) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::{Evaluator, Scope, TransportContext, default_registry};
     use crate::ast::{ExtractionExpr, JSONValue};
+    use crate::eval::{Evaluator, Scope, TransportContext, default_registry};
     use serde_json::Value as JsonValue;
 
     fn entity_payload() -> JsonValue {
@@ -365,7 +365,9 @@ mod tests {
         let ev = Evaluator::new(&reg);
         let expr = ExtractionExpr::Call {
             name: "wikidataEntity".into(),
-            args: vec![ExtractionExpr::Literal(JSONValue::String("Q24851740".into()))],
+            args: vec![ExtractionExpr::Literal(JSONValue::String(
+                "Q24851740".into(),
+            ))],
         };
         let transport = FixedTransport(entity_payload());
         let v = ev
@@ -392,7 +394,9 @@ mod tests {
         let reg = build_registry();
         let ev = Evaluator::new(&reg);
         let expr = ExtractionExpr::Pipe(
-            Box::new(ExtractionExpr::Literal(JSONValue::String("Q24851740".into()))),
+            Box::new(ExtractionExpr::Literal(JSONValue::String(
+                "Q24851740".into(),
+            ))),
             vec![crate::ast::TransformCall {
                 name: "wikidataEntity".into(),
                 args: vec![],

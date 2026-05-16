@@ -19,8 +19,8 @@
 
 use std::path::Path;
 
-use forage_core::ast::{FieldType, ForageFile, JSONValue, RecipeType};
 use forage_core::TypeCatalog;
+use forage_core::ast::{FieldType, ForageFile, JSONValue, RecipeType};
 use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::error::RunError;

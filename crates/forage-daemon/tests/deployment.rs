@@ -7,9 +7,7 @@
 use std::path::Path;
 
 use forage_core::SerializableCatalog;
-use forage_daemon::{
-    Cadence, Daemon, DeployError, Outcome, OutputFormat, RunConfig, RunFlags,
-};
+use forage_daemon::{Cadence, Daemon, DeployError, Outcome, OutputFormat, RunConfig, RunFlags};
 
 mod common;
 use common::init_workspace;
@@ -275,8 +273,8 @@ async fn run_once_uses_deployed_source() {
     let recipe_name = "fixture-ok";
     init_workspace(&ws_root, recipe_name, RECIPE);
 
-    let mock = common::http_mock::server_returning_items(&[("a", 0.1), ("b", 0.2), ("c", 0.3)])
-        .await;
+    let mock =
+        common::http_mock::server_returning_items(&[("a", 0.1), ("b", 0.2), ("c", 0.3)]).await;
     let recipe_path = ws_root.join(format!("{recipe_name}.forage"));
     let src = std::fs::read_to_string(&recipe_path).unwrap();
     let deployed_src = src.replace("https://example.test/items", &mock.url("/items"));
@@ -422,12 +420,15 @@ async fn concurrent_deploys_land_at_distinct_versions() {
 
     let mut versions = [dv1.version, dv2.version];
     versions.sort();
-    assert_eq!(versions, [1, 2], "two concurrent deploys must produce v1 and v2");
+    assert_eq!(
+        versions,
+        [1, 2],
+        "two concurrent deploys must produce v1 and v2"
+    );
 
     let listed = daemon.deployed_versions(recipe_name).unwrap();
     assert_eq!(listed.len(), 2);
 }
-
 
 /// — `None` for the no-deployment short-circuit, `Some(v)` for runs
 /// where the engine resolved a deployed version. Without this, the
@@ -480,7 +481,12 @@ async fn scheduled_run_recipe_version_round_trips() {
         .trigger_run(&run.id, RunFlags::prod())
         .await
         .expect("trigger post-deploy");
-    assert_eq!(post_deploy.outcome, Outcome::Ok, "stall: {:?}", post_deploy.stall);
+    assert_eq!(
+        post_deploy.outcome,
+        Outcome::Ok,
+        "stall: {:?}",
+        post_deploy.stall
+    );
     assert_eq!(post_deploy.recipe_version, Some(1));
 
     // Read back through the same query path Studio uses. Both

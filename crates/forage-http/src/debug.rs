@@ -236,11 +236,7 @@ pub trait Debugger: Send + Sync {
         ResumeAction::Continue
     }
 
-    async fn before_iteration(
-        &self,
-        _pause: IterationPause,
-        _scope: &Scope,
-    ) -> ResumeAction {
+    async fn before_iteration(&self, _pause: IterationPause, _scope: &Scope) -> ResumeAction {
         ResumeAction::Continue
     }
 
@@ -248,11 +244,7 @@ pub trait Debugger: Send + Sync {
     /// collection is resolved but before any iteration body. Default
     /// impl returns `Continue` so hosts that don't care about the
     /// loop-entry pause site can ignore it.
-    async fn before_for_loop(
-        &self,
-        _pause: ForLoopPause,
-        _scope: &Scope,
-    ) -> ResumeAction {
+    async fn before_for_loop(&self, _pause: ForLoopPause, _scope: &Scope) -> ResumeAction {
         ResumeAction::Continue
     }
 }
@@ -345,11 +337,7 @@ impl Debugger for RecordingDebugger {
         self.next()
     }
 
-    async fn before_iteration(
-        &self,
-        pause: IterationPause,
-        _scope: &Scope,
-    ) -> ResumeAction {
+    async fn before_iteration(&self, pause: IterationPause, _scope: &Scope) -> ResumeAction {
         self.seen_iterations.lock().unwrap().push(pause);
         if !self.script_iterations {
             return ResumeAction::Continue;

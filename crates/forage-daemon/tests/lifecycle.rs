@@ -6,9 +6,7 @@
 
 use std::path::Path;
 
-use forage_daemon::{
-    Cadence, Daemon, Health, Outcome, OutputFormat, RunConfig, RunFlags, Trigger,
-};
+use forage_daemon::{Cadence, Daemon, Health, Outcome, OutputFormat, RunConfig, RunFlags, Trigger};
 
 mod common;
 use common::{deploy_disk_recipe, init_workspace};
@@ -154,9 +152,7 @@ async fn load_run_snapshot_carries_alignment_catalog() {
         .expect("trigger");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
 
-    let snap = daemon
-        .load_run_snapshot(&sr.id)
-        .expect("load_run_snapshot");
+    let snap = daemon.load_run_snapshot(&sr.id).expect("load_run_snapshot");
     assert_eq!(snap.records.len(), 2);
     let item = snap
         .record_types

@@ -64,7 +64,11 @@ impl PublishError {
             // (re-banner the sign-in flow), so collapse both into
             // NotSignedIn rather than letting a stale token fall
             // through to a generic toast.
-            HubError::Api { status: 401, message, .. } => PublishError::NotSignedIn { message },
+            HubError::Api {
+                status: 401,
+                message,
+                ..
+            } => PublishError::NotSignedIn { message },
             // A malformed error envelope is a hub bug, not a caller
             // bug — surface it under its own discriminant so the UI
             // can render the right affordance.
@@ -176,10 +180,16 @@ pub async fn run_fork(
             message: "sign in to fork a recipe".into(),
         });
     }
-    fork_from_hub(&client, workspace_root, upstream_author, upstream_slug, r#as)
-        .await
-        .map(SyncOutcomeWire::from)
-        .map_err(PublishError::from_hub_error)
+    fork_from_hub(
+        &client,
+        workspace_root,
+        upstream_author,
+        upstream_slug,
+        r#as,
+    )
+    .await
+    .map(SyncOutcomeWire::from)
+    .map_err(PublishError::from_hub_error)
 }
 
 pub async fn run_publish(

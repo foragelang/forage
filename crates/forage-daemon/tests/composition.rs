@@ -65,11 +65,9 @@ async fn composition_runs_chain_and_emits_downstream_records() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/items"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "a"}, {"id": "b"}],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"id": "a"}, {"id": "b"}],
+        })))
         .mount(&mock)
         .await;
 
@@ -91,8 +89,13 @@ async fn composition_runs_chain_and_emits_downstream_records() {
         inputs: indexmap::IndexMap::new(),
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run("composed", cfg).expect("configure_run");
-    let sr = daemon.trigger_run(&run.id, RunFlags::prod()).await.expect("trigger_run");
+    let run = daemon
+        .configure_run("composed", cfg)
+        .expect("configure_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     // The enricher emits one Product per upstream record.
     assert_eq!(sr.counts.get("Product").copied(), Some(2));
@@ -120,11 +123,9 @@ async fn nested_composition_chains_three_stages() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/items"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "a"}, {"id": "b"}],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"id": "a"}, {"id": "b"}],
+        })))
         .mount(&mock)
         .await;
 
@@ -161,7 +162,10 @@ compose "composed" | "enrich-products"
     let run = daemon
         .configure_run("double-composed", cfg)
         .expect("configure_run");
-    let sr = daemon.trigger_run(&run.id, RunFlags::prod()).await.expect("trigger_run");
+    let sr = daemon
+        .trigger_run(&run.id, RunFlags::prod())
+        .await
+        .expect("trigger_run");
     assert_eq!(sr.outcome, Outcome::Ok, "stall: {:?}", sr.stall);
     assert_eq!(sr.counts.get("Product").copied(), Some(2));
 }

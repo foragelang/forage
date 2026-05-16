@@ -175,9 +175,10 @@ impl<'r> Evaluator<'r> {
                 apply_index(b, i)
             }
             ExtractionExpr::RegexLiteral(lit) => {
-                let re = crate::parse::parser::build_regex(&lit.pattern, &lit.flags).map_err(
-                    |e| EvalError::Generic(format!("regex /{}/{}: {e}", lit.pattern, lit.flags)),
-                )?;
+                let re =
+                    crate::parse::parser::build_regex(&lit.pattern, &lit.flags).map_err(|e| {
+                        EvalError::Generic(format!("regex /{}/{}: {e}", lit.pattern, lit.flags))
+                    })?;
                 Ok(EvalValue::Regex(crate::eval::value::RegexValue {
                     pattern: lit.pattern.clone(),
                     flags: lit.flags.clone(),
@@ -436,9 +437,13 @@ impl<'r> Evaluator<'r> {
                     Ok(v)
                 }
                 ExtractionExpr::Call { name, args } => {
-                    self.apply_direct_call_async(name, args, scope, transport).await
+                    self.apply_direct_call_async(name, args, scope, transport)
+                        .await
                 }
-                ExtractionExpr::CaseOf { scrutinee, branches } => {
+                ExtractionExpr::CaseOf {
+                    scrutinee,
+                    branches,
+                } => {
                     let v = self.eval_path(scrutinee, scope)?;
                     let label = match &v {
                         EvalValue::Bool(b) => b.to_string(),
@@ -469,7 +474,9 @@ impl<'r> Evaluator<'r> {
                     apply_binary(*op, l, r)
                 }
                 ExtractionExpr::Unary { op, operand } => {
-                    let v = self.eval_extraction_async(operand, scope, transport).await?;
+                    let v = self
+                        .eval_extraction_async(operand, scope, transport)
+                        .await?;
                     apply_unary(*op, v)
                 }
                 ExtractionExpr::StructLiteral { fields } => {
@@ -478,7 +485,9 @@ impl<'r> Evaluator<'r> {
                         if out.contains_key(&f.field_name) {
                             return Err(EvalError::DuplicateStructField(f.field_name.clone()));
                         }
-                        let v = self.eval_extraction_async(&f.expr, scope, transport).await?;
+                        let v = self
+                            .eval_extraction_async(&f.expr, scope, transport)
+                            .await?;
                         out.insert(f.field_name.clone(), v);
                     }
                     Ok(EvalValue::Object(out))
@@ -489,10 +498,11 @@ impl<'r> Evaluator<'r> {
                     apply_index(b, i)
                 }
                 ExtractionExpr::RegexLiteral(lit) => {
-                    let re = crate::parse::parser::build_regex(&lit.pattern, &lit.flags)
-                        .map_err(|e| {
+                    let re = crate::parse::parser::build_regex(&lit.pattern, &lit.flags).map_err(
+                        |e| {
                             EvalError::Generic(format!("regex /{}/{}: {e}", lit.pattern, lit.flags))
-                        })?;
+                        },
+                    )?;
                     Ok(EvalValue::Regex(crate::eval::value::RegexValue {
                         pattern: lit.pattern.clone(),
                         flags: lit.flags.clone(),
@@ -645,9 +655,30 @@ fn apply_binary(op: BinOp, lhs: EvalValue, rhs: EvalValue) -> Result<EvalValue, 
     let (l, r) = (as_number(&lhs)?, as_number(&rhs)?);
     let promote = matches!((&l, &r), (Numeric::Double(_), _) | (_, Numeric::Double(_)));
     match op {
-        BinOp::Add => Ok(combine_numeric(l, r, false, promote, |a, b| a + b, i64::checked_add)),
-        BinOp::Sub => Ok(combine_numeric(l, r, false, promote, |a, b| a - b, i64::checked_sub)),
-        BinOp::Mul => Ok(combine_numeric(l, r, false, promote, |a, b| a * b, i64::checked_mul)),
+        BinOp::Add => Ok(combine_numeric(
+            l,
+            r,
+            false,
+            promote,
+            |a, b| a + b,
+            i64::checked_add,
+        )),
+        BinOp::Sub => Ok(combine_numeric(
+            l,
+            r,
+            false,
+            promote,
+            |a, b| a - b,
+            i64::checked_sub,
+        )),
+        BinOp::Mul => Ok(combine_numeric(
+            l,
+            r,
+            false,
+            promote,
+            |a, b| a * b,
+            i64::checked_mul,
+        )),
         BinOp::Div => {
             let (a, b) = (l.to_double(), r.to_double());
             if b == 0.0 {
@@ -660,9 +691,9 @@ fn apply_binary(op: BinOp, lhs: EvalValue, rhs: EvalValue) -> Result<EvalValue, 
             // pure Int % Int stays Int but a zero divisor is a domain
             // error rather than a panic.
             match (l, r) {
-                (Numeric::Int(_), Numeric::Int(0)) => Err(EvalError::ArithmeticDomain(
-                    "modulo by zero".into(),
-                )),
+                (Numeric::Int(_), Numeric::Int(0)) => {
+                    Err(EvalError::ArithmeticDomain("modulo by zero".into()))
+                }
                 (Numeric::Int(a), Numeric::Int(b)) => Ok(EvalValue::Int(a % b)),
                 (a, b) => {
                     let (af, bf) = (a.to_double(), b.to_double());
@@ -1101,13 +1132,13 @@ mod tests {
 
     fn eval_first_emit(src: &str) -> EvalValue {
         let r = parse(src).expect("parse");
-        let registry =
-            TransformRegistry::with_user_fns(default_registry(), r.functions.clone());
+        let registry = TransformRegistry::with_user_fns(default_registry(), r.functions.clone());
         let ev = Evaluator::new(&registry);
         let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!("expected emit, got {:?}", r.body);
         };
-        ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap()
+        ev.eval_extraction(&em.bindings[0].expr, &Scope::new())
+            .unwrap()
     }
 
     #[test]
@@ -1166,7 +1197,9 @@ mod tests {
         let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
-        let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();
+        let err = ev
+            .eval_extraction(&em.bindings[0].expr, &Scope::new())
+            .unwrap_err();
         assert!(matches!(err, EvalError::ArithmeticDomain(_)), "got {err:?}");
     }
 
@@ -1198,7 +1231,9 @@ mod tests {
         let Statement::Emit(em) = &r.body.statements()[0] else {
             panic!()
         };
-        let err = ev.eval_extraction(&em.bindings[0].expr, &Scope::new()).unwrap_err();
+        let err = ev
+            .eval_extraction(&em.bindings[0].expr, &Scope::new())
+            .unwrap_err();
         assert!(matches!(err, EvalError::TypeMismatch { .. }), "got {err:?}");
     }
 

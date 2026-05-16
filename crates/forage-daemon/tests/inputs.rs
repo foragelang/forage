@@ -45,11 +45,9 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/acme/items"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "a"}, {"id": "b"}],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"id": "a"}, {"id": "b"}],
+        })))
         .mount(&mock)
         .await;
 
@@ -60,7 +58,10 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
     deploy_disk_recipe(&daemon, &ws_root, recipe_name);
 
     let mut inputs = indexmap::IndexMap::new();
-    inputs.insert("tenant".to_string(), serde_json::Value::String("acme".into()));
+    inputs.insert(
+        "tenant".to_string(),
+        serde_json::Value::String("acme".into()),
+    );
     let cfg = RunConfig {
         cadence: Cadence::Manual,
         output: ws_root.join(".forage").join("data").join("items.sqlite"),
@@ -68,7 +69,9 @@ async fn configure_run_with_inputs_passes_them_to_engine() {
         inputs,
         output_format: OutputFormat::default(),
     };
-    let run = daemon.configure_run(recipe_name, cfg).expect("configure_run");
+    let run = daemon
+        .configure_run(recipe_name, cfg)
+        .expect("configure_run");
 
     let sr = daemon
         .trigger_run(&run.id, RunFlags::prod())

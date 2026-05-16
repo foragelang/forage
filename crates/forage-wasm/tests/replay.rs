@@ -69,10 +69,7 @@ async fn run_replay_inner_merges_decls_into_catalog() {
             emit Item { id ← $i.id }
         }
     "#;
-    let jsonl = capture_line(
-        "https://api.example.com/items",
-        r#"{"items":[{"id":"x"}]}"#,
-    );
+    let jsonl = capture_line("https://api.example.com/items", r#"{"items":[{"id":"x"}]}"#);
     let snapshot = run_replay_inner(source, &decls, &jsonl, IndexMap::new(), IndexMap::new())
         .await
         .expect("replay run with shared decls succeeds");
@@ -130,10 +127,7 @@ async fn run_replay_inner_rejects_a_recipe_in_decls_slot() {
         }
         emit Item { id ← "x" }
     "#;
-    let jsonl = capture_line(
-        "https://api.example.com/items",
-        r#"{"items":[]}"#,
-    );
+    let jsonl = capture_line("https://api.example.com/items", r#"{"items":[]}"#);
     let err = run_replay_inner(source, &decls, &jsonl, IndexMap::new(), IndexMap::new())
         .await
         .expect_err("recipe in decls slot rejected");
@@ -154,10 +148,7 @@ async fn run_replay_inner_surfaces_validation_errors() {
         }
         emit DoesNotExist { id ← "x" }
     "#;
-    let jsonl = capture_line(
-        "https://api.example.com/items",
-        r#"{"items":[]}"#,
-    );
+    let jsonl = capture_line("https://api.example.com/items", r#"{"items":[]}"#);
     let err = run_replay_inner(source, &[], &jsonl, IndexMap::new(), IndexMap::new())
         .await
         .expect_err("validation should fail");
