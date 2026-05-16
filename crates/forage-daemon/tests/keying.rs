@@ -66,23 +66,16 @@ fn deploy_and_default_output_anchor_on_header_name() {
 
     let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
     let workspace = forage_core::load(&ws_root).expect("load workspace");
-    let recipe = forage_core::parse(RECIPE_AMAZON).expect("parse");
-    let catalog = workspace
-        .catalog(&recipe, |p| std::fs::read_to_string(p))
-        .expect("catalog");
-    let wire = forage_core::SerializableCatalog::from(catalog);
+    let outcome = forage_core::link(&workspace, "amazon-products").expect("link");
+    assert!(
+        !outcome.report.has_errors(),
+        "link errors: {:?}",
+        outcome.report.issues,
+    );
+    let module = outcome.module.expect("linker produces module");
+    let recipe_name = "amazon-products";
 
-    let recipe_name = recipe.recipe_name().expect("recipe header name");
-    assert_eq!(recipe_name, "amazon-products");
-
-    let dv = daemon
-        .deploy(
-            recipe_name,
-            RECIPE_AMAZON.to_string(),
-            wire,
-            &forage_core::RecipeSignatures::default(),
-        )
-        .expect("deploy");
+    let dv = daemon.deploy(recipe_name, module).expect("deploy");
     assert_eq!(dv.recipe_name, "amazon-products");
 
     // The on-disk deployment lives under the header name, not the

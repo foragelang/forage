@@ -1575,7 +1575,7 @@ impl<'a> Validator<'a> {
             );
             return None;
         }
-        let Some(sig) = self.signatures.get(&stage.name) else {
+        if self.signatures.get(&stage.name).is_none() {
             self.err(
                 stage.span.clone(),
                 ValidationCode::UnknownComposeStage,
@@ -1585,12 +1585,13 @@ impl<'a> Validator<'a> {
                 ),
             );
             return None;
-        };
+        }
         // The resolved output set: declared `emits` if present, else
-        // inferred from the body's emit statements. Compose chains
-        // need exactly one type per upstream so the downstream's input
-        // is unambiguous.
-        let output_types = &sig.output_types;
+        // inferred from the body's emit statements; composition bodies
+        // chase the chain's terminal stage. Compose chains need
+        // exactly one type per upstream so the downstream's input is
+        // unambiguous.
+        let output_types = self.signatures.resolve_output_types(&stage.name);
         if output_types.is_empty() {
             self.err(
                 stage.span.clone(),

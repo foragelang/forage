@@ -15,6 +15,7 @@ pub mod body;
 #[cfg(feature = "native")]
 pub mod client;
 pub mod debug;
+pub mod driver;
 pub mod engine;
 pub mod error;
 pub mod paginate;
@@ -27,8 +28,10 @@ pub use debug::{
     BODY_CAPTURE_MAX, DebugFrame, DebugScope, Debugger, EmitPause, ForLoopPause, IterationPause,
     NoopDebugger, ResumeAction, StepPause, StepResponse,
 };
-pub use engine::{Engine, EngineConfig, PriorRecords};
+pub use driver::{HttpDriver, UnsupportedDriver};
+pub use engine::{Engine, EngineConfig};
 pub use error::{HttpError, HttpResult};
+pub use forage_core::PriorRecords;
 pub use progress::{CaptureSink, FnSink, NoopSink, ProgressHandle, ProgressSink, RunEvent};
 pub use transport::{
     EngineTransportContext, HttpRequest, HttpResponse, ReplayTransport, Transport,

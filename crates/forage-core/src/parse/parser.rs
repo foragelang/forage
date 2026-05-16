@@ -346,7 +346,7 @@ impl Parser {
         // the latter as `RecipeContextWithoutHeader` upstream).
         let body = match (statements.is_empty(), composition) {
             (true, None) => RecipeBody::Empty,
-            (false, None) => RecipeBody::Scraping(statements),
+            (false, None) => RecipeBody::Scraping { statements },
             (true, Some(c)) => RecipeBody::Composition(c),
             (false, Some(_)) => {
                 return Err(self.generic(

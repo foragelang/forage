@@ -12,6 +12,7 @@ authors.workspace = true
 forage-core    = { workspace = true }
 forage-replay  = { workspace = true }
 
+async-trait    = { workspace = true }
 tokio          = { workspace = true }
 
 # wry + tao gate the live driver; replay mode is pure data.

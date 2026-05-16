@@ -7,11 +7,14 @@ use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 use owo_colors::OwoColorize;
 
-use forage_browser::run_browser_replay;
+use forage_browser::BrowserReplayDriver;
 use forage_core::ast::{EngineKind, JSONValue};
-use forage_core::workspace::{self, Workspace, WorkspaceError, fixtures_path, snapshot_path};
-use forage_core::{EvalValue, ForageFile, RunOptions, Snapshot, parse, validate};
-use forage_http::{Engine, LiveTransport, ReplayTransport};
+use forage_core::workspace::{self, Workspace, fixtures_path, snapshot_path};
+use forage_core::{
+    Drivers, EvalValue, ForageFile, LinkedModule, RunOptions, Snapshot, link, link_standalone,
+    parse, run_recipe,
+};
+use forage_http::{HttpDriver, LiveTransport, ReplayTransport, UnsupportedDriver};
 use forage_hub::{
     AuthStore, AuthTokens, HubClient, HubError, device::run_device_flow, fetch_to_cache,
     fork_from_hub, hub_cache_root, publish_from_workspace, sync_from_hub,
@@ -500,7 +503,7 @@ async fn run(
     format: OutputFormat,
 ) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    let catalog = validate_resolved(&resolved)?;
+    let module = link_resolved(&resolved)?;
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
@@ -516,40 +519,7 @@ async fn run(
         ),
     };
 
-    let snapshot = match (resolved.engine_kind()?, captures) {
-        (EngineKind::Http, Some(captures)) => {
-            let transport = ReplayTransport::new(captures);
-            let engine = Engine::new(&transport);
-            engine
-                .run(&resolved.file, &catalog, inputs, secrets, &options)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-        }
-        (EngineKind::Http, None) => {
-            let transport = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
-            let engine = Engine::new(&transport);
-            engine
-                .run(&resolved.file, &catalog, inputs, secrets, &options)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-        }
-        (EngineKind::Browser, Some(captures)) => run_browser_replay(
-            &resolved.file,
-            &catalog,
-            &captures,
-            inputs,
-            secrets,
-            &options,
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?,
-        (EngineKind::Browser, None) => {
-            bail!(
-                "browser-engine recipes need a real WebView; \
-                 use --replay against _fixtures/<recipe>.jsonl for now, \
-                 or open the recipe in Forage Studio (R9)"
-            );
-        }
-    };
+    let snapshot = run_module(&module, inputs, secrets, &options, captures.as_deref()).await?;
 
     match format {
         OutputFormat::Pretty => print_pretty(&snapshot),
@@ -572,6 +542,54 @@ async fn run(
     Ok(())
 }
 
+/// Build the HTTP + browser driver pair and dispatch the linked
+/// module through `forage_core::run_recipe`. Scraping bodies hit
+/// either a live HTTP transport or a `ReplayTransport`; browser-
+/// engine bodies replay against the same captures (live-mode browser
+/// runs are Studio-only).
+async fn run_module(
+    module: &LinkedModule,
+    inputs: IndexMap<String, EvalValue>,
+    secrets: IndexMap<String, String>,
+    options: &RunOptions,
+    captures: Option<&[forage_replay::Capture]>,
+) -> Result<Snapshot> {
+    // HTTP transport: live or replay, never both.
+    let live_transport = if captures.is_none() {
+        Some(LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?)
+    } else {
+        None
+    };
+    let replay_transport = captures.map(|c| ReplayTransport::new(c.to_vec()));
+    let http_transport: &dyn forage_http::Transport = match (&live_transport, &replay_transport) {
+        (Some(t), _) => t,
+        (None, Some(t)) => t,
+        (None, None) => unreachable!("exactly one transport is constructed above"),
+    };
+    let http_driver = HttpDriver::new(http_transport);
+
+    // Browser engine: replay always works (captures supply the bytes);
+    // live mode would need a webview, which the CLI doesn't ship.
+    let unsupported = UnsupportedDriver::new(
+        "browser-engine recipes need a real WebView; use --replay against \
+         _fixtures/<recipe>.jsonl for now, or open the recipe in Forage Studio"
+            .to_string(),
+    );
+    let browser_replay = captures.map(BrowserReplayDriver::new);
+    let browser_driver: &dyn forage_core::RecipeDriver = match &browser_replay {
+        Some(d) => d,
+        None => &unsupported,
+    };
+
+    let drivers = Drivers {
+        http: &http_driver,
+        browser: browser_driver,
+    };
+    run_recipe(module, inputs, secrets, options, &drivers)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 async fn test(
     recipe_arg: &str,
     inputs_path: Option<&Path>,
@@ -579,23 +597,19 @@ async fn test(
     format: TestFormat,
 ) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    let catalog = validate_resolved(&resolved)?;
+    let module = link_resolved(&resolved)?;
     let _engine_kind = resolved.engine_kind()?; // surface header-less files early
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
     let captures = load_captures_for(&resolved)?;
-    let transport = ReplayTransport::new(captures);
-    let engine = Engine::new(&transport);
-    let produced = engine
-        .run(
-            &resolved.file,
-            &catalog,
-            inputs,
-            secrets,
-            &RunOptions::default(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let produced = run_module(
+        &module,
+        inputs,
+        secrets,
+        &RunOptions::default(),
+        Some(&captures),
+    )
+    .await?;
 
     // The snapshot path's extension agrees with the chosen wire shape so
     // a recipe with both fixtures (`<recipe>.json` and `<recipe>.jsonld`)
@@ -653,7 +667,7 @@ fn snapshot_text_matches(format: TestFormat, expected: &str, produced: &str) -> 
 
 async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
     let resolved = resolve_recipe(recipe_arg)?;
-    let catalog = validate_resolved(&resolved)?;
+    let module = link_resolved(&resolved)?;
     let inputs = load_inputs(inputs_path)?;
     let secrets = load_secrets_from_env(&resolved.file);
 
@@ -667,15 +681,15 @@ async fn record(recipe_arg: &str, inputs_path: Option<&Path>) -> Result<()> {
 
     let live = LiveTransport::new().map_err(|e| anyhow::anyhow!("{e}"))?;
     let transport = RecordingTransport::new(live);
-    let engine = Engine::new(&transport);
-    let snapshot = engine
-        .run(
-            &resolved.file,
-            &catalog,
-            inputs,
-            secrets,
-            &RunOptions::default(),
-        )
+    let http_driver = HttpDriver::new(&transport);
+    let unsupported = UnsupportedDriver::new(
+        "record path is HTTP-only — browser-engine recording goes through Studio".to_string(),
+    );
+    let drivers = Drivers {
+        http: &http_driver,
+        browser: &unsupported,
+    };
+    let snapshot = run_recipe(&module, inputs, secrets, &RunOptions::default(), &drivers)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -748,33 +762,26 @@ impl forage_http::Transport for RecordingTransport {
     }
 }
 
-/// Build the recipe's `TypeCatalog` (merged with workspace `share`d
-/// declarations and hub-dep types when a workspace surrounds the file;
-/// file-local otherwise), then validate against it. Returns the catalog
-/// so engine call sites can reuse it without rebuilding — engines need
-/// it to stamp `Snapshot.record_types` with alignments for every type
-/// the recipe could emit, not just the ones declared in the recipe
-/// file.
-fn validate_resolved(resolved: &ResolvedRecipe) -> Result<forage_core::TypeCatalog> {
-    let catalog = match &resolved.workspace {
-        Some(ws) => ws
-            .catalog(&resolved.file, |p| std::fs::read_to_string(p))
-            .map_err(|e: WorkspaceError| anyhow::anyhow!("workspace catalog: {e}"))?,
-        None => forage_core::TypeCatalog::from_file(&resolved.file),
+/// Link the resolved recipe against its workspace and produce the
+/// runnable closure. The linker is a superset of validate: it runs
+/// every per-recipe validation rule, then resolves composition
+/// stages against the workspace and recurses. Errors render to
+/// stderr the same way the old `validate_resolved` did; on success
+/// the returned `LinkedModule` is what the runtime consumes.
+fn link_resolved(resolved: &ResolvedRecipe) -> Result<LinkedModule> {
+    let outcome = match &resolved.workspace {
+        Some(ws) => link(ws, &resolved.name).map_err(|e| anyhow::anyhow!("link: {e}"))?,
+        None => link_standalone(resolved.file.clone()),
     };
-    let signatures = resolved
-        .workspace
-        .as_ref()
-        .map(|ws| ws.recipe_signatures())
-        .unwrap_or_default();
-    let report = validate(&resolved.file, &catalog, &signatures);
-    if report.has_errors() {
-        for e in report.errors() {
+    if outcome.report.has_errors() {
+        for e in outcome.report.errors() {
             eprintln!("{} {}", "validate:".red(), e.message);
         }
         bail!("recipe failed validation");
     }
-    Ok(catalog)
+    outcome
+        .module
+        .ok_or_else(|| anyhow::anyhow!("linker produced no module despite a clean report"))
 }
 
 fn load_inputs(path: Option<&Path>) -> Result<IndexMap<String, EvalValue>> {

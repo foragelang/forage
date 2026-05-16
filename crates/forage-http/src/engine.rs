@@ -23,22 +23,8 @@ use crate::transport::{EngineTransportContext, HttpRequest, HttpResponse, Transp
 use forage_core::ast::*;
 use forage_core::eval::{TransformRegistry, default_registry};
 use forage_core::{
-    EvalValue, Evaluator, LineMap, Record, RunOptions, Scope, Snapshot, TypeCatalog,
+    EvalValue, Evaluator, LineMap, PriorRecords, Record, RunOptions, Scope, Snapshot, TypeCatalog,
 };
-
-/// Records to seed a downstream recipe with — the upstream stage's
-/// emissions, threaded into the next stage's input slot at run
-/// boundary. `RunInput::default()` is the standalone-recipe case (no
-/// prior); composition stages 2+ pass the prior stage's `records`.
-#[derive(Debug, Default, Clone)]
-pub struct PriorRecords {
-    pub records: Vec<Record>,
-    /// The downstream recipe's output type that the prior records
-    /// claim to be. The engine matches against the recipe's input
-    /// declarations to find the slot to bind them to. Empty when no
-    /// prior records flow.
-    pub type_name: String,
-}
 
 /// Engine knobs.
 #[derive(Debug, Clone)]

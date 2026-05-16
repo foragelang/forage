@@ -12,7 +12,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use forage_core::SerializableCatalog;
 use forage_daemon::{Clock, Daemon, DeployedVersion};
 
 /// Plant a workspace marker plus a flat-shape recipe file at
@@ -29,27 +28,24 @@ pub fn init_workspace(ws_root: &Path, name: &str, recipe_source: &str) {
     std::fs::write(ws_root.join(format!("{name}.forage")), recipe_source).unwrap();
 }
 
-/// Read the on-disk source under `ws_root/<name>.forage`, build a
-/// catalog the same way Studio does (the workspace's own declarations
-/// plus recipe-local types), and deploy via the daemon using the
-/// recipe's header name as the daemon key. Returns the resulting
-/// `DeployedVersion` so tests can pin the expected version number.
+/// Link the recipe at `ws_root/<name>.forage` through the workspace
+/// and deploy the resulting closure. Returns the `DeployedVersion` so
+/// tests can pin the expected version number.
 pub fn deploy_disk_recipe(daemon: &Daemon, ws_root: &Path, name: &str) -> DeployedVersion {
-    let recipe_path = ws_root.join(format!("{name}.forage"));
-    let source = std::fs::read_to_string(&recipe_path).expect("read recipe source");
-    let recipe = forage_core::parse(&source).expect("parse recipe");
-    let recipe_name = recipe
-        .recipe_name()
-        .expect("test recipe declares a header name");
     let workspace = forage_core::load(ws_root).expect("load workspace");
-    let catalog = workspace
-        .catalog(&recipe, |p| std::fs::read_to_string(p))
-        .expect("build catalog");
-    let wire = SerializableCatalog::from(catalog);
-    let signatures = workspace.recipe_signatures();
-    daemon
-        .deploy(recipe_name, source, wire, &signatures)
-        .expect("deploy")
+    let outcome = forage_core::link(&workspace, name).expect("link");
+    assert!(
+        !outcome.report.has_errors(),
+        "link errors for {name}: {:?}",
+        outcome
+            .report
+            .issues
+            .iter()
+            .map(|i| (i.code, &i.message))
+            .collect::<Vec<_>>(),
+    );
+    let module = outcome.module.expect("linker produces module");
+    daemon.deploy(name, module).expect("deploy")
 }
 
 pub fn set_secret(name: &str, value: &str) {

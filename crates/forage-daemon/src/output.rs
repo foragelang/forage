@@ -19,8 +19,8 @@
 
 use std::path::Path;
 
-use forage_core::TypeCatalog;
-use forage_core::ast::{FieldType, ForageFile, JSONValue, RecipeType};
+use forage_core::ast::{FieldType, JSONValue, RecipeType};
+use forage_core::{LinkedModule, TypeCatalog, resolve_terminal_emits};
 use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::error::RunError;
@@ -78,34 +78,19 @@ impl ColumnStorage {
     }
 }
 
-/// Build the schema for every record type emitted by `recipe`. Walks
-/// `recipe.body` + browser captures recursively to find every `emit`
-/// site, deduplicates by type name, and resolves each name against
-/// the merged `catalog`.
+/// Build the schema for every record type the linked recipe could
+/// emit. Reads the root's terminal emit set — declared `emits` when
+/// the recipe carries one, else the inferred body emits, else (for a
+/// composition body) the chain's terminal stage's emits, already
+/// resolved at link time through `module.stages`.
 ///
-/// Composition recipes have no `emit` statements of their own — their
-/// records arrive via the chain's final stage. When a composition
-/// recipe declares `emits T | U | …`, those types pre-create the
-/// output-store tables so the chain's writes land somewhere. A
-/// composition without an `emits` clause has no schema until the
-/// runtime adds tables on first record; that's a future extension,
-/// and today the daemon expects the author to declare `emits` on a
-/// composition recipe to enable the chain.
-///
-/// A reachable `emit Foo` whose `Foo` isn't in the catalog is a
-/// validation error that should be caught upstream; here we skip it
-/// to avoid panicking — the run already failed validation before
-/// reaching this point.
-pub fn derive_schema(recipe: &ForageFile, catalog: &TypeCatalog) -> Vec<TableDef> {
-    let mut emit_types = recipe.emit_types();
-    if recipe.body.composition().is_some() {
-        if let Some(out) = &recipe.emits {
-            for name in &out.types {
-                emit_types.insert(name.clone());
-            }
-        }
-    }
-
+/// A `emit Foo` whose `Foo` isn't in the catalog is a validation
+/// error that should be caught upstream; here we skip it to avoid
+/// panicking — the run already failed validation before reaching this
+/// point.
+pub fn derive_schema(module: &LinkedModule) -> Vec<TableDef> {
+    let catalog: TypeCatalog = module.catalog.clone().into();
+    let emit_types = resolve_terminal_emits(&module.root, module);
     emit_types
         .into_iter()
         .filter_map(|name| {

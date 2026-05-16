@@ -35,10 +35,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use forage_core::ast::JSONValue;
-use forage_core::{
-    EvalValue, ForageFile, RecipeSignatures, Record, RunOptions, SerializableCatalog, Snapshot,
-    TypeCatalog,
-};
+use forage_core::{EvalValue, ForageFile, LinkedModule, Record, RunOptions, Snapshot, TypeCatalog};
 use forage_http::{ProgressSink, RunEvent};
 use indexmap::IndexMap;
 use rusqlite::{Connection, OptionalExtension};
@@ -72,16 +69,15 @@ pub use output::{
 // without spinning up a scheduler task.
 pub use scheduler::{advance_next_run, interval_ms, next_fire_for, validate_cron};
 
-/// Source + catalog for one deployed version, as read back from the
-/// daemon's on-disk store. The shape is symmetric across callers:
-/// `run.rs` uses it to drive an execution, and Studio uses it to render
-/// "what is currently deployed" in the editor.
+/// Linked module + identity for one deployed version, as read back
+/// from the daemon's on-disk store. The shape is symmetric across
+/// callers: `run.rs` uses it to drive an execution, Studio uses it to
+/// render "what is currently deployed" in the editor.
 #[derive(Debug, Clone)]
 pub struct DeployedRecord {
     pub recipe_name: String,
     pub version: u32,
-    pub source: String,
-    pub catalog: SerializableCatalog,
+    pub module: LinkedModule,
     pub deployed_at: i64,
 }
 
@@ -388,7 +384,7 @@ impl Daemon {
         // possibly emit, including types with no records this cycle.
         let catalog: TypeCatalog = match sr.recipe_version {
             Some(v) => match self.load_deployed(&run.recipe_name, v) {
-                Ok(d) => d.catalog.into(),
+                Ok(d) => d.module.catalog.into(),
                 Err(_) => TypeCatalog::default(),
             },
             None => TypeCatalog::default(),
@@ -559,33 +555,23 @@ impl Daemon {
 
     // --- deployments -------------------------------------------------
 
-    /// Persist `source` + `catalog` as the next version of `name`.
-    /// Parses + validates first; on failure no row is inserted and no
-    /// files are written. The returned `DeployedVersion` is the row in
-    /// the metadata table; the source lives at
-    /// `<daemon_dir>/deployments/<recipe_name>/v<n>/`.
-    ///
-    /// `signatures` carries the typed input/output of every peer
-    /// recipe in the workspace; the validator's composition checks
-    /// look stages up here. Callers without composition concerns
-    /// pass `RecipeSignatures::default()`.
-    pub fn deploy(
-        &self,
-        name: &str,
-        source: String,
-        catalog: SerializableCatalog,
-        signatures: &RecipeSignatures,
-    ) -> Result<DeployedVersion, DeployError> {
-        let recipe = forage_core::parse(&source).map_err(|e| DeployError::Parse(e.to_string()))?;
-        let typed_catalog: TypeCatalog = catalog.clone().into();
-        let report = forage_core::validate(&recipe, &typed_catalog, signatures);
-        if report.has_errors() {
-            let detail = report
-                .errors()
-                .map(|i| i.message.clone())
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(DeployError::Validate(detail));
+    /// Persist a linked module as the next version of `name`. The
+    /// closure is the source of truth — `module.root` is the recipe
+    /// the deployment names, `module.stages` carries every transitively
+    /// referenced peer, and `module.catalog` is the unified type
+    /// catalog. Callers build the module via `forage_core::link(...)`
+    /// against their workspace; the daemon trusts that the linker has
+    /// already validated the closure.
+    pub fn deploy(&self, name: &str, module: LinkedModule) -> Result<DeployedVersion, DeployError> {
+        let recipe_name = module.root.file.recipe_name().ok_or_else(|| {
+            DeployError::Validate(format!(
+                "linked module's root has no recipe header (name argument: {name})",
+            ))
+        })?;
+        if recipe_name != name {
+            return Err(DeployError::Validate(format!(
+                "linked module's root recipe is '{recipe_name}' but deploy was keyed on '{name}'",
+            )));
         }
 
         let now_ms = self.now_ms();
@@ -617,7 +603,7 @@ impl Daemon {
             (None, None) => 1,
         };
 
-        deployments::write_atomic(&self.deployments_dir, name, next_version, &source, &catalog)?;
+        deployments::write_atomic(&self.deployments_dir, name, next_version, &module)?;
 
         let dv = DeployedVersion {
             recipe_name: name.to_string(),
@@ -666,13 +652,12 @@ impl Daemon {
         db::list_latest_per_recipe(&conn)
     }
 
-    /// Read a specific version's source + catalog from the
-    /// filesystem. Used by `run.rs` and by Studio's "show me what's
-    /// deployed" view.
+    /// Read a specific version's linked module from the filesystem.
+    /// Used by `run.rs` and by Studio's "show me what's deployed" view.
     pub fn load_deployed(&self, name: &str, version: u32) -> Result<DeployedRecord, DaemonError> {
         // The metadata row carries `deployed_at`; the filesystem
-        // payload carries source + catalog. We read both so callers
-        // see a complete picture without having to fan out.
+        // payload carries the closure. We read both so callers see a
+        // complete picture without having to fan out.
         let dv = {
             let conn = self.connection.lock().expect("daemon connection poisoned");
             db::list_deployed_versions(&conn, name)?
@@ -683,12 +668,11 @@ impl Daemon {
                     version,
                 })?
         };
-        let (source, catalog) = deployments::read_deployed(&self.deployments_dir, name, version)?;
+        let module = deployments::read_deployed(&self.deployments_dir, name, version)?;
         Ok(DeployedRecord {
             recipe_name: dv.recipe_name,
             version: dv.version,
-            source,
-            catalog,
+            module,
             deployed_at: dv.deployed_at,
         })
     }

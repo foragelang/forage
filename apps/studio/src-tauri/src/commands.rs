@@ -8,14 +8,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
 use ts_rs::TS;
 
-use forage_browser::run_browser_replay;
-use forage_core::ast::EngineKind;
+use forage_core::ast::{EngineKind, RecipeBody};
 use forage_core::eval::default_registry;
 use forage_core::parse::parse_extraction;
 use forage_core::{EvalValue, Evaluator, LineMap, RunOptions, Scope, Snapshot, parse, validate};
 use forage_http::{
-    Debugger, EmitPause, Engine, ForLoopPause, LiveTransport, ProgressSink, ReplayTransport,
-    ResumeAction, RunEvent, StepPause, StepResponse,
+    Debugger, EmitPause, ForLoopPause, LiveTransport, ProgressSink, ReplayTransport, ResumeAction,
+    RunEvent, StepPause, StepResponse,
 };
 use forage_hub::{AuthStore, AuthTokens};
 
@@ -652,8 +651,8 @@ pub async fn run_recipe(
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
     let source = workspace::read_source(&ws, &name)?;
-    let recipe = match parse(&source) {
-        Ok(r) => r,
+    let outcome = match forage_core::link(&ws, &name) {
+        Ok(o) => o,
         Err(e) => {
             return Ok(RunOutcome {
                 ok: false,
@@ -663,21 +662,8 @@ pub async fn run_recipe(
             });
         }
     };
-    let catalog = match build_catalog(&ws.root, &recipe) {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(RunOutcome {
-                ok: false,
-                snapshot: None,
-                error: Some(format!("{e}")),
-                daemon_warning: None,
-            });
-        }
-    };
-    let signatures = build_signatures(&ws.root);
-    let report = validate(&recipe, &catalog, &signatures);
-    if report.has_errors() {
-        let msgs: Vec<String> = report.errors().map(|e| e.message.clone()).collect();
+    if outcome.report.has_errors() {
+        let msgs: Vec<String> = outcome.report.errors().map(|e| e.message.clone()).collect();
         return Ok(RunOutcome {
             ok: false,
             snapshot: None,
@@ -685,6 +671,18 @@ pub async fn run_recipe(
             daemon_warning: None,
         });
     }
+    let module = match outcome.module {
+        Some(m) => m,
+        None => {
+            return Ok(RunOutcome {
+                ok: false,
+                snapshot: None,
+                error: Some("linker produced no module despite a clean report".into()),
+                daemon_warning: None,
+            });
+        }
+    };
+    let recipe = module.root.file.clone();
     // Inputs ride on the daemon's `Run.inputs`. A user with a recipe
     // that takes inputs sets them via `configure_run` once and they
     // apply to every subsequent fire — scheduler tick or Studio
@@ -770,50 +768,21 @@ pub async fn run_recipe(
     };
 
     let run_options = RunOptions { sample_limit };
-    let snapshot: Result<Snapshot, String> = match (engine_kind, replay) {
-        (EngineKind::Http, true) => {
-            let transport = ReplayTransport::new(captures);
-            let mut engine = Engine::new(&transport).with_progress(Arc::clone(&sink));
-            if let Some(d) = debugger.clone() {
-                engine = engine.with_debugger(d);
-            }
-            tokio::select! {
-                biased;
-                _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, &catalog, inputs, secrets, &run_options) => r.map_err(|e| format!("{e}")),
-            }
-        }
-        (EngineKind::Http, false) => {
-            let transport = LiveTransport::new().map_err(|e| format!("{e}"))?;
-            let mut engine = Engine::new(&transport).with_progress(Arc::clone(&sink));
-            if let Some(d) = debugger.clone() {
-                engine = engine.with_debugger(d);
-            }
-            tokio::select! {
-                biased;
-                _ = cancel.notified() => Err("cancelled".into()),
-                r = engine.run(&recipe, &catalog, inputs, secrets, &run_options) => r.map_err(|e| format!("{e}")),
-            }
-        }
-        (EngineKind::Browser, true) => {
-            run_browser_replay(&recipe, &catalog, &captures, inputs, secrets, &run_options)
-                .map_err(|e| format!("{e}"))
-        }
-        (EngineKind::Browser, false) => {
-            // Open a Tauri WebviewWindow + inject the shim; collect
-            // captures; route through the replay engine.
-            run_browser_live(
-                &app,
-                &recipe,
-                &catalog,
-                inputs,
-                secrets,
-                LiveRunOptions::default(),
-                &run_options,
-            )
-            .await
-        }
-    };
+    let snapshot: Result<Snapshot, String> = run_module_with_drivers(
+        &app,
+        &module,
+        &recipe,
+        &captures,
+        inputs,
+        secrets,
+        &run_options,
+        engine_kind,
+        replay,
+        Arc::clone(&sink),
+        debugger.clone(),
+        &cancel,
+    )
+    .await;
 
     // Clear the cancellation handle so a stale notify can't fire on the
     // next run, and tear down the debug session so the resume path
@@ -859,7 +828,7 @@ pub async fn run_recipe(
                         // table. Either way, the in-memory snapshot
                         // still rides back on the outcome.
                         if !ephemeral {
-                            if let Err(e) = persist_snapshot(&recipe, &catalog, &run, &s) {
+                            if let Err(e) = persist_snapshot(&module, &run, &s) {
                                 tracing::warn!(
                                     recipe_name = %header,
                                     error = %e,
@@ -906,17 +875,111 @@ pub async fn run_recipe(
     }
 }
 
+/// Whether `run_module_with_drivers` should dispatch through the
+/// browser-live path (open a real webview) for this run. True only
+/// when the *root* recipe is itself a scraping recipe with the browser
+/// engine and the run isn't a replay.
+///
+/// A composition recipe's header engine kind doesn't describe how the
+/// composition itself runs — the runtime walks each stage and
+/// dispatches per-stage onto the stage's own engine. Falling through
+/// to `run_recipe` lets the engine-agnostic path handle dispatch.
+fn should_dispatch_browser_live(
+    recipe: &forage_core::ForageFile,
+    engine_kind: EngineKind,
+    replay: bool,
+) -> bool {
+    let is_scraping_root = matches!(recipe.body, RecipeBody::Scraping { .. } | RecipeBody::Empty);
+    is_scraping_root && engine_kind == EngineKind::Browser && !replay
+}
+
+/// Build the driver pair Studio's `run_recipe` dispatches through,
+/// run the module, and select between the four (engine, replay) cases.
+/// The HTTP driver carries the debug session and progress sink; the
+/// browser driver branches on whether replay captures are present
+/// (replay) versus a live webview (live).
+#[allow(clippy::too_many_arguments)]
+async fn run_module_with_drivers(
+    app: &AppHandle,
+    module: &forage_core::LinkedModule,
+    recipe: &forage_core::ForageFile,
+    captures: &[forage_replay::Capture],
+    inputs: IndexMap<String, EvalValue>,
+    secrets: IndexMap<String, String>,
+    options: &RunOptions,
+    engine_kind: EngineKind,
+    replay: bool,
+    sink: Arc<dyn ProgressSink>,
+    debugger: Option<Arc<dyn Debugger>>,
+    cancel: &Notify,
+) -> Result<Snapshot, String> {
+    // The non-browser-live path runs through `forage_core::run_recipe`
+    // with HTTP + browser-replay drivers. Browser-live is special-cased
+    // because it needs the Tauri AppHandle to open a webview — the
+    // driver-trait interface from `forage_core` is purely engine-side.
+    if should_dispatch_browser_live(recipe, engine_kind, replay) {
+        let catalog: forage_core::TypeCatalog = module.catalog.clone().into();
+        return tokio::select! {
+            biased;
+            _ = cancel.notified() => Err("cancelled".into()),
+            r = run_browser_live(
+                app,
+                recipe,
+                &catalog,
+                inputs,
+                secrets,
+                LiveRunOptions::default(),
+                options,
+            ) => r,
+        };
+    }
+
+    let live_transport = if replay {
+        None
+    } else {
+        Some(LiveTransport::new().map_err(|e| format!("{e}"))?)
+    };
+    let replay_transport = if replay {
+        Some(ReplayTransport::new(captures.to_vec()))
+    } else {
+        None
+    };
+    let http_transport: &dyn forage_http::Transport = match (&live_transport, &replay_transport) {
+        (Some(t), _) => t,
+        (None, Some(t)) => t,
+        (None, None) => unreachable!("exactly one transport is constructed above"),
+    };
+    let mut http_driver = forage_http::HttpDriver::new(http_transport).with_progress(sink.clone());
+    if let Some(d) = debugger {
+        http_driver = http_driver.with_debugger(d);
+    }
+
+    // Browser-engine replay uses the same captures; live (handled
+    // above) never reaches here.
+    let browser_replay = forage_browser::BrowserReplayDriver::new(captures);
+    let drivers = forage_core::Drivers {
+        http: &http_driver,
+        browser: &browser_replay,
+    };
+
+    tokio::select! {
+        biased;
+        _ = cancel.notified() => Err("cancelled".into()),
+        r = forage_core::run_recipe(module, inputs, secrets, options, &drivers)
+            => r.map_err(|e| format!("{e}")),
+    }
+}
+
 /// Write the in-memory snapshot to the Run's configured output store.
 /// Used by `run_recipe` when the toolbar's "ephemeral" toggle is off
 /// so a Studio-driven run lands records in the same SQLite table the
 /// scheduler would have populated.
 fn persist_snapshot(
-    recipe: &forage_core::ForageFile,
-    catalog: &forage_core::TypeCatalog,
+    module: &forage_core::LinkedModule,
     run: &forage_daemon::Run,
     snapshot: &Snapshot,
 ) -> Result<(), String> {
-    let tables = forage_daemon::derive_schema(recipe, catalog);
+    let tables = forage_daemon::derive_schema(module);
     let mut store = forage_daemon::OutputStore::open(&run.output, tables)
         .map_err(|e| format!("open output store: {e}"))?;
     let scheduled_run_id = ulid::Ulid::new().to_string();
@@ -2073,12 +2136,10 @@ pub async fn validate_cron_expr(expr: String) -> Result<(), String> {
     validate_cron(&expr).map_err(|e| e.to_string())
 }
 
-/// Promote a draft recipe to a frozen deployed version. Reads the
-/// on-disk source for `name`, resolves its catalog against the
-/// Studio-side workspace (so workspace declarations and cached hub
-/// deps are folded in), and hands the validated pair to the daemon
-/// keyed on the recipe's header name. Returns the new
-/// `DeployedVersion` row.
+/// Promote a draft recipe to a frozen deployed version. Resolves the
+/// recipe through the workspace linker so the deployed closure
+/// carries every transitively-referenced peer + catalog. Returns the
+/// new `DeployedVersion` row.
 #[tauri::command]
 pub fn deploy_recipe(
     state: State<'_, StudioState>,
@@ -2086,22 +2147,20 @@ pub fn deploy_recipe(
 ) -> Result<DeployedVersion, String> {
     let ws = require_workspace(&state)?;
     let daemon = require_daemon(&state)?;
-    // Source and catalog anchored on the same workspace handle so a
-    // mid-deploy refresh can't make the source disagree with the
-    // catalog it resolves against.
-    let source = workspace::read_source(&ws, &name)?;
-    let recipe = parse(&source).map_err(|e| format!("parse: {e}"))?;
-    let recipe_name = recipe
-        .recipe_name()
-        .ok_or_else(|| format!("recipe {name:?} no longer has a header in its source"))?;
-    let catalog = ws
-        .catalog(&recipe, |p| std::fs::read_to_string(p))
-        .map_err(|e| format!("catalog: {e}"))?;
-    let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-    let signatures = ws.recipe_signatures();
-    daemon
-        .deploy(recipe_name, source, wire, &signatures)
-        .map_err(|e| e.to_string())
+    let outcome = forage_core::link(&ws, &name).map_err(|e| format!("link: {e}"))?;
+    if outcome.report.has_errors() {
+        let detail = outcome
+            .report
+            .errors()
+            .map(|i| i.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("validate: {detail}"));
+    }
+    let module = outcome
+        .module
+        .ok_or_else(|| "linker produced no module despite a clean report".to_string())?;
+    daemon.deploy(&name, module).map_err(|e| e.to_string())
 }
 
 /// All deployed versions for one recipe, newest first. Returns an
@@ -2726,18 +2785,20 @@ for $i in $list.items[*] {
     }
 
     fn deploy_from_disk(daemon: &Daemon, ws_root: &Path, name: &str) {
-        let recipe_path = ws_root.join(format!("{name}.forage"));
-        let source = std::fs::read_to_string(&recipe_path).unwrap();
-        let recipe = forage_core::parse(&source).unwrap();
         let workspace = forage_core::workspace::load(ws_root).unwrap();
-        let catalog = workspace
-            .catalog(&recipe, |p| std::fs::read_to_string(p))
-            .unwrap();
-        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        let signatures = workspace.recipe_signatures();
-        daemon
-            .deploy(name, source, wire, &signatures)
-            .expect("deploy");
+        let outcome = forage_core::link(&workspace, name).expect("link");
+        assert!(
+            !outcome.report.has_errors(),
+            "link errors for {name}: {:?}",
+            outcome
+                .report
+                .issues
+                .iter()
+                .map(|i| (i.code, &i.message))
+                .collect::<Vec<_>>(),
+        );
+        let module = outcome.module.expect("linker produces module");
+        daemon.deploy(name, module).expect("deploy");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2908,22 +2969,14 @@ for $i in $list.items[*] {
 
         let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
         let workspace = forage_core::workspace::load(&ws_root).expect("load workspace");
-        let recipe =
-            forage_core::parse(&std::fs::read_to_string(ws_root.join("foo.forage")).unwrap())
-                .expect("parse");
-        let catalog = workspace
-            .catalog(&recipe, |p| std::fs::read_to_string(p))
-            .expect("catalog");
-        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        let signatures = workspace.recipe_signatures();
-        daemon
-            .deploy(
-                "bar",
-                "recipe \"bar\"\nengine http\n".to_string(),
-                wire,
-                &signatures,
-            )
-            .expect("deploy");
+        let outcome = forage_core::link(&workspace, "bar").expect("link");
+        assert!(
+            !outcome.report.has_errors(),
+            "link errors: {:?}",
+            outcome.report.issues,
+        );
+        let module = outcome.module.expect("linker produces module");
+        daemon.deploy("bar", module).expect("deploy");
 
         let statuses = build_recipe_statuses(&workspace, &daemon).expect("build_recipe_statuses");
         assert_eq!(
@@ -3071,15 +3124,14 @@ for $i in $list.items[*] {
 
         // Deploy + configure_run + trigger_run, all keyed on `"bar"`.
         let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
-        let recipe = forage_core::parse(&source).expect("parse");
-        let catalog = ws
-            .catalog(&recipe, |p| std::fs::read_to_string(p))
-            .expect("catalog");
-        let wire = forage_core::workspace::SerializableCatalog::from(catalog);
-        let signatures = ws.recipe_signatures();
-        daemon
-            .deploy("bar", source, wire, &signatures)
-            .expect("deploy");
+        let outcome = forage_core::link(&ws, "bar").expect("link");
+        assert!(
+            !outcome.report.has_errors(),
+            "link errors: {:?}",
+            outcome.report.issues,
+        );
+        let module = outcome.module.expect("linker produces module");
+        daemon.deploy("bar", module).expect("deploy");
 
         let cfg = RunConfig {
             cadence: Cadence::Manual,
@@ -3514,5 +3566,89 @@ for $p in $input.prior {
             .await
             .expect("run_composition with replay");
         assert_eq!(snapshot.records.len(), 2);
+    }
+
+    /// A composition recipe declares an engine kind in its header, but
+    /// the kind has no runtime meaning for compositions — stages carry
+    /// their own engines. Studio's `run_module_with_drivers` dispatch
+    /// must skip the live-browser branch (which assumes the recipe is
+    /// a scraping recipe with a `browser` config) and fall through to
+    /// `run_recipe`, where the runtime walks the composition's stages.
+    #[test]
+    fn composition_root_never_dispatches_to_browser_live() {
+        use crate::commands::should_dispatch_browser_live;
+        use forage_core::ast::EngineKind;
+
+        // Composition recipe with `engine browser` in its header.
+        // Inner stages are workspace-local HTTP recipes; the header
+        // kind is a syntactic remnant the parser still accepts.
+        let composition = r#"recipe "outer"
+engine browser
+
+share type Product { id: String }
+
+emits Product
+
+compose "a" | "b"
+"#;
+        let file = forage_core::parse(composition).expect("parse");
+        // The runtime ignores the header for compositions, but Studio
+        // still receives whatever the recipe declares as `engine_kind`.
+        // Even when that's `Browser`, the dispatcher must not route
+        // through the live-browser path.
+        assert!(!should_dispatch_browser_live(
+            &file,
+            EngineKind::Browser,
+            false
+        ));
+
+        // A scraping recipe with `engine browser` and no `--replay`
+        // is still the live-browser case.
+        let scraping = r#"
+recipe "tiny-browser"
+engine browser
+
+type Film {
+    title: String,
+    url:   String?,
+}
+
+browser {
+    initialURL: "https://example.com"
+    observe:    "example.com"
+    paginate browserPaginate.scroll {
+        until: noProgressFor(2)
+        maxIterations: 5
+        iterationDelay: 1.5
+    }
+    captures.document {
+        for $poster in $ {
+            emit Film {
+                title ← $poster.title
+                url   ← $poster.url
+            }
+        }
+    }
+}
+"#;
+        let file = forage_core::parse(scraping).expect("parse");
+        assert!(should_dispatch_browser_live(
+            &file,
+            EngineKind::Browser,
+            false
+        ));
+        // Replay never goes through the live path — even for a
+        // scraping browser recipe.
+        assert!(!should_dispatch_browser_live(
+            &file,
+            EngineKind::Browser,
+            true
+        ));
+        // HTTP engine never dispatches to browser-live.
+        assert!(!should_dispatch_browser_live(
+            &file,
+            EngineKind::Http,
+            false
+        ));
     }
 }

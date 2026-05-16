@@ -616,6 +616,16 @@ in type position only.
 
 ## Notes
 
+- **Validation produces a linked module.** `forage_core::link(ws,
+  name)` is the public entry that runs the per-recipe validator on
+  the named recipe and on every transitively-referenced composition
+  stage, then folds the closure (root + reachable peers + unified
+  type catalog) into a `LinkedModule`. The single-file
+  `forage_core::validate(file, catalog, signatures)` function remains
+  as an internal helper that the linker calls on each node and that
+  the LSP / Studio call for live-buffer diagnostics; runnable
+  artifacts (deploy / CLI run / Studio's persisted snapshot) go
+  through the linker.
 - **At most one recipe per file.** A second `recipe` header is a
   validator error. Files without a header are pure declarations
   files; they're valid as long as they don't contain recipe-context

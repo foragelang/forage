@@ -82,6 +82,31 @@ by the release workflow's `update-homebrew-tap` job, gated on:
 When either is absent the job skips silently; the tap stays where it
 was and you update the formula by hand.
 
+## Pre-1.0 compatibility breakages
+
+Forage is pre-1.0 greenfield. Some releases ship incompatible changes
+to on-disk artifacts without migration shims. When that happens, the
+release notes call out what users need to clear; the list below tracks
+the cumulative effect.
+
+- **Linked-runtime release** — the daemon's deployment format changes
+  from `<deployments>/<name>/v<n>/recipe.forage + catalog.json` to
+  `<deployments>/<name>/v<n>/module.json` (a serialized `LinkedModule`
+  carrying the recipe plus its transitive closure of composition
+  stages). Existing deployment directories are unreadable under the
+  new format. Users recover by removing the whole deployments tree
+  and re-deploying:
+
+  ```sh
+  rm -rf <workspace>/.forage/deployments/
+  ```
+
+  Run-row pointers (`Run.deployed_version`) survive but point at
+  versions whose on-disk payload is gone; the next deploy lands at
+  the next version and the run row picks it up. Pause scheduled Runs
+  before clearing — any scheduled fire between the wipe and the
+  redeploy records a failure row pointing at the missing payload.
+
 ## Pre-flight (run locally if you don't trust CI)
 
 ```sh

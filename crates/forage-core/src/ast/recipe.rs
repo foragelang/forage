@@ -243,7 +243,9 @@ impl Statement {
 pub enum RecipeBody {
     #[default]
     Empty,
-    Scraping(Vec<Statement>),
+    Scraping {
+        statements: Vec<Statement>,
+    },
     Composition(Composition),
 }
 
@@ -253,7 +255,7 @@ impl RecipeBody {
     /// "this body has no statements to walk."
     pub fn statements(&self) -> &[Statement] {
         match self {
-            RecipeBody::Scraping(s) => s,
+            RecipeBody::Scraping { statements } => statements,
             RecipeBody::Empty | RecipeBody::Composition(_) => &[],
         }
     }
@@ -272,8 +274,8 @@ impl RecipeBody {
 /// inside binding expressions. A no-op on `Empty` and `Composition`
 /// bodies, both of which carry zero emit statements of their own.
 pub fn collect_body_emit_types(body: &RecipeBody, out: &mut std::collections::BTreeSet<String>) {
-    if let RecipeBody::Scraping(stmts) = body {
-        collect_statements_emit_types(stmts, out);
+    if let RecipeBody::Scraping { statements } = body {
+        collect_statements_emit_types(statements, out);
     }
 }
 

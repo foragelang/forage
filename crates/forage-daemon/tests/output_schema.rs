@@ -6,8 +6,7 @@
 //! tempfile, write a record, verify the row lives at the right
 //! columns.
 
-use forage_core::TypeCatalog;
-use forage_core::parse;
+use forage_core::{LinkedRecipe, link_standalone, parse};
 use forage_daemon::{ColumnStorage, OutputStore, derive_schema};
 use indexmap::IndexMap;
 use rusqlite::Connection;
@@ -39,11 +38,21 @@ for $p in $list.products[*] {
 }
 "#;
 
+fn module_for(source: &str) -> forage_core::LinkedModule {
+    let parsed = parse(source).expect("parse");
+    let outcome = link_standalone(parsed);
+    assert!(
+        !outcome.report.has_errors(),
+        "link errors: {:?}",
+        outcome.report.issues,
+    );
+    outcome.module.expect("linker produces module")
+}
+
 #[test]
 fn derive_schema_emits_one_table_per_emit_type() {
-    let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_file(&recipe);
-    let tables = derive_schema(&recipe, &catalog);
+    let module = module_for(RECIPE);
+    let tables = derive_schema(&module);
     assert_eq!(tables.len(), 1);
     let t = &tables[0];
     assert_eq!(t.name, "Product");
@@ -66,9 +75,8 @@ fn derive_schema_emits_one_table_per_emit_type() {
 
 #[test]
 fn output_store_creates_table_with_metadata_columns() {
-    let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_file(&recipe);
-    let tables = derive_schema(&recipe, &catalog);
+    let module = module_for(RECIPE);
+    let tables = derive_schema(&module);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");
     let _store = OutputStore::open(&path, tables).expect("open output store");
@@ -110,9 +118,8 @@ fn output_store_creates_table_with_metadata_columns() {
 
 #[test]
 fn write_record_round_trips_through_load_records() {
-    let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_file(&recipe);
-    let tables = derive_schema(&recipe, &catalog);
+    let module = module_for(RECIPE);
+    let tables = derive_schema(&module);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");
     let mut store = OutputStore::open(&path, tables).expect("open");
@@ -161,9 +168,8 @@ fn write_record_round_trips_through_load_records() {
 
 #[test]
 fn load_records_excludes_bookkeeping_columns() {
-    let recipe = parse(RECIPE).expect("parse");
-    let catalog = TypeCatalog::from_file(&recipe);
-    let tables = derive_schema(&recipe, &catalog);
+    let module = module_for(RECIPE);
+    let tables = derive_schema(&module);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("products.sqlite");
     let mut store = OutputStore::open(&path, tables).expect("open");
@@ -214,13 +220,81 @@ emits Product
 
 compose "scrape" | "enrich"
 "#;
-    let recipe = parse(COMPOSITION).expect("parse");
-    let catalog = TypeCatalog::from_file(&recipe);
-    let tables = derive_schema(&recipe, &catalog);
+    // Build the module manually: this test pins `derive_schema`'s
+    // behavior on a composition root with declared emits, regardless
+    // of whether the chain's stages resolve (the linker's tests cover
+    // the validation side).
+    let parsed = parse(COMPOSITION).expect("parse");
+    let catalog: forage_core::TypeCatalog = forage_core::TypeCatalog::from_file(&parsed);
+    let module = forage_core::LinkedModule {
+        root: LinkedRecipe::from_file(parsed),
+        stages: std::collections::BTreeMap::new(),
+        catalog: forage_core::SerializableCatalog::from(catalog),
+    };
+    let tables = derive_schema(&module);
     let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         names,
         vec!["Product"],
         "declared `emits Product` on a composition recipe must contribute a Product table"
+    );
+}
+
+/// `derive_schema` against a composition recipe without a declared
+/// `emits` clause chases the chain to its terminal stage. Tests pin
+/// the resolved-terminal recursion: `composed = compose scrape |
+/// enrich`, both stages emit `Product`, the composition declares no
+/// `emits` of its own, but `derive_schema` still produces a `Product`
+/// table because the terminal stage (`enrich`) declares emits via the
+/// linked closure.
+#[test]
+fn derive_schema_chases_terminal_stage_emits_for_composition_without_declared_emits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(
+        root.join("forage.toml"),
+        "description = \"\"\ncategory = \"\"\ntags = []\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Product.forage"),
+        "share type Product { id: String }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("scrape.forage"),
+        "recipe \"scrape\"\nengine http\n\
+         emits Product\n\
+         step list { method \"GET\" url \"https://x.test\" }\n\
+         emit Product { id ← \"a\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("enrich.forage"),
+        "recipe \"enrich\"\nengine http\n\
+         input prior: [Product]\n\
+         emits Product\n\
+         for $p in $input.prior { emit Product { id ← $p.id } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("composed.forage"),
+        "recipe \"composed\"\nengine http\ncompose \"scrape\" | \"enrich\"\n",
+    )
+    .unwrap();
+    let workspace = forage_core::load(root).unwrap();
+    let outcome = forage_core::link(&workspace, "composed").expect("link");
+    assert!(
+        !outcome.report.has_errors(),
+        "link errors: {:?}",
+        outcome.report.issues,
+    );
+    let module = outcome.module.expect("linker produces module");
+    let tables = derive_schema(&module);
+    let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Product"],
+        "terminal stage's emits drive derive_schema when the composition omits its own clause"
     );
 }

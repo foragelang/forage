@@ -7,8 +7,11 @@
 pub mod ast;
 pub mod error;
 pub mod eval;
+pub mod link;
+pub mod linked;
 pub mod parse;
 pub mod progress;
+pub mod runtime;
 pub mod snapshot;
 pub mod source;
 pub mod validate;
@@ -20,8 +23,13 @@ pub use eval::{
     AsyncTransformFn, EvalError, EvalValue, Evaluator, NoTransport, RunOptions, Scope,
     TransformFuture, TransformRegistry, TransportContext, default_registry,
 };
+pub use link::{LinkError, LinkOutcome, link, link_standalone};
+pub use linked::{LinkedModule, LinkedRecipe};
 pub use parse::{parse, parse_extraction};
 pub use progress::{ProgressUnit, infer_progress_unit};
+pub use runtime::{
+    Drivers, PriorRecords, RecipeDriver, RunError, resolve_terminal_emits, run_recipe,
+};
 pub use snapshot::{
     DiagnosticReport, JsonLdDocument, JsonLdRecord, JsonLdTypeContext, Record, RecordType,
     RecordTypeField, RuntimeDiagnostic, Snapshot, alignment_iri,

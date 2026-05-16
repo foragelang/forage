@@ -77,8 +77,21 @@ compose "ab" | "c"
 ```
 
 where `"ab"` is itself a composed recipe `compose "a" | "b"`. The
-runtime resolves each stage's deployed version and walks the chain
-recursively.
+linker walks the chain at validate time, freezing every reachable
+stage into the deployed module's closure; the runtime then traverses
+that closure without consulting other deployments.
+
+## Resolution happens at validate / link time
+
+Composition stage references are resolved when validation runs (the
+linker walks the workspace, pulls each stage's parsed recipe, and
+folds the full closure into a `LinkedModule`). The runtime consumes
+the linked module and never does name resolution at run time. As a
+result, redeploying a downstream stage after a composition recipe was
+itself deployed does **not** change the composition's behavior — the
+composition's deployed module already pinned every transitively
+referenced stage at the version that was current at composition-
+deploy time.
 
 ## Validation
 
@@ -116,4 +129,6 @@ The composition's daemon Run row carries the aggregate emission
 counts from the final stage. Inner stage runs are bookkept inside
 the composition's run but don't surface as separate `ScheduledRun`
 rows. The daemon writes the chain's final snapshot to the output
-store keyed under the composition's name.
+store keyed under the composition's name. The output schema comes
+from the composition's terminal stage emits, already resolved in the
+deployed `LinkedModule`.

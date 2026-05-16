@@ -1,31 +1,32 @@
-//! One execution of a `Run`. Loads the deployed source + catalog,
-//! executes against the appropriate engine, writes emitted records
-//! to the output store, and persists a `ScheduledRun` row capturing
-//! what happened.
+//! One execution of a `Run`. Loads the deployed linked module,
+//! executes through the engine-agnostic `forage_core::run_recipe`
+//! entry point, writes emitted records to the output store, and
+//! persists a `ScheduledRun` row capturing what happened.
 //!
 //! Always produces a `ScheduledRun` — even when the engine fails or
 //! the Run has no deployment yet — so the consumer (Studio) can
 //! render a failure row in the history table. Only setup-level errors
 //! (DB corruption, missing run row) bubble out as `Err`.
 //!
-//! Composed recipes walk the chain in `run_stage` — each stage's
-//! emitted records feed the next stage's input slot via
-//! `Engine::run_with_prior`. Inner stage runs are not surfaced as
-//! their own `ScheduledRun` rows; the composition's row carries the
-//! aggregate counts and the chain's final snapshot drives output
-//! persistence.
+//! The runtime (forage-core) owns the composition walk; the daemon's
+//! only run-side responsibilities are loading the deployed closure,
+//! wiring the appropriate drivers (HTTP transport, browser replay,
+//! browser live), and persisting the resulting snapshot.
 
 use std::sync::Arc;
 
-use forage_core::ast::{Composition, EngineKind, RecipeBody, RecipeHeader, RecipeRef, Span};
-use forage_core::{EvalValue, ForageFile, Record, RunOptions, Snapshot, TypeCatalog};
-use forage_http::{Engine, LiveTransport, PriorRecords, ReplayTransport};
+use async_trait::async_trait;
+use forage_core::{
+    Drivers, EvalValue, LinkedModule, PriorRecords, RecipeDriver, RunOptions, Snapshot,
+    TypeCatalog, run_recipe,
+};
+use forage_http::{HttpDriver, LiveTransport, ProgressSink, ReplayTransport};
 use indexmap::IndexMap;
 
 use crate::error::{DaemonError, RunError};
 use crate::model::{Outcome, RunFlags, ScheduledRun, Trigger};
 use crate::output::{OutputStore, derive_schema};
-use crate::{Daemon, ProgressForwarder};
+use crate::{Daemon, LiveBrowserDriver, ProgressForwarder};
 
 impl Daemon {
     /// Drive a single run cycle. Returns the resulting `ScheduledRun`
@@ -131,36 +132,32 @@ impl Daemon {
         Ok(scheduled)
     }
 
-    /// Run a notebook composition: walk `stages` in order, feeding the
-    /// emissions of stage N into stage N+1's input. Each stage name
-    /// resolves to its current deployed version through the daemon's
-    /// composition runtime — same path a hub-published composition
-    /// recipe would take, but without a persistent `Run` row.
-    ///
-    /// `name` labels the synthetic composition recipe for diagnostics
-    /// (`compose stage '<name>' …`). `inputs` flow into stage 1 only;
-    /// downstream stages consume the upstream record stream.
+    /// Run an ephemeral composition over a list of stage names.
+    /// Mirrors the notebook surface: each stage resolves to its
+    /// currently-deployed version, the closure of every stage's
+    /// deployed module folds into one synthetic module rooted at a
+    /// composition body, and the runtime walks the chain. Inputs
+    /// flow into stage 1; downstream stages consume the upstream
+    /// record stream.
     ///
     /// Always runs in ephemeral mode — the notebook is a playground;
-    /// the snapshot is returned in-memory and never written to a daemon
-    /// output store. `flags.ephemeral` is therefore irrelevant; the
-    /// `replay` and `sample_limit` flags carry through to every stage.
-    /// Persistence happens through "Publish notebook," which writes the
-    /// composition as a `.forage` recipe and goes through the normal
-    /// deploy + run path.
+    /// the snapshot is returned in-memory and never written to a
+    /// daemon output store. `flags.replay` and `flags.sample_limit`
+    /// carry through to every stage.
     pub async fn run_composition(
         self: &Arc<Self>,
         name: &str,
-        stages: Vec<String>,
+        stage_names: Vec<String>,
         inputs: IndexMap<String, EvalValue>,
         flags: RunFlags,
     ) -> Result<Snapshot, RunError> {
-        if stages.is_empty() {
+        if stage_names.is_empty() {
             return Err(RunError::Engine("composition has zero stages".into()));
         }
-        let synthetic = synthesize_composition_file(name, &stages);
-
-        let sink: Arc<dyn forage_http::ProgressSink> = Arc::new(ProgressForwarder {
+        let module = self
+            .synthesize_composition_module(name, &stage_names)
+            .map_err(RunError::Engine)?;
+        let sink: Arc<dyn ProgressSink> = Arc::new(ProgressForwarder {
             host: self
                 .host_progress
                 .lock()
@@ -177,65 +174,114 @@ impl Daemon {
             ),
             None => None,
         };
-        let catalog = TypeCatalog::default();
-        // `version` is the outer-recipe version that inner-stage
-        // failures cite for context. The synthetic composition has no
-        // deployed version, so we pass 0 — every inner failure overrides
-        // this with the inner stage's actual resolved version anyway.
-        let snapshot = run_stage(
-            self,
-            &synthetic,
-            &catalog,
+        let browser_driver = self.browser_driver.lock().expect("driver poisoned").clone();
+        let snapshot = run_with_drivers(
+            &module,
             inputs,
             IndexMap::new(),
-            PriorRecords::default(),
-            sink,
-            0,
             &engine_options,
+            sink,
+            browser_driver,
             replay_captures.as_deref(),
         )
         .await
         .map_err(|f| RunError::Engine(f.message))?;
         Ok(snapshot)
     }
-}
 
-/// Build an in-memory `ForageFile` whose body is a composition over
-/// `stages`. Carries an HTTP engine kind in the header — composition
-/// recipes ignore the header's engine field at run time (each inner
-/// stage carries its own), but the AST requires one.
-fn synthesize_composition_file(name: &str, stages: &[String]) -> ForageFile {
-    let stage_refs: Vec<RecipeRef> = stages
-        .iter()
-        .map(|s| RecipeRef {
-            author: None,
-            name: s.clone(),
-            span: Span::default(),
+    /// Build a linked module for an ephemeral composition. Each
+    /// stage's currently-deployed module supplies its root recipe
+    /// (which lands in the synthetic module's stage map) and its own
+    /// catalog (merged into the synthetic root's catalog). The
+    /// synthetic root has a composition body referencing the supplied
+    /// stage names in order.
+    fn synthesize_composition_module(
+        &self,
+        name: &str,
+        stage_names: &[String],
+    ) -> Result<LinkedModule, String> {
+        use forage_core::LinkedRecipe;
+        use forage_core::ast::{
+            Composition, EngineKind, ForageFile, RecipeBody, RecipeHeader, RecipeRef, Span,
+        };
+        use forage_core::workspace::SerializableCatalog;
+
+        let mut stages: std::collections::BTreeMap<String, LinkedRecipe> =
+            std::collections::BTreeMap::new();
+        let mut catalog = TypeCatalog::default();
+        let mut stage_refs: Vec<RecipeRef> = Vec::with_capacity(stage_names.len());
+        for stage_name in stage_names {
+            let current = self
+                .current_deployed(stage_name)
+                .map_err(|e| format!("compose stage '{stage_name}' deployed-version lookup: {e}"))?
+                .ok_or_else(|| format!("compose stage '{stage_name}' has no deployed version"))?;
+            let deployed = self
+                .load_deployed(stage_name, current.version)
+                .map_err(|e| {
+                    format!(
+                        "compose stage '{stage_name}' load v{}: {e}",
+                        current.version
+                    )
+                })?;
+            let stage_catalog: TypeCatalog = deployed.module.catalog.clone().into();
+            for (k, v) in stage_catalog.types {
+                catalog.types.entry(k).or_insert(v);
+            }
+            for (k, v) in stage_catalog.enums {
+                catalog.enums.entry(k).or_insert(v);
+            }
+            // Adopt every linked stage from the deployed module too —
+            // a stage that's itself a composition pulls its own
+            // closure in. Names not already present win; the first
+            // deployed module to introduce a name keeps it (which is
+            // fine because every deployment is a coherent closure
+            // unto itself).
+            for (k, v) in deployed.module.stages {
+                stages.entry(k).or_insert(v);
+            }
+            // The root of the deployed module is the stage itself.
+            // Use `insert` (not `or_insert`) so the explicitly-named
+            // stage always reflects the current deployment — an
+            // earlier stage's frozen closure may carry a transitive
+            // entry under the same name pinned at an older version;
+            // the user's explicit listing overrides it.
+            stages.insert(stage_name.clone(), deployed.module.root);
+            stage_refs.push(RecipeRef {
+                author: None,
+                name: stage_name.clone(),
+                span: Span::default(),
+            });
+        }
+        // Synthesize a root composition recipe carrying just enough
+        // shape to drive `run_recipe`. The validator already ran at
+        // each stage's deploy time; the synthetic root never reaches
+        // a validator pass.
+        let synthetic = ForageFile {
+            recipe_headers: vec![RecipeHeader {
+                name: name.to_string(),
+                engine_kind: EngineKind::Http,
+                span: Span::default(),
+            }],
+            types: Vec::new(),
+            enums: Vec::new(),
+            inputs: Vec::new(),
+            emits: None,
+            secrets: Vec::new(),
+            functions: Vec::new(),
+            auth: None,
+            browser: None,
+            body: RecipeBody::Composition(Composition {
+                stages: stage_refs,
+                span: Span::default(),
+            }),
+            expectations: Vec::new(),
+            source: std::sync::Arc::from(""),
+        };
+        Ok(LinkedModule {
+            root: LinkedRecipe::from_file(synthetic),
+            stages,
+            catalog: SerializableCatalog::from(catalog),
         })
-        .collect();
-    ForageFile {
-        recipe_headers: vec![RecipeHeader {
-            name: name.to_string(),
-            engine_kind: EngineKind::Http,
-            span: Span::default(),
-        }],
-        types: Vec::new(),
-        enums: Vec::new(),
-        inputs: Vec::new(),
-        emits: None,
-        secrets: Vec::new(),
-        functions: Vec::new(),
-        auth: None,
-        browser: None,
-        body: RecipeBody::Composition(Composition {
-            stages: stage_refs,
-            span: Span::default(),
-        }),
-        expectations: Vec::new(),
-        // Empty source is safe here: composition bodies have no
-        // pause sites, so the line-resolver never reads back from
-        // this string to map a byte span onto a source line.
-        source: std::sync::Arc::from(""),
     }
 }
 
@@ -280,20 +326,7 @@ async fn execute(
             });
         }
     };
-    let recipe = match forage_core::parse(&deployed.source) {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(RunFailure {
-                message: format!("parse deployed source: {e}"),
-                diagnostics: 0,
-                version: Some(version),
-            });
-        }
-    };
-    // The catalog was validated against the source at deploy time;
-    // we trust it here without re-validating. A parser version drift
-    // since deploy would surface above in `forage_core::parse`.
-    let catalog: TypeCatalog = deployed.catalog.into();
+    let module = deployed.module;
 
     // Inputs come from the explicit `Run.inputs` field set via
     // `configure_run`. Recipes that declare `input` bindings must have
@@ -304,9 +337,9 @@ async fn execute(
         .iter()
         .map(|(k, v)| (k.clone(), EvalValue::from(v)))
         .collect();
-    let secrets = load_secrets(&recipe);
+    let secrets = load_secrets(&module);
 
-    let tables = derive_schema(&recipe, &catalog);
+    let tables = derive_schema(&module);
     // Ephemeral runs land in an in-memory store; persistent runs write
     // to the configured `Run.output` path. The flag is invocation-level
     // (scheduled fires never set it), so the persistent table stays
@@ -332,7 +365,7 @@ async fn execute(
         .lock()
         .expect("host progress poisoned")
         .clone();
-    let sink: Arc<dyn forage_http::ProgressSink> = Arc::new(ProgressForwarder {
+    let sink: Arc<dyn ProgressSink> = Arc::new(ProgressForwarder {
         host: host_progress,
     });
 
@@ -357,22 +390,30 @@ async fn execute(
         },
         None => None,
     };
-    let snapshot_result = run_stage(
-        daemon,
-        &recipe,
-        &catalog,
+
+    let browser_driver = daemon
+        .browser_driver
+        .lock()
+        .expect("driver poisoned")
+        .clone();
+    let snapshot_result = run_with_drivers(
+        &module,
         inputs,
         secrets,
-        PriorRecords::default(),
-        sink.clone(),
-        version,
         &engine_options,
+        sink,
+        browser_driver,
         replay_captures.as_deref(),
     )
     .await;
     let snapshot = match snapshot_result {
         Ok(s) => s,
-        Err(f) => return Err(f),
+        Err(f) => {
+            return Err(RunFailure {
+                version: Some(version),
+                ..f
+            });
+        }
     };
 
     // Persist every emitted record under one transaction so a failed
@@ -396,296 +437,95 @@ async fn execute(
     })
 }
 
-/// Run one recipe to a snapshot. The dispatcher: scraping bodies go
-/// to the matching engine; composition bodies walk the chain by
-/// recursively invoking `run_stage` for each inner stage.
+/// Build the HTTP + browser driver pair the runtime dispatches
+/// through, then hand the module to `forage_core::run_recipe`. The
+/// HTTP driver swaps between live and replay transports based on
+/// `replay_captures`; the browser driver swaps between replay and the
+/// host-supplied live driver based on the same flag.
 ///
-/// `prior` carries upstream records when this stage is being driven
-/// by a composition; standalone calls (and composition stage 1) pass
-/// `PriorRecords::default()`.
-///
-/// `version` is the version that resolved at the *outer* run's
-/// deployment time; inner composition stages resolve their own
-/// versions via `daemon.current_deployed`, but failures still
-/// reference the outer version since that's what was scheduled.
-///
-/// `options` and `replay_captures` are decided once at the outermost
-/// `execute` and apply uniformly to every stage in a composition
-/// chain — sampling caps every stage's top-level for-loop, and replay
-/// (when set) feeds the same fixture stream to every HTTP / browser
-/// stage. Ephemeral output-store routing is realized in `execute`
-/// against the outer `Run.output`, not per-stage.
+/// Driver construction borrows the live transport / captures /
+/// progress sink with explicit lifetimes — that's why this helper
+/// owns the construction inline rather than living in `Daemon`.
 #[allow(clippy::too_many_arguments)]
-fn run_stage<'a>(
-    daemon: &'a Arc<Daemon>,
-    recipe: &'a ForageFile,
-    catalog: &'a TypeCatalog,
+async fn run_with_drivers(
+    module: &LinkedModule,
     inputs: IndexMap<String, EvalValue>,
     secrets: IndexMap<String, String>,
-    prior: PriorRecords,
-    sink: Arc<dyn forage_http::ProgressSink>,
-    version: u32,
-    options: &'a RunOptions,
-    replay_captures: Option<&'a [forage_replay::Capture]>,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<forage_core::Snapshot, RunFailure>> + Send + 'a>,
-> {
-    Box::pin(async move {
-        match &recipe.body {
-            RecipeBody::Composition(comp) => {
-                run_composition(
-                    daemon,
-                    comp,
-                    inputs,
-                    secrets,
-                    sink,
-                    version,
-                    options,
-                    replay_captures,
-                )
-                .await
-            }
-            RecipeBody::Scraping(_) | RecipeBody::Empty => {
-                run_scraping(
-                    daemon,
-                    recipe,
-                    catalog,
-                    inputs,
-                    secrets,
-                    prior,
-                    sink,
-                    version,
-                    options,
-                    replay_captures,
-                )
-                .await
-            }
-        }
-    })
-}
-
-/// Drive a scraping-body recipe against its engine, seeded with any
-/// prior records the composition runtime threaded in. When
-/// `replay_captures` is `Some`, the transport / browser-replay path is
-/// taken instead of live — the same fixture stream is used at every
-/// stage of a composition chain.
-#[allow(clippy::too_many_arguments)]
-async fn run_scraping(
-    daemon: &Arc<Daemon>,
-    recipe: &ForageFile,
-    catalog: &TypeCatalog,
-    inputs: IndexMap<String, EvalValue>,
-    secrets: IndexMap<String, String>,
-    prior: PriorRecords,
-    sink: Arc<dyn forage_http::ProgressSink>,
-    version: u32,
     options: &RunOptions,
+    sink: Arc<dyn ProgressSink>,
+    live_browser: Option<Arc<dyn LiveBrowserDriver>>,
     replay_captures: Option<&[forage_replay::Capture]>,
-) -> Result<forage_core::Snapshot, RunFailure> {
-    let Some(engine_kind) = recipe.engine_kind() else {
-        return Err(RunFailure {
-            message: "deployed source has no recipe header".to_string(),
+) -> Result<Snapshot, RunFailure> {
+    // HTTP transport branches on replay availability. Both transport
+    // values have to outlive the runtime call, so we bind one or the
+    // other to a local and pass a `&dyn Transport` into the driver.
+    let live_transport = if replay_captures.is_none() {
+        Some(LiveTransport::new().map_err(|e| RunFailure {
+            message: format!("http transport: {e}"),
             diagnostics: 0,
-            version: Some(version),
-        });
+            version: None,
+        })?)
+    } else {
+        None
     };
-    match engine_kind {
-        EngineKind::Http => {
-            let snapshot_result = match replay_captures {
-                Some(captures) => {
-                    let transport = ReplayTransport::new(captures.to_vec());
-                    let engine = Engine::new(&transport).with_progress(sink.clone());
-                    engine
-                        .run_with_prior(recipe, catalog, inputs, secrets, options, prior)
-                        .await
-                }
-                None => {
-                    let transport = LiveTransport::new().map_err(|e| RunFailure {
-                        message: format!("http transport: {e}"),
-                        diagnostics: 0,
-                        version: Some(version),
-                    })?;
-                    let engine = Engine::new(&transport).with_progress(sink.clone());
-                    engine
-                        .run_with_prior(recipe, catalog, inputs, secrets, options, prior)
-                        .await
-                }
-            };
-            snapshot_result.map_err(|e| RunFailure {
-                message: format!("engine: {e}"),
-                diagnostics: 0,
-                version: Some(version),
-            })
-        }
-        EngineKind::Browser => {
-            if !prior.records.is_empty() {
-                // Browser-engine downstream stages aren't supported yet —
-                // the browser driver runs a real WebView and has no
-                // record-seed entry point. Fail with a clear diagnostic
-                // rather than silently dropping the upstream records.
-                return Err(RunFailure {
-                    message: format!(
-                        "compose stage '{}' is browser-engine; browser engines can't yet receive prior records",
-                        recipe.recipe_name().unwrap_or("<unknown>"),
-                    ),
-                    diagnostics: 0,
-                    version: Some(version),
-                });
-            }
-            match replay_captures {
-                Some(captures) => forage_browser::run_browser_replay(
-                    recipe, catalog, captures, inputs, secrets, options,
-                )
-                .map_err(|e| RunFailure {
-                    message: format!("browser: {e}"),
-                    diagnostics: 0,
-                    version: Some(version),
-                }),
-                None => {
-                    let driver = daemon
-                        .browser_driver
-                        .lock()
-                        .expect("driver poisoned")
-                        .clone()
-                        .ok_or_else(|| RunFailure {
-                            message:
-                                "browser engine requires a LiveBrowserDriver — none registered"
-                                    .into(),
-                            diagnostics: 0,
-                            version: Some(version),
-                        })?;
-                    driver
-                        .run_live(recipe, catalog, inputs, secrets, sink.clone(), options)
-                        .await
-                        .map_err(|e| RunFailure {
-                            message: format!("browser: {e}"),
-                            diagnostics: 0,
-                            version: Some(version),
-                        })
-                }
-            }
-        }
-    }
-}
+    let replay_transport = replay_captures.map(|c| ReplayTransport::new(c.to_vec()));
+    let http_transport: &dyn forage_http::Transport = match (&live_transport, &replay_transport) {
+        (Some(t), _) => t,
+        (None, Some(t)) => t,
+        (None, None) => unreachable!("exactly one transport is constructed above"),
+    };
+    let http_driver = HttpDriver::new(http_transport).with_progress(sink.clone());
 
-/// Walk a composition chain: resolve each stage's deployed source,
-/// run it, and thread its emissions as the next stage's prior. The
-/// composition's own `inputs` flow into stage 1; downstream stages
-/// receive only their typed `prior` plus any auto-passthrough inputs
-/// the composition explicitly declares (today, none — the
-/// composition's input is forwarded only to stage 1).
-#[allow(clippy::too_many_arguments)]
-async fn run_composition(
-    daemon: &Arc<Daemon>,
-    comp: &forage_core::ast::Composition,
-    inputs: IndexMap<String, EvalValue>,
-    secrets: IndexMap<String, String>,
-    sink: Arc<dyn forage_http::ProgressSink>,
-    version: u32,
-    options: &RunOptions,
-    replay_captures: Option<&[forage_replay::Capture]>,
-) -> Result<forage_core::Snapshot, RunFailure> {
-    let mut prior = PriorRecords::default();
-    let mut stage_inputs = inputs;
-    let mut last_snapshot: Option<forage_core::Snapshot> = None;
-    // Hub-dep stages (`author.is_some()`) are rejected at validate time
-    // (`ValidationCode::HubDepStageUnsupported`), so by the time a
-    // deployed composition reaches this loop every stage is a bare
-    // workspace-local name.
-    for stage_ref in &comp.stages {
-        let dv = match daemon.current_deployed(&stage_ref.name) {
-            Ok(Some(dv)) => dv,
-            Ok(None) => {
-                return Err(RunFailure {
-                    message: format!("compose stage '{}' has no deployed version", stage_ref.name,),
-                    diagnostics: 0,
-                    version: Some(version),
-                });
-            }
-            Err(e) => {
-                return Err(RunFailure {
-                    message: format!(
-                        "compose stage '{}' deployed-version lookup: {e}",
-                        stage_ref.name,
-                    ),
-                    diagnostics: 0,
-                    version: Some(version),
-                });
-            }
-        };
-        let deployed = daemon
-            .load_deployed(&stage_ref.name, dv.version)
-            .map_err(|e| RunFailure {
-                message: format!(
-                    "compose stage '{}' load v{}: {e}",
-                    stage_ref.name, dv.version,
-                ),
-                diagnostics: 0,
-                version: Some(version),
-            })?;
-        let inner_recipe = forage_core::parse(&deployed.source).map_err(|e| RunFailure {
-            message: format!(
-                "compose stage '{}' parse deployed source: {e}",
-                stage_ref.name,
-            ),
+    let browser_driver: Box<dyn RecipeDriver + '_> = match (replay_captures, live_browser) {
+        (Some(captures), _) => Box::new(forage_browser::BrowserReplayDriver::new(captures)),
+        (None, Some(driver)) => Box::new(LiveBrowserAdapter {
+            driver,
+            sink: sink.clone(),
+        }),
+        (None, None) => Box::new(forage_http::UnsupportedDriver::new(
+            "browser engine requires a LiveBrowserDriver — none registered".to_string(),
+        )),
+    };
+
+    let drivers = Drivers {
+        http: &http_driver,
+        browser: browser_driver.as_ref(),
+    };
+
+    run_recipe(module, inputs, secrets, options, &drivers)
+        .await
+        .map_err(|e| RunFailure {
+            message: format!("engine: {e}"),
             diagnostics: 0,
-            version: Some(version),
-        })?;
-        let inner_catalog: TypeCatalog = deployed.catalog.into();
-        let inner_secrets = if secrets.is_empty() {
-            load_secrets(&inner_recipe)
-        } else {
-            // Carry the composition's secrets through verbatim — every
-            // inner stage that declares a `secret` of the same name sees
-            // the supplied value. Inner-only secrets fall through to the
-            // env-var convention.
-            let mut merged = load_secrets(&inner_recipe);
-            for (k, v) in &secrets {
-                merged.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-            merged
-        };
-        let snapshot = run_stage(
-            daemon,
-            &inner_recipe,
-            &inner_catalog,
-            stage_inputs.clone(),
-            inner_secrets,
-            prior.clone(),
-            sink.clone(),
-            version,
-            options,
-            replay_captures,
-        )
-        .await?;
-        // Stage 2+: the recipe consumes the upstream stream and ignores
-        // the composition's outer `inputs` (which are stage-1-only).
-        stage_inputs.clear();
-        prior = derive_prior(&snapshot);
-        last_snapshot = Some(snapshot);
-    }
-    last_snapshot.ok_or_else(|| RunFailure {
-        message: "composition has zero stages — validator should have rejected".into(),
-        diagnostics: 0,
-        version: Some(version),
-    })
+            version: None,
+        })
 }
 
-/// Build the `PriorRecords` carrier for the next stage from this
-/// stage's snapshot. When the upstream emitted multiple types, the
-/// downstream stage's input-slot lookup picks the matching one — but
-/// the per-stage validator already pinned each output to a single
-/// type, so in practice this is a one-type stream.
-fn derive_prior(snap: &forage_core::Snapshot) -> PriorRecords {
-    let mut type_name = String::new();
-    let mut records: Vec<Record> = Vec::with_capacity(snap.records.len());
-    for rec in &snap.records {
-        if type_name.is_empty() {
-            type_name = rec.type_name.clone();
-        }
-        records.push(rec.clone());
+/// Bridge from the daemon's `LiveBrowserDriver` trait (host-supplied
+/// — Studio provides the webview) onto the runtime's `RecipeDriver`
+/// shape. The progress sink threads through unchanged so the host
+/// keeps seeing live events.
+struct LiveBrowserAdapter {
+    driver: Arc<dyn LiveBrowserDriver>,
+    sink: Arc<dyn ProgressSink>,
+}
+
+#[async_trait]
+impl RecipeDriver for LiveBrowserAdapter {
+    async fn run_scraping(
+        &self,
+        recipe: &forage_core::ForageFile,
+        catalog: &TypeCatalog,
+        inputs: IndexMap<String, EvalValue>,
+        secrets: IndexMap<String, String>,
+        options: &RunOptions,
+        _prior: PriorRecords,
+    ) -> Result<Snapshot, forage_core::RunError> {
+        self.driver
+            .run_live(recipe, catalog, inputs, secrets, self.sink.clone(), options)
+            .await
+            .map_err(|e| forage_core::RunError::Driver(format!("browser: {e}")))
     }
-    PriorRecords { records, type_name }
 }
 
 fn write_records(
@@ -710,12 +550,24 @@ fn write_records(
 /// Secrets convention matches the CLI / Studio: each declared secret
 /// resolves via `FORAGE_SECRET_<NAME>` env var. Unset env vars → not
 /// in the map (the engine treats missing-secret as a recipe error).
-fn load_secrets(recipe: &ForageFile) -> IndexMap<String, String> {
+fn load_secrets(module: &LinkedModule) -> IndexMap<String, String> {
+    // Pull every secret name declared anywhere in the closure so a
+    // composition stage that declares its own secrets still sees the
+    // env-resolved value at run time.
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for s in &module.root.file.secrets {
+        names.insert(s.clone());
+    }
+    for stage in module.stages.values() {
+        for s in &stage.file.secrets {
+            names.insert(s.clone());
+        }
+    }
     let mut out = IndexMap::new();
-    for s in &recipe.secrets {
-        let key = format!("FORAGE_SECRET_{}", s.to_uppercase());
+    for name in names {
+        let key = format!("FORAGE_SECRET_{}", name.to_uppercase());
         if let Ok(v) = std::env::var(&key) {
-            out.insert(s.clone(), v);
+            out.insert(name, v);
         }
     }
     out

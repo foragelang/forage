@@ -1,12 +1,12 @@
-//! Deploy pipeline: the daemon accepts validated source + catalog,
-//! writes both to disk under `<daemon_dir>/deployments/<recipe_name>/v<n>/`,
-//! records the metadata row, and rejects parse / validation failures
-//! before anything is written. The Run pointer (`run.deployed_version`)
-//! advances atomically with the deploy when a Run row exists.
+//! Deploy pipeline: the daemon accepts a linked module, writes it
+//! to disk under `<daemon_dir>/deployments/<recipe_name>/v<n>/`,
+//! records the metadata row, and rejects mismatched roots. The Run
+//! pointer (`run.deployed_version`) advances atomically with the
+//! deploy when a Run row exists.
 
 use std::path::Path;
 
-use forage_core::SerializableCatalog;
+use forage_core::{LinkedModule, link};
 use forage_daemon::{Cadence, Daemon, DeployError, Outcome, OutputFormat, RunConfig, RunFlags};
 
 mod common;
@@ -46,13 +46,15 @@ for $i in $list.items[*] {
 }
 "#;
 
-fn catalog_for(source: &str, ws_root: &Path) -> SerializableCatalog {
-    let recipe = forage_core::parse(source).expect("parse");
+fn linked_module(name: &str, ws_root: &Path) -> LinkedModule {
     let workspace = forage_core::load(ws_root).expect("load workspace");
-    let cat = workspace
-        .catalog(&recipe, |p| std::fs::read_to_string(p))
-        .expect("catalog");
-    SerializableCatalog::from(cat)
+    let outcome = link(&workspace, name).expect("link runs");
+    assert!(
+        !outcome.report.has_errors(),
+        "link errors for {name}: {:?}",
+        outcome.report.issues,
+    );
+    outcome.module.expect("linker produces module")
 }
 
 #[test]
@@ -71,15 +73,8 @@ fn deploy_writes_filesystem_and_db_row() {
     init_workspace(&ws_root, recipe_name, RECIPE);
     let daemon = Daemon::open(ws_root.clone()).unwrap();
 
-    let catalog = catalog_for(RECIPE, &ws_root);
-    let dv = daemon
-        .deploy(
-            recipe_name,
-            RECIPE.to_string(),
-            catalog.clone(),
-            &forage_core::RecipeSignatures::default(),
-        )
-        .expect("deploy");
+    let module = linked_module(recipe_name, &ws_root);
+    let dv = daemon.deploy(recipe_name, module).expect("deploy");
     assert_eq!(dv.version, 1);
     assert_eq!(dv.recipe_name, recipe_name);
 
@@ -88,78 +83,56 @@ fn deploy_writes_filesystem_and_db_row() {
         .join("deployments")
         .join(recipe_name)
         .join("v1");
-    let recipe_path = v1_dir.join("recipe.forage");
-    let catalog_path = v1_dir.join("catalog.json");
-    assert!(recipe_path.exists(), "recipe.forage must be written");
-    assert!(catalog_path.exists(), "catalog.json must be written");
-    assert_eq!(std::fs::read_to_string(&recipe_path).unwrap(), RECIPE);
-
-    let on_disk_catalog: SerializableCatalog =
-        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-    assert_eq!(on_disk_catalog, catalog);
+    let module_path = v1_dir.join("module.json");
+    assert!(module_path.exists(), "module.json must be written");
+    // Read-back round-trips through the daemon's load_deployed surface.
+    let loaded = daemon.load_deployed(recipe_name, 1).expect("load deployed");
+    assert_eq!(loaded.recipe_name, recipe_name);
+    assert_eq!(loaded.version, 1);
+    assert_eq!(loaded.module.root.file.recipe_name(), Some(recipe_name));
 
     let current = daemon.current_deployed(recipe_name).unwrap();
     assert_eq!(current.map(|c| c.version), Some(1));
 }
 
 #[test]
-fn deploy_rejects_broken_source() {
+fn link_rejects_invalid_recipe_before_deploy() {
+    // Validation is the linker's job now; the daemon trusts the
+    // closure it receives. The linker rejects unknown emits the same
+    // way the old deploy path did, so a recipe whose `emit Ghost`
+    // references no declared type never produces a module.
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path().to_path_buf();
-    let recipe_name = "broken";
-    init_workspace(&ws_root, recipe_name, "recipe \"broken\"\nengine http\n");
-    let daemon = Daemon::open(ws_root.clone()).unwrap();
-
-    // Use an empty catalog — the parse failure short-circuits before
-    // validation cares about it.
-    let err = daemon
-        .deploy(
-            recipe_name,
-            "for in {{ }}\n".to_string(),
-            SerializableCatalog::default(),
-            &forage_core::RecipeSignatures::default(),
-        )
-        .expect_err("parse failure rejects the deploy");
-    assert!(matches!(err, DeployError::Parse(_)), "got {err:?}");
-
-    let v1_dir = ws_root
-        .join(".forage")
-        .join("deployments")
-        .join(recipe_name)
-        .join("v1");
-    assert!(!v1_dir.exists(), "no version directory must be written");
-    assert!(daemon.current_deployed(recipe_name).unwrap().is_none());
+    init_workspace(
+        &ws_root,
+        "broken-validate",
+        RECIPE_REFERENCES_UNDECLARED_TYPE,
+    );
+    let workspace = forage_core::load(&ws_root).expect("load workspace");
+    let outcome = link(&workspace, "broken-validate").expect("link runs");
+    assert!(outcome.report.has_errors(), "expected link errors");
+    assert!(outcome.module.is_none());
 }
 
 #[test]
-fn deploy_rejects_invalid_recipe() {
+fn deploy_rejects_mismatched_root_name() {
+    // The daemon validates that the linked module's root matches the
+    // name argument before it touches disk — a closure rooted at
+    // recipe `A` deployed under name `B` would otherwise quietly bind
+    // `B` to A's behavior.
     let tmp = tempfile::tempdir().unwrap();
     let ws_root = tmp.path().to_path_buf();
-    let recipe_name = "validates";
-    init_workspace(&ws_root, recipe_name, RECIPE_REFERENCES_UNDECLARED_TYPE);
+    let recipe_name = "fixture-ok";
+    init_workspace(&ws_root, recipe_name, RECIPE);
     let daemon = Daemon::open(ws_root.clone()).unwrap();
+    let module = linked_module(recipe_name, &ws_root);
 
-    let catalog = catalog_for(RECIPE_REFERENCES_UNDECLARED_TYPE, &ws_root);
     let err = daemon
-        .deploy(
-            recipe_name,
-            RECIPE_REFERENCES_UNDECLARED_TYPE.to_string(),
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
-        .expect_err("validation failure rejects the deploy");
+        .deploy("different-name", module)
+        .expect_err("mismatched root must reject");
     assert!(matches!(err, DeployError::Validate(_)), "got {err:?}");
 
-    let v1_dir = ws_root
-        .join(".forage")
-        .join("deployments")
-        .join(recipe_name)
-        .join("v1");
-    assert!(
-        !v1_dir.exists(),
-        "no version directory must be written on validation failure"
-    );
-    assert!(daemon.current_deployed(recipe_name).unwrap().is_none());
+    assert!(daemon.current_deployed("different-name").unwrap().is_none());
 }
 
 #[test]
@@ -169,23 +142,12 @@ fn deploy_bumps_version() {
     let recipe_name = "fixture-ok";
     init_workspace(&ws_root, recipe_name, RECIPE);
     let daemon = Daemon::open(ws_root.clone()).unwrap();
-    let catalog = catalog_for(RECIPE, &ws_root);
 
     let v1 = daemon
-        .deploy(
-            recipe_name,
-            RECIPE.to_string(),
-            catalog.clone(),
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .unwrap();
     let v2 = daemon
-        .deploy(
-            recipe_name,
-            RECIPE.to_string(),
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .unwrap();
     assert_eq!(v1.version, 1);
     assert_eq!(v2.version, 2);
@@ -222,14 +184,8 @@ fn deploy_updates_run_pointer_when_run_exists() {
     let run = daemon.configure_run(recipe_name, cfg).unwrap();
     assert!(run.deployed_version.is_none());
 
-    let catalog = catalog_for(RECIPE, &ws_root);
     daemon
-        .deploy(
-            recipe_name,
-            RECIPE.to_string(),
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .unwrap();
 
     let refreshed = daemon.get_run(&run.id).unwrap().unwrap();
@@ -281,14 +237,8 @@ async fn run_once_uses_deployed_source() {
     std::fs::write(&recipe_path, &deployed_src).unwrap();
 
     let daemon = Daemon::open(ws_root.clone()).unwrap();
-    let catalog = catalog_for(&deployed_src, &ws_root);
     daemon
-        .deploy(
-            recipe_name,
-            deployed_src,
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .unwrap();
 
     // Now mangle the draft so a re-read would parse but emit zero
@@ -345,33 +295,28 @@ fn deploy_skips_past_stray_version_directories() {
         .join(recipe_name)
         .join("v1");
     std::fs::create_dir_all(&stray).unwrap();
-    std::fs::write(stray.join("recipe.forage"), "STRAY").unwrap();
+    std::fs::write(stray.join("module.json"), "STRAY").unwrap();
 
-    let catalog = catalog_for(RECIPE, &ws_root);
     let dv = daemon
-        .deploy(
-            recipe_name,
-            RECIPE.to_string(),
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .expect("deploy must succeed past the stray dir");
     assert_eq!(dv.version, 2, "must bump past stray v1, not overwrite it");
 
     // Stray dir is untouched — that's the whole point of the bump.
     assert_eq!(
-        std::fs::read_to_string(stray.join("recipe.forage")).unwrap(),
+        std::fs::read_to_string(stray.join("module.json")).unwrap(),
         "STRAY"
     );
 
-    // The new deploy materialized at v2 with the real content.
+    // The new deploy materialized at v2 with the linked closure
+    // serialized as `module.json`.
     let v2 = ws_root
         .join(".forage")
         .join("deployments")
         .join(recipe_name)
         .join("v2")
-        .join("recipe.forage");
-    assert_eq!(std::fs::read_to_string(&v2).unwrap(), RECIPE);
+        .join("module.json");
+    assert!(v2.is_file(), "v2/module.json must exist");
 }
 
 /// Two concurrent `deploy(recipe_name, ...)` calls must land at distinct
@@ -386,34 +331,17 @@ async fn concurrent_deploys_land_at_distinct_versions() {
     let recipe_name = "fixture-ok";
     init_workspace(&ws_root, recipe_name, RECIPE);
     let daemon = Daemon::open(ws_root.clone()).unwrap();
-    let catalog = catalog_for(RECIPE, &ws_root);
 
     let d1 = daemon.clone();
     let d2 = daemon.clone();
-    let cat1 = catalog.clone();
-    let cat2 = catalog.clone();
+    let m1 = linked_module(recipe_name, &ws_root);
+    let m2 = linked_module(recipe_name, &ws_root);
     let name1 = recipe_name.to_string();
     let name2 = recipe_name.to_string();
-    let src1 = RECIPE.to_string();
-    let src2 = RECIPE.to_string();
 
     let (r1, r2) = tokio::join!(
-        tokio::task::spawn_blocking(move || {
-            d1.deploy(
-                &name1,
-                src1,
-                cat1,
-                &forage_core::RecipeSignatures::default(),
-            )
-        }),
-        tokio::task::spawn_blocking(move || {
-            d2.deploy(
-                &name2,
-                src2,
-                cat2,
-                &forage_core::RecipeSignatures::default(),
-            )
-        }),
+        tokio::task::spawn_blocking(move || d1.deploy(&name1, m1)),
+        tokio::task::spawn_blocking(move || d2.deploy(&name2, m2)),
     );
     let dv1 = r1.expect("join 1").expect("deploy 1");
     let dv2 = r2.expect("join 2").expect("deploy 2");
@@ -468,14 +396,8 @@ async fn scheduled_run_recipe_version_round_trips() {
     assert_eq!(pre_deploy.recipe_version, None);
 
     // Deploy then fire again: row carries `recipe_version: Some(1)`.
-    let catalog = catalog_for(&deployed_src, &ws_root);
     daemon
-        .deploy(
-            recipe_name,
-            deployed_src,
-            catalog,
-            &forage_core::RecipeSignatures::default(),
-        )
+        .deploy(recipe_name, linked_module(recipe_name, &ws_root))
         .unwrap();
     let post_deploy = daemon
         .trigger_run(&run.id, RunFlags::prod())

@@ -13,10 +13,12 @@
 //!   Studio (R9) — the live driver needs a tao event loop, which the
 //!   Tauri shell provides natively.
 
+pub mod driver;
 pub mod error;
 pub mod replay;
 pub mod shim;
 
+pub use driver::BrowserReplayDriver;
 pub use error::{BrowserError, BrowserResult};
 pub use replay::{ReplayEngine, run_browser_replay};
 pub use shim::{DUMP_DOCUMENT_JS, FETCH_INTERCEPT_JS, INTERACTIVE_OVERLAY_JS, SCROLL_TO_BOTTOM_JS};
