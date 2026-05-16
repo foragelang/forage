@@ -1,4 +1,4 @@
-name: PR review
+name: Rules review
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
 
 jobs:
   review:
-    uses: hideselfview/agent-instructions/.github/workflows/pr-review.yml@main
+    uses: hideselfview/agent-instructions/.github/workflows/rules-review.yml@main
     with:
       project: forage
     secrets:
