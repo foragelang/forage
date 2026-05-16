@@ -42,14 +42,33 @@ pub struct LinkOutcome {
 /// reads. Recipe-level validation issues (unknown stages, cycles,
 /// emit/input mismatches) are carried inside [`LinkOutcome::report`]
 /// instead.
+///
+/// `WorkspaceError` is boxed inside the `Workspace` variant: it's a
+/// large enum (the heaviest variants carry path + sub-error), and
+/// without the box, `Result<_, LinkError>` exceeds clippy's
+/// `result_large_err` threshold on Windows. Same precedent as
+/// `WorkspaceError`'s own internal boxing — heap allocation happens
+/// only on the rare failure path; the hot success path stays
+/// stack-only.
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
     #[error("workspace: {0}")]
-    Workspace(#[from] WorkspaceError),
+    Workspace(Box<WorkspaceError>),
     #[error("recipe '{0}' is not in the workspace")]
     UnknownRecipe(String),
     #[error("recipe '{0}' has no header — link target must be a recipe-bearing file")]
     HeaderlessRecipe(String),
+}
+
+// Manual `From` impl that boxes — `#[from] Box<WorkspaceError>` only
+// gives us `From<Box<WorkspaceError>>`, but every `?` site is
+// propagating a bare `Result<_, WorkspaceError>` and expects the
+// conversion to happen for free. This impl preserves that ergonomics
+// without unboxing the variant.
+impl From<WorkspaceError> for LinkError {
+    fn from(err: WorkspaceError) -> Self {
+        LinkError::Workspace(Box::new(err))
+    }
 }
 
 /// Link a recipe in the context of a workspace. Resolves the root's
