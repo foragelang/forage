@@ -6,6 +6,10 @@ on:
 
 jobs:
   review:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
     uses: hideselfview/agent-instructions/.github/workflows/rules-review.yml@main
     with:
       project: forage
