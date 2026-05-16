@@ -471,6 +471,15 @@ impl TypeCatalog {
     }
 }
 
+/// Workspace-loader errors. `ParseError` is the heaviest constituent —
+/// it carries source spans, token context, and a positional message —
+/// so the `Parse` and `RecipePathInvalid` variants box it. That keeps
+/// the enum's stack footprint small (Windows in particular pushes the
+/// unboxed version past clippy's `result_large_err` threshold) and
+/// confines the heap allocation to the rare parse-failure path; the
+/// hot success path stays stack-only. New precedent: when an error
+/// variant carries a contentful sub-error (rather than a fixed-size
+/// primitive), reach for `Box<SubError>` to keep the outer enum lean.
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("workspace root not readable: {0}")]
@@ -491,13 +500,13 @@ pub enum WorkspaceError {
     Parse {
         path: PathBuf,
         #[source]
-        source: ParseError,
+        source: Box<ParseError>,
     },
     #[error("recipe at {path} failed to parse: {source}")]
     RecipePathInvalid {
         path: PathBuf,
         #[source]
-        source: ParseError,
+        source: Box<ParseError>,
     },
     #[error("expected a recipe at {path} but found a header-less declarations file")]
     ExpectedRecipe { path: PathBuf },
@@ -763,7 +772,7 @@ impl Workspace {
         let recipe_src = fs::read_to_string(recipe_path).map_err(WorkspaceError::Io)?;
         let file = parse(&recipe_src).map_err(|source| WorkspaceError::RecipePathInvalid {
             path: recipe_path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
         if file.recipe_header().is_none() {
             return Err(WorkspaceError::ExpectedRecipe {
@@ -783,7 +792,7 @@ where
     let src = read(path)?;
     parse(&src).map_err(|source| WorkspaceError::Parse {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })
 }
 
