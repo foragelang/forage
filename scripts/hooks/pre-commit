@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Forage pre-commit hook: enforce `cargo fmt --check` before letting a
+# commit land. Wired up via `scripts/install-hooks.sh` which points
+# core.hooksPath at this directory, so editing this file takes effect
+# immediately — no re-install needed.
+#
+# Bypass with `git commit --no-verify` only when you have a specific
+# reason and intend to follow up; main was failing CI's rustfmt step
+# for weeks before this hook landed, which is exactly the case the
+# hook exists to prevent.
+
+set -euo pipefail
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: cargo not on PATH; skipping rustfmt check" >&2
+    exit 0
+fi
+
+if ! cargo fmt --all -- --check >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt failed. Run \`cargo fmt --all\` and re-stage." >&2
+    cargo fmt --all -- --check 2>&1 | head -40 >&2
+    exit 1
+fi

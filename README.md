@@ -101,10 +101,16 @@ ROADMAP.md              # milestones R1–R13
 ## Building
 
 ```sh
+bash scripts/install-hooks.sh   # one-time: enables the rustfmt pre-commit hook
 cargo build --workspace
 cargo test --workspace
 forage --version
 ```
+
+`scripts/install-hooks.sh` points `core.hooksPath` at the repo's
+`scripts/hooks/`; from then on, commits run `cargo fmt --all -- --check`
+and refuse if the tree isn't formatted. Bypass with `--no-verify` only
+when you have a specific reason.
 
 For Forage Studio:
 
