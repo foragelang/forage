@@ -1,23 +1,69 @@
 #!/usr/bin/env bash
-# Forage pre-commit hook: enforce `cargo fmt --check` before letting a
-# commit land. Wired up via `scripts/install-hooks.sh` which points
-# core.hooksPath at this directory, so editing this file takes effect
-# immediately — no re-install needed.
+# Forage pre-commit hook: enforce locally what CI gates on, so a
+# commit that lands here is one that's already passed the same checks
+# CI will re-run remotely. Mirrors `.github/workflows/rust-ci.yml`:
+# rustfmt, clippy, `cargo build --workspace --all-targets`, and
+# `wasm-pack build` of `forage-wasm` (when wasm-pack is on PATH).
+#
+# Wired up via `scripts/install-hooks.sh` which points core.hooksPath
+# at this directory, so editing this file takes effect immediately —
+# no re-install needed.
 #
 # Bypass with `git commit --no-verify` only when you have a specific
 # reason and intend to follow up; main was failing CI's rustfmt step
 # for weeks before this hook landed, which is exactly the case the
 # hook exists to prevent.
+#
+# Cost: on a clean tree this is several minutes (clippy + build
+# compile the whole workspace). Subsequent commits are fast through
+# cargo's incremental cache. Reorder fail-fast: cheap checks first.
 
 set -euo pipefail
 
 if ! command -v cargo >/dev/null 2>&1; then
-    echo "pre-commit: cargo not on PATH; skipping rustfmt check" >&2
+    echo "pre-commit: cargo not on PATH; skipping Rust checks" >&2
     exit 0
 fi
 
-if ! cargo fmt --all -- --check >/dev/null 2>&1; then
-    echo "pre-commit: rustfmt failed. Run \`cargo fmt --all\` and re-stage." >&2
-    cargo fmt --all -- --check 2>&1 | head -40 >&2
+fail() {
+    echo "pre-commit: $1 failed. Fix: $2" >&2
     exit 1
+}
+
+# 1. rustfmt — sub-second; same as CI's `fmt` job.
+if ! cargo fmt --all -- --check >/dev/null 2>&1; then
+    cargo fmt --all -- --check 2>&1 | head -40 >&2
+    fail "rustfmt" "cargo fmt --all"
+fi
+
+# 2. clippy with -D warnings — same as CI's `clippy` job. Catches
+# the lints CI will reject. Note: platform-conditional lints
+# (e.g. `result_large_err` that only fires on Windows due to type
+# layout) won't fire here unless you're on that platform; CI is
+# still the final word for those.
+if ! RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets >/dev/null 2>&1; then
+    RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets 2>&1 | tail -60 >&2
+    fail "clippy" "fix the warnings above"
+fi
+
+# 3. workspace build with all targets — same as CI's `test` job's
+# build step. Catches compile errors in tests, examples, and
+# integration targets that a partial build would miss.
+if ! cargo build --workspace --all-targets >/dev/null 2>&1; then
+    cargo build --workspace --all-targets 2>&1 | tail -60 >&2
+    fail "cargo build" "fix the errors above"
+fi
+
+# 4. wasm-pack build of forage-wasm — same as CI's `wasm` job's
+# build step. Catches wasm32-unknown-unknown regressions that the
+# host-target workspace build above won't surface. Skipped when
+# wasm-pack isn't installed locally so the hook works on dev
+# machines that don't have it; CI is the backstop.
+if command -v wasm-pack >/dev/null 2>&1; then
+    if ! (cd crates/forage-wasm && wasm-pack build --target web --out-dir ../../target/pre-commit-wasm-pkg) >/dev/null 2>&1; then
+        (cd crates/forage-wasm && wasm-pack build --target web --out-dir ../../target/pre-commit-wasm-pkg) 2>&1 | tail -40 >&2
+        fail "wasm-pack build" "wasm-pack build --target web --out-dir hub-site/forage-wasm/pkg (from crates/forage-wasm)"
+    fi
+else
+    echo "pre-commit: wasm-pack not on PATH; skipping forage-wasm wasm build (CI will catch any regressions)" >&2
 fi
