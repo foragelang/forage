@@ -113,6 +113,29 @@ fn require_workspace(
     require_session(state).map(|s| s.workspace.clone())
 }
 
+/// Re-parse the on-disk workspace and swap a fresh snapshot into
+/// `state.session`, keeping the existing daemon. Called after every
+/// command that mutates `.forage` files on disk
+/// (`create_recipe`, `delete_recipe`, `save_file`, `notebook_save`,
+/// `sync_from_hub`, `fork_from_hub`) so the next read — recipe
+/// counts, the LSP catalog, the validator catalog, recipe signatures —
+/// observes the mutation instead of the snapshot taken at
+/// `open_workspace` time. The public `refresh_workspace` Tauri
+/// command exposes the same path so the frontend can catch up after
+/// edits made outside Studio (external editor, git checkout).
+fn reload_workspace_session(state: &StudioState) -> Result<(), String> {
+    let prior = state
+        .session
+        .load_full()
+        .ok_or_else(|| "no workspace open".to_string())?;
+    let fresh = forage_core::workspace::load(&prior.workspace.root).map_err(|e| e.to_string())?;
+    state.session.store(Some(Arc::new(WorkspaceSession {
+        daemon: prior.daemon.clone(),
+        workspace: Arc::new(fresh),
+    })));
+    Ok(())
+}
+
 /// Wire Studio's browser driver and run-completed callback into a newly
 /// constructed daemon, then start its scheduler. Shared by the
 /// `open_workspace` command and any future bootstrapping path so the
@@ -232,14 +255,32 @@ pub fn recipe_progress_unit(
 
 #[tauri::command]
 pub fn create_recipe(state: State<'_, StudioState>) -> Result<String, String> {
-    let ws = require_workspace(&state)?;
-    workspace::create_recipe(&ws.root, None).map_err(|e| e.to_string())
+    create_recipe_inner(&state)
+}
+
+/// Test-reachable core of `create_recipe`. Scaffolds the next
+/// `untitled-N.forage` under the workspace root and reloads the cached
+/// workspace so subsequent reads (`list_recipe_statuses`, recipe
+/// signatures, the validator catalog) see the new draft. Mirrors the
+/// `open_workspace` / `open_workspace_inner` split so tests can drive
+/// the cache-reload contract without a Tauri runtime.
+fn create_recipe_inner(state: &StudioState) -> Result<String, String> {
+    let session = state
+        .session
+        .load_full()
+        .ok_or_else(|| "no workspace open".to_string())?;
+    let name =
+        workspace::create_recipe(&session.workspace.root, None).map_err(|e| e.to_string())?;
+    reload_workspace_session(state)?;
+    Ok(name)
 }
 
 #[tauri::command]
 pub fn delete_recipe(state: State<'_, StudioState>, name: String) -> Result<(), String> {
     let ws = require_workspace(&state)?;
-    workspace::delete_recipe(&ws, &name).map_err(|e| e.to_string())
+    workspace::delete_recipe(&ws, &name).map_err(|e| e.to_string())?;
+    reload_workspace_session(&state)?;
+    Ok(())
 }
 
 /// Pop up a native context menu (NSMenu on macOS, etc.) at the cursor
@@ -1169,7 +1210,10 @@ pub async fn sync_from_hub(
 ) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
     let ws = require_workspace(&state)
         .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
-    crate::hub_sync::run_sync(&ws.root, &hub_url, &author, &slug, version).await
+    let outcome = crate::hub_sync::run_sync(&ws.root, &hub_url, &author, &slug, version).await?;
+    reload_workspace_session(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
+    Ok(outcome)
 }
 
 /// Fork `(upstream_author, upstream_slug)` to `@me/<as>` and sync the
@@ -1185,7 +1229,12 @@ pub async fn fork_from_hub(
 ) -> Result<crate::hub_sync::SyncOutcomeWire, crate::hub_sync::PublishError> {
     let ws = require_workspace(&state)
         .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
-    crate::hub_sync::run_fork(&ws.root, &hub_url, &upstream_author, &upstream_slug, r#as).await
+    let outcome =
+        crate::hub_sync::run_fork(&ws.root, &hub_url, &upstream_author, &upstream_slug, r#as)
+            .await?;
+    reload_workspace_session(&state)
+        .map_err(|e| crate::hub_sync::PublishError::Other { message: e })?;
+    Ok(outcome)
 }
 
 /// Dry-run preview of a `publish_recipe` call: assemble the publish
@@ -1605,18 +1654,15 @@ pub fn list_workspace_files(state: State<'_, StudioState>) -> Result<FileNode, S
 }
 
 /// Re-scan the workspace from disk and replace the cached snapshot.
-/// Called from the frontend when a filesystem change (new recipe,
-/// renamed declarations file, manifest edit) should be reflected
-/// without restarting Studio.
+/// Studio-side mutations (`create_recipe`, `delete_recipe`,
+/// `save_file`, `notebook_save`, `sync_from_hub`, `fork_from_hub`)
+/// already refresh the cache themselves through
+/// `reload_workspace_session`. This command is the frontend's hook
+/// for catching up after edits made *outside* Studio — external
+/// editor, git checkout, file moved in Finder.
 #[tauri::command]
 pub fn refresh_workspace(state: State<'_, StudioState>) -> Result<(), String> {
-    let prior = require_session(&state)?;
-    let fresh = forage_core::workspace::load(&prior.workspace.root).map_err(|e| e.to_string())?;
-    state.session.store(Some(Arc::new(WorkspaceSession {
-        daemon: prior.daemon.clone(),
-        workspace: Arc::new(fresh),
-    })));
-    Ok(())
+    reload_workspace_session(&state)
 }
 
 /// Read an arbitrary file under the workspace by absolute or
@@ -1644,6 +1690,13 @@ pub fn save_file(
     std::fs::write(&target, &source).map_err(|e| e.to_string())?;
     let mut outcome = validate_path(&root, &target, &source);
     append_workspace_shared_diagnostics(&root, &target, &source, &mut outcome);
+    // The buffer that just hit disk may have added a recipe header,
+    // renamed a recipe, or flipped a parse from broken to clean (or
+    // vice versa). Refresh the cached workspace so every downstream
+    // surface — `list_recipe_statuses`, the LSP catalog, recipe
+    // signatures — reads the post-save view, not the snapshot taken
+    // at `open_workspace` time.
+    reload_workspace_session(&state)?;
     Ok(outcome)
 }
 
@@ -2469,6 +2522,7 @@ pub fn notebook_save(
         ));
     }
     std::fs::write(&target, &source).map_err(|e| format!("write {}: {e}", target.display()))?;
+    reload_workspace_session(&state)?;
     Ok(NotebookSaveOutcome {
         path: target,
         source,
@@ -2891,6 +2945,64 @@ for $i in $list.items[*] {
             matches!(status.deployed, DeployedState::Deployed { version: 1, .. }),
             "deployment side joined under the header name: {status:?}",
         );
+    }
+
+    /// `create_recipe_inner` scaffolds a draft on disk and refreshes
+    /// the cached workspace in place, so reads that follow the call
+    /// (`list_recipe_statuses`, recipe signatures, the LSP catalog)
+    /// observe the new draft instead of the snapshot taken at
+    /// `open_workspace` time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_recipe_refreshes_workspace_cache() {
+        use super::{build_recipe_statuses, create_recipe_inner};
+        use crate::state::{StudioState, WorkspaceSession};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().to_path_buf();
+        std::fs::write(
+            ws_root.join("forage.toml"),
+            "description = \"\"\ncategory = \"\"\ntags = []\n",
+        )
+        .unwrap();
+
+        let workspace = forage_core::workspace::load(&ws_root).expect("load workspace");
+        let daemon = Daemon::open(ws_root.clone()).expect("open daemon");
+        let state = StudioState::new_empty();
+        state
+            .session
+            .store(Some(std::sync::Arc::new(WorkspaceSession {
+                daemon: daemon.clone(),
+                workspace: std::sync::Arc::new(workspace),
+            })));
+
+        assert_eq!(
+            state
+                .session
+                .load()
+                .as_ref()
+                .unwrap()
+                .workspace
+                .recipes()
+                .count(),
+            0,
+        );
+
+        let name = create_recipe_inner(&state).expect("create_recipe_inner");
+        assert_eq!(name, "untitled-1");
+
+        let session = state.session.load();
+        let workspace = &session.as_ref().unwrap().workspace;
+        let names: Vec<&str> = workspace.recipes().map(|r| r.name()).collect();
+        assert_eq!(
+            names,
+            vec!["untitled-1"],
+            "post-scaffold cache must include the new recipe",
+        );
+
+        let statuses = build_recipe_statuses(workspace, &daemon).expect("build_recipe_statuses");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "untitled-1");
+        assert!(matches!(statuses[0].draft, DraftState::Valid { .. }));
     }
 
     const FOO_BAR_RECIPE: &str = r#"recipe "bar"
