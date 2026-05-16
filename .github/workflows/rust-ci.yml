@@ -71,7 +71,23 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: ./.github/actions/setup-linux
       - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace
+      # `forage-studio`'s lib-test binary fails to load on Windows with
+      # STATUS_ENTRYPOINT_NOT_FOUND — Tauri's runtime imports
+      # comctl32 v6 symbols, but cargo's `--test` build of a lib target
+      # doesn't carry Tauri's production app manifest (declaring v6),
+      # so the Windows loader picks the legacy v5 comctl32 and rejects
+      # the binary before any test runs. There's no cargo
+      # link-arg scope ("lib in test mode") that would let us embed
+      # the manifest only for test binaries — see
+      # https://github.com/tauri-apps/tauri/issues/14580 (open / un-triaged).
+      # Build + clippy still cover forage-studio on Windows; only test
+      # execution is skipped.
+      - name: Test
+        if: matrix.os != 'windows-latest'
+        run: cargo test --workspace
+      - name: Test (Windows excludes forage-studio)
+        if: matrix.os == 'windows-latest'
+        run: cargo test --workspace --exclude forage-studio
 
   wasm:
     name: forage-wasm build

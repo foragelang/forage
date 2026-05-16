@@ -471,15 +471,17 @@ impl TypeCatalog {
     }
 }
 
-/// Workspace-loader errors. `ParseError` is the heaviest constituent —
-/// it carries source spans, token context, and a positional message —
-/// so the `Parse` and `RecipePathInvalid` variants box it. That keeps
-/// the enum's stack footprint small (Windows in particular pushes the
-/// unboxed version past clippy's `result_large_err` threshold) and
-/// confines the heap allocation to the rare parse-failure path; the
-/// hot success path stays stack-only. New precedent: when an error
-/// variant carries a contentful sub-error (rather than a fixed-size
-/// primitive), reach for `Box<SubError>` to keep the outer enum lean.
+/// Workspace-loader errors. The contentful sub-errors —
+/// `ManifestError` (wraps toml's span-bearing error) and `ParseError`
+/// (carries source spans, token context, position message) — are
+/// boxed inside their variants so the enum stays lean. Without
+/// boxing, `WorkspaceError` crosses clippy's `result_large_err`
+/// threshold on Windows (PathBuf + toml::de::Error inline tips past
+/// 128 bytes); boxed, every variant is small. Heap allocation only
+/// happens on the rare failure path; the hot success path stays
+/// stack-only. Repo precedent: when an error variant carries a
+/// contentful sub-error (rather than a fixed-size primitive), reach
+/// for `Box<SubError>` to keep the outer enum lean.
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("workspace root not readable: {0}")]
@@ -488,13 +490,13 @@ pub enum WorkspaceError {
     Manifest {
         path: PathBuf,
         #[source]
-        source: ManifestError,
+        source: Box<ManifestError>,
     },
     #[error("malformed lockfile at {path}: {source}")]
     Lockfile {
         path: PathBuf,
         #[source]
-        source: ManifestError,
+        source: Box<ManifestError>,
     },
     #[error("workspace file at {path} failed to parse: {source}")]
     Parse {
@@ -543,7 +545,7 @@ pub fn load(root: &Path) -> Result<Workspace, WorkspaceError> {
     let manifest_src = fs::read_to_string(&manifest_path)?;
     let manifest = parse_manifest(&manifest_src).map_err(|source| WorkspaceError::Manifest {
         path: manifest_path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     let lockfile = load_lockfile(&root)?;
     let mut files = Vec::new();
@@ -567,7 +569,10 @@ fn load_lockfile(root: &Path) -> Result<Lockfile, WorkspaceError> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Lockfile::default()),
         Err(e) => return Err(WorkspaceError::Io(e)),
     };
-    parse_lockfile(&raw).map_err(|source| WorkspaceError::Lockfile { path, source })
+    parse_lockfile(&raw).map_err(|source| WorkspaceError::Lockfile {
+        path,
+        source: Box::new(source),
+    })
 }
 
 /// Re-scan the workspace tree on disk and refresh `files`. Manifest is
