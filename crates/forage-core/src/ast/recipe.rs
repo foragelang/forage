@@ -123,10 +123,6 @@ impl ForageFile {
         }
     }
 
-    pub fn function(&self, name: &str) -> Option<&FnDecl> {
-        self.functions.iter().find(|f| f.name == name)
-    }
-
     /// The recipe header, when the file has one. Validator-clean files
     /// have at most one header; callers that ran the validator first can
     /// rely on that. Returns the first header when several are present

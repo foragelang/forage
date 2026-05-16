@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ast::{AlignmentUri, EmitsDecl, ForageFile, InputDecl, RecipeEnum, RecipeField, RecipeType};
+use crate::ast::{AlignmentUri, ForageFile, InputDecl, RecipeEnum, RecipeField, RecipeType};
 use crate::parse::{ParseError, parse};
 
 pub use fixtures::{FIXTURES_DIR, SNAPSHOTS_DIR, fixtures_path, snapshot_path};
@@ -175,19 +175,15 @@ impl From<SerializableCatalog> for TypeCatalog {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecipeSignature {
     pub inputs: Vec<InputDecl>,
-    /// The declared `emits T | U | …` clause, when the source provides
-    /// one. Optional: a recipe without `emits` has an inferred output
-    /// set (see `output_types`) but no declared contract for the
-    /// validator to check body emissions against.
-    pub emits: Option<EmitsDecl>,
     pub body: crate::ast::RecipeBody,
     /// Resolved set of types this recipe emits. When `emits` is
-    /// declared, that's the canonical set; otherwise it's the set
-    /// inferred from the body's `emit X { … }` statements and the
-    /// browser config's captures. Empty for composition bodies and
-    /// header-less files. Pre-computed at signature construction so
-    /// composition's stage-resolution doesn't have to re-walk the
-    /// body on every check.
+    /// declared on the source, that's the canonical set; otherwise
+    /// it's the set inferred from the body's `emit X { … }` statements
+    /// and the browser config's captures. Empty for composition bodies
+    /// and header-less files. Pre-computed at signature construction
+    /// so composition's stage-resolution doesn't have to re-walk the
+    /// body on every check. The validator gets span info for `emits`
+    /// diagnostics from the original `ForageFile` directly.
     pub output_types: std::collections::BTreeSet<String>,
 }
 
@@ -215,14 +211,6 @@ impl RecipeSignatures {
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &RecipeSignature)> {
         self.by_name.iter()
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &String> {
-        self.by_name.keys()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
     }
 
     /// Resolve a recipe's output type set, chasing composition chains
@@ -295,7 +283,6 @@ impl RecipeSignature {
     pub fn from_file(file: &ForageFile) -> Self {
         Self {
             inputs: file.inputs.clone(),
-            emits: file.emits.clone(),
             body: file.body.clone(),
             output_types: file.resolved_output_types(),
         }
